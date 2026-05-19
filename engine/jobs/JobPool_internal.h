@@ -56,6 +56,12 @@ struct PSY_CACHELINE_ALIGN Job {
     // Wave A: a single fence handle that the public wait() blocks on.
     // (No condition variable yet — we busy-help, see worker loop.)
 
+    // Wave B: which pool class this job was submitted to. 0 = unified
+    // (`submit`), 1 = latency / P-core preferring (`submit_latency`),
+    // 2 = throughput / E-core preferring (`submit_throughput`). On
+    // homogeneous boxes 1 and 2 collapse onto 0 at dispatch time.
+    u8 pool_class = 0;
+
     void reset() noexcept {
         fn = nullptr;
         user = nullptr;
@@ -70,6 +76,7 @@ struct PSY_CACHELINE_ALIGN Job {
         }
         spill_count = 0;
         spill_capacity = 0;
+        pool_class = 0;
         done.store(0, std::memory_order_relaxed);
     }
 

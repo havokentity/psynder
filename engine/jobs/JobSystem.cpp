@@ -34,14 +34,24 @@
 // the target's `done` flag, which keeps every core fed and avoids deadlock
 // when a job waits on another job that needs us.
 //
-// Fibers (DESIGN.md §2.4): deferred to Wave B. parallel_for and the DAG
-// scheduler are sufficient for raster, vertex, narrowphase, etc., which is
-// what M0/M1 need. See PR body.
+// Fibers (DESIGN.md §2.4): Wave B adds an in-tree Fiber primitive
+// (engine/jobs/Fiber*) — Win32 fibers / POSIX ucontext, used by the
+// lightmap baker and BVH refit to yield mid-bounce without stalling a
+// worker. The DAG scheduler below is untouched; fibers are an orthogonal
+// concurrency tool a job can grab when it needs to suspend itself.
+//
+// Heterogeneous P/E cores (DESIGN.md §2.4 closing paragraph): Wave B also
+// adds side-pools served by the new `submit_latency` / `submit_throughput`
+// free functions in `JobSystemHetero.h`. On homogeneous boxes the side
+// pools collapse onto the unified pool and the new calls behave identically
+// to `submit`.
 
 #include "JobSystem.h"
 
 #include "ChaseLevDeque_internal.h"
+#include "HeteroPool_internal.h"
 #include "JobPool_internal.h"
+#include "JobSystemHetero.h"
 #include "core/hardware/CpuFeatures.h"
 
 #include <atomic>
@@ -76,11 +86,38 @@ void worker_scratch_init_local(u32 /*worker_id*/) noexcept {
 thread_local u32 t_worker_id = ~0u;
 
 // ─── Internal scheduler state ────────────────────────────────────────────
+//
+// Wave B layered the heterogeneous pools on top of the Wave A unified
+// worker set. Each Worker carries a `cls` tag — Unified, Latency, or
+// Throughput. Three inboxes feed the workers: the unified `main_inbox`
+// (filled by `submit`), plus `latency_inbox` and `throughput_inbox`
+// filled by `submit_latency` / `submit_throughput`. Stealing rules:
+//
+//   - Workers always pop their own deque (LIFO).
+//   - A worker drains its CLASS inbox first (latency worker → latency_inbox,
+//     throughput → throughput_inbox, unified → main_inbox).
+//   - Then it drains the unified inbox (everyone helps unified work).
+//   - Then it steals from a sibling deque — preferring same-class siblings
+//     to keep work where it was scheduled.
+//
+// The unified pool — when hetero is not active or when `submit` is called —
+// remains the canonical fallback so existing call sites keep working without
+// changes. On homogeneous boxes the latency/throughput inboxes still exist
+// but Wave-B `submit_latency`/`submit_throughput` route directly to the
+// unified inbox (no extra hops).
+
+enum class WorkerClass : u8 {
+    Unified    = 0,
+    Latency    = 1,
+    Throughput = 2,
+};
+
 struct PSY_CACHELINE_ALIGN Worker {
     std::thread          thread;
     detail::ChaseLevDeque deque;
     // Local RNG for victim selection; seeded with worker id.
     std::minstd_rand     rng;
+    WorkerClass          cls = WorkerClass::Unified;
 };
 
 struct SchedulerState {
@@ -94,6 +131,11 @@ struct SchedulerState {
     // keeps the workers' own deques single-owner — only the worker pushes/pops
     // its own deque; thieves steal from the top.
     detail::ChaseLevDeque main_inbox;
+    // Hetero inboxes — populated by submit_latency / submit_throughput
+    // when the host is heterogeneous. On a homogeneous host these still
+    // get init'd but the hetero submit functions route to main_inbox.
+    detail::ChaseLevDeque latency_inbox;
+    detail::ChaseLevDeque throughput_inbox;
     // Cross-worker submission: workers submitting (e.g. parallel_for from
     // inside a job) push to their own deque. Submissions from arbitrary
     // non-worker threads other than main are serialized via the inbox_mu.
@@ -102,6 +144,14 @@ struct SchedulerState {
     std::mutex            sleep_mu;
     std::condition_variable sleep_cv;
     std::atomic<u32>      sleeping{0};
+
+    // Hetero pool topology, populated at start(). When `hetero_active` is
+    // false, submit_latency / submit_throughput route to main_inbox and
+    // every worker is `Unified`.
+    bool                  hetero_active = false;
+    u32                   latency_workers    = 0;  // count of cls==Latency
+    u32                   throughput_workers = 0;  // count of cls==Throughput
+    detail::HeteroTopology topology{};
 };
 
 SchedulerState g_sched;
@@ -119,25 +169,37 @@ constexpr JobHandle make_handle(u32 slot, u32 gen) noexcept {
     return JobHandle{slot, gen};
 }
 
+// Pick the right inbox for a non-worker pusher given the job's pool class.
+detail::ChaseLevDeque* pick_inbox_for_class(u8 pool_class) noexcept {
+    if (!g_sched.hetero_active || pool_class == 0u) {
+        return &g_sched.main_inbox;
+    }
+    return (pool_class == 1u) ? &g_sched.latency_inbox
+                              : &g_sched.throughput_inbox;
+}
+
 // Dispatch a slot that has reached zero pending deps. From a worker, push
 // onto own deque. From the main thread (or any non-worker), push onto the
-// main-thread inbox — workers steal from it. Non-main non-worker threads
-// must hold inbox_mu to push, but Wave A's only producers are main + workers
-// so this branch is rare. The owner invariant (single push-er per deque) is
-// preserved either way.
-detail::ChaseLevDeque* select_deque_for_push(bool& need_inbox_lock) noexcept {
+// inbox matching the slot's pool class — workers steal from it. Non-main
+// non-worker threads must hold inbox_mu to push, but Wave A's only producers
+// are main + workers so this branch is rare. The owner invariant (single
+// push-er per deque) is preserved either way.
+detail::ChaseLevDeque* select_deque_for_push(u8 pool_class,
+                                             bool& need_inbox_lock) noexcept {
     u32 me = t_worker_id;
     if (me != ~0u) {
         need_inbox_lock = false;
         return &g_sched.workers[me].deque;
     }
     need_inbox_lock = true;  // non-worker — lock the inbox writer slot
-    return &g_sched.main_inbox;
+    return pick_inbox_for_class(pool_class);
 }
 
 void dispatch_ready(u32 slot) noexcept {
+    auto& job = g_sched.pool.at(slot);
+    u8 pool_class = job.pool_class;
     bool need_inbox_lock = false;
-    auto* dp = select_deque_for_push(need_inbox_lock);
+    auto* dp = select_deque_for_push(pool_class, need_inbox_lock);
     auto& d = *dp;
     bool pushed = false;
     {
@@ -154,7 +216,6 @@ void dispatch_ready(u32 slot) noexcept {
         // Deque full: fall back to running synchronously to avoid losing the
         // job. This is the safety valve; we size the deque so it doesn't
         // happen in practice for Wave A workloads.
-        auto& job = g_sched.pool.at(slot);
         if (job.fn) job.fn(job.user);
         job.done.store(1, std::memory_order_release);
         for (u32 i = 0; i < job.inline_child_count; ++i) {
@@ -209,7 +270,8 @@ void execute_slot(u32 slot) noexcept {
     g_sched.live_jobs.fetch_sub(1, std::memory_order_acq_rel);
 }
 
-// Try to find work: own deque, main inbox, then a random victim.
+// Try to find work: own deque, class-aligned inbox, unified inbox, then a
+// sibling deque (preferring same-class siblings).
 bool try_one_job(u32 my_id) noexcept {
     // Own deque first (LIFO — keeps the cache hot).
     auto r = g_sched.workers[my_id].deque.try_pop();
@@ -217,7 +279,24 @@ bool try_one_job(u32 my_id) noexcept {
         execute_slot(r.index);
         return true;
     }
-    // Drain the main inbox: jobs submitted from non-worker threads land here.
+    const WorkerClass my_cls = g_sched.workers[my_id].cls;
+    // Drain the class-aligned hetero inbox first when hetero is active.
+    // This keeps latency work on P-cores and throughput on E-cores when
+    // both have work pending. Falls through to the unified inbox so a
+    // worker never sleeps while there is *any* work to do.
+    if (g_sched.hetero_active) {
+        detail::ChaseLevDeque* class_inbox = nullptr;
+        if (my_cls == WorkerClass::Latency)        class_inbox = &g_sched.latency_inbox;
+        else if (my_cls == WorkerClass::Throughput) class_inbox = &g_sched.throughput_inbox;
+        if (class_inbox) {
+            auto s = class_inbox->try_steal();
+            if (s.status == detail::ChaseLevDeque::Status::Ok) {
+                execute_slot(s.index);
+                return true;
+            }
+        }
+    }
+    // Drain the unified inbox: jobs submitted via plain `submit()` land here.
     {
         auto s = g_sched.main_inbox.try_steal();
         if (s.status == detail::ChaseLevDeque::Status::Ok) {
@@ -225,9 +304,49 @@ bool try_one_job(u32 my_id) noexcept {
             return true;
         }
     }
-    // Steal from a sibling worker.
+    // Cross-class hetero inboxes: a latency worker that finds nothing in
+    // its own class should help drain throughput work (and vice versa)
+    // rather than parking, so we don't waste cores when only one class has
+    // load. Same-class is tried above; this is the fallback.
+    if (g_sched.hetero_active) {
+        detail::ChaseLevDeque* other = nullptr;
+        if (my_cls == WorkerClass::Latency)         other = &g_sched.throughput_inbox;
+        else if (my_cls == WorkerClass::Throughput) other = &g_sched.latency_inbox;
+        if (other) {
+            auto s = other->try_steal();
+            if (s.status == detail::ChaseLevDeque::Status::Ok) {
+                execute_slot(s.index);
+                return true;
+            }
+        }
+    }
+    // Steal from a sibling worker. Bias toward same-class siblings by
+    // sampling among them first if hetero is active.
     u32 n = g_sched.worker_count;
     if (n > 1) {
+        if (g_sched.hetero_active) {
+            // Collect same-class peers (up to a small inline set; we
+            // expect at most a few dozen workers).
+            u32 peer_ids[64];
+            u32 peer_count = 0;
+            for (u32 i = 0; i < n && peer_count < 64u; ++i) {
+                if (i == my_id) continue;
+                if (g_sched.workers[i].cls == my_cls) {
+                    peer_ids[peer_count++] = i;
+                }
+            }
+            if (peer_count > 0u) {
+                std::uniform_int_distribution<u32> dist(0u, peer_count - 1u);
+                u32 victim = peer_ids[dist(g_sched.workers[my_id].rng)];
+                auto s = g_sched.workers[victim].deque.try_steal();
+                if (s.status == detail::ChaseLevDeque::Status::Ok) {
+                    execute_slot(s.index);
+                    return true;
+                }
+            }
+        }
+        // Random victim from all workers — the cross-class fallback that
+        // keeps every core fed even when load is unbalanced across classes.
         std::uniform_int_distribution<u32> dist(0, n - 1);
         u32 victim = dist(g_sched.workers[my_id].rng);
         if (victim == my_id) victim = (victim + 1) % n;
@@ -244,6 +363,16 @@ bool try_one_job(u32 my_id) noexcept {
 void worker_main(u32 id) noexcept {
     t_worker_id = id;
     worker_scratch_init_local(id);
+    // Apply the per-thread P/E hint. On homogeneous boxes every worker is
+    // Unified and the hint call is a no-op; on hetero hosts (Apple Silicon,
+    // Intel Core Ultra, Snapdragon X) we tag latency workers as
+    // P-core-preferring and throughput workers as E-core-preferring.
+    WorkerClass cls = g_sched.workers[id].cls;
+    if (cls == WorkerClass::Latency) {
+        detail::apply_worker_class_hint(detail::WorkerClass::Latency);
+    } else if (cls == WorkerClass::Throughput) {
+        detail::apply_worker_class_hint(detail::WorkerClass::Throughput);
+    }
 
     while (g_sched.running.load(std::memory_order_acquire) != 0u) {
         if (try_one_job(id)) {
@@ -275,9 +404,22 @@ void worker_main(u32 id) noexcept {
 // help drain the pool while spinning on a target. Returns true if it did
 // work. We may NOT pop from any worker's bottom — only steal from tops.
 bool help_one_job() noexcept {
-    // Inbox first (work the current thread itself produced is here).
+    // Unified inbox first (work the current thread itself produced is here).
     {
         auto s = g_sched.main_inbox.try_steal();
+        if (s.status == detail::ChaseLevDeque::Status::Ok) {
+            execute_slot(s.index);
+            return true;
+        }
+    }
+    // Hetero inboxes — main may have submitted to either pool.
+    if (g_sched.hetero_active) {
+        auto s = g_sched.latency_inbox.try_steal();
+        if (s.status == detail::ChaseLevDeque::Status::Ok) {
+            execute_slot(s.index);
+            return true;
+        }
+        s = g_sched.throughput_inbox.try_steal();
         if (s.status == detail::ChaseLevDeque::Status::Ok) {
             execute_slot(s.index);
             return true;
@@ -306,6 +448,12 @@ JobSystem& JobSystem::Get() {
 void JobSystem::start(u32 worker_count) {
     if (g_sched.worker_count > 0) return;  // already started
 
+    // Detect heterogeneous topology up front. If the host reports a P/E
+    // split we sub-divide the worker pool into latency / throughput
+    // workers; otherwise every worker is Unified and the hetero inboxes
+    // collapse onto main_inbox semantically.
+    g_sched.topology = detail::detect_hetero_topology();
+
     if (worker_count == 0) {
         const auto& cpu = psynder::hardware::detect();
         u32 cores = cpu.cores_physical ? cpu.cores_physical
@@ -315,8 +463,52 @@ void JobSystem::start(u32 worker_count) {
         worker_count = cores > 1 ? cores - 1 : 1;
     }
 
+    // Decide hetero split. Activation rules:
+    //   - Topology reports both P and E cores.
+    //   - Total worker count is at least 4 so each pool has ≥ 1 worker
+    //     after main-thread reservation. Below 4 we keep everyone Unified
+    //     to avoid degenerate single-worker hetero pools that can't
+    //     parallelise their own class.
+    u32 p_workers = 0;
+    u32 e_workers = 0;
+    bool hetero = g_sched.topology.is_hetero() && worker_count >= 4u;
+    if (hetero) {
+        // Mirror the host ratio into worker assignment. We reserve one
+        // P-core slot for the main thread (matches Wave A's "one core
+        // reserved" rule and keeps frame setup off the workers).
+        const u32 host_p = g_sched.topology.p_cores;
+        const u32 host_e = g_sched.topology.e_cores;
+        const u32 host_total = host_p + host_e;
+        // Scale worker_count back into P/E pools by the host ratio. Round
+        // P up so latency-critical work always gets at least one worker.
+        p_workers = (worker_count * host_p + host_total - 1u) / host_total;
+        // Main thread occupies one P-core slot; subtract.
+        if (p_workers > 0u) p_workers -= 1u;
+        if (p_workers == 0u) p_workers = 1u;
+        e_workers = worker_count - p_workers;
+        if (e_workers == 0u) {
+            // Topology reported E-cores but worker math zeroed them out
+            // (small worker_count). Steal one from p to keep both pools
+            // populated, otherwise we'd silently lose throughput pool.
+            if (p_workers > 1u) {
+                --p_workers;
+                e_workers = 1u;
+            } else {
+                // Genuinely too few workers — fall back to Unified.
+                hetero = false;
+                p_workers = e_workers = 0u;
+            }
+        }
+    }
+
     g_sched.pool.init(kPoolCapacity);
     g_sched.main_inbox.init(kDequeCapacity);
+    g_sched.latency_inbox.init(kDequeCapacity);
+    g_sched.throughput_inbox.init(kDequeCapacity);
+    g_sched.hetero_active = hetero;
+    g_sched.latency_workers = hetero ? p_workers : 0u;
+    g_sched.throughput_workers = hetero ? e_workers : 0u;
+
     g_sched.workers = static_cast<Worker*>(
         std::aligned_alloc(kCacheLine,
                            ((sizeof(Worker) * worker_count + kCacheLine - 1) /
@@ -326,6 +518,14 @@ void JobSystem::start(u32 worker_count) {
         new (&g_sched.workers[i]) Worker();
         g_sched.workers[i].deque.init(kDequeCapacity);
         g_sched.workers[i].rng.seed(0x9E3779B9u ^ i);
+        if (hetero) {
+            // First p_workers indices serve the latency pool; the rest
+            // serve the throughput pool.
+            g_sched.workers[i].cls = (i < p_workers) ? WorkerClass::Latency
+                                                     : WorkerClass::Throughput;
+        } else {
+            g_sched.workers[i].cls = WorkerClass::Unified;
+        }
     }
     g_sched.worker_count = worker_count;
     g_sched.running.store(1, std::memory_order_release);
@@ -358,14 +558,25 @@ void JobSystem::stop() {
     std::free(g_sched.workers);
     g_sched.workers = nullptr;
     g_sched.main_inbox.deinit();
+    g_sched.latency_inbox.deinit();
+    g_sched.throughput_inbox.deinit();
     g_sched.pool.deinit();
     g_sched.worker_count = 0;
+    g_sched.hetero_active = false;
+    g_sched.latency_workers = 0;
+    g_sched.throughput_workers = 0;
 }
 
-JobHandle JobSystem::submit(const JobDesc& desc, JobHandle dep) {
+namespace {
+
+// Shared submit body — tags the job with `pool_class` so dispatch routing
+// (and hetero stealing) honor the requested class. The dep-wiring logic
+// is identical across submit / submit_latency / submit_throughput.
+JobHandle submit_with_class(const JobDesc& desc, JobHandle dep,
+                            u8 pool_class) noexcept {
     // Lazy-start if a caller forgot — keeps tests/samples that submit
     // straight off the bat from no-oping.
-    if (g_sched.worker_count == 0) start(0);
+    if (g_sched.worker_count == 0) JobSystem::Get().start(0);
 
     u32 slot = g_sched.pool.claim();
     if (slot == 0) {
@@ -375,11 +586,12 @@ JobHandle JobSystem::submit(const JobDesc& desc, JobHandle dep) {
     }
     auto& job = g_sched.pool.at(slot);
     job.reset();
-    job.fn       = desc.fn;
-    job.user     = desc.user;
-    job.name     = desc.name;
-    job.priority = desc.priority;
-    u32 gen      = job.gen.load(std::memory_order_acquire);
+    job.fn         = desc.fn;
+    job.user       = desc.user;
+    job.name       = desc.name;
+    job.priority   = desc.priority;
+    job.pool_class = pool_class;
+    u32 gen        = job.gen.load(std::memory_order_acquire);
 
     // Wire dep, if any. The fence here ensures the parent observes our
     // child entry before we observe its done flag.
@@ -395,20 +607,9 @@ JobHandle JobSystem::submit(const JobDesc& desc, JobHandle dep) {
             // children[] sees a count it can decrement.
             job.pending_deps.store(1, std::memory_order_relaxed);
             parent.add_child(slot);
-            // Re-check: did the parent finish while we were wiring up? If
-            // done is set, the completion path already iterated children
-            // (it may or may not have seen our addition — that race is the
-            // reason for the second check). We are responsible for our own
-            // dispatch if the parent has finished without decrementing us.
+            // Re-check: did the parent finish while we were wiring up?
             std::atomic_thread_fence(std::memory_order_seq_cst);
             if (parent.done.load(std::memory_order_acquire) != 0u) {
-                // Parent done. If we are still pending, decrement; if we
-                // were already decremented by the completion loop, this is
-                // safe (extra decrement) — but the completion loop only
-                // ever sees and decrements children that were in the array
-                // when it ran. So if done==1 we may or may not have been
-                // seen. The clean approach: if pending_deps is still 1,
-                // we own dispatching ourselves.
                 i32 expected = 1;
                 if (job.pending_deps.compare_exchange_strong(
                         expected, 0, std::memory_order_acq_rel,
@@ -417,8 +618,6 @@ JobHandle JobSystem::submit(const JobDesc& desc, JobHandle dep) {
                     dispatch_ready(slot);
                     return make_handle(slot, gen);
                 }
-                // pending_deps was already 0 — completion saw us and decremented.
-                // It will dispatch us.
                 g_sched.live_jobs.fetch_add(1, std::memory_order_acq_rel);
                 return make_handle(slot, gen);
             }
@@ -432,6 +631,50 @@ JobHandle JobSystem::submit(const JobDesc& desc, JobHandle dep) {
     g_sched.live_jobs.fetch_add(1, std::memory_order_acq_rel);
     dispatch_ready(slot);
     return make_handle(slot, gen);
+}
+
+}  // namespace
+
+JobHandle JobSystem::submit(const JobDesc& desc, JobHandle dep) {
+    return submit_with_class(desc, dep, /*pool_class*/ 0u);
+}
+
+// ─── Heterogeneous-pool API (JobSystemHetero.h) ──────────────────────────
+
+JobHandle submit_latency(const JobDesc& desc, JobHandle dep) noexcept {
+    if (g_sched.worker_count == 0) JobSystem::Get().start(0);
+    // On homogeneous hosts, route to the unified pool (pool_class 0).
+    u8 cls = g_sched.hetero_active ? 1u : 0u;
+    return submit_with_class(desc, dep, cls);
+}
+
+JobHandle submit_throughput(const JobDesc& desc, JobHandle dep) noexcept {
+    if (g_sched.worker_count == 0) JobSystem::Get().start(0);
+    u8 cls = g_sched.hetero_active ? 2u : 0u;
+    return submit_with_class(desc, dep, cls);
+}
+
+bool hetero_is_active() noexcept {
+    return g_sched.hetero_active;
+}
+
+u32 hetero_latency_workers() noexcept {
+    return g_sched.latency_workers;
+}
+
+u32 hetero_throughput_workers() noexcept {
+    return g_sched.throughput_workers;
+}
+
+HeteroCounts hetero_detected_counts() noexcept {
+    HeteroCounts c;
+    // detect_hetero_topology is idempotent / cached so calling here is cheap
+    // even if start() hasn't run yet.
+    auto t = detail::detect_hetero_topology();
+    c.p_cores = t.p_cores;
+    c.e_cores = t.e_cores;
+    c.total   = t.total;
+    return c;
 }
 
 void JobSystem::wait(JobHandle h) {
