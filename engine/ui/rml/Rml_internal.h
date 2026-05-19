@@ -151,6 +151,14 @@ struct ParseResult {
 ParseResult parse_rml(std::string_view src, Element& out_root);
 ParseResult parse_rcss(std::string_view src, std::vector<Rule>& out_rules);
 
+// Parses an inline `style="prop: val; prop: val"` body into the supplied
+// StyleBlock, merging on top of whatever's already there.  Used by both
+// the parser (for `<tag style="…">`) and the DataBind setters (when a
+// `style` attribute is updated post-load and we need to re-derive the
+// inline_style without reparsing the whole .rml).  Returns false if any
+// declaration was malformed (parsing continues for the rest).
+bool apply_declarations(std::string_view body, StyleBlock& out);
+
 // Cascades sheet rules into element.computed_style for the whole tree.
 void apply_cascade(Element& root, const std::vector<Rule>& sheet);
 
@@ -211,5 +219,12 @@ bool dispatch_handler(std::string_view event_name,
 // Bootstrapping shim — installs the `rml` Lua table when a backend is
 // present.  Idempotent.
 void register_lua_surface();
+
+// Look up a loaded document by name (mutable).  Returns nullptr if no
+// document with that name was loaded via load_document() (or injected
+// via test_only::inject_source).  Used by the DataBind setters so they
+// can poke into a live DOM without growing the anon state struct into
+// the public surface.
+Document* find_mutable_document(std::string_view name) noexcept;
 
 }  // namespace psynder::ui::rml::detail
