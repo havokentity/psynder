@@ -221,10 +221,14 @@ TEST_CASE("asset/vfs: async read fires callback with the same bytes",
     };
 
     Vfs::Get().read_async("msg.txt", cb, &st);
-    // The Wave-A jobs lane runs jobs synchronously, so the callback has
-    // already fired by the time submit() returns. When lane 04 lands
-    // the work-stealing pool this test should still pass because
-    // submit() will block on the worker via the same handle.
+    // Lane 04's Chase-Lev pool runs read_async on a worker, so we spin
+    // up to 1 s waiting for the callback to fire. Pre-lane-04 the
+    // callback fired inside submit(); the timeout-bounded spin keeps
+    // both behaviours correct.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!st.fired && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
     REQUIRE(st.fired);
     REQUIRE(st.seen == "async-roundtrip");
 }
