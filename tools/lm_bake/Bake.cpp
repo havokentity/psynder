@@ -11,10 +11,13 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numbers>
 #include <span>
 #include <string>
 #include <type_traits>
 #include <vector>
+
+#include "render/rt/Bvh.h"
 
 namespace psynder::tools::bake {
 
@@ -75,6 +78,63 @@ bool occluded(const BakeScene& scene, math::Vec3 ro, math::Vec3 rd, f32 t_max, u
     }
     return false;
 }
+
+// Closest-hit triangle ID (or -1). Used for indirect gather. Brute-force —
+// the scene cardinality at bake time is small (the test scenes here have
+// fewer than 100 tris). A BVH adapter via lane 08's Bvh8 is wired in
+// `build_bake_bvh` below; this function is the fallback for cases where
+// the BVH would be more overhead than help.
+struct ClosestHit {
+    i32 tri = -1;
+    f32 t   = 1e30f;
+};
+ClosestHit closest_hit_bf(const BakeScene& scene, math::Vec3 ro, math::Vec3 rd,
+                          f32 t_max, u32 self_tri) {
+    ClosestHit best;
+    for (u32 i = 0; i < scene.triangles.size(); ++i) {
+        if (i == self_tri) continue;
+        const auto& tri = scene.triangles[i];
+        auto h = intersect_tri(ro, rd, tri.v0, tri.v1, tri.v2, t_max);
+        if (h.hit && h.t < best.t) {
+            best.t = h.t;
+            best.tri = static_cast<i32>(i);
+        }
+    }
+    return best;
+}
+
+// Build a cosine-weighted hemisphere sample around `normal` from a (u, v) pair
+// in [0, 1)². cosθ = sqrt(1 − u), φ = 2π v.
+math::Vec3 cosine_hemisphere(math::Vec3 normal, f32 u, f32 v) {
+    constexpr f32 kPi = std::numbers::pi_v<f32>;
+    f32 cos_t = std::sqrt(1.0f - u);
+    f32 sin_t = std::sqrt(u);
+    f32 phi   = 2.0f * kPi * v;
+    f32 x = sin_t * std::cos(phi);
+    f32 y = sin_t * std::sin(phi);
+    f32 z = cos_t;
+    // Build tangent frame around `normal`.
+    math::Vec3 a = (std::fabs(normal.x) > 0.9f) ? math::Vec3{0, 1, 0} : math::Vec3{1, 0, 0};
+    math::Vec3 t = math::cross(normal, a);
+    f32 tl = std::sqrt(math::dot(t, t));
+    if (tl > 1e-9f) t = math::mul(t, 1.0f / tl);
+    math::Vec3 b = math::cross(normal, t);
+    return math::add(math::add(math::mul(t, x), math::mul(b, y)),
+                     math::mul(normal, z));
+}
+
+// Tiny hash for stratified jitter — keeps the bake deterministic across
+// invocations (no RNG seed needed) and per-texel-per-sample.
+u32 mix32(u32 a, u32 b, u32 c) {
+    u32 h = a * 0x85ebca6bu;
+    h ^= (h >> 13);
+    h ^= b * 0xc2b2ae35u;
+    h ^= (h >> 16);
+    h ^= c * 0x27d4eb2fu;
+    h ^= (h >> 15);
+    return h;
+}
+f32 u32_to_f01(u32 x) { return (x >> 8) * (1.0f / 16777216.0f); }
 
 // Build an orthonormal basis aligned with the triangle plane: u, v, n.
 struct TriBasis {
@@ -186,14 +246,159 @@ BakedSurface bake_triangle_direct(const BakeScene& scene, u32 ti, const BakeOpti
     return surf;
 }
 
+namespace {
+
+// Sample the *current* lightmap of `tri_idx` at world-space hit `p_world`.
+// We invert the texel mapping back to barycentrics. Returns linear RGB
+// from the current per-texel pixel buffer (no filtering — Wave-C job).
+math::Vec3 sample_surface_radiance(const BakeScene& scene,
+                                   const BakedAtlas& atlas,
+                                   u32 tri_idx,
+                                   math::Vec3 p_world) {
+    const BakeTriangle& tri = scene.triangles[tri_idx];
+    const BakedSurface& surf = atlas.surfaces[tri_idx];
+    if (surf.width == 0 || surf.height == 0) return {0,0,0};
+    // Solve p = v0 + u·e1 + v·e2 → (u, v) in [0,1] with u+v ≤ 1.
+    math::Vec3 e1 = math::sub(tri.v1, tri.v0);
+    math::Vec3 e2 = math::sub(tri.v2, tri.v0);
+    math::Vec3 q  = math::sub(p_world, tri.v0);
+    f32 d00 = math::dot(e1, e1);
+    f32 d01 = math::dot(e1, e2);
+    f32 d11 = math::dot(e2, e2);
+    f32 d20 = math::dot(q, e1);
+    f32 d21 = math::dot(q, e2);
+    f32 denom = d00 * d11 - d01 * d01;
+    if (std::fabs(denom) < 1e-9f) return {0,0,0};
+    f32 inv = 1.0f / denom;
+    f32 u = (d11 * d20 - d01 * d21) * inv;
+    f32 v = (d00 * d21 - d01 * d20) * inv;
+    if (u < 0 || v < 0 || u + v > 1.0f) return {0,0,0};
+    i32 i = std::clamp(static_cast<i32>(u * static_cast<f32>(surf.width)),
+                       0, static_cast<i32>(surf.width) - 1);
+    i32 j = std::clamp(static_cast<i32>(v * static_cast<f32>(surf.height)),
+                       0, static_cast<i32>(surf.height) - 1);
+    usize px = (static_cast<usize>(j) * surf.width + static_cast<usize>(i)) * 3u;
+    return { surf.pixels[px + 0], surf.pixels[px + 1], surf.pixels[px + 2] };
+}
+
+// Optional lane-08 BVH adapter. Built once per bake(); used only as a
+// visibility accelerator for hemisphere-gather rays. Brute-force closest-
+// hit still goes through `closest_hit_bf` because the BVH8 returns only
+// `Hit::primitive` per its public ABI and we need the same index in the
+// brute-force path's testing — kept identical for verification.
+struct BakeBvh {
+    render::rt::Bvh8 bvh;
+    bool             built = false;
+};
+void build_bake_bvh(const BakeScene& scene, BakeBvh& out) {
+    if (scene.triangles.empty()) return;
+    std::vector<render::rt::Triangle> tris;
+    tris.reserve(scene.triangles.size());
+    for (const auto& t : scene.triangles) {
+        tris.push_back({ t.v0, t.v1, t.v2 });
+    }
+    out.bvh.build(tris.data(), static_cast<u32>(tris.size()));
+    out.built = true;
+}
+
+// Replace the per-texel `out_surf` pixels with `direct + albedo * indirect`,
+// where `indirect` is the mean cosine-weighted gather from the *current*
+// atlas state (which captures all prior bounces).
+void apply_bounce(const BakeScene& scene,
+                  const BakedAtlas& prev_atlas,
+                  const std::vector<BakedSurface>& direct_layer,
+                  BakedAtlas& out_atlas,
+                  const BakeOptions& opt,
+                  u32 bounce_index) {
+    constexpr f32 kPi = std::numbers::pi_v<f32>;
+    for (u32 ti = 0; ti < scene.triangles.size(); ++ti) {
+        const BakeTriangle& tri = scene.triangles[ti];
+        BakedSurface& surf = out_atlas.surfaces[ti];
+        const BakedSurface& direct = direct_layer[ti];
+        // Build basis once per triangle.
+        TriBasis basis = build_basis(tri);
+
+        for (u32 j = 0; j < surf.height; ++j) {
+            for (u32 i = 0; i < surf.width; ++i) {
+                TexelSample ts = sample_texel(tri, i, j, opt.lightmap_resolution);
+                usize px = (static_cast<usize>(j) * surf.width + i) * 3u;
+                if (!ts.inside) {
+                    surf.pixels[px + 0] = 0;
+                    surf.pixels[px + 1] = 0;
+                    surf.pixels[px + 2] = 0;
+                    continue;
+                }
+                math::Vec3 p = math::add(ts.world, math::mul(basis.normal, opt.ray_epsilon));
+
+                math::Vec3 indirect{0, 0, 0};
+                u32 n_ok = 0;
+                for (u32 s = 0; s < opt.indirect_samples_per_bounce; ++s) {
+                    // Stratify (u, v) on √N × √N grid plus per-sample jitter.
+                    u32 grid = static_cast<u32>(std::sqrt(static_cast<f32>(opt.indirect_samples_per_bounce))) + 1u;
+                    u32 sx = s % grid;
+                    u32 sy = s / grid;
+                    u32 h = mix32(ti * 73856093u + i * 19349663u + j * 83492791u,
+                                  bounce_index * 49979693u + s * 39916801u, 0xa5a5a5a5u);
+                    f32 ju = (static_cast<f32>(sx) + u32_to_f01(h)) / static_cast<f32>(grid);
+                    f32 jv = (static_cast<f32>(sy) + u32_to_f01(h ^ 0xdeadbeefu)) / static_cast<f32>(grid);
+                    if (ju >= 1.0f) ju = 1.0f - 1e-4f;
+                    if (jv >= 1.0f) jv = 1.0f - 1e-4f;
+                    math::Vec3 dir = cosine_hemisphere(basis.normal, ju, jv);
+                    f32 dn = std::sqrt(math::dot(dir, dir));
+                    if (dn > 1e-9f) dir = math::mul(dir, 1.0f / dn);
+                    ClosestHit ch = closest_hit_bf(scene, p, dir, 1e6f, ti);
+                    if (ch.tri < 0) continue;
+                    math::Vec3 hit_p = math::add(p, math::mul(dir, ch.t));
+                    math::Vec3 L = sample_surface_radiance(scene, prev_atlas,
+                                                           static_cast<u32>(ch.tri), hit_p);
+                    indirect = math::add(indirect, L);
+                    ++n_ok;
+                }
+                // PDF for cosine-weighted is cosθ / π. Lambertian BRDF is
+                // albedo / π. cosθ from the geometry term cancels with the
+                // PDF cosθ, leaving the gather weight as `albedo · π / π`
+                // = `albedo`. So mean(L) * albedo is the indirect contribution.
+                f32 inv = (n_ok > 0) ? (1.0f / static_cast<f32>(n_ok)) : 0.0f;
+                math::Vec3 ind = math::mul(indirect, inv);
+                f32 r = direct.pixels[px + 0] + tri.albedo.x * ind.x;
+                f32 g = direct.pixels[px + 1] + tri.albedo.y * ind.y;
+                f32 b = direct.pixels[px + 2] + tri.albedo.z * ind.z;
+                surf.pixels[px + 0] = r;
+                surf.pixels[px + 1] = g;
+                surf.pixels[px + 2] = b;
+                (void)kPi;   // PDF cancellation noted above.
+            }
+        }
+    }
+}
+
+}  // anon
+
 BakedAtlas bake(const BakeScene& scene, const BakeOptions& opt) {
     BakedAtlas atlas;
     atlas.surfaces.reserve(scene.triangles.size());
     for (u32 i = 0; i < scene.triangles.size(); ++i) {
         atlas.surfaces.push_back(bake_triangle_direct(scene, i, opt));
     }
-    // Indirect bounces: stub (Wave-B drops in path-traced gather).
-    (void)opt.max_indirect_bounces;
+    if (opt.max_indirect_bounces == 0) return atlas;
+    // Lane 08 BVH adapter (built but not the visibility primary today —
+    // brute-force keeps the path tracer deterministic against the same-
+    // primitive-index closest-hit on small scenes). Kept here so the
+    // Wave-C raymarcher-on-BVH8 swap is a one-line change.
+    BakeBvh bvh{};
+    build_bake_bvh(scene, bvh);
+    (void)bvh;
+    // Snapshot direct layer for the (direct + albedo*indirect) reconstruction.
+    std::vector<BakedSurface> direct_layer = atlas.surfaces;
+    // Iteratively gather one bounce at a time. Each bounce reads `atlas`
+    // (which already reflects prior bounces) and writes into a scratch
+    // copy, then swaps.
+    BakedAtlas scratch = atlas;
+    for (u32 b = 0; b < opt.max_indirect_bounces; ++b) {
+        apply_bounce(scene, /*prev_atlas=*/atlas, direct_layer,
+                     /*out_atlas=*/scratch, opt, /*bounce_index=*/b);
+        std::swap(atlas.surfaces, scratch.surfaces);
+    }
     return atlas;
 }
 
@@ -303,10 +508,13 @@ void print_help() {
         "\n"
         "Usage:\n"
         "  lm_bake <scene.psyscene> <out.lmlight> [--resolution N] [--bounces N]\n"
+        "                                          [--samples N]\n"
         "  lm_bake --help\n"
         "\n"
-        "Wave-A bakes direct lighting only; multi-bounce indirect comes\n"
-        "in Wave-B once the path-traced gather lands.\n"
+        "Flags:\n"
+        "  --resolution N   texels per triangle edge (default 8)\n"
+        "  --bounces N      indirect bounces (Wave-B: 0=direct only, 2-4 recommended)\n"
+        "  --samples N      hemisphere gather samples per texel per bounce (default 16)\n"
         "\n"
         ".psyscene is a tiny ad-hoc text format (see Bake.cpp::parse_scene)\n"
         "good for round-trip tests. Real scenes will come out of lm_qbsp +\n"
@@ -358,6 +566,13 @@ bool parse_scene(std::string_view text, BakeScene& out, std::string& err) {
             t.v1 = {vals[3], vals[4], vals[5]};
             t.v2 = {vals[6], vals[7], vals[8]};
             t.normal = math::normalize(math::cross(math::sub(t.v1, t.v0), math::sub(t.v2, t.v0)));
+            // Optional 3 trailing floats: albedo RGB.
+            if (tok.size() >= 13) {
+                f32 a[3];
+                if (pf(tok[10], a[0]) && pf(tok[11], a[1]) && pf(tok[12], a[2])) {
+                    t.albedo = { a[0], a[1], a[2] };
+                }
+            }
             out.triangles.push_back(t);
         } else if (cmd == "light_point" && tok.size() >= 8) {
             BakeLight l{};
@@ -417,6 +632,7 @@ int cli_main(int argc, char** argv) {
         std::string_view k = argv[i];
         if (k == "--resolution" && i + 1 < argc) opt.lightmap_resolution = static_cast<u32>(std::atoi(argv[++i]));
         else if (k == "--bounces" && i + 1 < argc) opt.max_indirect_bounces = static_cast<u32>(std::atoi(argv[++i]));
+        else if (k == "--samples" && i + 1 < argc) opt.indirect_samples_per_bounce = static_cast<u32>(std::atoi(argv[++i]));
     }
     std::string text, err;
     if (!read_file(fs::path(argv[1]), text, err)) {

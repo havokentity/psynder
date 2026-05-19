@@ -345,6 +345,93 @@ i32 build_recursive(CompiledBsp& bsp,
 
 }  // anon namespace
 
+namespace {
+
+// ─── Portal generation (Wave-B) ──────────────────────────────────────────
+//
+// For every internal node whose two child subtrees each surface at least
+// one non-solid (empty) leaf, emit a portal on the splitting plane connecting
+// the front-most-empty leaf to the back-most-empty leaf. The winding is a
+// large square on the plane, sized to the world AABB; lane 10's portal
+// traversal clips the winding against the parent path's planes at load
+// time so we don't need to do the full geometric clip here.
+//
+// This is intentionally a "leaf-adjacency" portal — it gives the runtime
+// enough plane data + connectivity to do correct portal-frustum culling for
+// our Wave-B sample maps (single room → single empty leaf → zero portals,
+// multi-leaf maps → one portal per splitting node). Full BSP-style portal
+// clipping with vertex tessellation slips to Wave-C.
+
+// Walk subtree rooted at `child` (in BspNode child-encoding: negative =
+// leaf, non-negative = node index) and return the *first* empty leaf
+// encountered, or -1 if none.
+i32 first_empty_leaf(const CompiledBsp& bsp, i32 child) {
+    if (child < 0) {
+        // Leaf encoding mirrors lane 10's BspFormat.h: child = ~leaf_index.
+        i32 leaf_idx = ~child;
+        if (leaf_idx < 0 || static_cast<usize>(leaf_idx) >= bsp.leaves.size()) return -1;
+        if ((bsp.leaves[static_cast<usize>(leaf_idx)].flags & kLeafFlagEmpty) != 0) {
+            return leaf_idx;
+        }
+        return -1;
+    }
+    if (static_cast<usize>(child) >= bsp.nodes.size()) return -1;
+    const BspNode& n = bsp.nodes[static_cast<usize>(child)];
+    i32 a = first_empty_leaf(bsp, n.front);
+    if (a >= 0) return a;
+    return first_empty_leaf(bsp, n.back);
+}
+
+// Build a square winding (4 verts CCW seen from +normal side) on the plane
+// (n, d), centred at the plane's closest point to the origin, with edge
+// length `extent`. Returns the 4 corners.
+void build_portal_winding(math::Vec3 n, f32 d, f32 extent,
+                          std::vector<math::Vec3>& out_verts) {
+    // Pick a stable tangent.
+    math::Vec3 t{};
+    if (std::fabs(n.x) < 0.9f)      t = {1, 0, 0};
+    else                            t = {0, 1, 0};
+    math::Vec3 u = math::cross(n, t);
+    f32 ulen = std::sqrt(math::dot(u, u));
+    if (ulen > 1e-9f) u = math::mul(u, 1.0f / ulen);
+    math::Vec3 v = math::cross(n, u);
+    // centre = n * d (closest point on plane to origin).
+    math::Vec3 c = math::mul(n, d);
+    f32 h = 0.5f * extent;
+    out_verts.push_back(math::add(c, math::add(math::mul(u, -h), math::mul(v, -h))));
+    out_verts.push_back(math::add(c, math::add(math::mul(u,  h), math::mul(v, -h))));
+    out_verts.push_back(math::add(c, math::add(math::mul(u,  h), math::mul(v,  h))));
+    out_verts.push_back(math::add(c, math::add(math::mul(u, -h), math::mul(v,  h))));
+}
+
+void generate_portals(CompiledBsp& bsp, f32 world_extent) {
+    bsp.portals.clear();
+    bsp.portal_vertices.clear();
+    for (usize ni = 0; ni < bsp.nodes.size(); ++ni) {
+        const BspNode& node = bsp.nodes[ni];
+        if (node.plane < 0 || static_cast<usize>(node.plane) >= bsp.planes.size()) {
+            continue;
+        }
+        i32 fl = first_empty_leaf(bsp, node.front);
+        i32 bl = first_empty_leaf(bsp, node.back);
+        if (fl < 0 || bl < 0) continue;
+        if (fl == bl) continue;   // same empty region reached from both sides — degenerate.
+
+        const BspPlane& pl = bsp.planes[static_cast<usize>(node.plane)];
+        BspPortal portal;
+        portal.front_leaf   = fl;
+        portal.back_leaf    = bl;
+        portal.first_vertex = static_cast<u32>(bsp.portal_vertices.size());
+        portal.plane_normal = pl.normal;
+        portal.plane_d      = pl.d;
+        build_portal_winding(pl.normal, pl.d, world_extent, bsp.portal_vertices);
+        portal.vertex_count = static_cast<u32>(bsp.portal_vertices.size()) - portal.first_vertex;
+        bsp.portals.push_back(portal);
+    }
+}
+
+}  // anon namespace
+
 bool compile_bsp(const MapFile& map, CompiledBsp& out, std::string* err) {
     out = {};
     if (map.entities.empty()) {
@@ -404,12 +491,18 @@ bool compile_bsp(const MapFile& map, CompiledBsp& out, std::string* err) {
             }
         }
     }
+    // Wave-B: emit portal records mirroring lane 10's BspPortal layout.
+    // Extent picked large enough to span our Wave-B test scenes (single
+    // small Quake-style room) without overflowing single-precision floats
+    // when downstream clippers do plane-plane intersections.
+    generate_portals(out, /*world_extent=*/4096.0f);
     return true;
 }
 
 void write_psybsp(const CompiledBsp& bsp, std::vector<u8>& out) {
     out.clear();
-    out.reserve(32 + bsp.planes.size() * 16 + bsp.nodes.size() * 12);
+    out.reserve(40 + bsp.planes.size() * 16 + bsp.nodes.size() * 12
+                  + bsp.portals.size() * 32 + bsp.portal_vertices.size() * 12);
 
     append_le<u32>(out, kPsyBspMagic);
     append_le<u32>(out, kPsyBspVersion);
@@ -418,6 +511,8 @@ void write_psybsp(const CompiledBsp& bsp, std::vector<u8>& out) {
     append_le<u32>(out, static_cast<u32>(bsp.planes.size()));
     append_le<u32>(out, static_cast<u32>(bsp.brushes.size()));
     append_le<u32>(out, static_cast<u32>(bsp.brush_planes.size()));
+    append_le<u32>(out, static_cast<u32>(bsp.portals.size()));            // v2
+    append_le<u32>(out, static_cast<u32>(bsp.portal_vertices.size()));    // v2
     append_le<u32>(out, 0);   // reserved
 
     for (const auto& p : bsp.planes) {
@@ -444,25 +539,44 @@ void write_psybsp(const CompiledBsp& bsp, std::vector<u8>& out) {
         append_f32(out, b.bounds.max.x); append_f32(out, b.bounds.max.y); append_f32(out, b.bounds.max.z);
     }
     for (u32 pi : bsp.brush_planes) append_le<u32>(out, pi);
+    // ── portals (Wave-B / v2) ───────────────────────────────────────────
+    for (const auto& p : bsp.portals) {
+        append_le<i32>(out, p.front_leaf);
+        append_le<i32>(out, p.back_leaf);
+        append_le<u32>(out, p.first_vertex);
+        append_le<u32>(out, p.vertex_count);
+        append_f32(out, p.plane_normal.x);
+        append_f32(out, p.plane_normal.y);
+        append_f32(out, p.plane_normal.z);
+        append_f32(out, p.plane_d);
+    }
+    for (const auto& v : bsp.portal_vertices) {
+        append_f32(out, v.x);
+        append_f32(out, v.y);
+        append_f32(out, v.z);
+    }
 }
 
 bool read_psybsp(std::span<const u8> bytes, CompiledBsp& out, std::string* err) {
     auto fail = [&](const char* msg) { if (err) *err = msg; return false; };
-    if (bytes.size() < 32) return fail("psybsp header truncated");
+    if (bytes.size() < 40) return fail("psybsp header truncated");
     u32 magic = 0;
     read_le<u32>(bytes, 0, magic);
     if (magic != kPsyBspMagic) return fail("psybsp bad magic");
     u32 version = 0; read_le<u32>(bytes, 4, version);
     if (version != kPsyBspVersion) return fail("psybsp unsupported version");
 
-    u32 nc = 0, lc = 0, pc = 0, bc = 0, bpc = 0;
+    u32 nc = 0, lc = 0, pc = 0, bc = 0, bpc = 0, portal_c = 0, portal_vc = 0;
     read_le<u32>(bytes,  8, nc);
     read_le<u32>(bytes, 12, lc);
     read_le<u32>(bytes, 16, pc);
     read_le<u32>(bytes, 20, bc);
     read_le<u32>(bytes, 24, bpc);
+    read_le<u32>(bytes, 28, portal_c);
+    read_le<u32>(bytes, 32, portal_vc);
+    // bytes[36..40) is the reserved field.
 
-    usize cursor = 32;
+    usize cursor = 40;
     out.planes.resize(pc);
     for (u32 i = 0; i < pc; ++i) {
         BspPlane p{};
@@ -517,6 +631,32 @@ bool read_psybsp(std::span<const u8> bytes, CompiledBsp& out, std::string* err) 
         out.brush_planes[i] = v;
         cursor += 4;
     }
+    // ── portals (v2) ────────────────────────────────────────────────────
+    out.portals.resize(portal_c);
+    for (u32 i = 0; i < portal_c; ++i) {
+        BspPortal p{};
+        if (cursor + 32 > bytes.size()) return fail("psybsp portal truncated");
+        read_le<i32>(bytes, cursor +  0, p.front_leaf);
+        read_le<i32>(bytes, cursor +  4, p.back_leaf);
+        read_le<u32>(bytes, cursor +  8, p.first_vertex);
+        read_le<u32>(bytes, cursor + 12, p.vertex_count);
+        read_f32(bytes, cursor + 16, p.plane_normal.x);
+        read_f32(bytes, cursor + 20, p.plane_normal.y);
+        read_f32(bytes, cursor + 24, p.plane_normal.z);
+        read_f32(bytes, cursor + 28, p.plane_d);
+        out.portals[i] = p;
+        cursor += 32;
+    }
+    out.portal_vertices.resize(portal_vc);
+    for (u32 i = 0; i < portal_vc; ++i) {
+        if (cursor + 12 > bytes.size()) return fail("psybsp portal vertices truncated");
+        math::Vec3 v{};
+        read_f32(bytes, cursor +  0, v.x);
+        read_f32(bytes, cursor +  4, v.y);
+        read_f32(bytes, cursor +  8, v.z);
+        out.portal_vertices[i] = v;
+        cursor += 12;
+    }
     return true;
 }
 
@@ -529,8 +669,9 @@ void print_help() {
         "  lm_qbsp --help\n"
         "\n"
         "Accepts brush-list .map files in Quake / TrenchBroom format and\n"
-        "compiles a leafy BSP. PVS / portal data lives in Wave-B once lane\n"
-        "10 grows the reader.\n");
+        "compiles a leafy BSP. Wave-B output (.psybsp v2) carries a portal\n"
+        "table connecting non-solid leaves on every splitter plane; PVS\n"
+        "bit-vector generation still lives in lane 10's loader.\n");
 }
 
 namespace {
@@ -585,12 +726,13 @@ int cli_main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stdout,
-                 "lm_qbsp: %s -> %s (planes=%u nodes=%u leaves=%u brushes=%u)\n",
+                 "lm_qbsp: %s -> %s (planes=%u nodes=%u leaves=%u brushes=%u portals=%u)\n",
                  argv[1], argv[2],
                  static_cast<u32>(bsp.planes.size()),
                  static_cast<u32>(bsp.nodes.size()),
                  static_cast<u32>(bsp.leaves.size()),
-                 static_cast<u32>(bsp.brushes.size()));
+                 static_cast<u32>(bsp.brushes.size()),
+                 static_cast<u32>(bsp.portals.size()));
     return 0;
 }
 
