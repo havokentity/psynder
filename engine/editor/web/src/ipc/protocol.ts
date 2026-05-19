@@ -7,11 +7,17 @@
 // Channels are one of:
 //   - "schemas"   : engine pushes PSYNDER_COMPONENT schema catalog deltas.
 //   - "selection" : engine pushes the currently-selected entity's component
-//                   values; panel pushes back property edits.
+//                   values; panel pushes back property edits. Also carries
+//                   `spawn_prop` commands from the prop-spawn menu.
 //   - "console"   : bi-directional REPL — panel sends `eval`, engine streams
 //                   `log` lines plus the eventual `result`.
 //   - "profiler"  : engine pushes a `frame` sample per render frame (cpu_ms,
 //                   gpu_ms, ms_per_section breakdown, fps).
+//   - "assets"    : engine pushes the catalog of entries in the loaded
+//                   `.lmpak` archives, plus deltas as packs mount/unmount.
+//   - "props"     : engine pushes the searchable prop library used by the
+//                   spawn menu (thumbnails are URLs served by the IPC HTTP
+//                   side; in mock mode they're inline svg data URIs).
 //
 // The version `v` is the protocol revision. Wave-A pegs it to 1. A drift
 // detector in `client.ts` logs a warning if the engine reports a higher
@@ -20,7 +26,13 @@
 
 export const PROTOCOL_VERSION = 1;
 
-export type Channel = 'schemas' | 'selection' | 'console' | 'profiler';
+export type Channel =
+    | 'schemas'
+    | 'selection'
+    | 'console'
+    | 'profiler'
+    | 'assets'
+    | 'props';
 
 export interface Envelope<T = unknown> {
     v: number;
@@ -169,4 +181,74 @@ export interface ProfilerFrame {
     gpu_ms: number;
     /** Per-system / per-pass breakdown — `sum(sections.ms) ≈ cpu_ms`. */
     sections: ProfilerSection[];
+}
+
+// ─── Assets channel ──────────────────────────────────────────────────────
+//
+// The engine emits one `catalog` frame on connect (full set of `.lmpak`
+// entries currently mounted) plus `delta` frames when packs mount/unmount
+// at runtime. The asset browser surfaces these as a searchable tree, with
+// entries grouped by their `category` (meshes, textures, audio, levels,
+// scripts, …) — Wave C wires real-data filters on top of this surface.
+
+export type AssetCategory =
+    | 'mesh'
+    | 'texture'
+    | 'audio'
+    | 'level'
+    | 'script'
+    | 'prefab'
+    | 'material'
+    | 'other';
+
+export interface AssetEntry {
+    /** Canonical VFS path inside the pack, e.g. "meshes/crate_red.lmm". */
+    path: string;
+    category: AssetCategory;
+    /** Source `.lmpak` archive — Wave-A names it for filtering. */
+    pack: string;
+    /** Uncompressed size in bytes, for display in the browser. */
+    size_bytes: number;
+    /** FNV-1a64 of the cooked file — Wave C wires hot-reload off this. */
+    content_hash: string;
+}
+
+export interface AssetCatalog {
+    entries: AssetEntry[];
+}
+
+export interface AssetDelta {
+    added?: AssetEntry[];
+    /** Canonical paths of entries removed (e.g. when a pack unmounts). */
+    removed?: string[];
+}
+
+// ─── Props channel ───────────────────────────────────────────────────────
+//
+// Sandbox-mode prop spawn menu (DESIGN.md §10.8). Engine pushes a `catalog`
+// of available props on connect; the panel sends `spawn_prop` commands back
+// through the `selection` channel (which already handles entity creation).
+
+export interface PropEntry {
+    /** Stable id — what `selection.spawn_prop` references. */
+    id: string;
+    /** Display name shown in the grid tile. */
+    name: string;
+    /** Coarse category tag used for filter chips. */
+    category: string;
+    /** Thumbnail URL — engine serves these from the IPC HTTP side. */
+    thumbnail_url?: string;
+    /** Optional tags used by the fuzzy search. */
+    tags?: string[];
+}
+
+export interface PropCatalog {
+    props: PropEntry[];
+}
+
+export interface SpawnPropCommand {
+    /** Prop to spawn — must match an id from the catalog. */
+    prop_id: string;
+    /** Optional placement hint; engine picks a cursor location when absent. */
+    position?: [number, number, number];
 }

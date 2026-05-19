@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Psynder editor — Profiler panel. Streams per-frame samples from the engine
-// over the `profiler` channel and renders them as a scrolling strip chart
-// (cpu/gpu) plus a stacked bar of the per-section breakdown. The chart is
-// drawn via canvas2d so 60 Hz updates don't thrash React reconciliation.
+// over the `profiler` channel and renders them as:
+//   1. a scrolling cpu/gpu line strip chart (top), and
+//   2. a per-subsystem stacked-bar strip showing where each frame's CPU
+//      budget went (render/physics/audio/ui/…) — Wave B addition, mirroring
+//      the in-engine immediate-mode allocator heatmap idea from DESIGN.md
+//      §10.6 / §14.
+// Both charts share the same horizontal ring history. They draw to canvas2d
+// so 60 Hz updates don't thrash React reconciliation.
 
 import React from 'react';
 
@@ -18,10 +23,22 @@ import { use_mock_when_offline } from './shared/use_mock_when_offline';
 const HISTORY = 256;
 const TARGET_MS = 16.6;   // 60 Hz budget — drawn as a horizontal guide line.
 const BAD_MS    = 33.3;   // 30 Hz threshold — bar color flips warning red.
+const STACK_PALETTE = ['#5fb0ff', '#f49a4b', '#6dd49e', '#c98ee0', '#f6c244', '#e16a6a', '#7dc7d8'];
 
 interface Sample {
     cpu_ms: number;
     gpu_ms: number;
+    /** Per-subsystem breakdown for this frame — drives the stacked-bar strip. */
+    sections: ProfilerSection[];
+}
+
+// Stable color per subsystem name across the strip — names hash into the
+// palette so 'render' is always the same hue frame-to-frame even if the
+// engine reorders the section list.
+function color_for_section(name: string): string {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+    return STACK_PALETTE[Math.abs(h) % STACK_PALETTE.length];
 }
 
 export function Profiler() {
@@ -33,6 +50,7 @@ export function Profiler() {
     const ring_ref = React.useRef<Sample[]>([]);
     const latest_ref = React.useRef<ProfilerFrame | null>(null);
     const canvas_ref = React.useRef<HTMLCanvasElement | null>(null);
+    const stack_ref  = React.useRef<HTMLCanvasElement | null>(null);
     const rAF_handle = React.useRef<number | null>(null);
 
     const [latest, set_latest] = React.useState<ProfilerFrame | null>(null);
@@ -44,7 +62,13 @@ export function Profiler() {
             const frame = env.payload as ProfilerFrame;
             latest_ref.current = frame;
             const ring = ring_ref.current;
-            ring.push({ cpu_ms: frame.cpu_ms, gpu_ms: frame.gpu_ms });
+            ring.push({
+                cpu_ms: frame.cpu_ms,
+                gpu_ms: frame.gpu_ms,
+                // Defensive copy — protocol envelopes are nominally immutable
+                // but we don't trust upstream code to keep them that way.
+                sections: frame.sections.map((s) => ({ name: s.name, ms: s.ms })),
+            });
             if (ring.length > HISTORY) ring.splice(0, ring.length - HISTORY);
         });
         return unsub;
@@ -70,7 +94,9 @@ export function Profiler() {
     React.useEffect(() => {
         const draw = () => {
             const c = canvas_ref.current;
+            const s = stack_ref.current;
             if (c) draw_strip(c, ring_ref.current);
+            if (s) draw_subsystem_stack(s, ring_ref.current);
             rAF_handle.current = requestAnimationFrame(draw);
         };
         rAF_handle.current = requestAnimationFrame(draw);
@@ -106,13 +132,25 @@ export function Profiler() {
                     className="psy-profiler-chart"
                     width={HISTORY}
                     height={120}
-                    title={`Last ${HISTORY} frames. Yellow line = 16.6 ms (60 Hz).`}
+                    title={`Last ${HISTORY} frames. Dashed lines = 16.6 / 33.3 ms.`}
                 />
                 <div className="psy-profiler-legend">
                     <span className="psy-legend-swatch is-cpu" /> cpu
                     <span className="psy-legend-swatch is-gpu" /> gpu
                     <span className="psy-legend-swatch is-target" /> 16.6 ms
                 </div>
+            </div>
+
+            <div className="psy-profiler-stack-wrap">
+                <div className="psy-profiler-substack-label">CPU subsystems</div>
+                <canvas
+                    ref={stack_ref}
+                    className="psy-profiler-substack"
+                    width={HISTORY}
+                    height={80}
+                    title={`Per-frame CPU subsystem breakdown over the last ${HISTORY} frames.`}
+                />
+                <SubsystemLegend frame={latest} />
             </div>
 
             <div className="psy-profiler-stats">
@@ -148,8 +186,8 @@ function SectionBars({ sections }: { sections: ProfilerSection[] }) {
                     return (
                         <span
                             key={s.name + i}
-                            className={`psy-section-slice is-c${i % 5}`}
-                            style={{ width: `${pct}%` }}
+                            className="psy-section-slice"
+                            style={{ width: `${pct}%`, background: color_for_section(s.name) }}
                             title={`${s.name} — ${s.ms.toFixed(2)} ms (${pct.toFixed(1)}%)`}
                         />
                     );
@@ -158,13 +196,33 @@ function SectionBars({ sections }: { sections: ProfilerSection[] }) {
             <ul className="psy-section-list">
                 {sections.map((s, i) => (
                     <li key={s.name + i}>
-                        <span className={`psy-legend-swatch is-c${i % 5}`} />
+                        <span
+                            className="psy-legend-swatch"
+                            style={{ background: color_for_section(s.name) }}
+                        />
                         <span className="psy-section-name">{s.name}</span>
                         <code>{s.ms.toFixed(2)} ms</code>
                     </li>
                 ))}
             </ul>
         </div>
+    );
+}
+
+function SubsystemLegend({ frame }: { frame: ProfilerFrame | null }) {
+    if (!frame || frame.sections.length === 0) return null;
+    return (
+        <ul className="psy-profiler-substack-legend">
+            {frame.sections.map((s) => (
+                <li key={s.name}>
+                    <span
+                        className="psy-legend-swatch"
+                        style={{ background: color_for_section(s.name) }}
+                    />
+                    <span className="psy-section-name">{s.name}</span>
+                </li>
+            ))}
+        </ul>
     );
 }
 
@@ -210,4 +268,49 @@ function draw_strip(canvas: HTMLCanvasElement, ring: Sample[]) {
 
     draw_series('cpu_ms', '#5fb0ff');
     draw_series('gpu_ms', '#f49a4b');
+}
+
+// Per-column stacked-bar of subsystem timings — one column per recent frame.
+// The vertical axis is fraction-of-budget (16.6 ms) rather than fraction-of-
+// total-cpu so a frame that overshoots the budget visibly spills past the
+// top of the column.
+function draw_subsystem_stack(canvas: HTMLCanvasElement, ring: Sample[]) {
+    const w = canvas.width;
+    const h = canvas.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Background guide line at the 16.6 ms budget.
+    const max_ms = BAD_MS;
+    const y_for = (ms: number) => h - Math.min(ms, max_ms) / max_ms * h;
+
+    ctx.strokeStyle = '#3a3a3a';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, Math.round(y_for(TARGET_MS)) + 0.5);
+    ctx.lineTo(w, Math.round(y_for(TARGET_MS)) + 0.5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (ring.length === 0) return;
+
+    const x_step = w / Math.max(HISTORY - 1, 1);
+    const col_w = Math.max(1, Math.ceil(x_step));
+    const start_x = w - ring.length * x_step;
+
+    for (let i = 0; i < ring.length; i++) {
+        const x = Math.floor(start_x + i * x_step);
+        let y_top = h;
+        const sample = ring[i];
+        for (const sec of sample.sections) {
+            const slice_h = Math.max(0, Math.min(sec.ms, max_ms) / max_ms * h);
+            ctx.fillStyle = color_for_section(sec.name);
+            ctx.fillRect(x, y_top - slice_h, col_w, slice_h);
+            y_top -= slice_h;
+            if (y_top <= 0) break;
+        }
+    }
 }
