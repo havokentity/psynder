@@ -14,6 +14,8 @@
 #include "Console.h"
 #include "Completion.h"
 
+#include "../Tracy.h"
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -322,6 +324,7 @@ Console::Resolution Console::ResolveCommand(std::string_view typed) {
 
 // ─── Execute ─────────────────────────────────────────────────────────────
 ExecuteResult Console::Execute(std::string_view line) {
+    PSY_TRACE_ZONE("console::Execute");
     ExecuteResult result;
 
     // Strip leading whitespace; skip blank / full-line `//` comments.
@@ -823,6 +826,7 @@ void Console::QueueExecute(std::string line, Responder responder) {
 }
 
 void Console::Drain() {
+    PSY_TRACE_ZONE("console::Drain");
     std::deque<Pending> local;
     {
         std::lock_guard lock(queue_mutex_);

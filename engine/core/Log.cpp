@@ -22,6 +22,7 @@
 
 #include "Log.h"
 
+#include "Tracy.h"
 #include "Types.h"
 
 #include <atomic>
@@ -126,6 +127,7 @@ const char* level_prefix(Level l) noexcept {
 }  // namespace
 
 void emit(Level level, fmt::string_view fmt_str, fmt::format_args args) {
+    PSY_TRACE_ZONE("log::emit");
     // Format the line once. fmt::vformat allocates internally; we accept
     // that cost because the public API is built around fmt::format_args
     // and rendering inside emit lets the per-thread ring + sinks see the
