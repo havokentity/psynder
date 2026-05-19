@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Psynder — ray / packet intersection kernels. Lane 08 owns.
 //
-// Two paths:
+// Three paths:
 //   * Scalar traversal — single ray, walks the 8-wide BVH testing one
-//     ray against eight child slabs per node. Always available; used by
-//     Bvh8::intersect / Bvh8::occluded and Tlas object-space dispatch.
+//     ray against eight child slabs per node. On AVX2 (x86-64) the slab
+//     test is a true 8-way SIMD intersect: all eight child AABBs are
+//     loaded from the SoA `Bvh8Node` and tested in parallel in one
+//     batch (Hapala/Havran style). On arm64 NEON we do two 4-wide
+//     batches. Otherwise scalar fallback.
 //   * AVX2 8-wide packet — `trace_shadow_packet` driver. A coherent DFS:
 //     for every visited node, all 8 rays test against each of the 8
-//     children (one AVX2 8-way slab test per child). Children whose slab
-//     is hit by *any* live lane get pushed. At leaves, each primitive is
-//     tested per-lane via scalar Möller–Trumbore.
+//     children. At leaves, each primitive is tested per-lane via scalar
+//     Möller–Trumbore.
+//   * NEON 4-wide packet (arm64) — two 4-wide halves over the same 8-ray
+//     packet. Real SIMD slab tests via `float32x4_t`.
 //
-// On platforms without AVX2 (Apple Silicon NEON arm64 + others), we run
-// the scalar `occluded_scalar` path eight times. The wide NEON kernel
-// (two 4-wide packets) lands in Wave B per the lane brief.
+// On platforms without AVX2 or NEON we fall back to scalar per lane.
 //
 // Triangle test: Möller–Trumbore, single-precision.
 // Slab test: branchless safe-divide (no div-by-zero on axis-aligned rays).
@@ -27,6 +29,12 @@
 
 #if defined(__AVX2__)
 #   include <immintrin.h>
+#endif
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
+#   include <arm_neon.h>
+#   define PSYNDER_RT_HAVE_NEON 1
+#else
+#   define PSYNDER_RT_HAVE_NEON 0
 #endif
 
 namespace psynder::render::rt::detail {
@@ -71,8 +79,9 @@ bool ray_triangle_occluded(const Ray& r, const Triangle& tri) noexcept {
 
 // Scalar slab test on one of the 8 child AABBs of a wide node. Returns
 // `true` and writes `t_entry` if the ray enters the box within the current
-// [t_min, t_max] window.
-PSY_FORCEINLINE
+// [t_min, t_max] window. Used by the portable fallback in
+// `ray_vs_8_children_slab` when neither AVX2 nor NEON is available.
+[[maybe_unused]] PSY_FORCEINLINE
 bool node_slab_test(const Bvh8Node& node, u32 child,
                     math::Vec3 inv_dir, math::Vec3 origin,
                     f32 t_min, f32 t_max, f32& t_entry) noexcept
@@ -98,6 +107,113 @@ bool node_slab_test(const Bvh8Node& node, u32 child,
     return true;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Single-ray vs 8 children — true SIMD slab batch (Hapala/Havran).
+//
+// On AVX2 we load the 8-element SoA min/max arrays in one shot per axis
+// and run the standard branchless slab test on all 8 children at once.
+// Returns a bit mask: bit i set ⇔ child i is hit within [t_min, t_max].
+// On NEON we do two 4-wide halves.
+// ──────────────────────────────────────────────────────────────────────────
+
+PSY_FORCEINLINE
+u8 ray_vs_8_children_slab(const Bvh8Node& n,
+                          math::Vec3 inv_dir, math::Vec3 origin,
+                          f32 t_min, f32 t_max) noexcept
+{
+#if defined(__AVX2__)
+    const __m256 ox = _mm256_set1_ps(origin.x);
+    const __m256 oy = _mm256_set1_ps(origin.y);
+    const __m256 oz = _mm256_set1_ps(origin.z);
+    const __m256 ix = _mm256_set1_ps(inv_dir.x);
+    const __m256 iy = _mm256_set1_ps(inv_dir.y);
+    const __m256 iz = _mm256_set1_ps(inv_dir.z);
+    const __m256 vtmin_b = _mm256_set1_ps(t_min);
+    const __m256 vtmax_b = _mm256_set1_ps(t_max);
+
+    const __m256 mnx = _mm256_load_ps(n.min_x);
+    const __m256 mny = _mm256_load_ps(n.min_y);
+    const __m256 mnz = _mm256_load_ps(n.min_z);
+    const __m256 mxx = _mm256_load_ps(n.max_x);
+    const __m256 mxy = _mm256_load_ps(n.max_y);
+    const __m256 mxz = _mm256_load_ps(n.max_z);
+
+    const __m256 tx1 = _mm256_mul_ps(_mm256_sub_ps(mnx, ox), ix);
+    const __m256 tx2 = _mm256_mul_ps(_mm256_sub_ps(mxx, ox), ix);
+    const __m256 ty1 = _mm256_mul_ps(_mm256_sub_ps(mny, oy), iy);
+    const __m256 ty2 = _mm256_mul_ps(_mm256_sub_ps(mxy, oy), iy);
+    const __m256 tz1 = _mm256_mul_ps(_mm256_sub_ps(mnz, oz), iz);
+    const __m256 tz2 = _mm256_mul_ps(_mm256_sub_ps(mxz, oz), iz);
+
+    const __m256 tmin = _mm256_max_ps(vtmin_b,
+                        _mm256_max_ps(_mm256_min_ps(tx1, tx2),
+                        _mm256_max_ps(_mm256_min_ps(ty1, ty2),
+                                      _mm256_min_ps(tz1, tz2))));
+    const __m256 tmax = _mm256_min_ps(vtmax_b,
+                        _mm256_min_ps(_mm256_max_ps(tx1, tx2),
+                        _mm256_min_ps(_mm256_max_ps(ty1, ty2),
+                                      _mm256_max_ps(tz1, tz2))));
+    const __m256 ok = _mm256_cmp_ps(tmin, tmax, _CMP_LE_OQ);
+    const u32 bits = static_cast<u32>(_mm256_movemask_ps(ok));
+    return static_cast<u8>(bits & n.child_mask);
+#elif PSYNDER_RT_HAVE_NEON
+    // Two 4-wide halves over the 8 SoA children.
+    const float32x4_t ox = vdupq_n_f32(origin.x);
+    const float32x4_t oy = vdupq_n_f32(origin.y);
+    const float32x4_t oz = vdupq_n_f32(origin.z);
+    const float32x4_t ix = vdupq_n_f32(inv_dir.x);
+    const float32x4_t iy = vdupq_n_f32(inv_dir.y);
+    const float32x4_t iz = vdupq_n_f32(inv_dir.z);
+    const float32x4_t vtmin_b = vdupq_n_f32(t_min);
+    const float32x4_t vtmax_b = vdupq_n_f32(t_max);
+
+    u8 out_mask = 0;
+    for (u32 half = 0; half < 2; ++half) {
+        const u32 off = half * 4;
+        const float32x4_t mnx = vld1q_f32(&n.min_x[off]);
+        const float32x4_t mny = vld1q_f32(&n.min_y[off]);
+        const float32x4_t mnz = vld1q_f32(&n.min_z[off]);
+        const float32x4_t mxx = vld1q_f32(&n.max_x[off]);
+        const float32x4_t mxy = vld1q_f32(&n.max_y[off]);
+        const float32x4_t mxz = vld1q_f32(&n.max_z[off]);
+
+        const float32x4_t tx1 = vmulq_f32(vsubq_f32(mnx, ox), ix);
+        const float32x4_t tx2 = vmulq_f32(vsubq_f32(mxx, ox), ix);
+        const float32x4_t ty1 = vmulq_f32(vsubq_f32(mny, oy), iy);
+        const float32x4_t ty2 = vmulq_f32(vsubq_f32(mxy, oy), iy);
+        const float32x4_t tz1 = vmulq_f32(vsubq_f32(mnz, oz), iz);
+        const float32x4_t tz2 = vmulq_f32(vsubq_f32(mxz, oz), iz);
+
+        const float32x4_t tmin = vmaxq_f32(vtmin_b,
+                                 vmaxq_f32(vminq_f32(tx1, tx2),
+                                 vmaxq_f32(vminq_f32(ty1, ty2),
+                                           vminq_f32(tz1, tz2))));
+        const float32x4_t tmax = vminq_f32(vtmax_b,
+                                 vminq_f32(vmaxq_f32(tx1, tx2),
+                                 vminq_f32(vmaxq_f32(ty1, ty2),
+                                           vmaxq_f32(tz1, tz2))));
+        const uint32x4_t ok = vcleq_f32(tmin, tmax);
+        // Pack the 4 lane bits into the upper / lower nibble.
+        alignas(16) u32 lanes[4];
+        vst1q_u32(lanes, ok);
+        u8 nib = 0;
+        for (u32 k = 0; k < 4; ++k) if (lanes[k]) nib = static_cast<u8>(nib | (1u << k));
+        out_mask = static_cast<u8>(out_mask | (nib << (off)));
+    }
+    return static_cast<u8>(out_mask & n.child_mask);
+#else
+    u8 mask = 0;
+    for (u32 c = 0; c < 8; ++c) {
+        if (n.child_kind[c] == 2) continue;
+        f32 t_entry;
+        if (node_slab_test(n, c, inv_dir, origin, t_min, t_max, t_entry)) {
+            mask = static_cast<u8>(mask | (1u << c));
+        }
+    }
+    return mask;
+#endif
+}
+
 // Safe-divide reciprocal of the ray direction.
 PSY_FORCEINLINE
 math::Vec3 safe_inv(math::Vec3 d) noexcept {
@@ -111,7 +227,7 @@ math::Vec3 safe_inv(math::Vec3 d) noexcept {
 }  // anonymous namespace
 
 // ────────────────────────────────────────────────────────────────────────
-// Scalar traversal (single ray)
+// Scalar traversal (single ray) — uses the SIMD 8-way slab test above.
 // ────────────────────────────────────────────────────────────────────────
 
 LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
@@ -134,13 +250,12 @@ LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
     while (top > 0) {
         const u32 nid = stack[--top];
         const Bvh8Node& n = s.wide_nodes[nid];
+        const u8 mask = ray_vs_8_children_slab(n, inv_dir, ray.origin,
+                                               ray.t_min, ray.t_max);
+        if (mask == 0) continue;
         for (u32 c = 0; c < 8; ++c) {
+            if ((mask & (1u << c)) == 0) continue;
             const u8 kind = n.child_kind[c];
-            if (kind == 2) continue;  // empty
-            f32 t_entry;
-            if (!node_slab_test(n, c, inv_dir, ray.origin, ray.t_min, ray.t_max, t_entry)) {
-                continue;
-            }
             if (kind == 1) {
                 const u32 first = n.child_index[c];
                 const u32 cnt   = n.child_count[c];
@@ -159,7 +274,7 @@ LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
                         }
                     }
                 }
-            } else {
+            } else if (kind == 0) {
                 if (top < kStackCap) {
                     stack[top++] = n.child_index[c];
                 }
@@ -183,13 +298,12 @@ bool occluded_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
     while (top > 0) {
         const u32 nid = stack[--top];
         const Bvh8Node& n = s.wide_nodes[nid];
+        const u8 mask = ray_vs_8_children_slab(n, inv_dir, ray.origin,
+                                               ray.t_min, ray.t_max);
+        if (mask == 0) continue;
         for (u32 c = 0; c < 8; ++c) {
+            if ((mask & (1u << c)) == 0) continue;
             const u8 kind = n.child_kind[c];
-            if (kind == 2) continue;
-            f32 t_entry;
-            if (!node_slab_test(n, c, inv_dir, ray.origin, ray.t_min, ray.t_max, t_entry)) {
-                continue;
-            }
             if (kind == 1) {
                 const u32 first = n.child_index[c];
                 const u32 cnt   = n.child_count[c];
@@ -200,7 +314,7 @@ bool occluded_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
                         return true;
                     }
                 }
-            } else {
+            } else if (kind == 0) {
                 if (top < kStackCap) stack[top++] = n.child_index[c];
             }
         }
@@ -222,14 +336,13 @@ namespace psynder::render::rt {
 namespace {
 
 // AVX2 8-wide slab test: tests *one* child AABB against all 8 packet rays.
-// Inputs are pre-broadcast 8-lane vectors (one per ray). Returns the bit
-// mask of lanes that hit this child.
+// Returns the bit mask of lanes that hit this child.
 PSY_FORCEINLINE
-u8 packet_slab_one_child(f32 cmnx, f32 cmny, f32 cmnz,
-                         f32 cmxx, f32 cmxy, f32 cmxz,
-                         __m256 ox, __m256 oy, __m256 oz,
-                         __m256 ix, __m256 iy, __m256 iz,
-                         __m256 tmin_b, __m256 tmax_b) noexcept
+u8 packet8_slab_one_child(f32 cmnx, f32 cmny, f32 cmnz,
+                          f32 cmxx, f32 cmxy, f32 cmxz,
+                          __m256 ox, __m256 oy, __m256 oz,
+                          __m256 ix, __m256 iy, __m256 iz,
+                          __m256 tmin_b, __m256 tmax_b) noexcept
 {
     const __m256 bmx = _mm256_set1_ps(cmnx);
     const __m256 bmy = _mm256_set1_ps(cmny);
@@ -260,8 +373,8 @@ u8 packet_slab_one_child(f32 cmnx, f32 cmny, f32 cmnz,
 }
 
 // Coherent-packet traversal of one BLAS for occlusion (shadow rays).
-// `live_mask` = which lanes are still searching (others already occluded
-// or terminated). On exit, OR-s newly-occluded lanes into `pkt.occluded`.
+// `live_in`  = lanes still searching (bit i set ⇔ lane i still live).
+// On exit, OR-s newly-occluded lanes into `out_occluded`.
 void blas_packet_occlusion_avx2(const detail::Bvh8State& bs,
                                 const Ray* local_rays,
                                 u8 live_in,
@@ -315,7 +428,7 @@ void blas_packet_occlusion_avx2(const detail::Bvh8State& bs,
         for (u32 c = 0; c < 8; ++c) {
             const u8 kind = n.child_kind[c];
             if (kind == 2) continue;
-            const u8 hit_mask = packet_slab_one_child(
+            const u8 hit_mask = packet8_slab_one_child(
                 n.min_x[c], n.min_y[c], n.min_z[c],
                 n.max_x[c], n.max_y[c], n.max_z[c],
                 ox, oy, oz, ix, iy, iz, tmin_b, tmax_b);
@@ -352,6 +465,157 @@ void blas_packet_occlusion_avx2(const detail::Bvh8State& bs,
 #endif  // __AVX2__
 
 
+// ────────────────────────────────────────────────────────────────────────
+// NEON 4-wide packet shadow driver (arm64).
+//
+// We service the 8-ray packet as two 4-wide halves. Per node, all 4 active
+// rays of the half are tested against each non-empty child via a NEON
+// `float32x4_t` slab test.
+// ────────────────────────────────────────────────────────────────────────
+
+#if PSYNDER_RT_HAVE_NEON && !defined(__AVX2__)
+
+namespace {
+
+PSY_FORCEINLINE
+u8 packet4_slab_one_child(f32 cmnx, f32 cmny, f32 cmnz,
+                          f32 cmxx, f32 cmxy, f32 cmxz,
+                          float32x4_t ox, float32x4_t oy, float32x4_t oz,
+                          float32x4_t ix, float32x4_t iy, float32x4_t iz,
+                          float32x4_t tmin_b, float32x4_t tmax_b) noexcept
+{
+    const float32x4_t bmx = vdupq_n_f32(cmnx);
+    const float32x4_t bmy = vdupq_n_f32(cmny);
+    const float32x4_t bmz = vdupq_n_f32(cmnz);
+    const float32x4_t bMx = vdupq_n_f32(cmxx);
+    const float32x4_t bMy = vdupq_n_f32(cmxy);
+    const float32x4_t bMz = vdupq_n_f32(cmxz);
+
+    const float32x4_t tx1 = vmulq_f32(vsubq_f32(bmx, ox), ix);
+    const float32x4_t tx2 = vmulq_f32(vsubq_f32(bMx, ox), ix);
+    const float32x4_t ty1 = vmulq_f32(vsubq_f32(bmy, oy), iy);
+    const float32x4_t ty2 = vmulq_f32(vsubq_f32(bMy, oy), iy);
+    const float32x4_t tz1 = vmulq_f32(vsubq_f32(bmz, oz), iz);
+    const float32x4_t tz2 = vmulq_f32(vsubq_f32(bMz, oz), iz);
+
+    const float32x4_t tmin = vmaxq_f32(tmin_b,
+                             vmaxq_f32(vminq_f32(tx1, tx2),
+                             vmaxq_f32(vminq_f32(ty1, ty2),
+                                       vminq_f32(tz1, tz2))));
+    const float32x4_t tmax = vminq_f32(tmax_b,
+                             vminq_f32(vmaxq_f32(tx1, tx2),
+                             vminq_f32(vmaxq_f32(ty1, ty2),
+                                       vmaxq_f32(tz1, tz2))));
+    const uint32x4_t ok = vcleq_f32(tmin, tmax);
+    alignas(16) u32 lanes[4];
+    vst1q_u32(lanes, ok);
+    u8 m = 0;
+    for (u32 k = 0; k < 4; ++k) if (lanes[k]) m = static_cast<u8>(m | (1u << k));
+    return m;
+}
+
+// Walk the BVH for a 4-wide half of the 8-ray packet. live_bits / done_bits
+// are *half-relative* (bits 0..3). Caller composes back into the 8-bit mask.
+void blas_packet4_occlusion_neon_half(const detail::Bvh8State& bs,
+                                      const Ray* rays4,
+                                      u8 live_half_in,
+                                      u8& out_done_half) noexcept
+{
+    if (live_half_in == 0 || bs.wide_nodes.empty() || bs.triangles.empty()) return;
+
+    alignas(16) f32 ox_a[4], oy_a[4], oz_a[4];
+    alignas(16) f32 ix_a[4], iy_a[4], iz_a[4];
+    alignas(16) f32 tmin_a[4], tmax_a[4];
+    for (u32 r = 0; r < 4; ++r) {
+        ox_a[r] = rays4[r].origin.x;
+        oy_a[r] = rays4[r].origin.y;
+        oz_a[r] = rays4[r].origin.z;
+        constexpr f32 kBig = 1e30f;
+        const f32 dx = rays4[r].direction.x;
+        const f32 dy = rays4[r].direction.y;
+        const f32 dz = rays4[r].direction.z;
+        ix_a[r] = (std::fabs(dx) < 1e-20f) ? kBig : (1.0f / dx);
+        iy_a[r] = (std::fabs(dy) < 1e-20f) ? kBig : (1.0f / dy);
+        iz_a[r] = (std::fabs(dz) < 1e-20f) ? kBig : (1.0f / dz);
+        tmin_a[r] = rays4[r].t_min;
+        tmax_a[r] = rays4[r].t_max;
+        if ((live_half_in & (1u << r)) == 0) {
+            tmin_a[r] = 1.0f;
+            tmax_a[r] = 0.0f;
+        }
+    }
+    const float32x4_t ox     = vld1q_f32(ox_a);
+    const float32x4_t oy     = vld1q_f32(oy_a);
+    const float32x4_t oz     = vld1q_f32(oz_a);
+    const float32x4_t ix     = vld1q_f32(ix_a);
+    const float32x4_t iy     = vld1q_f32(iy_a);
+    const float32x4_t iz     = vld1q_f32(iz_a);
+    const float32x4_t tmin_b = vld1q_f32(tmin_a);
+    const float32x4_t tmax_b = vld1q_f32(tmax_a);
+
+    constexpr u32 kStackCap = 128;
+    u32 stack[kStackCap];
+    u32 top = 0;
+    stack[top++] = 0;
+
+    u8 done = out_done_half;
+    u8 live = static_cast<u8>(live_half_in & ~done);
+
+    while (top > 0 && live != 0) {
+        const u32 nid = stack[--top];
+        const detail::Bvh8Node& n = bs.wide_nodes[nid];
+        for (u32 c = 0; c < 8; ++c) {
+            const u8 kind = n.child_kind[c];
+            if (kind == 2) continue;
+            const u8 hit_mask = packet4_slab_one_child(
+                n.min_x[c], n.min_y[c], n.min_z[c],
+                n.max_x[c], n.max_y[c], n.max_z[c],
+                ox, oy, oz, ix, iy, iz, tmin_b, tmax_b);
+            const u8 active = static_cast<u8>(hit_mask & live);
+            if (active == 0) continue;
+            if (kind == 1) {
+                const u32 first = n.child_index[c];
+                const u32 cnt   = n.child_count[c];
+                for (u32 i = 0; i < cnt && live != 0; ++i) {
+                    const u32 pid = bs.prim_indices[first + i];
+                    if (pid >= bs.triangles.size()) continue;
+                    const Triangle& tri = bs.triangles[pid];
+                    u8 lane_bit = 1;
+                    for (u32 r = 0; r < 4; ++r, lane_bit = static_cast<u8>(lane_bit << 1)) {
+                        if ((active & lane_bit) == 0) continue;
+                        if ((live & lane_bit) == 0)   continue;
+                        // Inlined Möller–Trumbore for this 4-wide path.
+                        const math::Vec3 e1 = math::sub(tri.v1, tri.v0);
+                        const math::Vec3 e2 = math::sub(tri.v2, tri.v0);
+                        const math::Vec3 pv = math::cross(rays4[r].direction, e2);
+                        const f32 det = math::dot(e1, pv);
+                        if (std::fabs(det) < 1e-8f) continue;
+                        const f32 inv_det = 1.0f / det;
+                        const math::Vec3 tv = math::sub(rays4[r].origin, tri.v0);
+                        const f32 u = math::dot(tv, pv) * inv_det;
+                        if (u < 0.0f || u > 1.0f) continue;
+                        const math::Vec3 qv = math::cross(tv, e1);
+                        const f32 v = math::dot(rays4[r].direction, qv) * inv_det;
+                        if (v < 0.0f || u + v > 1.0f) continue;
+                        const f32 tt = math::dot(e2, qv) * inv_det;
+                        if (tt < rays4[r].t_min || tt > rays4[r].t_max) continue;
+                        done = static_cast<u8>(done | lane_bit);
+                        live = static_cast<u8>(live & ~lane_bit);
+                    }
+                }
+            } else {
+                if (top < kStackCap) stack[top++] = n.child_index[c];
+            }
+        }
+    }
+    out_done_half = done;
+}
+
+}  // namespace
+
+#endif  // PSYNDER_RT_HAVE_NEON && !__AVX2__
+
+
 void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
     const auto& ts = detail::state_of(tlas);
     for (u32 i = 0; i < 8; ++i) pkt.occluded[i] = false;
@@ -385,9 +649,17 @@ void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
 
 #if defined(__AVX2__)
         blas_packet_occlusion_avx2(bs, local_rays, live_in, packed_done);
+#elif PSYNDER_RT_HAVE_NEON
+        // arm64 NEON: two 4-wide halves.
+        u8 done_lo = static_cast<u8>(packed_done & 0x0F);
+        u8 done_hi = static_cast<u8>((packed_done >> 4) & 0x0F);
+        const u8 live_lo = static_cast<u8>(live_in & 0x0F);
+        const u8 live_hi = static_cast<u8>((live_in >> 4) & 0x0F);
+        blas_packet4_occlusion_neon_half(bs, &local_rays[0], live_lo, done_lo);
+        blas_packet4_occlusion_neon_half(bs, &local_rays[4], live_hi, done_hi);
+        packed_done = static_cast<u8>((done_lo & 0x0F) | ((done_hi & 0x0F) << 4));
 #else
-        // Portable / NEON: scalar per lane. Wave-B NEON-real kernel will
-        // replace this with two 4-wide vget/vminq-based slab tests.
+        // Portable scalar fallback.
         for (u32 r = 0; r < 8; ++r) {
             if (packed_done & (1u << r)) continue;
             if (detail::occluded_scalar(bs, local_rays[r])) {
