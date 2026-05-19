@@ -1,5 +1,153 @@
 # Changelog
 
+## v0.6.0-wave-b-complete (2026-05-19) — Wave B 25/25 lanes, 612/612 tests pass 🎉
+
+Final Wave B batch shipped. **All 25 lanes integrated.** Wave B done.
+
+### Wave B / Lane 10 / world-bsp (#96)
+- **Portal clipping** (`PortalClip.{h,cpp}`) — real portal-graph BFS walk
+  replacing Wave A's PVS-only fallback. Clips view frustum at each portal
+  via side planes generated from eye and CCW-convention portal edges.
+  Falls back to PVS when `BspPortalSet.portals` is empty.
+- **Lightmap atlas** (`LightmapAtlas.{h,cpp}`) — level-scope, slab-allocated
+  from a bound `LinearArena`. 96 KiB pages (128×128 RGB16F). 256-page
+  resident cap with LRU eviction. `atlas_page_for_surface(face_id)` is
+  idempotent — same id → same `LightmapPage*` until eviction.
+
+### Wave B / Lane 14 / net (#98)
+- **Configurable sliding-window depth** — `WindowSize` enum (`Bits32`/
+  `Bits64`/`Bits128`). `AckTracker` tracks 128 bits internally; send-ring
+  256 slots. `apply_ack_wide()`/`snapshot_wide()` carry up to 128 bits
+  via four u32 words. Legacy 32-bit form still on the wire by default;
+  bits above the operational width masked off so a narrow host can't
+  leak wide bits.
+- **AOI per-channel priorities** — `set_channel_priority(channel, prio)`,
+  `bytes_for_channel(channel, base)`. Priority defaults to 2; bytes =
+  `base * priority / 2`. Tracked for the four reserved channel ids
+  (default/lockstep/snapshot/reserved).
+
+### Wave B / Lane 19 / editor-ipc (#100)
+- **State-delta push** — `Server::push_scene_delta(slice, payload)`
+  wraps payload in a `SceneDeltaFrame` (opcode 20) tagged with the
+  slice; delivered only to connections subscribed to that channel.
+- **Schema versioning** — `protocol.psy` bumped to v2. `Welcome::server_ver`
+  carries the new value; v1 decoders see `server_ver == 2`. Forward-compat
+  fallback for unknown opcodes already in `client_loop` default arm.
+- **REPL hook wired** — `Server::start()` calls `install_repl_backend()`,
+  `pump()` routes `ConsoleCmd` text through `script::dispatch_repl(...)`
+  and ships back a `ConsoleReplyFrame` (opcode 21). Custom backends
+  installed via `script::set_repl_backend(...)` are honoured.
+- Drive-by: fixed `read_exact` overflow bug in `editor_ipc_session.cpp`
+  that silently dropped bytes when `recv()` returned more than wanted.
+
+### Wave B / Lane 20 / editor-web (#94)
+- **AssetBrowser panel** (`src/panels/AssetBrowser.tsx`) — collapsible
+  per-category groups, filter-as-you-type, visible/total counter,
+  sorted tables. Mock data via `mock_assets()` until the real
+  `assets` channel comes online.
+- **PropSpawn panel** (`src/panels/PropSpawn.tsx`) — thumbnail grid
+  with category filter chips, click-to-spawn sending
+  `selection.spawn_prop` via the IPC client. Recent-spawn highlight.
+- **Profiler upgrade** — second canvas2d stacked-bar strip-chart
+  showing per-subsystem CPU time per frame (render, physics, audio,
+  etc.) on top of the existing total-frame chart. Stable hashed
+  colors per subsystem name.
+
+### Wave B / Lane 21 / platform-win32 (#95)
+- **WASAPI mixer wired** — strong overrides for
+  `audio::backend_init_wasapi`/`backend_shutdown_wasapi` take precedence
+  over lane 12's `[[gnu::weak]]` no-op fallbacks. `WasapiBridge` holds
+  lane-12 stereo callback + scratch buffer reserved up-front. Stereo
+  memcpy / mono downmix / 5.1+7.1 front-L/R upmix paths.
+- **DirectInput FFB wheel** (`Win32Ffb.{h,cpp}`) — enumerates
+  FF-capable wheels via `IDirectInput8::EnumDevices` with
+  `DIEDFL_FORCEFEEDBACK`. Constant-force + spring (`DICONDITION`) effects
+  created on demand via `IDirectInputDevice8::CreateEffect`, patched
+  with `SetParameters` afterwards. Exclusive-foreground cooperative
+  level when an HWND is available.
+
+### Wave B / Lane 22 / platform-linux (#99)
+- **PipeWire mixer wired** — `dlopen` libpipewire-0.3, `pw_thread_loop_new`
+  + `pw_stream_new_simple` with `on_process` thunk. Dedicated pump
+  thread drives lane-12's `MixerCallback` at `buffer_frames/sample_rate`
+  cadence.
+- **ALSA fallback wired** — `dlopen` libasound.so.2, `snd_pcm_set_params`
+  (S16_LE/2ch/48k), writer thread float→int16 with `snd_pcm_recover`
+  on -EPIPE/-ESTRPIPE.
+- **dmabuf zero-copy** — `WaylandWindow::try_dmabuf_present(fb)` —
+  zwp_linux_dmabuf_v1 v3 binding, lazy `/dev/dma_heap/system` open with
+  `linux,cma` fallback. `DMA_HEAP_IOCTL_ALLOC` linear buffer +
+  `zwp_linux_buffer_params_v1::create_immed` with XRGB8888. Sticky-disabled
+  on any failure so we don't keep paying syscall cost. Falls back to
+  wl_shm path automatically.
+
+### Wave B / Lane 23 / platform-macos (#97)
+- **CoreAudio mixer wired** — strong overrides for
+  `audio::backend_init_coreaudio`/`backend_shutdown_coreaudio` calling
+  `audio_start` with `coreaudio_render_thunk` that forwards into lane
+  12's interleaved-stereo `MixerCallback`. Handles 1/2/N-channel device
+  layouts.
+- **IOSurface zero-copy upload** — first-frame allocates an `IOSurfaceRef`
+  (BGRA / 4-bpp / IOSurface-aligned pitch); `id<MTLTexture>` bound via
+  `newTextureWithDescriptor:iosurface:plane:`. Per-frame upload becomes
+  `IOSurfaceLock` + `memcpy` + `IOSurfaceUnlock` — no
+  `replaceRegion:withBytes:` staging copy. Falls back cleanly if
+  IOSurface allocation refuses.
+- **HID FFB** — `IOServiceMatching(kIOHIDDeviceKey)` walk, filtered with
+  `FFIsForceFeedback`, opened via `FFCreateDevice`. Cartesian-direction
+  `FFEFFECT` with `FFCONSTANTFORCE` type-specific params, submitted via
+  `FFDeviceCreateEffect` + `FFEffectStart`. Updates via
+  `FFEffectSetParameters`.
+
+### Cumulative Wave B accomplishments (25/25 lanes)
+
+By DESIGN.md §13 milestone:
+- **M0 (clear color)** ✓ verified visually on Mac
+- **M1 (textured triangle)** ✓ verified visually on Mac
+- **M2 (tiled raster + Z + bilinear + crate room)** ✓ M2 demo renders
+  spinning textured cubes
+- **M3 (BSP + lightmaps + editor v0)** ✓ BSP loader, lightmap atlas
+  streaming, brush CSG + sculpt, physgun, editor IPC + React panels
+  (Inspector / Console / Profiler / AssetBrowser / PropSpawn),
+  `.psylevel` + `.psyc` save/load
+- **M4 (outdoor track + vehicles)** ✓ in-code: CDLOD watertight mesh,
+  SIMD raymarcher backend, full Pacejka tires + 6+R drivetrain + aero,
+  spline track editor ops. Needs sample_04 wiring.
+- **M5 (hybrid raytracing + headlights)** ✓ in-code: BVH8 SAH +
+  8-wide AVX2 packet + 4-wide NEON + à-trous denoiser + heightmap
+  shadow path. Needs sample_05 wiring.
+- **M6 (tactical map + sandbox editor)** ✓ in-code: heightmap raymarcher
+  SIMD, full editor constraints + physgun + save/load.
+- **M7 (RmlUi HUD + networking + audio)** ✓ in-code: RmlUi hot reload +
+  Lua handlers + Quake-style HUD assets, rUDP with configurable window
+  + AOI priorities + lockstep + snapshot, HRIR HRTF + partitioned FFT
+  reverb + modulated FDN + Doppler.
+- **M8 polish** — Tracy zones in core, allocator heatmap viz, deterministic
+  physics with `-fno-fast-math`, 612 unit tests + golden harness +
+  bench gate.
+
+### Test + demo status
+
+- **612/612 Catch2 cases passing** (zero flakes — the previously known
+  IPC port-race is gone).
+- **M0/M1/M2 demos all smoke-pass** on Mac.
+- Repo is **~60-65K LOC across engine/tools/tests/samples**.
+- All Wave B PRs (#76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88,
+  89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100) merged into main.
+
+### What's left for v1.0
+
+- **Sample wiring (M4-M7 demos)** — the engine code is there; samples
+  04/05/06 just need their `main.cpp` calling the right APIs.
+- **Cross-platform validation** — Win32 + Linux PRs landed but were never
+  built on actual hardware. The Mac orchestrator can't verify; needs
+  PC/Linux smoke runs from the user.
+- **Copilot review sweep** — Copilot Code Review hasn't been enabled on
+  the repo yet. Once the user toggles it (Settings → Code & automation
+  → Code review), I run the `copilot-review` skill across all 50
+  merged PRs and address legitimate concerns in a `chore/copilot-sweep`
+  PR.
+
 ## v0.5.0-wave-b-batch4 (2026-05-19) — Wave B 18/25 lanes, 602/602 tests pass
 
 Five more Wave B lanes shipped. Wave B is now **18/25 integrated**.
