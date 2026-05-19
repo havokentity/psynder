@@ -55,6 +55,28 @@
 #include <wayland-client-protocol.h>
 #include "xdg-shell-client-protocol.h"
 #include "viewporter-client-protocol.h"
+#include "linux-dmabuf-v1-client-protocol.h"
+
+// DRM FOURCC code for XRGB8888 (32-bit, X channel ignored). Defined in
+// <drm/drm_fourcc.h> on Linux but we don't want a hard libdrm dep. The
+// constant has been stable since 2012.
+#ifndef DRM_FORMAT_XRGB8888
+#  define DRM_FORMAT_XRGB8888 0x34325258u  // 'XR24'
+#endif
+
+// DMA-BUF heap ioctl (Linux 5.6+). Allocates a linear-memory dmabuf fd
+// suitable for zero-copy SHM-style uploads. We probe /dev/dma_heap/system
+// at runtime; failure cleanly falls back to the wl_shm path.
+#include <sys/ioctl.h>
+#ifndef DMA_HEAP_IOCTL_ALLOC
+struct psy_dma_heap_allocation_data {
+    std::uint64_t len;
+    std::uint32_t fd;
+    std::uint32_t fd_flags;
+    std::uint64_t heap_flags;
+};
+#  define DMA_HEAP_IOCTL_ALLOC _IOWR('H', 0, struct psy_dma_heap_allocation_data)
+#endif
 
 // xkbcommon for key translation. Optional — if a future build can't link
 // xkbcommon we still want key_down(Tilde) to work via the evdev rawkey
@@ -98,8 +120,10 @@ struct WaylandGlobals {
     wl_seat*           seat            = nullptr;
     xdg_wm_base*       wm_base         = nullptr;
     wp_viewporter*     viewporter      = nullptr;
-    // dmabuf protocol present? We detect but don't yet bind for Wave A.
-    bool               has_dmabuf      = false;
+    // zwp_linux_dmabuf_v1 bound when the compositor exposes the protocol.
+    // Used by WaylandWindow::try_dmabuf_present() for zero-copy upload of
+    // the framebuffer instead of the wl_shm memcpy path.
+    zwp_linux_dmabuf_v1* dmabuf        = nullptr;
     // wl_seat capabilities — kbd / ptr availability.
     wl_keyboard*       keyboard        = nullptr;
     wl_pointer*        pointer         = nullptr;
@@ -155,6 +179,14 @@ private:
     bool allocate_shm_pool(u32 w, u32 h) noexcept;
     bool ensure_shm_for(u32 w, u32 h) noexcept;
 
+    // Wave-B: attempt zero-copy upload via zwp_linux_dmabuf_v1. Returns
+    // true if the framebuffer was attached + committed via dmabuf, false
+    // if any required step failed (no protocol, no dma-heap, alloc fail).
+    // Callers must fall back to the wl_shm path on false.
+    bool try_dmabuf_present(const render::Framebuffer& fb) noexcept;
+    bool ensure_dmabuf_for (u32 w, u32 h) noexcept;
+    void release_dmabuf    () noexcept;
+
     // ─── Wayland objects ───────────────────────────────────────────────
     wl_display*         display_    = nullptr;
     wl_registry*        registry_   = nullptr;
@@ -170,6 +202,19 @@ private:
     size_t              shm_size_   = 0;
     wl_shm_pool*        shm_pool_   = nullptr;
     wl_buffer*          shm_buffer_ = nullptr;
+
+    // ─── dmabuf path (Wave-B zero-copy) ────────────────────────────────
+    // dma_heap_fd_ is the file descriptor to /dev/dma_heap/system (kernel
+    // 5.6+). When the heap isn't accessible we never populate dmabuf_buf_
+    // and present() permanently falls back to the shm path.
+    int                 dma_heap_fd_  = -1;
+    int                 dma_fd_       = -1;   // currently-bound dmabuf fd
+    void*               dma_map_      = nullptr;
+    size_t              dma_size_     = 0;
+    wl_buffer*          dma_buffer_   = nullptr;
+    u32                 dma_w_        = 0;
+    u32                 dma_h_        = 0;
+    bool                dma_disabled_ = false; // sticky after first failure
 
     // ─── State ─────────────────────────────────────────────────────────
     std::string         title_      = "Psynder";
@@ -308,6 +353,9 @@ void WaylandWindow::teardown() noexcept {
     if (xkb_keymap_)  { xkb_keymap_unref(xkb_keymap_); xkb_keymap_ = nullptr; }
     if (xkb_ctx_)     { xkb_context_unref(xkb_ctx_);   xkb_ctx_    = nullptr; }
 
+    release_dmabuf();
+    if (dma_heap_fd_ >= 0) { ::close(dma_heap_fd_); dma_heap_fd_ = -1; }
+
     if (shm_buffer_)  { wl_buffer_destroy(shm_buffer_); shm_buffer_ = nullptr; }
     if (shm_pool_)    { wl_shm_pool_destroy(shm_pool_); shm_pool_   = nullptr; }
     if (shm_data_ && shm_size_) {
@@ -323,6 +371,7 @@ void WaylandWindow::teardown() noexcept {
     if (surface_)         { wl_surface_destroy(surface_);          surface_      = nullptr; }
     if (globals_.pointer) { wl_pointer_destroy(globals_.pointer);  globals_.pointer  = nullptr; }
     if (globals_.keyboard){ wl_keyboard_destroy(globals_.keyboard);globals_.keyboard = nullptr; }
+    if (globals_.dmabuf)     { zwp_linux_dmabuf_v1_destroy(globals_.dmabuf); globals_.dmabuf = nullptr; }
     if (globals_.viewporter) { wp_viewporter_destroy(globals_.viewporter); globals_.viewporter = nullptr; }
     if (globals_.wm_base) { xdg_wm_base_destroy(globals_.wm_base); globals_.wm_base = nullptr; }
     if (globals_.seat)    { wl_seat_destroy(globals_.seat);        globals_.seat = nullptr; }
@@ -380,6 +429,158 @@ bool WaylandWindow::allocate_shm_pool(u32 w, u32 h) noexcept {
     return true;
 }
 
+// ─── dmabuf zero-copy path (Wave B) ──────────────────────────────────────
+//
+// Strategy:
+//   1. Skip if the compositor never bound zwp_linux_dmabuf_v1 (no
+//      `globals_.dmabuf`), or if we already determined the path is
+//      unusable on this host (no dma-heap, alloc failed, etc.).
+//   2. Lazily open /dev/dma_heap/system on the first call.
+//   3. Allocate a linear dmabuf sized to width*height*4 via the heap
+//      ioctl; mmap it as the staging area; hand the fd to the compositor
+//      through zwp_linux_buffer_params_v1::create_immed.
+//   4. Per-frame: memcpy the framebuffer into the mapped dmabuf with the
+//      same RGBA → XRGB byte swizzle as the shm path; attach the wl_buffer
+//      to the surface; commit.
+//
+// On any failure we mark the path disabled and return false — the caller
+// falls back to wl_shm for the rest of the program's lifetime, so we
+// don't keep paying syscall overhead probing a missing /dev/dma_heap.
+void WaylandWindow::release_dmabuf() noexcept {
+    if (dma_buffer_) { wl_buffer_destroy(dma_buffer_); dma_buffer_ = nullptr; }
+    if (dma_map_ && dma_size_) {
+        ::munmap(dma_map_, dma_size_);
+        dma_map_  = nullptr;
+        dma_size_ = 0;
+    }
+    if (dma_fd_ >= 0) { ::close(dma_fd_); dma_fd_ = -1; }
+    dma_w_ = dma_h_ = 0;
+}
+
+bool WaylandWindow::ensure_dmabuf_for(u32 w, u32 h) noexcept {
+    if (dma_disabled_) return false;
+    if (!globals_.dmabuf) { dma_disabled_ = true; return false; }
+    if (dma_buffer_ && dma_w_ == w && dma_h_ == h) return true;
+
+    // Drop the prior buffer; we'll allocate a freshly-sized one.
+    release_dmabuf();
+
+    if (dma_heap_fd_ < 0) {
+        dma_heap_fd_ = ::open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+        if (dma_heap_fd_ < 0) {
+            // Try the legacy CMA heap name as a fallback. Most modern
+            // distros expose `system`; servers/embedded sometimes use
+            // `linux,cma` instead.
+            dma_heap_fd_ = ::open("/dev/dma_heap/linux,cma", O_RDWR | O_CLOEXEC);
+        }
+        if (dma_heap_fd_ < 0) {
+            dma_disabled_ = true;
+            return false;
+        }
+    }
+
+    constexpr u32 kBpp = 4;
+    const std::uint64_t size = static_cast<std::uint64_t>(w) * h * kBpp;
+    if (size == 0) { dma_disabled_ = true; return false; }
+
+    psy_dma_heap_allocation_data req{};
+    req.len = size;
+    req.fd_flags = O_RDWR | O_CLOEXEC;
+    if (::ioctl(dma_heap_fd_, DMA_HEAP_IOCTL_ALLOC, &req) < 0) {
+        dma_disabled_ = true;
+        return false;
+    }
+
+    void* map = ::mmap(nullptr, static_cast<size_t>(size),
+                       PROT_READ | PROT_WRITE, MAP_SHARED,
+                       static_cast<int>(req.fd), 0);
+    if (map == MAP_FAILED) {
+        ::close(static_cast<int>(req.fd));
+        dma_disabled_ = true;
+        return false;
+    }
+
+    // Build the wl_buffer via zwp_linux_buffer_params_v1.
+    zwp_linux_buffer_params_v1* params =
+        zwp_linux_dmabuf_v1_create_params(globals_.dmabuf);
+    if (!params) {
+        ::munmap(map, static_cast<size_t>(size));
+        ::close(static_cast<int>(req.fd));
+        dma_disabled_ = true;
+        return false;
+    }
+    // Plane 0 — single-plane XRGB8888 with linear modifier (0 hi, 0 lo).
+    zwp_linux_buffer_params_v1_add(params, static_cast<int32_t>(req.fd),
+                                   /*plane_idx*/ 0u,
+                                   /*offset*/    0u,
+                                   /*stride*/    w * kBpp,
+                                   /*modifier_hi*/ 0u,
+                                   /*modifier_lo*/ 0u);
+    wl_buffer* buf = zwp_linux_buffer_params_v1_create_immed(
+        params,
+        static_cast<int32_t>(w), static_cast<int32_t>(h),
+        DRM_FORMAT_XRGB8888,
+        /*flags*/ 0u);
+    zwp_linux_buffer_params_v1_destroy(params);
+
+    if (!buf) {
+        ::munmap(map, static_cast<size_t>(size));
+        ::close(static_cast<int>(req.fd));
+        dma_disabled_ = true;
+        return false;
+    }
+
+    dma_fd_     = static_cast<int>(req.fd);
+    dma_map_    = map;
+    dma_size_   = static_cast<size_t>(size);
+    dma_buffer_ = buf;
+    dma_w_      = w;
+    dma_h_      = h;
+    return true;
+}
+
+bool WaylandWindow::try_dmabuf_present(const render::Framebuffer& fb) noexcept {
+    if (!ensure_dmabuf_for(fb.width, fb.height)) return false;
+
+    // Same RGBA → XRGB swizzle as the shm path. With dmabuf the
+    // compositor reads the linear buffer directly — no extra GPU copy.
+    const u32* src = reinterpret_cast<const u32*>(fb.pixels);
+    u32*       dst = reinterpret_cast<u32*>(dma_map_);
+    const size_t pixels_n = static_cast<size_t>(dma_w_) * dma_h_;
+    for (size_t i = 0; i < pixels_n; ++i) {
+        const u32 v = src[i];
+        const u32 r = (v      ) & 0xFFu;
+        const u32 g = (v >>  8) & 0xFFu;
+        const u32 b = (v >> 16) & 0xFFu;
+        dst[i] = (b) | (g << 8) | (r << 16) | (0xFFu << 24);
+    }
+
+    // Viewport update — identical to the shm path. The scale / aspect
+    // computation doesn't depend on the upload mechanism.
+    if (viewport_) {
+        wp_viewport_set_source(viewport_,
+                               wl_fixed_from_int(0),
+                               wl_fixed_from_int(0),
+                               wl_fixed_from_int(static_cast<int>(dma_w_)),
+                               wl_fixed_from_int(static_cast<int>(dma_h_)));
+        const BlitRect r = compute_blit_rect(
+            static_cast<int>(window_w_), static_cast<int>(window_h_),
+            static_cast<int>(dma_w_),    static_cast<int>(dma_h_),
+            aspect_, scale_mode_);
+        const int dst_w = r.w > 0 ? r.w : static_cast<int>(window_w_);
+        const int dst_h = r.h > 0 ? r.h : static_cast<int>(window_h_);
+        wp_viewport_set_destination(viewport_, dst_w, dst_h);
+    }
+
+    wl_surface_attach(surface_, dma_buffer_, 0, 0);
+    wl_surface_damage_buffer(surface_, 0, 0,
+                             static_cast<int32_t>(dma_w_),
+                             static_cast<int32_t>(dma_h_));
+    wl_surface_commit(surface_);
+    wl_display_flush(display_);
+    return true;
+}
+
 // ─── Frame pump ──────────────────────────────────────────────────────────
 void WaylandWindow::poll_events() {
     if (!display_) return;
@@ -397,8 +598,16 @@ void WaylandWindow::poll_events() {
 
 void WaylandWindow::present(const render::Framebuffer& fb) {
     if (!surface_ || !configured_) return;
-    if (!shm_data_) return;
     if (fb.width == 0 || fb.height == 0 || fb.pixels == nullptr) return;
+
+    // ─── Wave-B: zero-copy dmabuf upload when available ──────────────
+    // try_dmabuf_present commits the surface internally on success and
+    // returns true; on false we fall through to the shm memcpy path.
+    if (try_dmabuf_present(fb)) {
+        return;
+    }
+
+    if (!shm_data_) return;
 
     // Resize SHM if the engine changed render resolution between frames.
     if (fb.width != render_w_ || fb.height != render_h_) {
@@ -475,12 +684,13 @@ void WaylandWindow::on_registry(void* data, wl_registry* reg, uint32_t name,
             wl_registry_bind(reg, name, &wl_seat_interface,
                              std::min<uint32_t>(version, 7u)));
         wl_seat_add_listener(w->globals_.seat, &kSeatListener, w);
-    } else if (std::strcmp(iface, "zwp_linux_dmabuf_v1") == 0) {
-        // Detected but not bound. dmabuf upload becomes the default once
-        // the dmabuf-modifier negotiation lands in Wave B. For now the
-        // SHM path is the present mechanism; we just record availability
-        // so a future build can branch on it.
-        w->globals_.has_dmabuf = true;
+    } else if (std::strcmp(iface, zwp_linux_dmabuf_v1_interface.name) == 0) {
+        // Bind at v3 (immediate-buffer creation + format/modifier events).
+        // Older compositors only advertise v1/v2 — clamp to what they
+        // expose so we don't trip a protocol error.
+        w->globals_.dmabuf = static_cast<zwp_linux_dmabuf_v1*>(
+            wl_registry_bind(reg, name, &zwp_linux_dmabuf_v1_interface,
+                             std::min<uint32_t>(version, 3u)));
     }
 }
 
