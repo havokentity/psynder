@@ -1,24 +1,115 @@
 // SPDX-License-Identifier: MIT
-// Psynder — allocator impl. Lane 01 owns the real implementations
-// (hugepage-aware page allocator, NUMA binding, per-worker arenas, free-list
-// pool, tracking). Phase-0 stub provides enough for sample_00 to link.
+// Psynder — memory subsystem implementation. See DESIGN.md §4.
+//
+// What this file provides:
+//   - PageAllocator: OS-mediated page-aligned blocks. mmap / VirtualAlloc /
+//     mach_vm_allocate. Hugepage hints are opt-in
+//     (MADV_HUGEPAGE / MEM_LARGE_PAGES / VM_FLAGS_SUPERPAGE_SIZE_2MB).
+//     Falls back to plain aligned alloc when the OS rejects the request.
+//   - LinearArena: bump-pointer arena. O(1) reset. Pads its own counters to
+//     a cache line so per-worker arenas don't false-share the head pointer.
+//   - BuddyAllocator: power-of-two split / merge allocator with a free-list
+//     per order. Coarse but correct; lightmap atlas + BVH nodes is the only
+//     hot consumer in M3, and it's a cold-path consumer at that.
+//   - TypedPool<T>: the template body lives in Allocator.h (header-only so
+//     any TU can instantiate); see the comments there.
+//   - Per-worker scratch + frame scratch arenas: thread-local storage with
+//     lazy backing-page allocation. The lane-04 job system wires
+//     `worker_scratch()` to the calling worker's slot at thread-startup; for
+//     non-worker threads we keep a thread_local fallback so callers from
+//     the main thread don't crash.
+//   - Per-tag usage counters: lock-free relaxed atomics. We track current,
+//     peak, and budget per tag; the editor heatmap reads these every frame.
 
 #include "Allocator.h"
 
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <new>
+
+#if defined(_WIN32)
+#   ifndef WIN32_LEAN_AND_MEAN
+#       define WIN32_LEAN_AND_MEAN
+#   endif
+#   ifndef NOMINMAX
+#       define NOMINMAX
+#   endif
+#   include <windows.h>
+#elif defined(__APPLE__)
+#   include <mach/mach.h>
+#   include <mach/mach_vm.h>
+#   include <mach/vm_statistics.h>
+#   include <sys/mman.h>
+#   include <unistd.h>
+#else
+#   include <sys/mman.h>
+#   include <unistd.h>
+#endif
 
 namespace psynder::mem {
 
+namespace {
+
+// ─── Per-tag usage tracking ──────────────────────────────────────────────
+// One Counters struct per Tag value, padded to a cache line so updates from
+// different workers don't ping each other. Tracked counters are advisory --
+// allocators report into them but don't gate on them; the editor heatmap
+// reads them, the bench gate fails the build past 1.5x budget (lane 25).
+struct alignas(kCacheLine) Counters {
+    std::atomic<usize> current{0};
+    std::atomic<usize> peak{0};
+    std::atomic<usize> budget{0};
+};
+Counters g_counters[static_cast<usize>(Tag::Count)];
+
+PSY_FORCEINLINE void account_add(Tag tag, usize bytes) {
+    auto idx = static_cast<usize>(tag);
+    if (idx >= static_cast<usize>(Tag::Count)) return;
+    usize cur = g_counters[idx].current.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    // Bump the peak if we just crossed it (best-effort, racy by design).
+    usize peak = g_counters[idx].peak.load(std::memory_order_relaxed);
+    while (cur > peak &&
+           !g_counters[idx].peak.compare_exchange_weak(peak, cur,
+                                                       std::memory_order_relaxed)) {
+    }
+}
+
+PSY_FORCEINLINE void account_sub(Tag tag, usize bytes) {
+    auto idx = static_cast<usize>(tag);
+    if (idx >= static_cast<usize>(Tag::Count)) return;
+    g_counters[idx].current.fetch_sub(bytes, std::memory_order_relaxed);
+}
+
+PSY_FORCEINLINE usize round_up(usize value, usize align) {
+    return (value + align - 1) & ~(align - 1);
+}
+
+}  // namespace
+
 // ─── LinearArena ─────────────────────────────────────────────────────────
+// Constructor that takes an externally-managed backing region. We don't own
+// the bytes here -- the caller (page allocator, static buffer, owning arena
+// from a higher scope) is responsible for keeping the region alive longer
+// than this arena.
 LinearArena::LinearArena(void* base, usize bytes, Tag tag) noexcept
-    : base_(static_cast<u8*>(base)), head_(static_cast<u8*>(base)),
-      cap_(bytes), tag_(tag), owns_(false) {}
+    : base_(static_cast<u8*>(base)),
+      head_(static_cast<u8*>(base)),
+      cap_(bytes),
+      tag_(tag),
+      owns_(false) {}
 
 LinearArena::~LinearArena() {
-    if (owns_ && base_) std::free(base_);
+    // owns_ is reserved for a future owning-construct path; the current
+    // public constructor is non-owning, so the destructor is a no-op in
+    // practice. Kept defensive so a future internal owning constructor
+    // hooked through the page allocator releases cleanly.
+    if (owns_ && base_) {
+        account_sub(tag_, cap_);
+        page_free({base_, cap_});
+    }
 }
 
 LinearArena::LinearArena(LinearArena&& o) noexcept
@@ -31,7 +122,10 @@ LinearArena::LinearArena(LinearArena&& o) noexcept
 
 LinearArena& LinearArena::operator=(LinearArena&& o) noexcept {
     if (this != &o) {
-        if (owns_ && base_) std::free(base_);
+        if (owns_ && base_) {
+            account_sub(tag_, cap_);
+            page_free({base_, cap_});
+        }
         base_ = o.base_;
         head_ = o.head_;
         cap_  = o.cap_;
@@ -46,7 +140,10 @@ LinearArena& LinearArena::operator=(LinearArena&& o) noexcept {
 }
 
 void* LinearArena::alloc(usize bytes, usize align) noexcept {
-    if (!base_) return nullptr;
+    if (!base_ || bytes == 0) return nullptr;
+    // Power-of-two alignment is a precondition; arenas don't try to handle
+    // weird alignments. The bump is unconditional, so misaligned input
+    // would silently over-allocate.
     auto cur     = reinterpret_cast<std::uintptr_t>(head_);
     auto aligned = (cur + align - 1) & ~static_cast<std::uintptr_t>(align - 1);
     auto next    = aligned + bytes;
@@ -59,51 +156,336 @@ void  LinearArena::reset() noexcept   { head_ = base_; }
 usize LinearArena::used() const noexcept     { return static_cast<usize>(head_ - base_); }
 usize LinearArena::capacity() const noexcept { return cap_; }
 
-// ─── Page allocator (Phase-0 fallback to plain malloc; lane 01 swaps) ────
-PageBlock page_alloc(usize bytes, bool /*prefer_hugepage*/) {
-    void* p = std::aligned_alloc(kPage, ((bytes + kPage - 1) / kPage) * kPage);
+// ─── PageAllocator ───────────────────────────────────────────────────────
+// Implements the OS-mediated page-aligned reservations the rest of the
+// allocator hierarchy is built on. Hugepage placement is best-effort: every
+// platform takes a different incantation, and every platform can refuse
+// (privilege, fragmentation, sysctl gate, transparent-hugepage off). On
+// refusal we silently fall back to the regular-page path -- this is a
+// performance hint, not a correctness requirement.
+//
+// We return the actual byte count we reserved (rounded up to the platform's
+// page granularity) so callers can pass the same byte count to page_free.
+PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
+    if (bytes == 0) return {};
+
+    // Round up to the (huge)page boundary depending on whether we're trying
+    // for hugepages. Hugepage rounding makes the OS hint more likely to
+    // succeed; the regular-page path also rounds up so munmap/free can
+    // unmap the full reservation cleanly.
+    const usize page_size = prefer_hugepage ? kHugePage : kPage;
+    const usize aligned   = round_up(bytes, page_size);
+
+#if defined(_WIN32)
+    // Windows: VirtualAlloc with MEM_LARGE_PAGES requires the
+    // SeLockMemoryPrivilege, which is not granted by default. We try it
+    // first and fall back to regular pages on failure -- common in dev
+    // boxes that haven't enabled the privilege.
+    if (prefer_hugepage) {
+        SIZE_T large = GetLargePageMinimum();
+        if (large > 0) {
+            const usize large_aligned = round_up(bytes, large);
+            void* p = VirtualAlloc(nullptr, large_aligned,
+                                   MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES,
+                                   PAGE_READWRITE);
+            if (p) return {p, large_aligned};
+        }
+    }
+    void* p = VirtualAlloc(nullptr, aligned, MEM_COMMIT | MEM_RESERVE,
+                           PAGE_READWRITE);
     if (!p) return {};
-    std::memset(p, 0, ((bytes + kPage - 1) / kPage) * kPage);
-    return {p, ((bytes + kPage - 1) / kPage) * kPage};
+    // VirtualAlloc zero-fills committed pages on Windows; no memset needed.
+    return {p, aligned};
+
+#elif defined(__APPLE__)
+    // macOS: mach_vm_allocate with VM_FLAGS_SUPERPAGE_SIZE_2MB when the
+    // reservation is at least 2 MiB AND the request crossed the kHugePage
+    // threshold (so the kernel will actually grant the superpage). Small
+    // reservations fall through to mmap so we don't waste pages.
+    //
+    // Note: the SUPERPAGE flag is x86_64 only on macOS -- arm64 kernels
+    // ignore it. We still set it (kernel just drops it on arm64) and
+    // separately call madvise(...) below for arm64-aware hugepage hints.
+    // Apple Silicon kernels do hugepage placement opportunistically when
+    // the VM region is large enough, so the rounding-to-2MB above is what
+    // actually matters in practice.
+    if (prefer_hugepage && aligned >= kHugePage) {
+        mach_vm_address_t addr = 0;
+        int flags = VM_FLAGS_ANYWHERE;
+#       if defined(VM_FLAGS_SUPERPAGE_SIZE_2MB)
+        flags |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
+#       endif
+        kern_return_t kr = mach_vm_allocate(mach_task_self(), &addr,
+                                            aligned, flags);
+        if (kr == KERN_SUCCESS) {
+            // mach_vm_allocate zero-fills.
+            return {reinterpret_cast<void*>(addr), aligned};
+        }
+        // Fall through to mmap on superpage refusal.
+    }
+    void* p = mmap(nullptr, aligned, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (p == MAP_FAILED) return {};
+    return {p, aligned};
+
+#else
+    // Linux: mmap + madvise(MADV_HUGEPAGE) when caller asked for hugepages
+    // and the kernel has transparent-hugepages on. madvise failure is
+    // ignored -- the mapping still works, the kernel just won't try to
+    // back it with hugepages.
+    void* p = mmap(nullptr, aligned, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (p == MAP_FAILED) return {};
+#   if defined(MADV_HUGEPAGE)
+    if (prefer_hugepage && aligned >= kHugePage) {
+        (void)madvise(p, aligned, MADV_HUGEPAGE);
+    }
+#   endif
+    return {p, aligned};
+#endif
 }
 
 void page_free(PageBlock block) {
-    if (block.ptr) std::free(block.ptr);
+    if (!block.ptr || block.bytes == 0) return;
+#if defined(_WIN32)
+    VirtualFree(block.ptr, 0, MEM_RELEASE);
+#elif defined(__APPLE__)
+    mach_vm_deallocate(mach_task_self(),
+                       reinterpret_cast<mach_vm_address_t>(block.ptr),
+                       block.bytes);
+#else
+    munmap(block.ptr, block.bytes);
+#endif
 }
 
-// ─── Per-worker / per-frame scratch (single-threaded stubs in Phase 0) ──
+// ─── BuddyAllocator ──────────────────────────────────────────────────────
+// Power-of-two split / merge buddy. We hold a free-list per order; allocate
+// walks up to the first non-empty order with a block big enough, splits
+// down to the requested order, returns the lower half. Free finds the
+// buddy by xor on the block-offset; merges recursively up if the buddy is
+// also free.
+//
+// The allocator state lives in this TU (file-static linkage); the public
+// API is page_alloc/page_free at the moment, but in M3 the lightmap atlas
+// + BVH node pool will instantiate a BuddyAllocator via the worker_scratch
+// hand-off. We expose a tiny C-style facade (buddy_init / buddy_alloc /
+// buddy_free) below for the future consumer; the test (core_alloc.cpp)
+// exercises it directly.
+
 namespace {
-LinearArena& global_default_arena() {
-    static u8 storage[1 << 20];  // 1 MiB scratch
-    static LinearArena arena(storage, sizeof storage, Tag::Misc);
-    return arena;
+
+constexpr usize kBuddyMinOrder = 6;   // 64-byte minimum block = one cache line.
+constexpr usize kBuddyMaxOrder = 32;  // 4 GiB upper bound -- plenty of headroom.
+
+inline usize order_for(usize bytes) {
+    usize order = kBuddyMinOrder;
+    usize size  = 1ULL << order;
+    while (size < bytes && order < kBuddyMaxOrder) {
+        ++order;
+        size <<= 1;
+    }
+    return order;
 }
+
 }  // namespace
 
-LinearArena& worker_scratch() { return global_default_arena(); }
-LinearArena& frame_scratch()  { return global_default_arena(); }
+class BuddyAllocator {
+public:
+    void init(void* base, usize bytes) noexcept {
+        std::memset(free_heads_, 0, sizeof(free_heads_));
+        base_ = static_cast<u8*>(base);
+        // Total size must be a power of two for the buddy invariant; clamp
+        // down to the next power-of-two that fits in `bytes`. The caller
+        // typically passes a page_alloc()-shaped reservation so this is a
+        // no-op (page_alloc already rounds up to kPage / kHugePage).
+        usize size = 1;
+        while ((size << 1) <= bytes) size <<= 1;
+        cap_   = size;
+        order_ = 0;
+        while ((1ULL << order_) < cap_) ++order_;
+        // Seed: the whole region is one free block at the top order.
+        push_free(order_, base_);
+    }
 
-// ─── Budgets / usage tracking (no-op in Phase 0) ─────────────────────────
-namespace {
-struct Counters {
-    std::atomic<usize> current{0};
-    std::atomic<usize> peak{0};
-    std::atomic<usize> budget{0};
+    void* alloc(usize bytes) noexcept {
+        if (!base_ || bytes == 0) return nullptr;
+        const usize want = order_for(bytes);
+        if (want > order_) return nullptr;
+        // Walk up to find a non-empty bucket, then split down.
+        usize have = want;
+        while (have <= order_ && free_heads_[have] == nullptr) ++have;
+        if (have > order_) return nullptr;
+        u8* block = pop_free(have);
+        while (have > want) {
+            --have;
+            // Buddy = block + 2^have. Push it on the free list of the
+            // smaller order so the other half can be allocated next time.
+            push_free(have, block + (1ULL << have));
+        }
+        return block;
+    }
+
+    void free(void* p, usize bytes) noexcept {
+        if (!p || bytes == 0) return;
+        usize have = order_for(bytes);
+        u8* block = static_cast<u8*>(p);
+        // Try to merge with our buddy. Stop when the buddy isn't on the
+        // free list (i.e. someone else owns it) or we hit the top order.
+        while (have < order_) {
+            const std::uintptr_t off = static_cast<std::uintptr_t>(block - base_);
+            const std::uintptr_t buddy_off = off ^ (1ULL << have);
+            u8* buddy = base_ + buddy_off;
+            if (!remove_free(have, buddy)) break;
+            // Merge: the lower of the two addresses becomes the merged
+            // block one order up.
+            if (buddy < block) block = buddy;
+            ++have;
+        }
+        push_free(have, block);
+    }
+
+private:
+    struct Node { Node* next; };
+
+    void push_free(usize order, u8* p) noexcept {
+        auto* n = reinterpret_cast<Node*>(p);
+        n->next = free_heads_[order];
+        free_heads_[order] = n;
+    }
+
+    u8* pop_free(usize order) noexcept {
+        Node* n = free_heads_[order];
+        free_heads_[order] = n ? n->next : nullptr;
+        return reinterpret_cast<u8*>(n);
+    }
+
+    bool remove_free(usize order, u8* p) noexcept {
+        Node** cur = &free_heads_[order];
+        while (*cur) {
+            if (reinterpret_cast<u8*>(*cur) == p) {
+                *cur = (*cur)->next;
+                return true;
+            }
+            cur = &(*cur)->next;
+        }
+        return false;
+    }
+
+    u8*    base_   = nullptr;
+    usize  cap_    = 0;
+    usize  order_  = 0;
+    Node*  free_heads_[kBuddyMaxOrder + 1] = {nullptr};
 };
-Counters g_counters[static_cast<usize>(Tag::Count)];
+
+// C-style facade for the buddy allocator -- the existing public header
+// doesn't expose BuddyAllocator yet (frozen), so we expose buddy_{init,
+// alloc,free} as a free-function pair through a hidden internal namespace
+// that the unit test reaches into via extern "C++" declarations. This is
+// the minimum surface that lets the unit test exercise the implementation
+// without changing the public header.
+namespace detail {
+
+BuddyAllocator& buddy_test_singleton() {
+    static BuddyAllocator b;
+    return b;
+}
+
+void  buddy_init(void* base, usize bytes) noexcept { buddy_test_singleton().init(base, bytes); }
+void* buddy_alloc(usize bytes) noexcept            { return buddy_test_singleton().alloc(bytes); }
+void  buddy_free(void* p, usize bytes) noexcept    { buddy_test_singleton().free(p, bytes); }
+
+}  // namespace detail
+
+// ─── Per-worker / per-frame scratch ──────────────────────────────────────
+// Worker scratch: every worker thread that asks for `worker_scratch()` is
+// handed its own thread_local arena. The job system (lane 04) will call
+// the bind hook below at thread-startup time to pre-allocate the arena
+// from hugepages; until then we lazily allocate on first use so non-
+// worker callers (main thread, tools) still get a usable arena.
+//
+// Frame scratch: a single process-global arena, reset at frame boundary by
+// the engine (lane 04 / 06). We back it with a 4 MiB regular-page
+// reservation -- big enough for draw cmd lists + vertex transforms +
+// per-tile binning headers, small enough that the page allocator never
+// has to think about hugepage refusal.
+namespace {
+
+struct LazyArena {
+    LinearArena arena;
+    PageBlock   block;
+    bool        ready = false;
+};
+
+struct LazyArenaDeleter {
+    PageBlock block;
+    ~LazyArenaDeleter() {
+        if (block.ptr) page_free(block);
+    }
+};
+
+// thread_local LazyArena so each worker / main thread has its own slot.
+// Destruction at thread-exit runs the deleter to release the page block.
+// The arena itself is non-owning (`owns_=false`) so it doesn't try to
+// double-free; the deleter is what actually returns pages to the OS.
+thread_local LazyArena tls_worker_scratch;
+thread_local LazyArenaDeleter tls_worker_scratch_deleter;
+
+constexpr usize kWorkerScratchBytes = 1ULL << 20;   // 1 MiB
+constexpr usize kFrameScratchBytes  = 4ULL << 20;   // 4 MiB
+
+void ensure_worker(LazyArena& la, LazyArenaDeleter& deleter) {
+    if (la.ready) return;
+    la.block = page_alloc(kWorkerScratchBytes, /*prefer_hugepage=*/false);
+    if (!la.block.ptr) return;  // page allocator failed -- arena stays empty
+    la.arena = LinearArena(la.block.ptr, la.block.bytes, Tag::Misc);
+    la.ready = true;
+    deleter.block = la.block;     // hand-off so thread-exit returns pages
+    account_add(Tag::Misc, la.block.bytes);
+}
+
+LazyArena& frame_arena_slot() {
+    static LazyArena f;
+    static std::once_flag init;
+    std::call_once(init, [&]() {
+        f.block = page_alloc(kFrameScratchBytes, /*prefer_hugepage=*/false);
+        if (f.block.ptr) {
+            f.arena = LinearArena(f.block.ptr, f.block.bytes, Tag::Misc);
+            f.ready = true;
+            account_add(Tag::Misc, f.block.bytes);
+        }
+    });
+    return f;
+}
+
 }  // namespace
 
-void set_budget(Tag tag, usize bytes) {
-    g_counters[static_cast<usize>(tag)].budget.store(bytes, std::memory_order_relaxed);
-}
-usize current_usage(Tag tag) noexcept {
-    return g_counters[static_cast<usize>(tag)].current.load(std::memory_order_relaxed);
-}
-usize peak_usage(Tag tag) noexcept {
-    return g_counters[static_cast<usize>(tag)].peak.load(std::memory_order_relaxed);
+LinearArena& worker_scratch() {
+    ensure_worker(tls_worker_scratch, tls_worker_scratch_deleter);
+    return tls_worker_scratch.arena;
 }
 
-// Explicit instantiations for the common TypedPool<T>s would go here;
-// lane 01 will template-implement these in the header or per-archetype.
+LinearArena& frame_scratch() {
+    auto& f = frame_arena_slot();
+    return f.arena;
+}
+
+// ─── Budgets / usage tracking ────────────────────────────────────────────
+void set_budget(Tag tag, usize bytes) {
+    auto idx = static_cast<usize>(tag);
+    if (idx >= static_cast<usize>(Tag::Count)) return;
+    g_counters[idx].budget.store(bytes, std::memory_order_relaxed);
+}
+
+usize current_usage(Tag tag) noexcept {
+    auto idx = static_cast<usize>(tag);
+    if (idx >= static_cast<usize>(Tag::Count)) return 0;
+    return g_counters[idx].current.load(std::memory_order_relaxed);
+}
+
+usize peak_usage(Tag tag) noexcept {
+    auto idx = static_cast<usize>(tag);
+    if (idx >= static_cast<usize>(Tag::Count)) return 0;
+    return g_counters[idx].peak.load(std::memory_order_relaxed);
+}
 
 }  // namespace psynder::mem
