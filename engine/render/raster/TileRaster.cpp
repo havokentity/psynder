@@ -8,6 +8,8 @@
 // 128 are explicitly instantiated at the bottom of this file.
 
 #include "TileBin.h"
+#include "HiZ.h"
+#include "SurfaceCache.h"
 
 #include "core/Types.h"
 
@@ -19,16 +21,16 @@ namespace psynder::render::raster {
 
 namespace {
 
-// ─── Bilinear texture sample ─────────────────────────────────────────────
-// Returns RGBA8 packed. Wraps on negative coords via floor (i.e. wrap
-// semantics); textures we ship are power-of-two so the mask is cheap. Lane
-// 07 implements bilinear minimum (DESIGN.md §7.5); trilinear / aniso are
-// Wave-B.
-PSY_FORCEINLINE u32 sample_bilinear(const Texture& tex, f32 u, f32 v) noexcept {
-    if (!tex.texels || tex.width == 0 || tex.height == 0) return 0xFF888888u;
+// ─── Bilinear sample on a single mip level ───────────────────────────────
+// Returns RGBA8 packed. Wraps via modulo — width/height don't need to be
+// power-of-two, but pre-divisible by 2 along the mip chain is assumed
+// (lane 05 cooks mips that way).
+PSY_FORCEINLINE u32 sample_bilinear_mip(const Texture::MipLevel& mip,
+                                        f32 u, f32 v) noexcept {
+    if (!mip.texels || mip.width == 0 || mip.height == 0) return 0xFF888888u;
 
-    const f32 wf = static_cast<f32>(tex.width);
-    const f32 hf = static_cast<f32>(tex.height);
+    const f32 wf = static_cast<f32>(mip.width);
+    const f32 hf = static_cast<f32>(mip.height);
 
     // Texel-space coordinates with the standard half-texel bias.
     const f32 tx = u * wf - 0.5f;
@@ -39,23 +41,22 @@ PSY_FORCEINLINE u32 sample_bilinear(const Texture& tex, f32 u, f32 v) noexcept {
     const f32 fx = tx - static_cast<f32>(x0);
     const f32 fy = ty - static_cast<f32>(y0);
 
-    // Wrap. Width/height aren't required to be PoT here — modulo cost is
-    // negligible vs the texel fetch latency it serializes against.
+    // Wrap. Modulo is fine — texel fetch latency dominates anyway.
     auto wrap = [](i32 a, i32 b) noexcept {
         i32 r = a % b;
         return static_cast<u32>(r < 0 ? r + b : r);
     };
-    const i32 wx = static_cast<i32>(tex.width);
-    const i32 hy = static_cast<i32>(tex.height);
+    const i32 wx = static_cast<i32>(mip.width);
+    const i32 hy = static_cast<i32>(mip.height);
     const u32 x1 = wrap(x0 + 1, wx);
     const u32 y1 = wrap(y0 + 1, hy);
     const u32 x0w = wrap(x0, wx);
     const u32 y0w = wrap(y0, hy);
 
-    const u32 t00 = tex.texels[y0w * tex.pitch + x0w];
-    const u32 t10 = tex.texels[y0w * tex.pitch + x1];
-    const u32 t01 = tex.texels[y1  * tex.pitch + x0w];
-    const u32 t11 = tex.texels[y1  * tex.pitch + x1];
+    const u32 t00 = mip.texels[y0w * mip.pitch + x0w];
+    const u32 t10 = mip.texels[y0w * mip.pitch + x1];
+    const u32 t01 = mip.texels[y1  * mip.pitch + x0w];
+    const u32 t11 = mip.texels[y1  * mip.pitch + x1];
 
     // Per-channel lerp (8 lerps total). Keep in fixed-point so we don't
     // round through float.
@@ -71,6 +72,75 @@ PSY_FORCEINLINE u32 sample_bilinear(const Texture& tex, f32 u, f32 v) noexcept {
     };
 
     return chan(0) | (chan(8) << 8) | (chan(16) << 16) | (chan(24) << 24);
+}
+
+// Bilinear sample on mip 0 only — kept as the original entrypoint for
+// callers that don't care about mip selection (e.g. UI bicubic upscalers
+// when they land in lane 09).
+PSY_FORCEINLINE u32 sample_bilinear(const Texture& tex, f32 u, f32 v) noexcept {
+    Texture::MipLevel m0{ tex.texels, tex.width, tex.height, tex.pitch };
+    return sample_bilinear_mip(m0, u, v);
+}
+
+// ─── Trilinear sample across two mip levels ──────────────────────────────
+// Two bilinear lookups (mip floor and mip floor+1) lerped by the
+// fractional mip. The mip LOD is computed from the per-quad finite
+// differences of (u,v) — for the within-tile inner loop we approximate
+// du/dx and dv/dx as the 1-pixel stride. The §7.5 "trilinear" cost
+// budget is 8 fetches; we deliver that.
+PSY_FORCEINLINE u32 sample_trilinear(const Texture& tex,
+                                     f32 u, f32 v,
+                                     f32 mip_lod) noexcept {
+    if (tex.mip_count <= 1) {
+        return sample_bilinear(tex, u, v);
+    }
+    // Clamp mip LOD into [0, mip_count-1].
+    const f32 max_lod = static_cast<f32>(tex.mip_count - 1);
+    if (mip_lod < 0.0f) mip_lod = 0.0f;
+    if (mip_lod > max_lod) mip_lod = max_lod;
+
+    const i32 m0 = static_cast<i32>(std::floor(mip_lod));
+    const i32 m1 = std::min(m0 + 1, static_cast<i32>(tex.mip_count - 1));
+    const f32 t  = mip_lod - static_cast<f32>(m0);
+
+    const u32 s0 = sample_bilinear_mip(tex.mips[m0], u, v);
+    if (m0 == m1 || t == 0.0f) return s0;
+    const u32 s1 = sample_bilinear_mip(tex.mips[m1], u, v);
+
+    // Per-channel lerp.
+    auto lerp = [t](u32 a, u32 b) noexcept {
+        const f32 af = static_cast<f32>(a);
+        const f32 bf = static_cast<f32>(b);
+        return static_cast<u32>(af + (bf - af) * t + 0.5f) & 0xFFu;
+    };
+    const u32 r = lerp( s0        & 0xFFu, s1        & 0xFFu);
+    const u32 g = lerp((s0 >>  8) & 0xFFu, (s1 >>  8) & 0xFFu);
+    const u32 b = lerp((s0 >> 16) & 0xFFu, (s1 >> 16) & 0xFFu);
+    const u32 a = lerp((s0 >> 24) & 0xFFu, (s1 >> 24) & 0xFFu);
+    return r | (g << 8) | (b << 16) | (a << 24);
+}
+
+// Estimate the mip LOD given screen-space derivatives of (u, v) and the
+// texture's mip 0 dimensions. log2(max(|du/dx|*w, |dv/dx|*h, ...)). The
+// derivatives arrive from the quad walk's 1-pixel stride deltas in
+// texture coordinates; we compute the max texel-stride per pixel and
+// take log2.
+PSY_FORCEINLINE f32 compute_mip_lod(const Texture& tex,
+                                    f32 dudx, f32 dvdx,
+                                    f32 dudy, f32 dvdy) noexcept {
+    if (tex.mip_count <= 1) return 0.0f;
+    const f32 wf = static_cast<f32>(tex.width);
+    const f32 hf = static_cast<f32>(tex.height);
+    const f32 ax = dudx * wf;
+    const f32 ay = dvdx * hf;
+    const f32 bx = dudy * wf;
+    const f32 by = dvdy * hf;
+    const f32 d2_dx = ax*ax + ay*ay;
+    const f32 d2_dy = bx*bx + by*by;
+    const f32 d2_max = std::max(d2_dx, d2_dy);
+    if (d2_max <= 1.0f) return 0.0f;
+    // log2(sqrt(d2_max)) = 0.5 * log2(d2_max).
+    return 0.5f * std::log2(d2_max);
 }
 
 // ─── Pack/unpack f32 depth ───────────────────────────────────────────────
@@ -159,6 +229,14 @@ void rasterize_tile(const Framebuffer& fb,
 
     auto* pixels = reinterpret_cast<u32*>(fb.pixels);
 
+    // ─── HiZ: per-tile 8×8 cell-grid early-reject (DESIGN.md §7.3) ───────
+    // Built from the framebuffer's depth slice (carries previously-drawn
+    // triangles for this frame; cleared to 1.0 at frame start). Updated
+    // incrementally below as each triangle finalizes. Lives on the stack —
+    // 8×8 cells × 4 bytes = 256 B per 64×64 tile (1 cacheline x 4).
+    HiZTile<TILE_W, TILE_H> hiz;
+    hiz.rebuild_from_fb(fb, static_cast<u32>(tile_x0), static_cast<u32>(tile_y0));
+
     for (u32 e = begin; e < end; ++e) {
         const BinEntry& be = grid.entries[e];
         const DrawCmd&  d  = draws[be.draw_idx];
@@ -171,6 +249,20 @@ void rasterize_tile(const Framebuffer& fb,
         const i32 x1 = std::min(t.maxx, tile_x1);
         const i32 y1 = std::min(t.maxy, tile_y1);
         if (x0 >= x1 || y0 >= y1) continue;
+
+        // HiZ test — find the triangle's minimum z over its three verts
+        // (a conservative lower bound; the actual interpolated z varies
+        // inside the triangle but never goes below min(z0,z1,z2)). If no
+        // cell touching the triangle's bbox has farther geometry, every
+        // pixel under this triangle is occluded — skip the inner loop.
+        const f32 tri_z_min = std::min({ t.v0.z, t.v1.z, t.v2.z });
+        const i32 tile_lx0 = x0 - tile_x0;
+        const i32 tile_ly0 = y0 - tile_y0;
+        const i32 tile_lx1 = x1 - tile_x0;
+        const i32 tile_ly1 = y1 - tile_y0;
+        if (!hiz.any_cell_passes(tile_lx0, tile_ly0, tile_lx1, tile_ly1, tri_z_min)) {
+            continue;
+        }
 
         // 2×2 quad walk (DESIGN.md §7.4 — gives free LOD finite-diffs,
         // which we don't use yet but the quad organization is the right
@@ -198,8 +290,50 @@ void rasterize_tile(const Framebuffer& fb,
         i64 e2_row = eval_edge2(t, px, py);
 
         const bool has_tex   = (tex != nullptr);
-        const bool alpha_test= (d.flags & 0x1) != 0;
-        const bool affine    = affine_mode || (d.flags & 0x2) != 0;
+        const bool alpha_test= (d.flags & draw_flags::kAlphaTest) != 0;
+        const bool affine    = affine_mode || (d.flags & draw_flags::kAffine) != 0;
+
+        // Dispatch tag — DESIGN.md §7.6. Picked once per draw; the inner
+        // pixel loop branches on a const bool, never on a per-pixel
+        // variable. SurfaceCached takes the pre-multiplied path; OnTheFly
+        // does the modern sample(base) * sample(lightmap) path. Wave-B
+        // ships SurfaceCached as a single-sample lookup against the slab;
+        // the actual base*lightmap product is filled in by the surface
+        // cooker when lane 10 lands.
+        const ShadingPath path = static_cast<ShadingPath>(d.shading_path);
+        const bool surface_cached = (path == ShadingPath::SurfaceCached) &&
+                                    d.surface_cache_payload != nullptr;
+
+        // Trilinear mip-LOD per draw — for now we use the screen-space
+        // 1-pixel finite diff at the triangle's centroid. The proper
+        // quad-level dy derivative arrives once the 2x2 quad walk lands
+        // its full version. Static within a draw to keep SIMD-coherent.
+        f32 draw_mip_lod = 0.0f;
+        if (has_tex && tex->mip_count > 1 && !affine) {
+            const f32 fb_inv = 1.0f / static_cast<f32>(std::max(1, fb_w));
+            // Approximate (du/dx, dv/dx) from the triangle's 1-pixel walk:
+            // pixel-step in barycentric Δw_i = ex_i_dx * inv_area2x.
+            const f32 dw0_dx = static_cast<f32>(ex0_dx) * t.inv_area2x;
+            const f32 dw1_dx = static_cast<f32>(ex1_dx) * t.inv_area2x;
+            const f32 dw2_dx = static_cast<f32>(ex2_dx) * t.inv_area2x;
+            const f32 dw0_dy = static_cast<f32>(ex0_dy) * t.inv_area2x;
+            const f32 dw1_dy = static_cast<f32>(ex1_dy) * t.inv_area2x;
+            const f32 dw2_dy = static_cast<f32>(ex2_dy) * t.inv_area2x;
+            const f32 du_dx = dw0_dx * t.v0.u_over_w
+                            + dw1_dx * t.v1.u_over_w
+                            + dw2_dx * t.v2.u_over_w;
+            const f32 dv_dx = dw0_dx * t.v0.v_over_w
+                            + dw1_dx * t.v1.v_over_w
+                            + dw2_dx * t.v2.v_over_w;
+            const f32 du_dy = dw0_dy * t.v0.u_over_w
+                            + dw1_dy * t.v1.u_over_w
+                            + dw2_dy * t.v2.u_over_w;
+            const f32 dv_dy = dw0_dy * t.v0.v_over_w
+                            + dw1_dy * t.v1.v_over_w
+                            + dw2_dy * t.v2.v_over_w;
+            draw_mip_lod = compute_mip_lod(*tex, du_dx, dv_dx, du_dy, dv_dy);
+            (void)fb_inv;
+        }
 
         // Iterate rows in the tile-clipped bbox
         for (i32 y = y0; y < y1; ++y) {
@@ -268,8 +402,28 @@ void rasterize_tile(const Framebuffer& fb,
                         }
 
                         u32 out_rgba;
-                        if (has_tex) {
-                            const u32 t_rgba = sample_bilinear(*tex, u, v);
+                        if (surface_cached) {
+                            // Surface-cache path: one fetch from the
+                            // pre-multiplied chunk. Vertex colour still
+                            // modulates so the lit triangle still shades.
+                            Texture::MipLevel sc{
+                                d.surface_cache_payload,
+                                d.surface_cache_width,
+                                d.surface_cache_height,
+                                d.surface_cache_width,
+                            };
+                            const u32 t_rgba = sample_bilinear_mip(sc, u, v);
+                            const f32 tr = static_cast<f32>(t_rgba       & 0xFFu) * (1.0f/255.0f);
+                            const f32 tg = static_cast<f32>((t_rgba >>  8) & 0xFFu) * (1.0f/255.0f);
+                            const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f/255.0f);
+                            const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f/255.0f);
+                            out_rgba = pack_rgba(r * tr, g * tg, b * tb, a * ta);
+                        } else if (has_tex) {
+                            // OnTheFly: sample base texture (bilinear or
+                            // trilinear depending on mip availability).
+                            const u32 t_rgba = (tex->mip_count > 1)
+                                ? sample_trilinear(*tex, u, v, draw_mip_lod)
+                                : sample_bilinear(*tex, u, v);
                             const f32 tr = static_cast<f32>(t_rgba       & 0xFFu) * (1.0f/255.0f);
                             const f32 tg = static_cast<f32>((t_rgba >>  8) & 0xFFu) * (1.0f/255.0f);
                             const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f/255.0f);
@@ -295,6 +449,30 @@ void rasterize_tile(const Framebuffer& fb,
             e0_row += ex0_dy;
             e1_row += ex1_dy;
             e2_row += ex2_dy;
+        }
+
+        // ── HiZ update ───────────────────────────────────────────────
+        // Tighten cells under this triangle to its max z (a conservative
+        // upper bound for what's now in the depth buffer). Cheap — one
+        // pass over the cells covered by the triangle's tile-clipped
+        // bbox. Real per-cell tightening would scan the depth slice; the
+        // conservative tri-max is enough to drive useful occlusion in
+        // sample_03's BSP room without the scan cost.
+        const f32 tri_z_max = std::max({ t.v0.z, t.v1.z, t.v2.z });
+        const i32 lx0 = std::max(0, x0 - tile_x0);
+        const i32 ly0 = std::max(0, y0 - tile_y0);
+        const i32 lx1 = std::min(static_cast<i32>(TILE_W), x1 - tile_x0);
+        const i32 ly1 = std::min(static_cast<i32>(TILE_H), y1 - tile_y0);
+        if (lx0 < lx1 && ly0 < ly1) {
+            const u32 cx0 = static_cast<u32>(lx0) / kHiZCellPx;
+            const u32 cy0 = static_cast<u32>(ly0) / kHiZCellPx;
+            const u32 cx1 = (static_cast<u32>(lx1 - 1) / kHiZCellPx) + 1;
+            const u32 cy1 = (static_cast<u32>(ly1 - 1) / kHiZCellPx) + 1;
+            for (u32 cy = cy0; cy < cy1 && cy < hiz.kRows; ++cy) {
+                for (u32 cx = cx0; cx < cx1 && cx < hiz.kCols; ++cx) {
+                    hiz.update_cell(cy * hiz.kCols + cx, tri_z_max);
+                }
+            }
         }
     }
 }
