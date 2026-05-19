@@ -98,9 +98,18 @@ ImportResult import_map(std::string_view map_text,
     ImportResult res;
     out = {};
 
+    // Wave-B: run the curve-brush preprocessor on the .map text before
+    // handing it to qbsp::parse_map. The preprocessor is idempotent on
+    // maps that contain no directives, so this is safe to always invoke.
+    std::string expanded;
+    std::string_view feed = map_text;
+    if (opt.expand_curve_brushes) {
+        expanded = expand_curve_brushes(map_text);
+        feed = expanded;
+    }
     qbsp::MapFile map;
     std::string err;
-    if (!qbsp::parse_map(map_text, map, &err)) {
+    if (!qbsp::parse_map(feed, map, &err)) {
         res.error = err;
         return res;
     }

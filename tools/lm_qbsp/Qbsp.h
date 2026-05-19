@@ -13,8 +13,13 @@
 //     the brush set, recurse. No CSG vertex construction; we record face
 //     planes and per-leaf brush counts, which is enough to validate the
 //     pipeline end-to-end. (Full vertex tessellation lives in Wave-B.)
-//   - PVS / portals: skipped (will live in lane 10's reader once full
-//     compilation lands).
+//
+// Wave-B additions:
+//   - Portal generation: emit a `BspPortal` per internal node that
+//     bridges leaves, mirroring lane 10's `BspPortal` layout. The portal
+//     winding is a square clipped on the splitting plane and bounded by
+//     the world AABB, which is enough for adjacency-based culling tests.
+//   - Format bumped to version 2; the v1 header layout is retired.
 
 #pragma once
 
@@ -52,38 +57,60 @@ bool parse_map(std::string_view text, MapFile& out, std::string* err = nullptr);
 
 // ─── .psybsp output ──────────────────────────────────────────────────────
 //
-//   char  magic[4]    = "PSBP"
-//   u32   version     = 1
+//   char  magic[4]      = "PSBP"
+//   u32   version       = 2
 //   u32   node_count
 //   u32   leaf_count
 //   u32   plane_count
 //   u32   brush_count
+//   u32   brush_planes_count
+//   u32   portal_count            (v2)
+//   u32   portal_vertices_count   (v2)
 //   u32   reserved
-//   ── plane table (plane_count × Plane { Vec3 normal; f32 d }) ──
-//   ── node table  (node_count  × Node  { i32 plane; i32 front, back }) ──
-//   ── leaf table  (leaf_count  × Leaf  { i32 cluster; u32 flags; Aabb }) ──
-//   ── brush table (brush_count × BrushRef { u32 first_plane; u32 plane_count; Aabb })
+//   ── plane table     (plane_count × Plane { Vec3 normal; f32 d }) ──
+//   ── node table      (node_count  × Node  { i32 plane; i32 front, back }) ──
+//   ── leaf table      (leaf_count  × Leaf  { i32 cluster; u32 flags; Aabb }) ──
+//   ── brush table     (brush_count × BrushRef { u32 first_plane; u32 plane_count; Aabb }) ──
+//   ── brush planes    (brush_planes_count × u32) ──
+//   ── portal table    (portal_count × Portal { i32 front_leaf; i32 back_leaf; u32 first_vertex;
+//                                               u32 vertex_count; Vec3 plane_normal; f32 plane_d }) ──
+//   ── portal vertices (portal_vertices_count × Vec3) ──
 //
 // Negative `front` or `back` in a node points at a leaf; positive points at
 // another node. Leaf index `~child`.
 
 inline constexpr u32 kPsyBspMagic   = 0x50425350u;  // 'PSBP'
-inline constexpr u32 kPsyBspVersion = 1u;
+inline constexpr u32 kPsyBspVersion = 2u;
 
 inline constexpr u32 kLeafFlagSolid = 1u << 0;
 inline constexpr u32 kLeafFlagEmpty = 1u << 1;
 
-struct BspPlane { math::Vec3 normal; f32 d; };
-struct BspNode  { i32 plane; i32 front; i32 back; };
-struct BspLeaf  { i32 cluster; u32 flags; math::Aabb bounds; };
-struct BspBrush { u32 first_plane; u32 plane_count; math::Aabb bounds; };
+struct BspPlane  { math::Vec3 normal; f32 d; };
+struct BspNode   { i32 plane; i32 front; i32 back; };
+struct BspLeaf   { i32 cluster; u32 flags; math::Aabb bounds; };
+struct BspBrush  { u32 first_plane; u32 plane_count; math::Aabb bounds; };
+
+// Wave-B portal record. Mirrors lane 10's `BspPortal` (engine/world/bsp/Portal.h)
+// so the loader can copy bytes 1:1. The winding lives in `portal_vertices`
+// shared across all portals (CCW when viewed from `front_leaf` toward
+// `back_leaf`).
+struct BspPortal {
+    i32        front_leaf;
+    i32        back_leaf;
+    u32        first_vertex;
+    u32        vertex_count;
+    math::Vec3 plane_normal;
+    f32        plane_d;
+};
 
 struct CompiledBsp {
-    std::vector<BspPlane> planes;
-    std::vector<BspNode>  nodes;
-    std::vector<BspLeaf>  leaves;
-    std::vector<BspBrush> brushes;
-    std::vector<u32>      brush_planes;   // flattened plane indices per brush
+    std::vector<BspPlane>   planes;
+    std::vector<BspNode>    nodes;
+    std::vector<BspLeaf>    leaves;
+    std::vector<BspBrush>   brushes;
+    std::vector<u32>        brush_planes;     // flattened plane indices per brush
+    std::vector<BspPortal>  portals;          // Wave-B
+    std::vector<math::Vec3> portal_vertices;  // Wave-B (windings)
 };
 
 // Compile the worldspawn (entity 0) brushes into a leafy BSP. Other

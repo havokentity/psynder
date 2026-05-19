@@ -134,6 +134,72 @@ TEST_CASE("lm_cook WAV round-trip preserves PCM samples", "[tools][lm_cook]") {
     REQUIRE(back.sample_count == 4);
 }
 
+// ─── Wave-B: stb_image integration ───────────────────────────────────────
+
+TEST_CASE("lm_cook stb PNG round-trip preserves arbitrary pixel data", "[tools][lm_cook][wave-b]") {
+    // A 16×16 RGBA image that exercises every channel + a transparency
+    // gradient. Wave-A's stored-deflate codec round-tripped this, but the
+    // emitted bytes were uncompressed (every PNG decoder accepts them, the
+    // file size was just larger than necessary). Wave-B routes through
+    // stb_image_write which DEFLATE-compresses the IDAT.
+    constexpr u32 W = 16, H = 16;
+    std::vector<u8> rgba(W * H * 4u);
+    for (u32 y = 0; y < H; ++y) {
+        for (u32 x = 0; x < W; ++x) {
+            usize i = (y * W + x) * 4;
+            rgba[i + 0] = static_cast<u8>(x * 16);
+            rgba[i + 1] = static_cast<u8>(y * 16);
+            rgba[i + 2] = static_cast<u8>((x ^ y) * 16);
+            rgba[i + 3] = static_cast<u8>(255 - x * 8);
+        }
+    }
+    std::vector<u8> png;
+    encode_png_stored(rgba.data(), W, H, png);
+    REQUIRE_FALSE(png.empty());
+    // PNG signature must be present in the encoded output.
+    REQUIRE(png.size() >= 8);
+    REQUIRE(png[0] == 0x89);
+    REQUIRE(png[1] == 0x50);
+    REQUIRE(png[2] == 0x4E);
+    REQUIRE(png[3] == 0x47);
+
+    std::vector<u8> back;
+    u32 w = 0, h = 0;
+    std::string err;
+    REQUIRE(decode_png_stored(png, back, w, h, &err));
+    REQUIRE(w == W);
+    REQUIRE(h == H);
+    REQUIRE(back.size() == rgba.size());
+    REQUIRE(std::memcmp(back.data(), rgba.data(), rgba.size()) == 0);
+}
+
+TEST_CASE("lm_cook stb PNG compresses output below stored-deflate baseline", "[tools][lm_cook][wave-b]") {
+    // The Wave-A codec produced uncompressed IDAT (one byte filter + raw
+    // RGBA scanlines, framed in stored-DEFLATE blocks). Wave-B's stb
+    // encoder uses real DEFLATE so a flat image should compress well.
+    constexpr u32 W = 64, H = 64;
+    std::vector<u8> rgba(W * H * 4u);
+    // Solid-colour fill — maximally compressible.
+    for (usize i = 0; i < rgba.size(); i += 4) {
+        rgba[i + 0] = 200;
+        rgba[i + 1] = 100;
+        rgba[i + 2] = 50;
+        rgba[i + 3] = 255;
+    }
+    std::vector<u8> png;
+    encode_png_stored(rgba.data(), W, H, png);
+    // Round-trip safety check.
+    std::vector<u8> back;
+    u32 w = 0, h = 0;
+    std::string err;
+    REQUIRE(decode_png_stored(png, back, w, h, &err));
+    REQUIRE(back == rgba);
+    // The raw scanline-deflated payload would be > W*H*4 = 16384 bytes plus
+    // chunk overhead. With real DEFLATE on a constant image we expect well
+    // under that.
+    REQUIRE(png.size() < W * H * 4u / 2u);
+}
+
 TEST_CASE("lm_cook glTF minimal JSON path", "[tools][lm_cook]") {
     // Construct a buffer that holds:
     //   - 3 positions (VEC3 f32) = 36 bytes

@@ -154,9 +154,9 @@ void print_help() {
         "\n"
         "Outputs are written as <dest_dir>/<stem>.<lmm|lmt|lma>.\n"
         "\n"
-        "Wave-A note: PNG decoder accepts uncompressed-stored DEFLATE streams\n"
-        "(what stb_image_write and Z_NO_COMPRESSION emit); arbitrary PNGs need\n"
-        "the Wave-B stb_image vendor pass.\n");
+        "PNG decoder/encoder routes through stb_image / stb_image_write (vendored\n"
+        "under third_party/) — any standards-compliant PNG decodes, and cooked\n"
+        ".lmt textures can be inspected with any image viewer.\n");
 }
 
 int cli_main(int argc, char** argv) {
