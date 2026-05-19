@@ -1,5 +1,96 @@
 # Changelog
 
+## v0.4.0-wave-b-batch3 (2026-05-19) — Wave B 13/25 lanes, 582/583 tests pass
+
+Five more Wave B lanes shipped on top of v0.3.0-wave-b-batch2 — bringing
+Wave B to **13/25 integrated**. 12 Wave B lanes remain (Issues #51, 52,
+53, 59, 63, 64, 65, 68, 69, 70, 71, 72).
+
+### Wave B / Lane 05 / asset (#86)
+- **zstd cooker side** — `LmpakWriter::write_entry(..., compress=true)`
+  zstd-compresses payloads at level 6, sets per-entry flag, stores both
+  compressed + uncompressed sizes. Default + `std::span` overload.
+- **`.lmm` / `.lmt` / `.lma` round-trip** — new `Codecs.h` + `Codecs.cpp`
+  with `lmm::write_mesh/read_mesh`, `lmt::write_texture/read_texture`,
+  `lma::write_audio/read_audio`. `static_assert`s pin wire-byte sizes
+  (16/56/16/32/16/40) to catch ABI drift.
+- **Hot-reload watcher hardened** — single state machine handles mtime
+  change, delete, rename-away, recreate, and rename-into-place as
+  single-edge events.
+
+### Wave B / Lane 09 / render-post (#84)
+- **Motion blur** — `VelocityField` path + depth-reproject path; cvars
+  `r_motion_blur_strength` (0 is strict no-op, verified) and
+  `r_motion_blur_max_pixel`.
+- **Volumetric fog froxel grid** — exact §8.4 dims (160×90×64 = 921 600
+  cells), CPU-side in-scatter, optional `OccluderFn` callback for
+  shadowed contributions binds to lane 08's `Tlas::occluded` at call
+  site without a hard dep. Beer-Lambert ray-march at resolve with
+  per-pixel depth back-stop. Cvars `r_fog_enable`, `r_fog_density`.
+- **Rain streaks** — 4 096-streak pool, gravity-driven sim, alpha-blended
+  HDR composite lit by the same `FogLight` list. Cvars `r_rain_enable`,
+  `r_rain_intensity`.
+
+### Wave B / Lane 11 / world-outdoor (#85)
+- **Heightmap raymarcher SIMD** — 8-wide AVX2 + 4-wide NEON column-batch
+  kernels (`simd_step_columns8/4`, `simd_sample_bilinear8/4`, etc.) on
+  top of lane 03's `f32x8`/`f32x4`. Scalar reference preserved.
+- **CDLOD inter-LOD vertex morph** — `CdlodMorph` struct + endpoint-clean
+  morph (morph=0 → fine bitwise, morph=1 → coarse bitwise). Watertight
+  invariant preserved at every (lod_level, morph_factor) for same-LOD
+  shared edges.
+- **Spline track editor ops** — `SplineEditor::insert_control_point`
+  (de Casteljau split preserving curve geometry exactly), move/translate
+  isolation, delete + neighbor stitching, banking write/read round-trip.
+
+### Wave B / Lane 12 / audio (#87)
+- **HRIR set** — 2 elevations × 12 azimuths × 256 taps per ear via
+  deterministic closed-form IRCAM-LISTEN-style synthesis (ITD + 1-pole
+  shadow LPF + elevation-dependent pinna echo). Bilinear lookup in (az,
+  el) plus per-bin magnitude crossfade between adjacent azimuth bins.
+- **Partitioned FFT convolution reverb** — overlap-save with up to 32
+  partitions, configurable overlap factor (1/2/4), per-channel
+  impulses, scratch pool sized once in `reset()`.
+- **Modulated FDN reverb** — four mutually-incommensurate LFOs (0.83×,
+  1.00×, 1.21×, 1.47×) drive fractional read-pointer offsets with
+  linear interp; depth 3.5 samples. Kills fixed-frequency ringing.
+- **Doppler shift** — classical from positions+velocities, clamped to
+  [0.5×, 1.5×]. `Voice` struct gained a `velocity` field defaulting
+  to zero so existing Wave-A tests still pass.
+
+### Wave B / Lane 17 / ui-rml (#88)
+- **Hot reload between frames** — parses incoming `.rml`/`.rcss` into
+  `ParsedPair` temp, atomically swaps `doc.root` + `doc.sheet` into the
+  existing map slot. `needs_reload` is now `std::atomic<bool>` for
+  watcher-thread → main-thread handoff. Document identity (keyed by
+  name) and `visible` preserved across reload.
+- **Lua handler payload** — generated prelude
+  `local event = { kind, target_id, mouse_x, mouse_y, button };` is
+  prepended to each handler body before dispatch via the
+  `set_lua_backend` hook. Strings Lua-escaped so generated chunks parse
+  cleanly even with `"`, `\`, or newlines in element ids.
+- **Sample HUD** — `samples/03_quake_room/assets/hud.rml` + `.rcss`
+  shipped: Quake-style HUD (health bar, armor bar, ammo counter,
+  minimap shape, crosshair, pause menu with Lua handlers).
+
+### Test + demo status
+
+- **582/583 Catch2 cases passing** (single known flake: IPC port-race
+  under parallel ctest, passes on retry; lane 19 Wave B may fix in next
+  batch).
+- All M0/M1/M2 demos still smoke-pass.
+- New unit tests this batch: 16 (asset) + 9 (post) + 32 (world-outdoor)
+  + 25 (audio) + 20 (ui-rml) = 102 new cases.
+
+### Wave B remaining (12 lanes)
+
+02 math, 03 simd, 04 jobs (fibers + P/E pools), 10 world-bsp (portal
+culling, lightmap atlas streaming), 14 net, 15 script, 16 ui-imm
+(gizmos, brush previews, allocator heatmap), 19 editor-ipc (IDL regen,
+state-delta, IPC flake fix), 20 editor-web (asset browser, profiler
+upgrade, prop menu), 21 platform-win32, 22 platform-linux, 23
+platform-macos.
+
 ## v0.3.0-wave-b-batch2 (2026-05-19) — Wave B 8/25 lanes, 477/478 tests pass
 
 Five more Wave B lanes shipped on top of v0.2.0-wave-b-partial — bringing
