@@ -10,6 +10,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <vector>
+
 using namespace psynder;
 using namespace psynder::physics::detail;
 using Catch::Approx;

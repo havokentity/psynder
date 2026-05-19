@@ -34,6 +34,10 @@
     #endif
   #endif
   #include <ucontext.h>
+  // SIGSTKSZ is exposed by <signal.h> on glibc; macOS exposes it transitively
+  // through <ucontext.h>, but Linux does not. Include explicitly so the
+  // sanity-floor stack-size check below compiles on every POSIX target.
+  #include <csignal>
   #if defined(__APPLE__)
     // Re-poison once we're past the header. From here on, warnings about
     // get/make/swapcontext at *call sites* are silenced one block at a

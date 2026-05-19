@@ -27,6 +27,7 @@
 
 #include "../Tracy.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>

@@ -13,8 +13,11 @@
 #include "Win32Common.h"
 #include "Win32Input.h"
 #include "Win32Window.h"
+#include "core/Log.h"
 
 #include <shlobj.h>
+
+#include <string>
 
 #pragma comment(lib, "shell32.lib")
 

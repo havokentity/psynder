@@ -20,6 +20,7 @@
 #include "render/Framebuffer.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <span>

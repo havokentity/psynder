@@ -15,6 +15,7 @@
 #include "render/Framebuffer.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace psynder::render::raster {
 
@@ -65,7 +66,7 @@ struct HiZTile {
                     const u32* row = fb.depth + static_cast<usize>(y) * fb_w;
                     for (u32 x = x0; x < x1; ++x) {
                         u32 packed = row[x] & 0xFFFFFF00u;
-                        f32 z; __builtin_memcpy(&z, &packed, sizeof(z));
+                        f32 z; std::memcpy(&z, &packed, sizeof(z));
                         if (z > max_seen) max_seen = z;
                     }
                 }

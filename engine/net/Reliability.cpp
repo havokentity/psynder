@@ -9,6 +9,9 @@
 
 #include "Reliability.h"
 
+#include <array>
+#include <vector>
+
 namespace psynder::net {
 
 namespace {

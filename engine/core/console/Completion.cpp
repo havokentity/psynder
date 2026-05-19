@@ -11,7 +11,10 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <string>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 namespace psynder::console {
 

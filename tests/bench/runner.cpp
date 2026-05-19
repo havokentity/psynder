@@ -60,6 +60,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace psynder;
@@ -82,10 +83,20 @@ f64 elapsed_ns(Clock::time_point a, Clock::time_point b) {
 }
 
 // Compiler-fence helper — keep results live so the optimizer can't sink
-// the workload.
+// the workload. GCC/Clang use an inline-asm clobber; MSVC uses a
+// volatile read against a memory barrier (the Google-Benchmark trick:
+// the volatile read is observable, so the compiler can't elide the
+// preceding computation that produced `v`).
 template <class T>
 PSY_FORCEINLINE void do_not_optimize(const T& v) noexcept {
+#if defined(__GNUC__) || defined(__clang__)
     asm volatile("" : : "g"(&v) : "memory");
+#else
+    // MSVC path. Reading through a volatile reference is an observable
+    // side-effect the optimizer must preserve.
+    const volatile T& sink = v;
+    (void)sink;
+#endif
 }
 
 // ─── bench 1: 64×64 tile clear ───────────────────────────────────────────

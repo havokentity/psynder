@@ -5,6 +5,8 @@
 
 #include "scene/World.h"
 
+#include <vector>
+
 namespace lane06_lifecycle {
 
 // Two trivial POD components for the lifecycle tests.

@@ -6,6 +6,7 @@
 #if defined(PSYNDER_PLATFORM_WIN32)
 
 #include "audio/internal/Backend.h"
+#include "core/Log.h"
 
 #include <algorithm>
 #include <atomic>

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace psynder::net {
 
