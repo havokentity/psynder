@@ -12,6 +12,7 @@ if(TARGET Catch2::Catch2WithMain)
     target_link_libraries(psynder_unit PRIVATE
         Catch2::Catch2WithMain
         psynder_core psynder_math psynder_simd psynder_scene
+        psynder_world_bsp psynder_render_raster psynder_asset
     )
     include(Catch)
     catch_discover_tests(psynder_unit)
