@@ -781,4 +781,302 @@ inline void kernel_sap_axis(const AabbEntry* aabbs, usize count, u32 axis,
                     out_pairs.end());
 }
 
+// ─── Pacejka '94 magic-formula tire model (Wave B) ───────────────────────
+//
+// The Pacejka magic formula relates a normalised slip x to a tire force F:
+//      F(x) = D · sin( C · arctan( B·x − E·(B·x − arctan(B·x)) ) )
+//
+// where D = peak force (~mu·Fz), C = shape factor, B = stiffness, E = curvature.
+// Longitudinal and lateral channels each have their own (B,C,D,E) tuple, then
+// the combined-slip output is clipped to a friction circle bounded by the
+// vertical load. We keep the math header-only so unit tests and the vehicle
+// TU share exactly one definition.
+//
+// Inputs:
+//   slip_long  — longitudinal slip ratio κ ≈ (v_wheel − v_road) / |v_road|
+//                Sign convention: κ > 0 = drive (wheel faster than ground),
+//                                 κ < 0 = brake (wheel slower than ground).
+//   slip_lat   — lateral slip angle α (radians, small-angle), positive = right.
+//   Fz         — vertical load on the contact patch (newtons).
+//   mu         — overall friction coefficient (dimensionless).
+//
+// Returns:
+//   Fx (drive/brake) and Fy (steer) in newtons, in the tire's local frame.
+
+struct PacejkaCoeffs {
+    // Longitudinal (Fx vs κ). Pacejka '94 conventional values shown.
+    f32 Bx = 10.0f;
+    f32 Cx = 1.65f;
+    f32 Ex = 0.5f;
+
+    // Lateral (Fy vs α). Conventional passenger-car values.
+    f32 By = 9.0f;
+    f32 Cy = 1.30f;
+    f32 Ey = -1.0f;
+};
+
+PSY_FORCEINLINE f32 pacejka_magic(f32 B, f32 C, f32 D, f32 E, f32 x) noexcept {
+    // Single channel: D · sin( C · atan( B·x − E·(B·x − atan(B·x)) ) )
+    f32 Bx     = B * x;
+    f32 atanBx = std::atan(Bx);
+    f32 phi    = Bx - E * (Bx - atanBx);
+    return D * std::sin(C * std::atan(phi));
+}
+
+struct TireForces {
+    f32 Fx = 0.0f;   // longitudinal (drive/brake) in tire frame, N
+    f32 Fy = 0.0f;   // lateral     (steer)        in tire frame, N
+};
+
+// Combined-slip Pacejka: compute pure-slip Fx0 and Fy0, then normalise by the
+// friction-ellipse so the combined magnitude never exceeds mu·Fz. Sign of κ
+// determines whether Fx accelerates or decelerates the wheel.
+inline TireForces kernel_pacejka_combined(f32 slip_long, f32 slip_lat,
+                                          f32 Fz, f32 mu,
+                                          const PacejkaCoeffs& c) noexcept {
+    TireForces out{};
+    if (Fz <= 0.0f) return out;            // wheel off the ground
+
+    f32 D = mu * Fz;                       // peak (per-axis identical)
+    f32 Fx0 = pacejka_magic(c.Bx, c.Cx, D, c.Ex, slip_long);
+    f32 Fy0 = pacejka_magic(c.By, c.Cy, D, c.Ey, slip_lat);
+
+    // Friction circle / ellipse: clip combined magnitude to D = mu·Fz. The
+    // ellipse weighting (kx, ky) keeps each channel's share proportional to
+    // its pure-slip pull — the classic Bakker/Pacejka combined-slip recipe.
+    f32 mag_sq = Fx0 * Fx0 + Fy0 * Fy0;
+    f32 limit  = D;
+    if (mag_sq > limit * limit && mag_sq > 1e-8f) {
+        f32 inv = limit / std::sqrt(mag_sq);
+        Fx0 *= inv;
+        Fy0 *= inv;
+    }
+    out.Fx = Fx0;
+    out.Fy = Fy0;
+    return out;
+}
+
+// ─── Drivetrain (Wave B) ─────────────────────────────────────────────────
+//
+// Power flow: engine torque curve (RPM → N·m) → clutch (slip factor) →
+// gearbox (6 fwd + reverse) → final-drive differential (equal split L/R).
+// Output is per-wheel torque on the drive axle plus the new engine RPM after
+// load.
+//
+// Sign convention: throttle ∈ [0,1] feeds the curve; brake ∈ [0,1] applies a
+// fixed peak brake torque per wheel; clutch ∈ [0,1] (1 = fully engaged).
+// Reverse gear has negative ratio so positive throttle drives backward.
+
+struct EngineCurvePoint {
+    f32 rpm;
+    f32 torque_nm;
+};
+
+struct DrivetrainParams {
+    // Engine curve: piecewise-linear in RPM. Caller supplies a small table
+    // (typically 6-10 points) covering idle .. redline. Order: ascending rpm.
+    std::array<EngineCurvePoint, 8> curve{};
+    u32                            curve_count = 0;
+
+    f32 idle_rpm     = 800.0f;
+    f32 redline_rpm  = 7000.0f;
+    f32 engine_inertia = 0.20f;          // kg·m^2
+
+    // 6 forward + 1 reverse gear ratios (engine-to-driveshaft). +ve = forward.
+    // Reverse is index 0; gears[1..6] = 1st .. 6th. Final drive multiplies on
+    // top of these.
+    std::array<f32, 7> gears{ -3.4f, 3.6f, 2.2f, 1.5f, 1.15f, 0.9f, 0.75f };
+    f32                final_drive = 3.42f;
+
+    f32 max_brake_torque = 2000.0f;      // N·m total at the wheel pair
+};
+
+struct DrivetrainOutput {
+    f32 wheel_torque_l = 0.0f;   // N·m at the left drive wheel
+    f32 wheel_torque_r = 0.0f;   // N·m at the right drive wheel
+    f32 engine_rpm     = 0.0f;   // post-update engine RPM
+};
+
+// Sample the engine curve at the given RPM (piecewise linear, clamped at
+// edges).
+inline f32 kernel_engine_torque_at(const DrivetrainParams& p, f32 rpm) noexcept {
+    if (p.curve_count == 0) return 0.0f;
+    if (rpm <= p.curve[0].rpm) return p.curve[0].torque_nm;
+    for (u32 i = 1; i < p.curve_count; ++i) {
+        if (rpm <= p.curve[i].rpm) {
+            f32 t = (rpm - p.curve[i - 1].rpm)
+                  / std::max(1e-3f, p.curve[i].rpm - p.curve[i - 1].rpm);
+            return p.curve[i - 1].torque_nm
+                 + t * (p.curve[i].torque_nm - p.curve[i - 1].torque_nm);
+        }
+    }
+    return p.curve[p.curve_count - 1].torque_nm;
+}
+
+// Forward-Euler drivetrain step. Returns per-wheel drive torque and the new
+// engine RPM. Wheel angular velocities are the inputs that close the loop —
+// the gearbox synthesises an expected engine RPM from the driveshaft, and the
+// clutch blends that toward the engine's free-running RPM.
+inline DrivetrainOutput kernel_drivetrain_step(const DrivetrainParams& p,
+                                               f32 throttle,
+                                               f32 brake,
+                                               f32 clutch,
+                                               i32 gear,                // -1, 0, 1..6
+                                               f32 wheel_omega_l,      // rad/s
+                                               f32 wheel_omega_r,      // rad/s
+                                               f32 engine_rpm_in) noexcept {
+    DrivetrainOutput out{};
+
+    // Gear ratio lookup. gear == 0 → neutral. gear == -1 → reverse (slot 0).
+    f32 gear_ratio = 0.0f;
+    if (gear == -1) gear_ratio = p.gears[0];
+    else if (gear >= 1 && gear <= 6) gear_ratio = p.gears[static_cast<usize>(gear)];
+    f32 total_ratio = gear_ratio * p.final_drive;
+
+    // Engine free-running update. Throttle pulls toward the throttled torque
+    // curve; we apply that as an angular impulse on the engine inertia. dt is
+    // implicit in the caller — the integrator is taken over the physics
+    // sub-step (1/120 s by default). To keep this kernel pure we accept the
+    // step inline: caller passes dt via the engine_rpm_in update done outside.
+    f32 throttle_torque = throttle * kernel_engine_torque_at(p, engine_rpm_in);
+
+    // Average driveshaft RPM seen by the engine through the gearbox. With a
+    // fully engaged clutch and non-neutral gear, the engine RPM should track
+    // the wheel angular velocity through `total_ratio`. With a slipping
+    // clutch, blend between the engine free-running RPM and the driveshaft
+    // imposed RPM by `clutch`.
+    f32 avg_wheel_omega = 0.5f * (wheel_omega_l + wheel_omega_r);
+    f32 driveshaft_rpm  = std::fabs(total_ratio) * avg_wheel_omega * (60.0f / (2.0f * math::kPi));
+    if (gear == 0 || total_ratio == 0.0f) {
+        // Neutral: engine free-runs from throttle alone.
+        out.engine_rpm = std::clamp(engine_rpm_in
+            + (throttle_torque / p.engine_inertia) * (1.0f / 120.0f)
+              * (60.0f / (2.0f * math::kPi)),
+            p.idle_rpm, p.redline_rpm);
+    } else {
+        out.engine_rpm = std::clamp(
+            engine_rpm_in + (driveshaft_rpm - engine_rpm_in) * clutch,
+            p.idle_rpm, p.redline_rpm);
+    }
+
+    // Wheel torque = engine torque × total_ratio × clutch (transmission
+    // efficiency rolled in via the gear table). Differential splits evenly.
+    f32 wheel_t = throttle_torque * total_ratio * clutch;
+
+    // Brake is always applied opposite to wheel rotation, equal per side.
+    f32 brake_per_wheel = 0.5f * brake * p.max_brake_torque;
+    f32 brake_l = (wheel_omega_l > 0.0f ? -1.0f : 1.0f) * brake_per_wheel;
+    f32 brake_r = (wheel_omega_r > 0.0f ? -1.0f : 1.0f) * brake_per_wheel;
+    if (std::fabs(wheel_omega_l) < 1e-3f) brake_l = 0.0f;
+    if (std::fabs(wheel_omega_r) < 1e-3f) brake_r = 0.0f;
+
+    out.wheel_torque_l = 0.5f * wheel_t + brake_l;
+    out.wheel_torque_r = 0.5f * wheel_t + brake_r;
+    return out;
+}
+
+// ─── Aero (Wave B) ───────────────────────────────────────────────────────
+//
+// Standard rigid-body aero: drag force = ½ · ρ · v² · Cd · A applied opposite
+// to velocity, downforce = ½ · ρ · v² · Cl · A applied along negative body-Y.
+// Air density defaults to 1.225 kg/m^3 (sea-level ISA). The function returns
+// the world-space force vector to add to the chassis at COM.
+//
+// Units throughout: SI. Velocity v in m/s; force in N. No demo-scaling.
+
+PSY_FORCEINLINE math::Vec3 kernel_aero_force(math::Vec3 velocity,
+                                             math::Vec3 down_world,
+                                             f32 drag_coeff,
+                                             f32 frontal_area,
+                                             f32 downforce_coeff,
+                                             f32 downforce_area,
+                                             f32 air_density = 1.225f) noexcept {
+    f32 v_sq = math::dot(velocity, velocity);
+    if (v_sq < 1e-6f) return {0, 0, 0};
+    f32 v_mag = std::sqrt(v_sq);
+    math::Vec3 v_dir = math::mul(velocity, 1.0f / v_mag);
+    f32 q = 0.5f * air_density * v_sq;     // dynamic pressure
+
+    f32 drag_mag      = q * drag_coeff      * frontal_area;
+    f32 downforce_mag = q * downforce_coeff * downforce_area;
+    math::Vec3 drag      = math::mul(v_dir,      -drag_mag);
+    math::Vec3 downforce = math::mul(down_world,  downforce_mag);
+    return math::add(drag, downforce);
+}
+
+// ─── Character controller — stair-step + state transitions (Wave B) ──────
+//
+// kernel_stair_step_climb: given a planar move that just hit a vertical wall,
+// try to lift the body by `step_height` and re-cast forward; if the elevated
+// motion clears the obstacle and a downward probe finds floor, accept the
+// new position. Returns the resolved position. Otherwise returns the
+// original blocked position.
+//
+// The probe doesn't depend on the physics-world singleton — callers pass an
+// overlap predicate so this stays pure-algorithmic (and unit-testable
+// without staging bodies).
+
+template <class OverlapFn>
+inline math::Vec3 kernel_stair_step_climb(math::Vec3 origin,
+                                          math::Vec3 horizontal_move,
+                                          f32 step_height,
+                                          OverlapFn overlap) {
+    // Lift up, slide forward, drop down. If the dropped position is on floor
+    // and the swept move along the elevated plane is unobstructed, commit.
+    math::Vec3 lifted = origin;
+    lifted.y += step_height;
+    if (overlap(lifted)) return origin;     // can't even lift
+    math::Vec3 forward = math::add(lifted, horizontal_move);
+    if (overlap(forward)) return origin;    // obstacle still in the way
+    math::Vec3 dropped = forward;
+    // Probe down by step_height + a small skin; if we hit floor, accept.
+    f32 step = step_height + 0.05f;
+    constexpr u32 kProbeSteps = 8;
+    for (u32 i = 0; i < kProbeSteps; ++i) {
+        math::Vec3 probe = dropped;
+        probe.y -= step * (1.0f / static_cast<f32>(kProbeSteps));
+        if (overlap(probe)) break;
+        dropped = probe;
+    }
+    return dropped;
+}
+
+// Character stance transitions. Caller produces a `CharIntent` from input
+// (crouch button, prone button, near-ladder flag, in-water flag); the kernel
+// produces the new stance. Pure function — easy to unit-test.
+enum class CharStanceK : u8 { Stand = 0, Crouch = 1, Prone = 2, Ladder = 3, Water = 4 };
+
+struct CharIntent {
+    bool want_crouch  = false;
+    bool want_prone   = false;
+    bool near_ladder  = false;   // collision query says a ladder is touching
+    bool in_water     = false;   // volume query says we're submerged
+};
+
+inline CharStanceK kernel_char_next_stance(CharStanceK current,
+                                           CharIntent  intent) noexcept {
+    // Water and ladder take priority because they're driven by environment
+    // collision, not by player intent. The player can still be crouched in
+    // water — but the kinematic state is Water until they leave the volume.
+    if (intent.in_water)    return CharStanceK::Water;
+    if (intent.near_ladder) return CharStanceK::Ladder;
+    if (intent.want_prone)  return CharStanceK::Prone;
+    if (intent.want_crouch) return CharStanceK::Crouch;
+    // If no modifier intent is active, return to standing — but if we're
+    // currently prone, require an explicit transition through crouch first
+    // (one frame's slowdown matches the typical FPS feel).
+    if (current == CharStanceK::Prone) return CharStanceK::Crouch;
+    return CharStanceK::Stand;
+}
+
+inline f32 kernel_char_height_for_stance(CharStanceK s, f32 stand_height) noexcept {
+    switch (s) {
+        case CharStanceK::Crouch: return stand_height * 0.55f;
+        case CharStanceK::Prone:  return stand_height * 0.30f;
+        case CharStanceK::Ladder: return stand_height * 1.0f;
+        case CharStanceK::Water:  return stand_height * 0.85f;
+        default:                  return stand_height;
+    }
+}
+
 }  // namespace psynder::physics::detail::kernels

@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Psynder physics — character controller internal state (DESIGN.md §10.1).
 //
-// Capsule kinematic controller, sweep-step-slide motion. Wave A ships the
-// motion algorithm; the full state machine (crouch / prone / ladder / water)
-// is API-only in Wave A and will be filled out in Wave B once lane 15 wires
-// gameplay flags.
+// Capsule kinematic controller, sweep-step-slide motion.
+//
+// Wave A: motion algorithm only.
+// Wave B: full stance state machine (crouch / prone / ladder / water) driven
+// by player intent + collision queries, plus stair-step climb-up via the
+// header-only kernel in `internal/Kernels.h`. The public `character::`
+// namespace stays frozen — Wave B input flows through the internal
+// `character_set_intent()` plumbing the test TUs reach for directly. (Lane 15
+// wires this to gameplay once it ships its Wave B.)
 
 #pragma once
 
 #include "core/Types.h"
 #include "math/Math.h"
+#include "internal/Kernels.h"
 
 #include <vector>
 
@@ -20,13 +26,22 @@ enum class CharStance : u8 { Stand, Crouch, Prone, Ladder, Water };
 struct Character {
     math::Vec3 position{0, 0, 0};
     math::Vec3 velocity{0, 0, 0};
-    f32        height   = 1.8f;
-    f32        radius   = 0.35f;
-    f32        step_height = 0.35f;   // max obstacle height we walk over
-    f32        slope_limit = 0.7f;    // cos(angle) above which a normal counts as floor
-    bool       on_floor = false;
-    CharStance stance   = CharStance::Stand;
-    u32        gen      = 1;
+    f32        stand_height = 1.8f;     // height in Stand stance
+    f32        height       = 1.8f;     // current height (derived from stance)
+    f32        radius       = 0.35f;
+    f32        step_height  = 0.35f;    // max obstacle height we walk over
+    f32        slope_limit  = 0.7f;     // cos(angle) above which a normal counts as floor
+    bool       on_floor     = false;
+    CharStance stance       = CharStance::Stand;
+
+    // Wave-B intent + environment flags. The motion code reads these to
+    // pick the next stance via `kernels::kernel_char_next_stance`.
+    bool       intent_crouch = false;
+    bool       intent_prone  = false;
+    bool       env_ladder    = false;
+    bool       env_water     = false;
+
+    u32        gen           = 1;
 };
 
 struct CharacterWorld {
@@ -39,5 +54,25 @@ CharacterWorld& character_world();
 // Sweep-step-slide kernel — runs N collide-and-slide iterations against the
 // current physics world. Public character::move() forwards into this.
 void character_move(Character& c, math::Vec3 delta, f32 dt);
+
+// Wave-B: update the character's intent flags before the next `move()` call.
+// Internal API only — lane 15 (gameplay) wires it. Stays out of the public
+// header because lane 13's public surface is frozen.
+inline void character_set_intent(Character& c,
+                                 bool want_crouch,
+                                 bool want_prone,
+                                 bool near_ladder,
+                                 bool in_water) noexcept {
+    c.intent_crouch = want_crouch;
+    c.intent_prone  = want_prone;
+    c.env_ladder    = near_ladder;
+    c.env_water     = in_water;
+
+    auto cur = static_cast<kernels::CharStanceK>(static_cast<u8>(c.stance));
+    auto nxt = kernels::kernel_char_next_stance(cur,
+        kernels::CharIntent{want_crouch, want_prone, near_ladder, in_water});
+    c.stance = static_cast<CharStance>(static_cast<u8>(nxt));
+    c.height = kernels::kernel_char_height_for_stance(nxt, c.stand_height);
+}
 
 }  // namespace psynder::physics::detail
