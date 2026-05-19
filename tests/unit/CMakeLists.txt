@@ -54,6 +54,22 @@ if(TARGET Catch2::Catch2WithMain)
     endforeach()
     include(Catch)
     catch_discover_tests(psynder_unit)
+    # Serialize the IPC live-server tests so they don't race on port
+    # acquisition under parallel ctest. pick_port() binds to port 0,
+    # reads the assigned port, closes the socket, and the server
+    # re-binds — under parallel ctest another process can grab the
+    # port in between. We can't apply RESOURCE_LOCK via catch_discover's
+    # PROPERTIES (it would lock every test); the deferred call attaches
+    # it after discovery has populated the test list.
+    function(_psynder_apply_ipc_resource_lock)
+        get_property(_tests DIRECTORY PROPERTY TESTS)
+        foreach(_t IN LISTS _tests)
+            if("${_t}" MATCHES "ipc:")
+                set_tests_properties(${_t} PROPERTIES RESOURCE_LOCK psynder_ipc_port)
+            endif()
+        endforeach()
+    endfunction()
+    cmake_language(DEFER CALL _psynder_apply_ipc_resource_lock)
 else()
     add_executable(psynder_unit ${SRC})
     target_link_libraries(psynder_unit PRIVATE psynder_core psynder_math psynder_render_rt)
