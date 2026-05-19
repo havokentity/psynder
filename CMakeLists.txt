@@ -48,6 +48,7 @@ include(CompilerWarnings)
 include(Sanitizers)
 include(Dependencies)
 include(Lanes)
+include(Goldens)
 
 # ─── Platform detection helpers ───────────────────────────────────────────
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
