@@ -283,12 +283,22 @@ CameraView make_flyover_camera(f32 t_seconds) {
 // `TerrainRaymarch::render` (Wave E #112) paints terrain pixels only —
 // it leaves unhit pixels at whatever was in the framebuffer. Sweep the
 // sky gradient in first; the public render then writes terrain over it.
+//
+// Iterates using the framebuffer's actual `width / height` + the
+// `pitch`-derived row stride rather than the sample's compile-time
+// `kFbW / kFbH` — keeps the helper consistent with its parameter so a
+// future render-resolution change can't OOB the pixel buffer.
 void fill_sky(render::Framebuffer& fb) noexcept {
-    auto* pixels = reinterpret_cast<u32*>(fb.pixels);
-    for (u32 y = 0; y < kFbH; ++y) {
+    if (!fb.pixels || fb.width == 0 || fb.height == 0 || fb.pitch == 0) {
+        return;
+    }
+    auto* base = fb.pixels;
+    const usize row_stride = static_cast<usize>(fb.pitch);  // bytes
+    for (u32 y = 0; y < fb.height; ++y) {
         const u32 sky_color = sample_sky_row(y);
-        for (u32 x = 0; x < kFbW; ++x) {
-            pixels[static_cast<usize>(y) * kFbW + x] = sky_color;
+        auto* row = reinterpret_cast<u32*>(base + static_cast<usize>(y) * row_stride);
+        for (u32 x = 0; x < fb.width; ++x) {
+            row[x] = sky_color;
         }
     }
 }
@@ -374,9 +384,28 @@ std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
     // Bilinear sample of the u16 heightmap at world-space (x, z). Inlined
     // so the sample doesn't depend on the `detail::*` raymarch internals
     // (the public `TerrainRaymarch::render` is the canonical paint path).
+    //
+    // Semantics deliberately match `world::outdoor::detail::sample_bilinear`:
+    //   * null heights / zero size / non-positive spacing  →  return 0
+    //   * out-of-bounds (fx/fz outside [0, size-1])         →  return 0
+    //   * in-bounds                                          →  bilinear blend
+    // The Copilot review on PR #114 flagged the previous edge-clamp
+    // behavior — for the watchtower hex ring inside the map it'd never
+    // fire, but a future change that places props near the map edge
+    // would silently get extrapolated edge heights instead of falling
+    // back to 0 the way the rest of the engine does.
     auto sample_height_at = [&hm](f32 wx, f32 wz) noexcept -> f32 {
+        if (!hm.heights || hm.size_x == 0 || hm.size_z == 0 ||
+            hm.spacing <= 0.0f) {
+            return 0.0f;
+        }
         const f32 fx = wx / hm.spacing;
         const f32 fz = wz / hm.spacing;
+        const f32 max_x = static_cast<f32>(hm.size_x - 1);
+        const f32 max_z = static_cast<f32>(hm.size_z - 1);
+        if (fx < 0.0f || fx > max_x || fz < 0.0f || fz > max_z) {
+            return 0.0f;
+        }
         const i32 ix = static_cast<i32>(std::floor(fx));
         const i32 iz = static_cast<i32>(std::floor(fz));
         const f32 tx = fx - static_cast<f32>(ix);
