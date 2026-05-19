@@ -9,6 +9,7 @@
 #include "internal/LuaState.h"
 #include "internal/Registry.h"
 #include "internal/Bindings.h"
+#include "internal/Spawn.h"
 
 #include <mutex>
 #include <string>
@@ -91,6 +92,9 @@ bool Vm::start() {
         return false;
     }
     detail::install_world_api(impl.lua.handle(), &impl.registry);
+    // Wave B: attach `world:spawn(...)` after the base world table is up so
+    // it can extend rather than replace the existing methods.
+    detail::register_spawn_binding(impl.lua.handle());
     impl.started = true;
     PSY_LOG_INFO("script: Vm started (Lua {}.{})", LUA_VERSION_MAJOR,
                  LUA_VERSION_MINOR);
