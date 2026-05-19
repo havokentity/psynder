@@ -12,4 +12,5 @@ target_link_libraries(sample_05_hybrid_night PRIVATE
     psynder_render_raster psynder_render_rt psynder_render_post
     psynder_world_outdoor psynder_scene psynder_physics psynder_asset psynder_platform
     psynder_samples_common
+    psynder_ui_imm psynder_editor_core
 )
