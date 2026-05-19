@@ -45,7 +45,7 @@ constexpr Vec3 cross(Vec3 a, Vec3 b) noexcept {
 }
 
 inline f32  length(Vec3 v)    noexcept { return std::sqrt(dot(v,v)); }
-inline Vec3 normalize(Vec3 v) noexcept { f32 l = length(v); return l ? mul(v, 1.0f/l) : v; }
+inline Vec3 normalize(Vec3 v) noexcept { f32 l = length(v); return l > 0.0f ? mul(v, 1.0f/l) : v; }
 
 // ─── Mat4 constructors (lane 02 implements the heavier ones) ─────────────
 Mat4 identity4();
