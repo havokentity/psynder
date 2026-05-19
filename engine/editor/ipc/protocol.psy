@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: MIT
+# Psynder editor IPC protocol — wire schema between the C++ engine and the
+# React panels under engine/editor/web/.
+#
+# Grammar (line-oriented, hash-comments):
+#   version <u32>
+#   channel <name>           # logical pub/sub channel name (string id)
+#   enum <Name>:
+#       <variant> = <int>
+#   struct <Name>:
+#       <field-name> : <type>
+#   frame <Name>:            # a frame is a wire-level packet; has an opcode + body struct
+#       opcode = <u16>
+#       channel = <name | "*">
+#       body = <StructName>
+#
+# Primitive types: bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64,
+# str (utf-8), bin (raw bytes), array<T>, map<K,V>.
+#
+# The stub generator emits C++ structs + msgpack encode/decode + a
+# TypeScript module with the same shape. Both consumers MUST agree on the
+# version field — mismatches are logged + the connection is dropped.
+
+version 1
+
+channel "log"
+channel "scene"
+channel "stats"
+channel "console"
+
+struct Hello:
+    protocol_version : u32
+    engine_version   : str
+    session_token    : str
+
+struct Welcome:
+    accepted     : bool
+    server_ver   : u32
+    server_build : str
+    reason       : str
+
+struct Subscribe:
+    channel : str
+
+struct Unsubscribe:
+    channel : str
+
+struct LogLine:
+    level   : u8
+    message : str
+
+struct SceneDelta:
+    frame_index : u64
+    entity_id   : u32
+    op          : u8
+    payload     : bin
+
+struct StatsTick:
+    frame_index : u64
+    cpu_ms      : f32
+    gpu_ms      : f32
+    draw_calls  : u32
+    entities    : u32
+
+struct ConsoleCmd:
+    text : str
+
+frame HelloFrame:
+    opcode  = 1
+    channel = "*"
+    body    = Hello
+
+frame WelcomeFrame:
+    opcode  = 2
+    channel = "*"
+    body    = Welcome
+
+frame SubscribeFrame:
+    opcode  = 3
+    channel = "*"
+    body    = Subscribe
+
+frame UnsubscribeFrame:
+    opcode  = 4
+    channel = "*"
+    body    = Unsubscribe
+
+frame LogFrame:
+    opcode  = 16
+    channel = "log"
+    body    = LogLine
+
+frame SceneFrame:
+    opcode  = 17
+    channel = "scene"
+    body    = SceneDelta
+
+frame StatsFrame:
+    opcode  = 18
+    channel = "stats"
+    body    = StatsTick
+
+frame ConsoleFrame:
+    opcode  = 19
+    channel = "console"
+    body    = ConsoleCmd
