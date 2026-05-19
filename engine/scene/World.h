@@ -68,6 +68,19 @@ public:
 
     // Query construction is library-provided; lane 06 implements.
     // Users register systems via the script-side API (see engine/script).
+    //
+    // Call site: `world.query<reads<A>, writes<B>>(body)` — see the brief
+    // for Lane 06 (Issue #6). The body receives one `std::span<const R>`
+    // per Reads type then one `std::span<W>` per Writes type, fired once
+    // per chunk so iteration stays column-at-a-time.
+    template <class Reads, class Writes, class Body>
+    void query(Body&& body);
+
+    // Defer / immediate-mode toggle. The engine main loop flips deferred
+    // mode on at frame start; tests and tools that want immediate
+    // mutation leave it off. Structural changes queue when on.
+    void set_structural_deferred(bool on) noexcept;
+    void apply_structural_changes();
 };
 
 // ─── Tag traits for read/write declarations ──────────────────────────────
@@ -75,3 +88,9 @@ template <class... Ts> struct reads  {};
 template <class... Ts> struct writes {};
 
 }  // namespace psynder::scene
+
+// Lane 06 internal: template definitions for `add`, `get`, `remove`,
+// `query` live in the impl header, which is pulled in here so users of
+// `World.h` see the full template bodies. The header above stays
+// declarations-only for everything an external lane should grep against.
+#include "World_Internal.h"
