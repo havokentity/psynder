@@ -14,8 +14,13 @@
 #import <GameController/GameController.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreAudio/CoreAudio.h>
+#import <IOSurface/IOSurface.h>
+#import <IOKit/hid/IOHIDManager.h>
+#import <ForceFeedback/ForceFeedback.h>
+#import <ForceFeedback/ForceFeedbackConstants.h>
 
 #include "MacPlatform_internal.h"
+#include "audio/internal/Backend.h"
 #include "core/Log.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
@@ -205,6 +210,16 @@ struct ScanoutState {
     u32                       tex_width           = 0;
     u32                       tex_height          = 0;
 
+    // ── IOSurface-backed zero-copy upload path (DESIGN.md §11.3) ─────────
+    // When the framebuffer's geometry / format is stable, we wrap a single
+    // `IOSurfaceRef` once and bind a Metal texture to it via
+    // `-newTextureWithDescriptor:iosurface:plane:`. The per-frame upload
+    // then becomes a CPU-side memcpy into the surface's locked base
+    // address, no `replaceRegion:withBytes:` and no second copy inside
+    // Metal. On hosts where IOSurface allocation fails the field stays nil
+    // and the legacy `replaceRegion` path is used as a fallback.
+    IOSurfaceRef              iosurface           = nullptr;
+
     void shutdown() {
         pipeline         = nil;
         texture          = nil;
@@ -212,6 +227,10 @@ struct ScanoutState {
         sampler_linear   = nil;
         queue            = nil;
         device           = nil;
+        if (iosurface) {
+            CFRelease(iosurface);
+            iosurface = nullptr;
+        }
     }
 };
 
@@ -519,14 +538,70 @@ public:
                 scanout_.tex_width  != fb.width ||
                 scanout_.tex_height != fb.height ||
                 scanout_.tex_format != fmt) {
-                MTLTextureDescriptor* td =
-                    [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt
-                                                                      width:fb.width
-                                                                     height:fb.height
-                                                                   mipmapped:NO];
-                td.usage         = MTLTextureUsageShaderRead;
-                td.storageMode   = MTLStorageModeShared;
-                scanout_.texture = [scanout_.device newTextureWithDescriptor:td];
+                // Tear down any previously-bound IOSurface; a fresh size /
+                // format requires a fresh surface (its layout is baked in
+                // at allocation time).
+                if (scanout_.iosurface) {
+                    CFRelease(scanout_.iosurface);
+                    scanout_.iosurface = nullptr;
+                }
+                // Try the IOSurface-backed zero-copy path first for the
+                // two GPU-sampleable framebuffer formats. RGB565 / Paletted8
+                // still go through the staging path below (lane 09 owns
+                // the real expand kernel; here we just zero-fill).
+                const bool can_iosurface =
+                    (fb.format == render::PixelFormat::RGBA8 ||
+                     fb.format == render::PixelFormat::BGRA8);
+                if (can_iosurface) {
+                    // Per-pixel byte count is fixed at 4 for the formats we
+                    // accept on this path. IOSurface needs an explicit
+                    // pixel-format FourCC: 'BGRA' for both because Metal's
+                    // sampleable IOSurface textures normalise to BGRA on
+                    // import. The Metal texture format we use below still
+                    // sees the requested `fmt` so colour ordering is
+                    // honoured by the sampler swizzle.
+                    constexpr u32 kBytesPerPixel = 4;
+                    const size_t aligned_bpr = IOSurfaceAlignProperty(
+                        kIOSurfaceBytesPerRow,
+                        static_cast<size_t>(fb.width) * kBytesPerPixel);
+                    NSDictionary* props = @{
+                        (id)kIOSurfaceWidth:           @((NSInteger)fb.width),
+                        (id)kIOSurfaceHeight:          @((NSInteger)fb.height),
+                        (id)kIOSurfaceBytesPerElement: @((NSInteger)kBytesPerPixel),
+                        (id)kIOSurfaceBytesPerRow:     @((NSInteger)aligned_bpr),
+                        (id)kIOSurfacePixelFormat:     @((unsigned)'BGRA'),
+                    };
+                    scanout_.iosurface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+                    if (scanout_.iosurface) {
+                        MTLTextureDescriptor* td = [MTLTextureDescriptor
+                            texture2DDescriptorWithPixelFormat:fmt
+                                                         width:fb.width
+                                                        height:fb.height
+                                                     mipmapped:NO];
+                        td.usage       = MTLTextureUsageShaderRead;
+                        td.storageMode = MTLStorageModeShared;
+                        scanout_.texture =
+                            [scanout_.device newTextureWithDescriptor:td
+                                                            iosurface:scanout_.iosurface
+                                                                plane:0];
+                        if (!scanout_.texture) {
+                            // IOSurface path refused (driver / format
+                            // mismatch); fall back to a regular texture.
+                            CFRelease(scanout_.iosurface);
+                            scanout_.iosurface = nullptr;
+                        }
+                    }
+                }
+                if (!scanout_.texture) {
+                    MTLTextureDescriptor* td =
+                        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt
+                                                                          width:fb.width
+                                                                         height:fb.height
+                                                                       mipmapped:NO];
+                    td.usage         = MTLTextureUsageShaderRead;
+                    td.storageMode   = MTLStorageModeShared;
+                    scanout_.texture = [scanout_.device newTextureWithDescriptor:td];
+                }
                 scanout_.tex_width  = fb.width;
                 scanout_.tex_height = fb.height;
                 scanout_.tex_format = fmt;
@@ -534,11 +609,35 @@ public:
             // ── CPU framebuffer → texture upload ─────────────────────────
             if (fb.format == render::PixelFormat::RGBA8 ||
                 fb.format == render::PixelFormat::BGRA8) {
-                MTLRegion region = MTLRegionMake2D(0, 0, fb.width, fb.height);
-                [scanout_.texture replaceRegion:region
-                                    mipmapLevel:0
-                                      withBytes:fb.pixels
-                                    bytesPerRow:fb.pitch];
+                if (scanout_.iosurface) {
+                    // Zero-copy: write pixels directly into the IOSurface
+                    // base address. The texture is already bound to the
+                    // surface so Metal sees the new data without a
+                    // `replaceRegion:withBytes:` call (which always copies
+                    // through Metal's staging path).
+                    IOSurfaceLock(scanout_.iosurface, 0, nullptr);
+                    auto* dst = static_cast<u8*>(IOSurfaceGetBaseAddress(scanout_.iosurface));
+                    const size_t dst_pitch = IOSurfaceGetBytesPerRow(scanout_.iosurface);
+                    const size_t src_pitch = fb.pitch;
+                    const size_t row_bytes = static_cast<size_t>(fb.width) * 4;
+                    if (dst_pitch == src_pitch && src_pitch == row_bytes) {
+                        std::memcpy(dst, fb.pixels, src_pitch * fb.height);
+                    } else {
+                        const auto* src = static_cast<const u8*>(fb.pixels);
+                        for (u32 y = 0; y < fb.height; ++y) {
+                            std::memcpy(dst + y * dst_pitch,
+                                        src + y * src_pitch,
+                                        row_bytes);
+                        }
+                    }
+                    IOSurfaceUnlock(scanout_.iosurface, 0, nullptr);
+                } else {
+                    MTLRegion region = MTLRegionMake2D(0, 0, fb.width, fb.height);
+                    [scanout_.texture replaceRegion:region
+                                        mipmapLevel:0
+                                          withBytes:fb.pixels
+                                        bytesPerRow:fb.pitch];
+                }
             } else {
                 // 16-bit / palette: write zeros for now — lane 09 owns expand
                 std::vector<u8> staging(static_cast<usize>(fb.width) * fb.height * 4, 0);
@@ -940,5 +1039,277 @@ void gamepad_arm() {
 }
 
 u32 gamepad_count() { return gp_state().connected_count.load(std::memory_order_relaxed); }
+
+}  // namespace psynder::platform::macos
+
+// ─── CoreAudio strong override for lane-12's audio dispatcher ────────────
+// Lane 12 (engine/audio/internal/Backend.cpp) declares `[[gnu::weak]]`
+// fallbacks for `backend_init_coreaudio` / `backend_shutdown_coreaudio` so
+// the Wave-A null-device path can run on hosts without a platform lane
+// linked in. On macOS we ship a strong override here that wires lane 12's
+// mixer pull (interleaved stereo f32) directly into the AUHAL render
+// callback via our existing `audio_start` machinery. The platform lane's
+// public surface stays unchanged — lane 12 still calls the dispatcher and
+// is none the wiser about which backend won the link.
+namespace psynder::audio {
+
+namespace {
+
+// Adapter — AUHAL's per-channel-buffer callback (see `audio_start` above)
+// invokes this thunk with a stereo scratch buffer. We forward to lane 12's
+// `MixerCallback`, which fills interleaved L/R floats. The AUHAL render
+// then de-interleaves into the AudioBufferList's per-channel buffers.
+struct CoreAudioAdapter {
+    MixerCallback cb   = nullptr;
+    void*         user = nullptr;
+};
+
+CoreAudioAdapter& ca_adapter() {
+    static CoreAudioAdapter a;
+    return a;
+}
+
+void coreaudio_render_thunk(void* /*user*/, psynder::f32* out,
+                            psynder::u32 frame_count,
+                            psynder::u32 channel_count,
+                            psynder::u32 /*sample_rate*/) {
+    auto& a = ca_adapter();
+    const psynder::u32 stereo_floats = 2u * frame_count;
+    if (!a.cb) {
+        // Silence — keep the device alive without producing audio.
+        for (psynder::u32 i = 0; i < frame_count * channel_count; ++i) out[i] = 0.0f;
+        return;
+    }
+    if (channel_count == 2) {
+        // Direct: lane 12 writes interleaved stereo straight into `out`.
+        a.cb(out, frame_count, a.user);
+        return;
+    }
+    // Channel-count mismatch: pull a stereo block into a small scratch buffer
+    // and broadcast / downmix into the device's channel layout. Stack-bounded
+    // to the same 4096-frame cap as the AUHAL render path.
+    constexpr psynder::u32 kMaxFrames = 4096;
+    psynder::f32 scratch[kMaxFrames * 2];
+    const psynder::u32 frames = std::min<psynder::u32>(frame_count, kMaxFrames);
+    a.cb(scratch, frames, a.user);
+    for (psynder::u32 f = 0; f < frames; ++f) {
+        const psynder::f32 l = scratch[2*f + 0];
+        const psynder::f32 r = scratch[2*f + 1];
+        const psynder::f32 m = 0.5f * (l + r);
+        if (channel_count == 1) {
+            out[f] = m;
+        } else {
+            // L, R, mono, mono, … — front-pair → engine stereo, rest → centre
+            for (psynder::u32 c = 0; c < channel_count; ++c) {
+                out[f * channel_count + c] =
+                    (c == 0) ? l : (c == 1) ? r : m;
+            }
+        }
+        (void)stereo_floats;
+    }
+    // Zero any remaining frames past `kMaxFrames` (shouldn't happen in practice).
+    for (psynder::u32 f = frames; f < frame_count; ++f) {
+        for (psynder::u32 c = 0; c < channel_count; ++c) {
+            out[f * channel_count + c] = 0.0f;
+        }
+    }
+}
+
+}  // namespace
+
+bool backend_init_coreaudio(const DeviceDesc& desc, MixerCallback cb, void* user) noexcept {
+    auto& a = ca_adapter();
+    a.cb   = cb;
+    a.user = user;
+    psynder::platform::macos::AudioDeviceDesc pd{};
+    pd.sample_rate   = desc.sample_rate;
+    pd.channels      = desc.channels;
+    pd.buffer_frames = desc.buffer_frames;
+    if (!psynder::platform::macos::audio_start(pd, &coreaudio_render_thunk, nullptr)) {
+        // audio_start failed (no device on this host, etc.). Keep the
+        // adapter populated so the engine's `mixer_pull` is still
+        // reachable from tests / smoke samples; the failure is logged
+        // by `audio_start` itself.
+        return false;
+    }
+    return true;
+}
+
+void backend_shutdown_coreaudio() noexcept {
+    psynder::platform::macos::audio_stop();
+    auto& a = ca_adapter();
+    a.cb   = nullptr;
+    a.user = nullptr;
+}
+
+}  // namespace psynder::audio
+
+// ─── HID Force Feedback (IOKit + ForceFeedback.framework) ────────────────
+// Wave-B deliverable: a constant-force effect descriptor + best-effort
+// submission against the first FFB-capable HID device discovered. The
+// engine consumer (Wave-C lane 25 sample_04) calls `ffb_submit_constant_force`
+// every physics step with the magnitude derived from the lateral slip
+// angle; this TU translates that descriptor into a `FFEFFECT` and pushes
+// it through ForceFeedback.framework.
+//
+// Unit tests under `tests/unit/platform_macos_ffb.cpp` exercise the
+// descriptor builder only — `ffb_build_constant_force` is a pure function
+// so it runs without any hardware.
+namespace psynder::platform::macos {
+
+namespace {
+
+struct FfbState {
+    io_service_t              hid_service     = MACH_PORT_NULL;
+    FFDeviceObjectReference   device          = nullptr;
+    FFEffectObjectReference   active_effect   = nullptr;
+    bool                      device_opened   = false;
+};
+
+FfbState& ffb_state() {
+    static FfbState s;
+    return s;
+}
+
+// Walk the IOKit HID registry for the first device that advertises a
+// ForceFeedback plug-in. Returns MACH_PORT_NULL when nothing is found.
+// The returned io_service_t is owned by the caller (release via
+// IOObjectRelease).
+io_service_t ffb_find_first_capable_device() noexcept {
+    CFMutableDictionaryRef match = IOServiceMatching(kIOHIDDeviceKey);
+    if (!match) return MACH_PORT_NULL;
+    io_iterator_t it = MACH_PORT_NULL;
+    if (IOServiceGetMatchingServices(kIOMainPortDefault, match, &it) != KERN_SUCCESS) {
+        return MACH_PORT_NULL;
+    }
+    io_service_t hit = MACH_PORT_NULL;
+    io_service_t svc;
+    while ((svc = IOIteratorNext(it)) != MACH_PORT_NULL) {
+        if (FFIsForceFeedback(svc) == FF_OK) {
+            hit = svc;
+            break;
+        }
+        IOObjectRelease(svc);
+    }
+    IOObjectRelease(it);
+    return hit;
+}
+
+}  // namespace
+
+FfbConstantForceWire ffb_build_constant_force(const FfbConstantForce& d) noexcept {
+    // Clamp + scale to the DirectInput integer convention.
+    auto clamp01 = [](f32 v) -> f32 {
+        if (v <  0.0f) return 0.0f;
+        if (v >  1.0f) return 1.0f;
+        return v;
+    };
+    auto clamp_signed = [](f32 v) -> f32 {
+        if (v < -1.0f) return -1.0f;
+        if (v >  1.0f) return  1.0f;
+        return v;
+    };
+    FfbConstantForceWire w{};
+    const f32 mag = clamp_signed(d.magnitude);
+    w.magnitude = static_cast<i32>(std::round(mag * 10000.0f));
+
+    // Cartesian planar direction: convert degrees to (x, y) unit vector and
+    // scale to ±10000. We don't enforce normalization on the input — a zero-
+    // magnitude direction is fine; we just emit (0, 0). FF expects the
+    // direction array to be in axis-units of 10000.
+    const f32 dir_rad = d.direction_deg * (math::kPi / 180.0f);
+    const f32 cx = std::cos(dir_rad);
+    const f32 cy = std::sin(dir_rad);
+    w.direction_x = static_cast<i32>(std::round(cx * 10000.0f));
+    w.direction_y = static_cast<i32>(std::round(cy * 10000.0f));
+
+    w.duration      = (d.duration_us == 0u) ? FF_INFINITE : d.duration_us;
+    w.sample_period = d.sample_period_us;
+    w.start_delay   = d.start_delay_us;
+    w.gain          = static_cast<u32>(std::round(clamp01(d.gain) * 10000.0f));
+    return w;
+}
+
+bool ffb_submit_constant_force(const FfbConstantForce& d) {
+    // Validate / build the wire descriptor regardless of device presence.
+    // Tests rely on the build step running pure; submission itself is
+    // best-effort and a no-op without hardware.
+    FfbConstantForceWire w = ffb_build_constant_force(d);
+
+    FfbState& s = ffb_state();
+    if (!s.device_opened) {
+        s.hid_service = ffb_find_first_capable_device();
+        if (s.hid_service == MACH_PORT_NULL) return false;
+        HRESULT rc = FFCreateDevice(s.hid_service, &s.device);
+        if (rc != FF_OK) {
+            IOObjectRelease(s.hid_service);
+            s.hid_service = MACH_PORT_NULL;
+            s.device      = nullptr;
+            return false;
+        }
+        s.device_opened = true;
+    }
+    if (!s.device) return false;
+
+    // Build the FFEFFECT shell. Two axes (X, Y) with Cartesian direction.
+    DWORD axes[2] = { FFJOFS_X, FFJOFS_Y };
+    LONG  dir[2]  = { static_cast<LONG>(w.direction_x),
+                      static_cast<LONG>(w.direction_y) };
+    FFCONSTANTFORCE cf{};
+    cf.lMagnitude = static_cast<LONG>(w.magnitude);
+
+    FFEFFECT eff{};
+    eff.dwSize                  = sizeof(FFEFFECT);
+    eff.dwFlags                 = FFEFF_CARTESIAN | FFEFF_OBJECTOFFSETS;
+    eff.dwDuration              = w.duration;
+    eff.dwSamplePeriod          = w.sample_period;
+    eff.dwGain                  = w.gain;
+    eff.dwTriggerButton         = FFEB_NOTRIGGER;
+    eff.dwTriggerRepeatInterval = 0;
+    eff.cAxes                   = 2;
+    eff.rgdwAxes                = axes;
+    eff.rglDirection            = dir;
+    eff.lpEnvelope              = nullptr;
+    eff.cbTypeSpecificParams    = sizeof(cf);
+    eff.lpvTypeSpecificParams   = &cf;
+    eff.dwStartDelay            = w.start_delay;
+
+    if (s.active_effect) {
+        // Update an in-flight effect rather than churning the slot.
+        HRESULT rc = FFEffectSetParameters(s.active_effect, &eff,
+                                           FFEP_TYPESPECIFICPARAMS |
+                                           FFEP_DIRECTION |
+                                           FFEP_DURATION |
+                                           FFEP_GAIN |
+                                           FFEP_START);
+        return rc == FF_OK;
+    }
+    HRESULT rc = FFDeviceCreateEffect(s.device,
+                                      kFFEffectType_ConstantForce_ID,
+                                      &eff, &s.active_effect);
+    if (rc != FF_OK || !s.active_effect) {
+        s.active_effect = nullptr;
+        return false;
+    }
+    FFEffectStart(s.active_effect, /*iterations*/ 1, /*flags*/ 0);
+    return true;
+}
+
+void ffb_shutdown() {
+    FfbState& s = ffb_state();
+    if (s.active_effect && s.device) {
+        FFDeviceReleaseEffect(s.device, s.active_effect);
+    }
+    s.active_effect = nullptr;
+    if (s.device) {
+        FFReleaseDevice(s.device);
+        s.device = nullptr;
+    }
+    if (s.hid_service != MACH_PORT_NULL) {
+        IOObjectRelease(s.hid_service);
+        s.hid_service = MACH_PORT_NULL;
+    }
+    s.device_opened = false;
+}
 
 }  // namespace psynder::platform::macos
