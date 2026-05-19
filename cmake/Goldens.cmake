@@ -135,7 +135,7 @@ function(psynder_add_golden_cell)
                 -DGOLDEN=${_golden_png}
                 -DCELL=${_cell_name}
                 -DACTUAL=${_actual_png}
-                -P ${CMAKE_SOURCE_DIR}/tests/golden/missing_golden.cmake)
+                -P ${CMAKE_SOURCE_DIR}/cmake/missing_golden.cmake)
         set_tests_properties(${_cell_name}_diff PROPERTIES
             WILL_FAIL TRUE
             DEPENDS   ${_cell_name}_render
