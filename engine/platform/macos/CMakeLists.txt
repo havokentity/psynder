@@ -12,5 +12,7 @@ if(PSYNDER_PLATFORM_MACOS)
         "-framework AudioToolbox"
         "-framework GameController"
         "-framework IOKit"
+        "-framework IOSurface"
+        "-framework ForceFeedback"
     )
 endif()
