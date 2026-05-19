@@ -7,10 +7,14 @@
 // the real frames take over.
 
 import type {
+    AssetCatalog,
+    AssetEntry,
     ComponentSchema,
     ConsoleLog,
     Envelope,
     ProfilerFrame,
+    PropCatalog,
+    PropEntry,
     SchemaCatalog,
     SelectionState,
 } from './protocol';
@@ -84,6 +88,53 @@ const DEMO_SELECTION: SelectionState = {
     },
 };
 
+// Representative `.lmpak` entries — Wave C will replace with live data.
+const DEMO_ASSETS: AssetEntry[] = [
+    { path: 'meshes/crate_red.lmm',     category: 'mesh',    pack: 'sandbox.lmpak', size_bytes:  18_240, content_hash: 'fnv-mesh-crate-red' },
+    { path: 'meshes/crate_blue.lmm',    category: 'mesh',    pack: 'sandbox.lmpak', size_bytes:  18_240, content_hash: 'fnv-mesh-crate-blue' },
+    { path: 'meshes/barrel_metal.lmm',  category: 'mesh',    pack: 'sandbox.lmpak', size_bytes:  24_512, content_hash: 'fnv-mesh-barrel' },
+    { path: 'meshes/lamp_post.lmm',     category: 'mesh',    pack: 'sandbox.lmpak', size_bytes:  31_104, content_hash: 'fnv-mesh-lamp' },
+    { path: 'textures/crate_red_diff.lmt',   category: 'texture', pack: 'sandbox.lmpak', size_bytes: 262_144, content_hash: 'fnv-tex-crate-red-d' },
+    { path: 'textures/crate_red_norm.lmt',   category: 'texture', pack: 'sandbox.lmpak', size_bytes: 262_144, content_hash: 'fnv-tex-crate-red-n' },
+    { path: 'textures/concrete_01.lmt', category: 'texture', pack: 'core.lmpak',    size_bytes: 524_288, content_hash: 'fnv-tex-concrete' },
+    { path: 'audio/impact_wood.lma',    category: 'audio',   pack: 'core.lmpak',    size_bytes:  48_000, content_hash: 'fnv-aud-impact-w' },
+    { path: 'audio/impact_metal.lma',   category: 'audio',   pack: 'core.lmpak',    size_bytes:  52_000, content_hash: 'fnv-aud-impact-m' },
+    { path: 'audio/ambient_room.lma',   category: 'audio',   pack: 'core.lmpak',    size_bytes: 192_000, content_hash: 'fnv-aud-ambient' },
+    { path: 'levels/crate_room.psylevel',    category: 'level',   pack: 'sandbox.lmpak', size_bytes:  72_192, content_hash: 'fnv-lvl-crate-room' },
+    { path: 'levels/test_arena.psylevel',    category: 'level',   pack: 'sandbox.lmpak', size_bytes: 124_864, content_hash: 'fnv-lvl-arena' },
+    { path: 'scripts/sandbox_init.lua', category: 'script',  pack: 'sandbox.lmpak', size_bytes:   2_048, content_hash: 'fnv-scr-init' },
+    { path: 'scripts/physgun.lua',      category: 'script',  pack: 'sandbox.lmpak', size_bytes:   8_192, content_hash: 'fnv-scr-physgun' },
+    { path: 'prefabs/crate_stack.lmprefab',  category: 'prefab',  pack: 'sandbox.lmpak', size_bytes:   1_312, content_hash: 'fnv-pfb-stack' },
+    { path: 'materials/metal_rough.lmmat',   category: 'material', pack: 'core.lmpak', size_bytes:     512, content_hash: 'fnv-mat-metal' },
+];
+
+// Representative props — paired with a tiny inline-svg thumbnail so the
+// menu grid is non-empty even without the engine's HTTP image side.
+function tile_thumb(label: string, fill: string): string {
+    const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">`
+        + `<rect width="96" height="96" fill="${fill}"/>`
+        + `<text x="48" y="54" text-anchor="middle" font-family="monospace"`
+        + ` font-size="12" fill="#000">${label}</text>`
+        + `</svg>`;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+const DEMO_PROPS: PropEntry[] = [
+    { id: 'crate_red',    name: 'Crate (red)',    category: 'crates',    thumbnail_url: tile_thumb('crate', '#b8533a'), tags: ['wood', 'storage', 'sandbox'] },
+    { id: 'crate_blue',   name: 'Crate (blue)',   category: 'crates',    thumbnail_url: tile_thumb('crate', '#3a78b8'), tags: ['wood', 'storage'] },
+    { id: 'barrel_metal', name: 'Barrel (metal)', category: 'barrels',   thumbnail_url: tile_thumb('barrel', '#9aa0a6'), tags: ['metal', 'explosive'] },
+    { id: 'barrel_wood',  name: 'Barrel (wood)',  category: 'barrels',   thumbnail_url: tile_thumb('barrel', '#8c5a2a'), tags: ['wood'] },
+    { id: 'lamp_post',    name: 'Lamp post',      category: 'lighting',  thumbnail_url: tile_thumb('lamp', '#d8c46a'), tags: ['light', 'outdoor'] },
+    { id: 'chair_wood',   name: 'Chair (wood)',   category: 'furniture', thumbnail_url: tile_thumb('chair', '#a87340'), tags: ['wood', 'interior'] },
+    { id: 'desk',         name: 'Desk',           category: 'furniture', thumbnail_url: tile_thumb('desk', '#7a5034'), tags: ['wood', 'interior'] },
+    { id: 'cone_traffic', name: 'Traffic cone',   category: 'misc',      thumbnail_url: tile_thumb('cone', '#e08a30'), tags: ['outdoor'] },
+    { id: 'tire',         name: 'Tire',           category: 'misc',      thumbnail_url: tile_thumb('tire', '#222'),     tags: ['rubber', 'physics'] },
+    { id: 'rocket',       name: 'Rocket',         category: 'physics',   thumbnail_url: tile_thumb('rocket', '#d04040'), tags: ['weld', 'thruster'] },
+    { id: 'ball_beach',   name: 'Beach ball',     category: 'physics',   thumbnail_url: tile_thumb('ball', '#f2dc6a'),  tags: ['bouncy'] },
+    { id: 'computer',     name: 'Computer',       category: 'furniture', thumbnail_url: tile_thumb('pc', '#9a9a9a'),    tags: ['interior', 'electronics'] },
+];
+
 export interface MockDriver {
     stop(): void;
 }
@@ -107,6 +158,12 @@ export function start_mock(deliver: Deliver): MockDriver {
     const catalog: SchemaCatalog = { components: DEMO_SCHEMAS };
     send({ v: PROTOCOL_VERSION, ch: 'schemas',   type: 'catalog', payload: catalog });
     send({ v: PROTOCOL_VERSION, ch: 'selection', type: 'state',   payload: DEMO_SELECTION });
+
+    // ── Asset + prop catalogs ────────────────────────────────────────────
+    const asset_catalog: AssetCatalog = { entries: DEMO_ASSETS };
+    send({ v: PROTOCOL_VERSION, ch: 'assets', type: 'catalog', payload: asset_catalog });
+    const prop_catalog: PropCatalog = { props: DEMO_PROPS };
+    send({ v: PROTOCOL_VERSION, ch: 'props', type: 'catalog', payload: prop_catalog });
 
     // ── Profiler — emulate a 60 Hz frame stream ─────────────────────────
     let frame_idx = 0;
@@ -166,4 +223,14 @@ export function mock_catalog(): SchemaCatalog {
 /** Synchronously generate a single mock selection — used by tests/storybook. */
 export function mock_selection(): SelectionState {
     return DEMO_SELECTION;
+}
+
+/** Synchronously generate the mock asset catalog. */
+export function mock_assets(): AssetCatalog {
+    return { entries: DEMO_ASSETS };
+}
+
+/** Synchronously generate the mock prop catalog. */
+export function mock_props(): PropCatalog {
+    return { props: DEMO_PROPS };
 }

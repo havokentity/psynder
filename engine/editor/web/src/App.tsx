@@ -1,23 +1,42 @@
 // SPDX-License-Identifier: MIT
 // Psynder editor — top-level router. Each panel is a separate Chrome window
-// that hits one of `/panels/inspector`, `/panels/console`, `/panels/profiler`
-// per DESIGN.md §10.6. In dev (vite) we use the `?panel=` query parameter.
+// that hits one of `/panels/<name>` per DESIGN.md §10.6. In dev (vite) we
+// use the `?panel=` query parameter to flip between them in one bundle.
 
 import React from 'react';
 
+import { AssetBrowser } from './panels/AssetBrowser';
 import { Console } from './panels/Console';
 import { Inspector } from './panels/Inspector';
 import { Profiler } from './panels/Profiler';
+import { PropSpawn } from './panels/PropSpawn';
 
-type PanelName = 'inspector' | 'console' | 'profiler';
+type PanelName = 'inspector' | 'console' | 'profiler' | 'assets' | 'props';
+
+const PANEL_NAMES: readonly PanelName[] = [
+    'inspector', 'console', 'profiler', 'assets', 'props',
+];
+
+// Engine route paths map onto panel names; "assets" / "props" land on the
+// `/panels/assets` and `/panels/props` URLs that the engine launches Chrome
+// against — see DESIGN.md §10.6 / §10.8.
+const PATH_TO_PANEL: Record<string, PanelName> = {
+    inspector: 'inspector',
+    console:   'console',
+    profiler:  'profiler',
+    assets:    'assets',
+    props:     'props',
+};
 
 function pick_panel(): PanelName {
     if (typeof window === 'undefined') return 'inspector';
     // Path-based first (engine routes via /panels/<name>), then query string.
-    const m = window.location.pathname.match(/\/panels\/(inspector|console|profiler)/);
-    if (m) return m[1] as PanelName;
+    const m = window.location.pathname.match(/\/panels\/([a-z]+)/);
+    if (m && m[1] in PATH_TO_PANEL) return PATH_TO_PANEL[m[1]];
     const qp = new URLSearchParams(window.location.search).get('panel');
-    if (qp === 'console' || qp === 'profiler') return qp;
+    if (qp && (PANEL_NAMES as readonly string[]).includes(qp)) {
+        return qp as PanelName;
+    }
     return 'inspector';
 }
 
@@ -46,7 +65,7 @@ export function App() {
     return (
         <div className="psy-app" data-panel={panel}>
             <nav className="psy-app-nav" aria-label="panel switcher">
-                {(['inspector', 'console', 'profiler'] as const).map((name) => (
+                {PANEL_NAMES.map((name) => (
                     <button
                         key={name}
                         type="button"
@@ -62,6 +81,8 @@ export function App() {
                 {panel === 'inspector' && <Inspector />}
                 {panel === 'console'   && <Console />}
                 {panel === 'profiler'  && <Profiler />}
+                {panel === 'assets'    && <AssetBrowser />}
+                {panel === 'props'     && <PropSpawn />}
             </main>
         </div>
     );
