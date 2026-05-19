@@ -1,11 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Psynder — shadow-visibility denoiser. Lane 08 owns.
 //
-// Implements `denoise_shadows` from Bvh.h: edge-aware à-trous filter, two
-// passes guided by depth + normal (DESIGN.md §8.2). Wave-A version is the
-// simplest correct form: 2-pass à-trous with a 5-tap kernel per axis,
-// bilateral weights from depth/normal. Wave B will widen the kernel and
-// add temporal accumulation.
+// Edge-aware à-trous wavelet filter, **2 passes** guided by depth + normal
+// (DESIGN.md §8.2). The à-trous (Dammertz 2010 "Edge-Avoiding À-Trous
+// Wavelet Transform for fast Global Illumination Filtering") is a separable
+// stationary-kernel filter where successive passes use the *same* 5-tap
+// Gaussian kernel but with *exponentially widening* stride between samples
+// (step = 1, 2, 4, …). Two passes give us a roughly 9-tap effective radius
+// while remaining edge-aware via depth + normal weights.
+//
+// Properties relied on by tests:
+//   * Bilateral weights are all ≥ 0; output is a weighted convex
+//     combination of input samples, so output ∈ [min(in), max(in)] over
+//     the kernel window. In particular, where every sample has visibility
+//     ≥ V0, the filtered output is also ≥ V0. For shadow-visibility in
+//     [0, 1] this gives the monotonicity required by the unit test.
+//   * Output never goes negative (inputs assumed in [0, 1]).
 
 #include "Bvh.h"
 
@@ -25,11 +35,16 @@ f32 gauss5(i32 d) noexcept {
     return w[idx];
 }
 
+// Bilateral weight from a depth delta.
+// σ_z = 1/32 — about a third of a unit, matches typical world-space depth
+// scales in shadow space. Falls off as e^{-|Δz| / σ_z}.
 PSY_FORCEINLINE
 f32 depth_weight(f32 dz) noexcept {
     return std::exp(-std::fabs(dz) * 32.0f);
 }
 
+// Bilateral weight from the angle between two normals. Uses (n·n')^4 to
+// give a tight lobe — sharp creases stop the filter.
 PSY_FORCEINLINE
 f32 normal_weight(const f32* n0, const f32* n1) noexcept {
     const f32 d = n0[0]*n1[0] + n0[1]*n1[1] + n0[2]*n1[2];
@@ -37,6 +52,9 @@ f32 normal_weight(const f32* n0, const f32* n1) noexcept {
     return c * c * c * c;
 }
 
+// One à-trous pass. `step` is the stride between samples in pixels — the
+// classic à-trous schedule doubles step each pass (1, 2, 4, …). With a
+// 5-tap base kernel this produces a 1+4*step radius per pass.
 void atrous_pass(const f32* in, f32* out,
                  const f32* depth, const f32* normals,
                  u32 width, u32 height, i32 step)
@@ -65,7 +83,11 @@ void atrous_pass(const f32* in, f32* out,
                     sum_v += w * in[sidx];
                 }
             }
+            // Center pixel always has full weight (wg=6/16*6/16=36/256,
+            // wd=1, wn=1), so sum_w > 0 always; the guard is defensive.
             out[idx] = (sum_w > 0.0f) ? (sum_v / sum_w) : in[idx];
+            // Clamp to [0, max-in-kernel] is implicit because output is a
+            // non-negative convex combination of non-negative inputs.
         }
     }
 }
@@ -77,8 +99,8 @@ void denoise_shadows(const DenoiseInput& in, f32* output_visibility) {
     if (in.width == 0 || in.height == 0) return;
 
     const usize n = static_cast<usize>(in.width) * in.height;
-    // Two-pass à-trous: pass 1 step=1, pass 2 step=2. Use the output as a
-    // ping-pong target alongside a temp buffer.
+    // Two-pass à-trous: pass 1 step=1, pass 2 step=2 (classic schedule).
+    // Use the output as a ping-pong target alongside a thread-local temp.
     static thread_local std::vector<f32> tmp;
     if (tmp.size() < n) tmp.resize(n);
 
