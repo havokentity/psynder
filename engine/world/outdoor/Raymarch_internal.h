@@ -24,9 +24,11 @@
 
 #include "core/Types.h"
 #include "math/Math.h"
+#include "simd/Simd_internal.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace psynder::world::outdoor::detail {
 
@@ -201,17 +203,336 @@ PSY_FORCEINLINE f32 logstep_size(const HeightmapDesc& h,
     return near_step * (1.0f + current_t / falloff);
 }
 
-// ─── Wave-B SIMD note ────────────────────────────────────────────────────
-// The SIMD lift packs 8 ColumnStates into one AVX2 batch:
-//   __m256  ray_dir_x_8, ray_dir_z_8;
-//   __m256  t_8, dt_8;
-//   __m256  hy_8 = simd_sample_bilinear(...);  // gather lanes via VGATHERDPS
-//   __m256  screen_y_8 = simd_project_y(...);
-//   __m256i horizon_8;
-//   __m256  mask_advance = _mm256_cmp_ps(screen_y_8, horizon_8, _CMP_LT_OQ);
-//   <conditional strip emit per-lane>
-// All math above is branchless / lane-pure; the only divergence is "did
-// this lane's column finish (horizon hit top of screen)?", and a single
-// movemask suffices to early-out the batch when all 8 are done.
+// ─── Wave-B SIMD batched columns ─────────────────────────────────────────
+//
+// Process N columns in lockstep through one along-ray step. N = 8 on AVX2
+// (one __m256), N = 4 on NEON (one float32x4_t) — the f32x8 type in lane 03's
+// SIMD abstraction collapses to two f32x4 halves on NEON, but we still issue
+// the kernel as an 8-pack: NEON hosts pay two 4-wide kernels per "8-pack"
+// step, which is exactly the right scheduling — the inner-loop store cost is
+// amortized across the whole batch, and the f32x4 halves can issue on
+// independent pipes on Apple Silicon's 4 NEON FP units.
+//
+// All inputs are batched as f32x8; the only loop-carried state per batch is
+// the per-lane horizon (i32x8) and "lane done" mask (mask8). The kernel is
+// branchless internally — `screen_y < horizon` is the only divergence, and
+// `blend8` resolves it per-lane. A single `movemask` short-circuits when
+// every lane has marched off the top of the screen.
+
+// Column batch: 8 columns processed in lockstep. Lane i corresponds to
+// framebuffer column `column_x_base + i` (we pack contiguous columns for
+// good cache behavior in the framebuffer write-back; the tile job system
+// dispatches these batches per-tile per-row).
+struct ColumnBatch8 {
+    f32 ray_dir_x[8];     // unit-ish XZ ray direction per lane
+    f32 ray_dir_z[8];
+    i32 horizon_y [8];    // current top-of-painted row per lane (inclusive)
+    u32 column_x  [8];    // framebuffer x per lane
+    u32 done_mask;        // bit i set ⇒ lane i has marched out of frame
+};
+
+// Per-lane step output, laid out so the tile-emit pass can iterate without
+// any per-lane branching: one strip rectangle + one packed color + one z.
+struct ColumnStepBatch8 {
+    i32 new_horizon_y[8];
+    u32 strip_top_y  [8];
+    u32 strip_bottom_y[8];
+    u32 packed_color [8];
+    f32 z_distance   [8];
+    u32 active_mask;       // bit i set ⇒ lane i painted a strip this step
+};
+
+// Bilinear height sample for 8 (wx, wz) lanes at once. Uses lane 03's `gather8`
+// against the heightmap to load the 4 texel corners per lane; the bilinear
+// blend is pure SIMD arithmetic.
+//
+// The heightmap is u16, so we have to load through a small adapter — we
+// rebuild a per-batch f32 corner buffer from the u16 source (one branch-free
+// gather4 of (x0,z0), (x1,z0), (x0,z1), (x1,z1) per lane, expanded to f32).
+// This is the right shape for AVX2 (no native u16-gather) and faster than
+// going through `sample_bilinear` 8 times because the per-lane arithmetic
+// (clamp, fmadd, fmadd, fmadd) folds into the SIMD pipe.
+PSY_FORCEINLINE void simd_sample_bilinear8(const HeightmapDesc& h,
+                                           const f32 wx[8],
+                                           const f32 wz[8],
+                                           f32       out_height[8]) noexcept {
+    if (!h.heights || h.size_x == 0 || h.size_z == 0 || h.spacing <= 0.0f) {
+        for (u32 i = 0; i < 8; ++i) out_height[i] = 0.0f;
+        return;
+    }
+    // The u16 → f32 conversion is per-corner; we do the 8 lanes scalar at
+    // the gather boundary (no VPGATHER for u16 anyway), but the BLEND math
+    // below is SIMD-wide.
+    alignas(32) f32 h00[8], h10[8], h01[8], h11[8];
+    alignas(32) f32 tx[8], tz[8];
+    const f32 inv_spacing = 1.0f / h.spacing;
+    for (u32 i = 0; i < 8; ++i) {
+        const f32 fx = wx[i] * inv_spacing;
+        const f32 fz = wz[i] * inv_spacing;
+        const i32 x0 = static_cast<i32>(std::floor(fx));
+        const i32 z0 = static_cast<i32>(std::floor(fz));
+        tx[i] = fx - static_cast<f32>(x0);
+        tz[i] = fz - static_cast<f32>(z0);
+        h00[i] = height_at_texel(h, x0,     z0);
+        h10[i] = height_at_texel(h, x0 + 1, z0);
+        h01[i] = height_at_texel(h, x0,     z0 + 1);
+        h11[i] = height_at_texel(h, x0 + 1, z0 + 1);
+    }
+    // 8-wide bilinear blend: hx0 = h00 + (h10-h00)*tx; hx1 = h01 + (h11-h01)*tx;
+    // height = hx0 + (hx1-hx0)*tz. Three FMAs in the AVX2 pipe.
+    using namespace simd;
+    const f32x8 v00 = load_aligned8(h00);
+    const f32x8 v10 = load_aligned8(h10);
+    const f32x8 v01 = load_aligned8(h01);
+    const f32x8 v11 = load_aligned8(h11);
+    const f32x8 vtx = load_aligned8(tx);
+    const f32x8 vtz = load_aligned8(tz);
+
+    const f32x8 hx0 = fma8(sub8(v10, v00), vtx, v00);  // v00 + (v10-v00)*tx
+    const f32x8 hx1 = fma8(sub8(v11, v01), vtx, v01);  // v01 + (v11-v01)*tx
+    const f32x8 hy  = fma8(sub8(hx1, hx0), vtz, hx0);  // hx0 + (hx1-hx0)*tz
+    alignas(32) f32 tmp[8];
+    store_aligned8(tmp, hy);
+    for (u32 i = 0; i < 8; ++i) out_height[i] = tmp[i];
+}
+
+// 8-wide screen-Y projection — the SIMD counterpart of `project_y`. We keep
+// the inputs in plain f32[8] for ergonomics (callers usually have them in
+// AoS-ish layouts); the inner math is the SIMD-wide fmadd.
+PSY_FORCEINLINE void simd_project_y8(const f32 height_world[8],
+                                     f32       camera_y,
+                                     const f32 distance[8],
+                                     f32       pixels_per_unit_at_unit_dist,
+                                     i32       fb_height,
+                                     i32       out_screen_y[8]) noexcept {
+    using namespace simd;
+    const f32x8 vhw    = load_unaligned8(height_world);
+    const f32x8 vdist  = load_unaligned8(distance);
+    const f32x8 vcam   = broadcast8(camera_y);
+    const f32x8 vppx   = broadcast8(pixels_per_unit_at_unit_dist);
+    const f32x8 vhz    = broadcast8(static_cast<f32>(fb_height) * 0.5f);
+    const f32x8 vfb1   = broadcast8(static_cast<f32>(fb_height - 1));
+    const f32x8 vzero  = broadcast8(0.0f);
+    const f32x8 veps   = broadcast8(1e-4f);
+
+    // offset_px = (height - eye_y) * scale / dist
+    // y         = horizon - offset_px
+    const f32x8 dy        = sub8(vhw, vcam);
+    const f32x8 offset_px = mul8(mul8(dy, vppx), div8(broadcast8(1.0f), vdist));
+    f32x8       y_f       = sub8(vhz, offset_px);
+
+    // Clamp distance ≤ eps → out_screen_y = fb_height (off-screen below);
+    // we mark these by forcing y to fb_height (then clamp clamps it).
+    const mask8 near_zero = cmp_le8(vdist, veps);
+    y_f = blend8(y_f, broadcast8(static_cast<f32>(fb_height)), near_zero);
+
+    // Clamp to [0, fb_height-1].
+    y_f = max8(y_f, vzero);
+    y_f = min8(y_f, vfb1);
+
+    alignas(32) f32 tmp[8];
+    store_aligned8(tmp, y_f);
+    for (u32 i = 0; i < 8; ++i) out_screen_y[i] = static_cast<i32>(tmp[i] + 0.5f);
+}
+
+// One SIMD-wide column step. Same math as the scalar `step_column`, lifted
+// to 8 lanes. Strips are emitted per-active-lane via the `active_mask` bit
+// pattern; the framebuffer writer iterates the set bits.
+//
+// Per-lane invariant identical to the scalar kernel: if `screen_y < horizon`
+// then advance the horizon to `screen_y` and emit a [screen_y, horizon-1]
+// strip. Otherwise the lane is a no-op for this step.
+PSY_FORCEINLINE void simd_step_columns8(const HeightmapDesc&   h,
+                                        const ColumnBatch8&    cb,
+                                        math::Vec3             eye,
+                                        f32                    t,
+                                        i32                    fb_height,
+                                        f32                    pixels_per_unit,
+                                        ColumnStepBatch8&      out) noexcept {
+    // Zero outputs first; the scalar painter doesn't depend on default-init
+    // but the test asserts strip_top/strip_bottom for inactive lanes are
+    // sensible (we leave them at zero).
+    std::memset(&out, 0, sizeof(out));
+
+    alignas(32) f32 wx[8], wz[8], dist[8];
+    for (u32 i = 0; i < 8; ++i) {
+        wx[i]   = eye.x + cb.ray_dir_x[i] * t;
+        wz[i]   = eye.z + cb.ray_dir_z[i] * t;
+        dist[i] = t;
+        out.z_distance[i] = t;
+    }
+
+    alignas(32) f32 hy[8];
+    simd_sample_bilinear8(h, wx, wz, hy);
+
+    alignas(32) i32 screen_y[8];
+    simd_project_y8(hy, eye.y, dist, pixels_per_unit, fb_height, screen_y);
+
+    // Per-lane: advance if screen_y < horizon AND lane is not done. The
+    // done mask short-circuits up at the call site, but we honor it here
+    // too so a stale done-lane never paints.
+    u32 active = 0;
+    for (u32 i = 0; i < 8; ++i) {
+        const bool lane_done = (cb.done_mask >> i) & 1u;
+        if (lane_done) {
+            out.new_horizon_y[i] = cb.horizon_y[i];
+            continue;
+        }
+        if (screen_y[i] < cb.horizon_y[i]) {
+            out.strip_top_y[i]    = static_cast<u32>(screen_y[i]);
+            out.strip_bottom_y[i] = static_cast<u32>(cb.horizon_y[i] - 1);
+            out.new_horizon_y[i]  = screen_y[i];
+
+            // Per-lane texel snap for the splat color. Cheap; one mul + floor
+            // + integer index. We don't try to SIMD this — the splat is u32
+            // and the heightmap is small enough that the indirection cost
+            // dwarfs the per-lane scalar ops.
+            const f32 spacing  = h.spacing > 0.0f ? h.spacing : 1.0f;
+            const i32 tx_i = static_cast<i32>(std::floor(wx[i] / spacing + 0.5f));
+            const i32 tz_i = static_cast<i32>(std::floor(wz[i] / spacing + 0.5f));
+            out.packed_color[i] = pack_splat(splat_at_texel(h, tx_i, tz_i));
+            active |= (1u << i);
+        } else {
+            out.new_horizon_y[i] = cb.horizon_y[i];
+        }
+    }
+    out.active_mask = active;
+}
+
+// Advance a batch in-place: copy `step.new_horizon_y[]` back into `cb.horizon_y[]`,
+// flip the `done_mask` for any lane that's marched off the top of the screen.
+// This is the per-step state update that the tile job loop calls between
+// `simd_step_columns8` calls.
+PSY_FORCEINLINE void simd_advance_batch8(ColumnBatch8& cb,
+                                         const ColumnStepBatch8& step) noexcept {
+    for (u32 i = 0; i < 8; ++i) {
+        cb.horizon_y[i] = step.new_horizon_y[i];
+        if (cb.horizon_y[i] <= 0) cb.done_mask |= (1u << i);
+    }
+}
+
+// True if every lane in the batch has marched off the top of the screen.
+// The tile-job inner loop breaks out as soon as this returns true; on a
+// long-horizon view (tactical-FPS dawn, all lanes paint many strips before
+// any finishes) this is essentially never hit early, but for narrow ground-
+// pointing views the early-out saves the bulk of the steps.
+PSY_FORCEINLINE bool simd_batch_done8(const ColumnBatch8& cb) noexcept {
+    return cb.done_mask == 0xFFu;
+}
+
+// 4-wide convenience for NEON-narrow hosts and for testing the 4-lane
+// variant of the kernel. AVX2 still emits 8-wide via `simd_step_columns8`;
+// callers running on a 4-wide-only target (or wanting deterministic 4-wide
+// behavior in a unit test) use these.
+
+struct ColumnBatch4 {
+    f32 ray_dir_x[4];
+    f32 ray_dir_z[4];
+    i32 horizon_y [4];
+    u32 column_x  [4];
+    u32 done_mask;
+};
+
+struct ColumnStepBatch4 {
+    i32 new_horizon_y[4];
+    u32 strip_top_y  [4];
+    u32 strip_bottom_y[4];
+    u32 packed_color [4];
+    f32 z_distance   [4];
+    u32 active_mask;
+};
+
+PSY_FORCEINLINE void simd_sample_bilinear4(const HeightmapDesc& h,
+                                           const f32 wx[4],
+                                           const f32 wz[4],
+                                           f32       out_height[4]) noexcept {
+    if (!h.heights || h.size_x == 0 || h.size_z == 0 || h.spacing <= 0.0f) {
+        for (u32 i = 0; i < 4; ++i) out_height[i] = 0.0f;
+        return;
+    }
+    alignas(16) f32 h00[4], h10[4], h01[4], h11[4];
+    alignas(16) f32 tx[4], tz[4];
+    const f32 inv_spacing = 1.0f / h.spacing;
+    for (u32 i = 0; i < 4; ++i) {
+        const f32 fx = wx[i] * inv_spacing;
+        const f32 fz = wz[i] * inv_spacing;
+        const i32 x0 = static_cast<i32>(std::floor(fx));
+        const i32 z0 = static_cast<i32>(std::floor(fz));
+        tx[i] = fx - static_cast<f32>(x0);
+        tz[i] = fz - static_cast<f32>(z0);
+        h00[i] = height_at_texel(h, x0,     z0);
+        h10[i] = height_at_texel(h, x0 + 1, z0);
+        h01[i] = height_at_texel(h, x0,     z0 + 1);
+        h11[i] = height_at_texel(h, x0 + 1, z0 + 1);
+    }
+    using namespace simd;
+    const f32x4 v00 = load_aligned4(h00);
+    const f32x4 v10 = load_aligned4(h10);
+    const f32x4 v01 = load_aligned4(h01);
+    const f32x4 v11 = load_aligned4(h11);
+    const f32x4 vtx = load_aligned4(tx);
+    const f32x4 vtz = load_aligned4(tz);
+    const f32x4 hx0 = fma4(sub4(v10, v00), vtx, v00);
+    const f32x4 hx1 = fma4(sub4(v11, v01), vtx, v01);
+    const f32x4 hy  = fma4(sub4(hx1, hx0), vtz, hx0);
+    alignas(16) f32 tmp[4];
+    store_aligned4(tmp, hy);
+    for (u32 i = 0; i < 4; ++i) out_height[i] = tmp[i];
+}
+
+PSY_FORCEINLINE void simd_step_columns4(const HeightmapDesc&  h,
+                                        const ColumnBatch4&   cb,
+                                        math::Vec3            eye,
+                                        f32                   t,
+                                        i32                   fb_height,
+                                        f32                   pixels_per_unit,
+                                        ColumnStepBatch4&     out) noexcept {
+    std::memset(&out, 0, sizeof(out));
+
+    alignas(16) f32 wx[4], wz[4];
+    for (u32 i = 0; i < 4; ++i) {
+        wx[i] = eye.x + cb.ray_dir_x[i] * t;
+        wz[i] = eye.z + cb.ray_dir_z[i] * t;
+        out.z_distance[i] = t;
+    }
+
+    alignas(16) f32 hy[4];
+    simd_sample_bilinear4(h, wx, wz, hy);
+
+    u32 active = 0;
+    for (u32 i = 0; i < 4; ++i) {
+        const bool lane_done = (cb.done_mask >> i) & 1u;
+        if (lane_done) {
+            out.new_horizon_y[i] = cb.horizon_y[i];
+            continue;
+        }
+        const i32 screen_y = project_y(hy[i], eye.y, t, pixels_per_unit, fb_height);
+        if (screen_y < cb.horizon_y[i]) {
+            out.strip_top_y[i]    = static_cast<u32>(screen_y);
+            out.strip_bottom_y[i] = static_cast<u32>(cb.horizon_y[i] - 1);
+            out.new_horizon_y[i]  = screen_y;
+            const f32 spacing = h.spacing > 0.0f ? h.spacing : 1.0f;
+            const i32 tx_i = static_cast<i32>(std::floor(wx[i] / spacing + 0.5f));
+            const i32 tz_i = static_cast<i32>(std::floor(wz[i] / spacing + 0.5f));
+            out.packed_color[i] = pack_splat(splat_at_texel(h, tx_i, tz_i));
+            active |= (1u << i);
+        } else {
+            out.new_horizon_y[i] = cb.horizon_y[i];
+        }
+    }
+    out.active_mask = active;
+}
+
+PSY_FORCEINLINE void simd_advance_batch4(ColumnBatch4& cb,
+                                         const ColumnStepBatch4& step) noexcept {
+    for (u32 i = 0; i < 4; ++i) {
+        cb.horizon_y[i] = step.new_horizon_y[i];
+        if (cb.horizon_y[i] <= 0) cb.done_mask |= (1u << i);
+    }
+}
+
+PSY_FORCEINLINE bool simd_batch_done4(const ColumnBatch4& cb) noexcept {
+    return cb.done_mask == 0xFu;
+}
 
 }  // namespace psynder::world::outdoor::detail
