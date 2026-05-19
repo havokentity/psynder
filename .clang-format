@@ -1,0 +1,52 @@
+# Psynder C++23 style. 4-space indent, 100-col soft limit, snake_case
+# functions/locals, PascalCase types, kCamelCase constants.
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++20
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# Spacing
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpacesInContainerLiterals: false
+SpacesInAngles: false
+
+# Pointers / references hug the type
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+
+# Braces
+BreakBeforeBraces: Attach
+AllowShortBlocksOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortCaseLabelsOnASingleLine: false
+
+# Includes
+IncludeBlocks: Regroup
+SortIncludes: true
+
+# Constructors
+ConstructorInitializerIndentWidth: 4
+BreakConstructorInitializers: BeforeComma
+AllowAllArgumentsOnNextLine: false
+BinPackArguments: false
+BinPackParameters: false
+
+# Misc
+FixNamespaceComments: true
+NamespaceIndentation: None
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+ReflowComments: true
+
+# Penalize lines longer than 100 cols more than the default
+PenaltyExcessCharacter: 5
+PenaltyBreakBeforeFirstCallParameter: 50

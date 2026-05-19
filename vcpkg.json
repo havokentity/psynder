@@ -1,0 +1,26 @@
+{
+  "name": "psynder",
+  "version-string": "0.1.0",
+  "description": "Pure-CPU game engine with software rasterizer and software raytracer",
+  "license": "MIT",
+  "dependencies": [
+    "fmt",
+    "zstd",
+    "lua",
+    "freetype"
+  ],
+  "features": {
+    "tracy": {
+      "description": "Tracy profiler integration",
+      "dependencies": ["tracy"]
+    },
+    "tests": {
+      "description": "Unit tests + bench harness",
+      "dependencies": ["catch2"]
+    },
+    "tools": {
+      "description": "Offline tools (lm_bake reference, dmonte_pt)",
+      "dependencies": ["embree"]
+    }
+  }
+}
