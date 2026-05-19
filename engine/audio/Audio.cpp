@@ -13,7 +13,10 @@
 #include "Audio.h"
 
 #include "internal/Backend.h"
+#include "internal/Doppler.h"
+#include "internal/HrirDatabase.h"
 #include "internal/MixerCore.h"
+#include "internal/PartitionedConvolver.h"
 
 #include "core/Log.h"
 #include "jobs/JobSystem.h"
@@ -46,9 +49,14 @@ struct State {
     math::Vec3                  forward{0, 0, 1};
     math::Vec3                  up{0, 1, 0};
 
-    // wet/dry reverb chains
+    // wet/dry reverb chains — Wave-A unmodulated FDN + naive FFT reverb,
+    // Wave-B modulated FDN + partitioned overlap-save convolver (per-ear).
     detail::FdnReverb           fdn{};
     detail::FftConvReverb       indoor{};
+    detail::ModulatedFdnReverb  fdn_mod{};
+    detail::PartitionedConvolver indoor_partitioned_l{};
+    detail::PartitionedConvolver indoor_partitioned_r{};
+    detail::HrirDatabase        hrir_db{};
     bool                        reverbs_ready = false;
 
     // mixer scratch — sized once in start(), reused on every pull.
@@ -101,15 +109,25 @@ void mixer_pull(f32* out_stereo, u32 frames, void* /*user*/) noexcept {
         std::fill(s.per_voice_buffers.begin(),
                   s.per_voice_buffers.begin() + static_cast<isize>(snapshot_count * per_voice_floats),
                   0.0f);
+        const math::Vec3 listener_eye = s.eye;
+        // Wave-B: listener velocity isn't tracked separately by the public
+        // API yet (set_listener takes pose only). The Doppler kernel handles
+        // a zero listener-vel correctly.
+        const math::Vec3 listener_vel{0, 0, 0};
         js.parallel_for(0u, snapshot_count, 1u,
             [&](usize begin, usize end) {
                 for (usize vi = begin; vi < end; ++vi) {
                     f32* buf = s.per_voice_buffers.data() + vi * per_voice_floats;
+                    // Wave-B Doppler ratio (1.0 when voice is at rest).
+                    const f32 doppler = detail::doppler_ratio(
+                        listener_eye, listener_vel,
+                        snapshot[vi].position, snapshot[vi].velocity);
                     // 440 Hz placeholder tone — real PCM clip streaming
                     // lands in Wave B. The deliverable here is the mixer
                     // structure, not playback fidelity.
                     detail::render_voice_into_stereo(snapshot[vi], 440.0f,
-                                                     s.desc.sample_rate, frames, buf);
+                                                     s.desc.sample_rate, frames, buf,
+                                                     doppler);
                 }
             });
         // SIMD-merge per-voice buffers into master scratch.
@@ -164,8 +182,24 @@ bool Engine::start(const DeviceDesc& desc) {
         0.0f);
 
     s.voices.clear();
+    // Wave-A naive paths kept for backwards-compatible tests.
     s.fdn.reset(s.desc.sample_rate,        /*decay s*/   2.5f);
     s.indoor.reset(s.desc.sample_rate,     /*ir s*/      0.12f, /*decay s*/ 1.2f);
+    // Wave-B refined paths.
+    s.fdn_mod.reset(s.desc.sample_rate,    /*decay s*/   2.5f,
+                    /*mod_depth_samples*/  3.5f,
+                    /*mod_rate_hz_base*/   0.71f);
+    // Partitioned convolver: 256-sample block with 4× overlap, 0.40 s IR,
+    // 1.2 s decay — one instance per ear so left/right impulses can diverge
+    // (different LCG seeds → uncorrelated tails).
+    const u32 conv_block = std::min<u32>(256u, s.desc.buffer_frames);
+    s.indoor_partitioned_l.reset(s.desc.sample_rate, /*ir s*/ 0.40f,
+                                 /*decay s*/ 1.2f, conv_block, /*overlap*/ 4u,
+                                 /*seed*/ 0xC0FFEEu);
+    s.indoor_partitioned_r.reset(s.desc.sample_rate, /*ir s*/ 0.40f,
+                                 /*decay s*/ 1.2f, conv_block, /*overlap*/ 4u,
+                                 /*seed*/ 0xDEADBEEFu);
+    s.hrir_db.build(s.desc.sample_rate);
     s.reverbs_ready = true;
 
     if (!backend_init(s.desc, &mixer_pull, &s, s.chosen_backend)) {
