@@ -42,6 +42,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
+#include "ui/rml/DataBind.h"
 #include "ui/rml/Rml.h"
 #include "world/outdoor/Terrain.h"
 
@@ -54,22 +55,16 @@
 #include <string_view>
 #include <vector>
 
-// ── Wave-D HUD live binding ───────────────────────────────────────────────
+// ── Wave-E HUD live binding ───────────────────────────────────────────────
 //
-// The public RmlUi binding (engine/ui/rml/Rml.h) does not yet expose per-
-// element setters — the in-tree RML/RCSS subset only ships static parse +
-// cascade + layout.  Lane 17 already has a `test_only::reload_with_source`
-// surface that re-parses + re-cascades an existing document in-place; we
-// forward-declare it here (same shape as tests/unit/ui_rml_lua.cpp) so we
-// can re-template the HUD each frame with the current vehicle telemetry
-// baked in.  This is exactly what a data-binding setter will do once the
-// `PSYNDER_VENDOR_RMLUI=ON` upstream path lands; the sample-level usage
-// pattern stays identical.
-namespace psynder::ui::rml::test_only {
-bool reload_with_source(std::string_view name,
-                        std::string_view rml_src,
-                        std::string_view rcss_src);
-}  // namespace psynder::ui::rml::test_only
+// Wave-D plumbed the HUD via a test-only reload hack
+// (`test_only::reload_with_source`) because lane 17's in-tree RML/RCSS
+// subset shipped no per-element setters.  Wave-E adds a real public
+// surface in `engine/ui/rml/DataBind.h` (`set_element_text` +
+// `set_element_attribute`); the sample now drives the HUD through those
+// instead, with no per-frame source rebuild.  The same calls route
+// through upstream RmlUi when `PSYNDER_VENDOR_RMLUI=ON` flips the
+// vendor bring-up on.
 
 using namespace psynder;
 
@@ -521,16 +516,17 @@ EngineEstimate estimate_engine(f32 speed_mps, f32 throttle, f32 wheel_radius) no
     return EngineEstimate{rpm, gear};
 }
 
-// Re-template the hud.rml document with current telemetry baked in.  The
-// in-tree RmlUi subset does not have a per-property setter API yet, so we
-// rebuild the RML source per-frame and call the engine-side test_only
-// reload surface (which re-parses + re-cascades in place, preserving the
-// document's visibility).  Cheap: parse + cascade for ~16 elements runs in
-// the tens of microseconds.
-std::string build_hud_rml(f32 speed_mps, f32 rpm, i32 gear,
-                          f32 throttle, f32 brake) {
+// Push current telemetry into the HUD document via the public DataBind
+// setters.  The static structure (speed panel, rpm bar, pedal indicators)
+// is defined in `assets/hud.rml` and loaded once at startup; every frame
+// we update only the fields that change — the text run on the speed +
+// gear elements, and the `style="..."` attribute on the bars whose
+// height/width represent the value.  No per-frame source rebuild,
+// no test-layer hooks.
+void push_hud_telemetry(f32 speed_mps, f32 rpm, i32 gear,
+                        f32 throttle, f32 brake) {
     const u32 speed_kmh   = static_cast<u32>(std::round(speed_mps * 3.6f));
-    // RPM bar: scale 800..7000 → 0..340 px (match width in hud.rcss).
+    // RPM bar: scale 800..7000 → 0..340 px (matches width in hud.rcss).
     constexpr f32 kIdle    = 800.0f;
     constexpr f32 kRedline = 7000.0f;
     constexpr u32 kBarW    = 340u;
@@ -551,45 +547,32 @@ std::string build_hud_rml(f32 speed_mps, f32 rpm, i32 gear,
     else if (gear ==  0) gear_ch = 'N';
     else if (gear >= 1 && gear <= 6) gear_ch = static_cast<char>('0' + gear);
 
-    // Inline style overrides for the dynamic widgets.  The RCSS file
-    // supplies base layout + colours; per-frame `style="..."` attributes
-    // win in the cascade and reflect telemetry without restyling the
-    // panels themselves.
-    char buf[2048];
-    std::snprintf(buf, sizeof(buf),
-        "<rml><head><title>HUD</title>"
-        "<link rel=\"stylesheet\" href=\"hud.rcss\"/></head><body>"
-        "<div id=\"hud-root\">"
-          "<div id=\"speed-panel\" class=\"panel\">"
-            "<div id=\"speed-value\" class=\"speed-number\">%u</div>"
-            "<div id=\"speed-unit\"  class=\"speed-unit\">KM/H</div>"
-          "</div>"
-          "<div id=\"rpm-panel\" class=\"panel\">"
-            "<div id=\"rpm-label\" class=\"label\">RPM</div>"
-            "<div id=\"rpm-track\" class=\"bar bar-track\"></div>"
-            "<div id=\"rpm-fill\"  class=\"bar bar-fill rpm\" "
-              "style=\"width:%u\"></div>"
-            "<div id=\"rpm-redline\" class=\"bar bar-redline\"></div>"
-            "<div id=\"gear-letter\" class=\"gear\">%c</div>"
-          "</div>"
-          "<div id=\"pedal-panel\" class=\"panel\">"
-            "<div id=\"thr-label\"  class=\"pedal-label\">THR</div>"
-            "<div id=\"thr-track\"  class=\"pedal-track\"></div>"
-            "<div id=\"thr-fill\"   class=\"pedal-fill throttle\" "
-              "style=\"top:%u; height:%u\"></div>"
-            "<div id=\"brk-label\"  class=\"pedal-label brk\">BRK</div>"
-            "<div id=\"brk-track\"  class=\"pedal-track brk\"></div>"
-            "<div id=\"brk-fill\"   class=\"pedal-fill brake\" "
-              "style=\"top:%u; height:%u\"></div>"
-          "</div>"
-        "</div>"
-        "</body></rml>",
-        speed_kmh,
-        rpm_fill_px,
-        gear_ch,
-        thr_top, thr_fill_px,
-        brk_top, brk_fill_px);
-    return std::string(buf);
+    // Format the numeric readouts into small stack buffers so we don't
+    // allocate on the hot path.  `set_element_text` copies the bytes.
+    char speed_buf[16];
+    std::snprintf(speed_buf, sizeof(speed_buf), "%u", speed_kmh);
+    const char gear_str[2] = { gear_ch, '\0' };
+
+    psynder::ui::rml::set_element_text("hud", "speed-value", speed_buf);
+    psynder::ui::rml::set_element_text("hud", "gear-letter", gear_str);
+
+    // Bars drive their geometry via the `style` attribute.  The setter
+    // re-parses the inline style and re-cascades the document so
+    // `computed_style.width` / `top` / `height` reflect the new pixel
+    // count for the next render() pass.
+    char rpm_style[32];
+    std::snprintf(rpm_style, sizeof(rpm_style), "width:%u", rpm_fill_px);
+    psynder::ui::rml::set_element_attribute("hud", "rpm-fill", "style", rpm_style);
+
+    char thr_style[48];
+    std::snprintf(thr_style, sizeof(thr_style), "top:%u; height:%u",
+                  thr_top, thr_fill_px);
+    psynder::ui::rml::set_element_attribute("hud", "thr-fill", "style", thr_style);
+
+    char brk_style[48];
+    std::snprintf(brk_style, sizeof(brk_style), "top:%u; height:%u",
+                  brk_top, brk_fill_px);
+    psynder::ui::rml::set_element_attribute("hud", "brk-fill", "style", brk_style);
 }
 
 // Build a chassis-local frame from a forward (XZ) vector.
@@ -920,18 +903,16 @@ int main(int argc, char** argv) {
 
         rasterizer.end_frame();
 
-        // ── HUD update + render (Wave-D M7) ─────────────────────────────
+        // ── HUD update + render (Wave-E) ────────────────────────────────
         //
-        // Bake current telemetry into a fresh RML source and reload the
-        // "hud" document in place; then tick the binding and submit it to
-        // the same software framebuffer the scene rendered into.  The
+        // Push current telemetry directly into the live DOM via the public
+        // DataBind setters (`set_element_text` + `set_element_attribute`)
+        // — no per-frame source rebuild, no test-layer reload hack.  The
         // engine-side render() walks the cascaded layout boxes and draws
         // them on top of the 3D scene without disturbing depth.
         if (hud_active) {
             const EngineEstimate ee = estimate_engine(car_speed, hud_throttle, 0.35f);
-            const std::string rml_src = build_hud_rml(
-                car_speed, ee.rpm, ee.gear, hud_throttle, hud_brake);
-            psynder::ui::rml::test_only::reload_with_source("hud", rml_src, "");
+            push_hud_telemetry(car_speed, ee.rpm, ee.gear, hud_throttle, hud_brake);
             psynder::ui::rml::update(dt);
             psynder::ui::rml::render(fb);
         }

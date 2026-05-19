@@ -23,7 +23,7 @@ psynder_add_lane(ui_rml
 # flip this option (`-DPSYNDER_VENDOR_RMLUI=ON`).  The public API
 # (`engine/ui/rml/Rml.h`) is unchanged either way.
 option(PSYNDER_VENDOR_RMLUI
-    "Vendor RmlUi + FreeType via FetchContent under third_party/. Lane 17 only."
+    "Vendor RmlUi + FreeType via FetchContent (staged under the build dir). Lane 17 only."
     OFF
 )
 
@@ -31,6 +31,9 @@ if(PSYNDER_VENDOR_RMLUI)
     include(FetchContent)
 
     # FreeType first — RmlUi's default font engine depends on it.
+    # Fetched sources live under the build directory (CMake's default
+    # `_deps/` staging) so the engine's source tree stays clean and Git
+    # status doesn't churn when the vendor switch is flipped.
     find_package(Freetype QUIET)
     if(NOT Freetype_FOUND)
         message(STATUS "[deps] FreeType: fetching via FetchContent")
@@ -38,7 +41,6 @@ if(PSYNDER_VENDOR_RMLUI)
             GIT_REPOSITORY https://github.com/freetype/freetype.git
             GIT_TAG        VER-2-13-3
             GIT_SHALLOW    TRUE
-            SOURCE_DIR     ${CMAKE_SOURCE_DIR}/third_party/freetype
         )
         set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
         set(FT_DISABLE_BZIP2    ON CACHE BOOL "" FORCE)
@@ -54,12 +56,15 @@ if(PSYNDER_VENDOR_RMLUI)
         GIT_REPOSITORY https://github.com/mikke89/RmlUi.git
         GIT_TAG        6.2
         GIT_SHALLOW    TRUE
-        SOURCE_DIR     ${CMAKE_SOURCE_DIR}/third_party/rmlui
     )
     set(BUILD_SHARED_LIBS_SAVED ${BUILD_SHARED_LIBS})
     set(BUILD_SHARED_LIBS         OFF CACHE BOOL "" FORCE)
     set(RMLUI_SAMPLES             OFF CACHE BOOL "" FORCE)
-    set(RMLUI_BACKEND             "none" CACHE STRING "" FORCE)
+    # `RMLUI_BACKEND` is validated against the allow-list in RmlUi's root
+    # CMakeLists even when RMLUI_SAMPLES=OFF.  RmlUi 6.2 dropped the "none"
+    # alias; the backend is only consumed by sample targets, so "auto"
+    # (the upstream default) is the safe choice that compiles RmlCore only.
+    set(RMLUI_BACKEND             "auto" CACHE STRING "" FORCE)
     set(RMLUI_FONT_ENGINE         "freetype" CACHE STRING "" FORCE)
     set(RMLUI_LUA_BINDINGS        OFF CACHE BOOL "" FORCE)
     set(RMLUI_LOTTIE_PLUGIN       OFF CACHE BOOL "" FORCE)
@@ -69,8 +74,20 @@ if(PSYNDER_VENDOR_RMLUI)
     FetchContent_MakeAvailable(rmlui)
     set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVED})
 
+    # Upstream exposes the static core lib as `rmlui_core` (snake_case in
+    # 6.2).  Earlier versions used `RmlCore`; we accept whichever target the
+    # vendor pull produced so the option keeps working as RmlUi evolves.
+    if(TARGET rmlui_core)
+        set(_psy_rmlui_target rmlui_core)
+    elseif(TARGET RmlCore)
+        set(_psy_rmlui_target RmlCore)
+    else()
+        message(FATAL_ERROR
+            "PSYNDER_VENDOR_RMLUI=ON but no RmlUi core target found "
+            "(expected rmlui_core or RmlCore)")
+    endif()
     target_compile_definitions(psynder_ui_rml PUBLIC PSYNDER_HAS_RMLUI=1)
-    target_link_libraries(psynder_ui_rml PUBLIC RmlCore)
+    target_link_libraries(psynder_ui_rml PUBLIC ${_psy_rmlui_target})
 endif()
 
 # ─── Hook our test sources into the shared psynder_unit binary ───────────

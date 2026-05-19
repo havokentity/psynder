@@ -263,9 +263,15 @@ bool read_attr(Cursor& c, std::string& name, std::string& value) {
     return true;
 }
 
+}  // namespace (anon)
+
 // ─── Inline-style parser (`style="prop: val; prop: val"`) ───────────────
 //
 // Used both for `<tag style="…">` and as the body parser for RCSS rules.
+// Also exposed at `detail::` scope (declared in Rml_internal.h) so the
+// DataBind setters can re-derive `inline_style` from an updated `style`
+// attribute without reparsing the whole document.
+//
 // Returns ok=false on malformed declarations (warn-only — we still set
 // every prop we recognized).
 bool apply_declarations(std::string_view body, StyleBlock& out) {
@@ -324,6 +330,8 @@ bool apply_declarations(std::string_view body, StyleBlock& out) {
     }
     return !any_failed;
 }
+
+namespace {
 
 // ─── Children parse ──────────────────────────────────────────────────────
 ParseResult parse_element(Cursor& c, Element& out);
