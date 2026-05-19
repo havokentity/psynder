@@ -212,9 +212,15 @@ int main(int argc, char** argv) {
     // 60-sample ring of recent frame times (ms) for the debug HUD's strip
     // chart. Wraps via `frame % kFrameHistory`; the HUD's own internal
     // averaging looks at `avg_frame_ms` so we keep this lightweight.
-    constexpr usize kFrameHistory = 60;
+    // Sized `u32` so `frame + 1u` and the `min` against it stay in the
+    // same domain (the comparable variant in PR #114 mixed `usize` and
+    // `u32`, which clang would have narrowed silently — pre-emptively
+    // avoiding that here).
+    constexpr u32 kFrameHistory = 60;
     std::array<f32, kFrameHistory> frame_ms_ring{};
     u64 prev_frame_ticks = t0;
+    // Smoke-mode default frame time stand-in (60 FPS budget = 1/60 s).
+    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
 
     while (!window->should_close()) {
         window->poll_events();
@@ -224,11 +230,12 @@ int main(int argc, char** argv) {
             break;
         }
 
-        // Per-frame wall-clock delta for HUD stats. Skipped on smoke runs
-        // because their time is frame-indexed (the chart would look weird).
+        // Per-frame wall-clock delta for HUD stats. Smoke runs are
+        // frame-indexed so we use the 60 FPS budget stand-in to keep the
+        // chart deterministic across hosts.
         const u64 now_ticks = platform::Clock::ticks_now();
         const f32 frame_ms  = args.smoke_frames > 0
-                                  ? 16.6f
+                                  ? kSmokeFrameMs
                                   : static_cast<f32>(
                                         platform::Clock::seconds(
                                             now_ticks - prev_frame_ticks) *
@@ -250,8 +257,11 @@ int main(int argc, char** argv) {
             platform::input()
                 ? editor::sample_step(*platform::input(), fb)
                 : editor::Mode::Play;
+        // EDIT mode pins `t` to a constant so the scene is frozen for
+        // inspection. Smoke mode advances per frame for deterministic
+        // captures; otherwise we tick off the wall clock.
         const f32 t = (edit_mode == editor::Mode::Edit)
-                          ? static_cast<f32>(frame) * 0.0f
+                          ? 0.0f
                           : args.smoke_frames > 0
                                 ? static_cast<f32>(frame) * 0.05f
                                 : static_cast<f32>(platform::Clock::seconds(
@@ -300,12 +310,14 @@ int main(int argc, char** argv) {
         {
             ui::imm::DebugHudStats stats{};
             stats.frame_ms      = frame_ms;
-            stats.avg_frame_ms  = [&]{
+            stats.avg_frame_ms  = [&]() noexcept {
+                // Walk only the populated prefix of the ring. `n` matches
+                // `kFrameHistory`'s `u32` type so we don't mix domains.
+                const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
+                if (n == 0u) return 0.0f;
                 f32 sum = 0.0f;
-                const usize n =
-                    static_cast<usize>(std::min<u32>(frame + 1u, kFrameHistory));
-                for (usize i = 0; i < n; ++i) sum += frame_ms_ring[i];
-                return n ? sum / static_cast<f32>(n) : 0.0f;
+                for (u32 i = 0; i < n; ++i) sum += frame_ms_ring[i];
+                return sum / static_cast<f32>(n);
             }();
             stats.draw_calls    = kCratePositions.size();
             stats.triangles     = kCratePositions.size() * 12u;
