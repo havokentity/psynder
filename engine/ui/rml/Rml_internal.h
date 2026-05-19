@@ -19,6 +19,7 @@
 #include "core/Types.h"
 #include "math/Math.h"
 
+#include <atomic>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -96,8 +97,43 @@ struct Document {
     Element             root;
     std::vector<Rule>   sheet;
     bool                visible           = false;
-    bool                needs_reload      = false;
+    // `needs_reload` is touched from the VFS watcher thread (which fires
+    // the watch callback) and read on the engine main thread inside
+    // update().  Using a 1-byte atomic keeps it racey-but-correct: a
+    // pending reload is never lost, an in-flight reload simply repeats
+    // on the next frame.  The atomic flag avoids any need for a mutex on
+    // the hot render/update path.
+    std::atomic<bool>   needs_reload{ false };
     u64                 reload_generation = 0;
+
+    // Default/move semantics so the unordered_map<string,Document> can
+    // still re-emplace cleanly when load_document is called twice.
+    Document() = default;
+    Document(const Document&)            = delete;
+    Document& operator=(const Document&) = delete;
+    Document(Document&& o) noexcept
+        : name(std::move(o.name))
+        , rml_virtual_path(std::move(o.rml_virtual_path))
+        , rcss_virtual_path(std::move(o.rcss_virtual_path))
+        , root(std::move(o.root))
+        , sheet(std::move(o.sheet))
+        , visible(o.visible)
+        , needs_reload(o.needs_reload.load(std::memory_order_relaxed))
+        , reload_generation(o.reload_generation) {}
+    Document& operator=(Document&& o) noexcept {
+        if (this != &o) {
+            name              = std::move(o.name);
+            rml_virtual_path  = std::move(o.rml_virtual_path);
+            rcss_virtual_path = std::move(o.rcss_virtual_path);
+            root              = std::move(o.root);
+            sheet             = std::move(o.sheet);
+            visible           = o.visible;
+            needs_reload.store(o.needs_reload.load(std::memory_order_relaxed),
+                               std::memory_order_relaxed);
+            reload_generation = o.reload_generation;
+        }
+        return *this;
+    }
 };
 
 // ─── Parser ──────────────────────────────────────────────────────────────
@@ -144,10 +180,33 @@ void layout(const Document& doc, math::Vec2 viewport, std::vector<LayoutBox>& ou
 using LuaExecFn = bool (*)(std::string_view source, std::string_view name) noexcept;
 void set_lua_backend(LuaExecFn backend) noexcept;
 
+// Structured event payload passed to the handler body via a Lua `event`
+// upvalue.  Designers reference `event.kind`, `event.target_id`,
+// `event.mouse_x`, `event.mouse_y`, `event.button` inside the handler:
+//
+//     <button id="quit" onclick="lua:print(event.target_id)" />
+//
+// Wave-B keeps the payload deliberately small — kind + target + mouse
+// state — which is enough for buttons, sliders, and hover effects.
+// Upstream RmlUi events grow this surface organically once the vendored
+// branch flips on.
+struct EventPayload {
+    std::string_view kind;        // "click", "mouseover", "mouseout", "change", ...
+    std::string_view target_id;   // element id ("" if none)
+    f32              mouse_x = 0.f;
+    f32              mouse_y = 0.f;
+    i32              button  = 0; // 0=left, 1=middle, 2=right (for click events)
+};
+
 // Called by Rml.cpp for every inline-attribute handler that fires.  See
-// LuaBinding.cpp for the implementation.
+// LuaBinding.cpp for the implementation.  The two-arg overload is kept
+// for backwards-compat with existing tests; new callers supply a
+// payload.
 bool dispatch_handler(std::string_view event_name,
                       std::string_view handler_body);
+bool dispatch_handler(std::string_view event_name,
+                      std::string_view handler_body,
+                      const EventPayload& payload);
 
 // Bootstrapping shim — installs the `rml` Lua table when a backend is
 // present.  Idempotent.
