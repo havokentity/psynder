@@ -35,7 +35,7 @@ add_custom_target(psynder_editor_ipc_idl_gen
 # ─── Library ───────────────────────────────────────────────────────────────
 # Note: the Lanes helper globs *.cpp under this directory; Server.cpp picks up
 # automatically. We add include dirs for the generated header.
-psynder_add_lane(editor_ipc LINKS psynder_core psynder_scene psynder_editor_core)
+psynder_add_lane(editor_ipc LINKS psynder_core psynder_scene psynder_editor_core psynder_script)
 
 add_dependencies(psynder_editor_ipc psynder_editor_ipc_idl_gen)
 
