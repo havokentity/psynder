@@ -55,6 +55,24 @@ public:
     // Push a state delta to all connected, authenticated, subscribed clients.
     void broadcast(std::string_view channel, std::span<const ::psynder::u8> payload);
 
+    // Wave-B: slice-scoped scene-delta push. Wraps `msgpack_payload` in a
+    // SceneDeltaFrame (opcode 20) tagged with `slice_name` and broadcasts to
+    // every authenticated client subscribed to a *channel matching the slice
+    // name*. The `payload` itself is opaque msgpack chosen by the caller
+    // (e.g. lane 20 React panels consume it as a Uint8Array). Connections
+    // that have not subscribed to `slice_name` see no traffic — this is the
+    // mechanism by which the React panels under engine/editor/web/ multiplex
+    // their independent panel updates across one socket.
+    void push_scene_delta(std::string_view slice_name,
+                          std::span<const ::psynder::u8> msgpack_payload);
+
+    // Wave-B: install the script REPL evaluator as the console-panel backend.
+    // Called automatically from `start()` so ConsoleFrame messages route
+    // through Lua once the IPC server is up. Idempotent — calling twice is
+    // a no-op. Tests can stub the backend via `script::set_repl_backend(...)`
+    // before calling `start()` to verify wiring without a live VM.
+    void install_repl_backend();
+
     // Pump once per frame; drains inbound commands.
     void pump();
 
@@ -64,10 +82,14 @@ public:
     bool validate_token(std::string_view t) const noexcept;
 
     // Inbound command queue — populated by client workers when they receive
-    // ConsoleFrame / other client→server frames; drained by pump().
+    // ConsoleFrame / other client→server frames; drained by pump(). The
+    // `conn` weak_ptr lets pump() route a ConsoleReply back to the
+    // originating client without keeping a dead Connection alive after the
+    // socket has closed.
     struct InboundCmd {
         std::string channel;
         std::vector<::psynder::u8> payload;
+        std::weak_ptr<Connection> conn;
     };
 
 private:
@@ -102,6 +124,11 @@ private:
 
     std::mutex                                  inbound_mu_;
     std::deque<InboundCmd>                      inbound_;
+
+    // Wave-B: set by `install_repl_backend()`. When false, `pump()` falls
+    // back to the legacy Wave-A path (log-only). When true, `pump()` calls
+    // `script::dispatch_repl` and ships back a ConsoleReply frame.
+    std::atomic<bool>                           repl_installed_{false};
 };
 
 }  // namespace psynder::editor::ipc::internal

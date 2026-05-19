@@ -29,6 +29,7 @@
 #include "editor/ipc/proto/Protocol.gen.h"
 
 #include "core/Log.h"
+#include "script/internal/ReplHook.h"
 
 #include <algorithm>
 #include <array>
@@ -211,8 +212,27 @@ bool Server::start(const char* bind_host, ::psynder::u16 port, bool require_sess
     running_.store(true);
     accept_thread_ = std::thread([this]() { this->accept_loop(); });
 
+    // Wave-B: route ConsoleFrame messages through the script lane's REPL hook
+    // by default. The script lane installs its own evaluator; we only verify
+    // that a backend is registered so `dispatch_repl` is callable from pump().
+    install_repl_backend();
+
     PSY_LOG_INFO("editor-ipc: listening on {}:{}", bind_host_, port_);
     return true;
+}
+
+void Server::install_repl_backend() {
+    // The script lane's `dispatch_repl(...)` already falls back to the
+    // default Vm evaluator when no custom backend is installed (see
+    // engine/script/internal/ReplHook.cpp). Calling this method here is the
+    // explicit hand-off point: the IPC server now considers the REPL wiring
+    // live, and `pump()` will forward ConsoleCmd text through Lua.
+    //
+    // We deliberately do NOT install our own backend that supplants the
+    // script lane's default — tests opt in to a fake backend via
+    // `script::set_repl_backend(...)`. This method is therefore mostly a
+    // documentation hook + state flag for `pump()` to consult.
+    repl_installed_.store(true, std::memory_order_release);
 }
 
 void Server::stop() {
@@ -512,6 +532,7 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                     ic.channel = proto::channels::kconsole;
                     ic.payload.assign(reinterpret_cast<const ::psynder::u8*>(cmd.text.data()),
                                       reinterpret_cast<const ::psynder::u8*>(cmd.text.data()) + cmd.text.size());
+                    ic.conn = conn;  // weak ref so pump() can ship the reply.
                     std::lock_guard<std::mutex> lk(inbound_mu_);
                     inbound_.emplace_back(std::move(ic));
                 }
@@ -568,19 +589,83 @@ void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> 
     }
 }
 
+void Server::push_scene_delta(std::string_view slice_name,
+                              std::span<const ::psynder::u8> msgpack_payload) {
+    // Build the SceneDeltaFrame: u16 opcode then SceneDeltaSlice{slice,
+    // payload}. The payload itself is opaque to us — we only re-frame it.
+    msgpack::Writer w;
+    w.u16_(proto::opcodes::kSceneDeltaFrame);
+    proto::SceneDeltaSlice sd;
+    sd.slice.assign(slice_name.data(), slice_name.size());
+    sd.payload.assign(msgpack_payload.data(),
+                      msgpack_payload.data() + msgpack_payload.size());
+    proto::SceneDeltaSlice_encode(w, sd);
+    auto frame = wsframe::encode_server_binary(w.data(), w.size());
+
+    std::vector<std::shared_ptr<Connection>> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(conns_mu_);
+        snapshot = conns_;
+    }
+    // Deliver to every authenticated connection whose subscription set
+    // contains `slice_name`. The slice and the WS subscription channel are
+    // the same string by convention so lane 20 panels can keep using the
+    // existing SubscribeFrame mechanism.
+    const std::string slice_str(slice_name);
+    for (auto& c : snapshot) {
+        if (!c || !c->authed.load() || !c->alive.load()) continue;
+        bool subscribed = false;
+        {
+            std::lock_guard<std::mutex> lk(c->sub_mu);
+            subscribed = c->subscribed.count(slice_str) > 0;
+        }
+        if (!subscribed) continue;
+        enqueue(*c, frame);
+    }
+
+    // Same opportunistic GC as broadcast(): if a connection died between
+    // accept and now its slot is removed here so the conns_ vector doesn't
+    // grow without bound across a long session.
+    {
+        std::lock_guard<std::mutex> lk(conns_mu_);
+        conns_.erase(std::remove_if(conns_.begin(), conns_.end(),
+                                    [](const std::shared_ptr<Connection>& c) {
+                                        return !c || !c->alive.load();
+                                    }),
+                     conns_.end());
+    }
+}
+
 void Server::pump() {
     std::deque<InboundCmd> local;
     {
         std::lock_guard<std::mutex> lk(inbound_mu_);
         local.swap(inbound_);
     }
+    const bool repl_live = repl_installed_.load(std::memory_order_acquire);
     for (auto& cmd : local) {
         std::string text(reinterpret_cast<const char*>(cmd.payload.data()), cmd.payload.size());
         PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);
-        // Lane 18 (editor_core) consumes inbound commands via its own Console
-        // hook; we just surface them in the log for Wave A. The TS panel
-        // gets back log lines on the "log" channel via a future log-sink
-        // wiring under engine/core (out of this lane's scope).
+        if (!repl_live) continue;
+
+        // Route through the script lane's REPL hook. `dispatch_repl` looks up
+        // whatever backend is currently installed (default = Vm::execute_repl,
+        // tests may override). The result string goes back to the originating
+        // panel as a ConsoleReply frame (opcode 21).
+        std::string out;
+        const bool ok = ::psynder::script::dispatch_repl(text, out);
+
+        auto conn = cmd.conn.lock();
+        if (!conn || !conn->alive.load()) continue;
+
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleReplyFrame);
+        proto::ConsoleReply rep;
+        rep.ok = ok;
+        rep.text = std::move(out);
+        proto::ConsoleReply_encode(w, rep);
+        auto frame = wsframe::encode_server_binary(w.data(), w.size());
+        enqueue(*conn, std::move(frame));
     }
 }
 
