@@ -363,33 +363,8 @@ void build_leaf_draws(const BspMap&             map,
     build_face_draws(geom, faces, resolve, out);
 }
 
-// ─── Portal walk (Portal.h) — Wave A degrades to PVS-only ────────────────
-
-void walk_portal_visible_leaves(const BspMap&        map,
-                                const BspPortalSet&  /*portals*/,
-                                math::Vec3           eye,
-                                const PortalFrustum& initial,
-                                void (*emit)(const BspLeaf&,
-                                             const PortalFrustum&,
-                                             void* user),
-                                void*                user) {
-    if (emit == nullptr) return;
-    struct Ctx { void (*cb)(const BspLeaf&, const PortalFrustum&, void*);
-                 void* user;
-                 const PortalFrustum* frustum; };
-    Ctx ctx{ emit, user, &initial };
-    auto bridge = +[](const BspLeaf& leaf, void* u) {
-        Ctx& c = *static_cast<Ctx*>(u);
-        c.cb(leaf, *c.frustum, c.user);
-    };
-    walk_visible_leaves(map, eye, bridge, &ctx);
-}
-
-BspPortalSet build_portal_set(const BspMap& /*map*/) {
-    // Wave A: lm_qbsp does not yet emit a portals chunk; we hand back an empty
-    // table so callers (renderer integration) compile and run today. Wave B
-    // wires portals up properly when lm_qbsp lands the chunk.
-    return BspPortalSet{};
-}
+// `walk_portal_visible_leaves` + `build_portal_set` (Portal.h) live in
+// PortalClip.cpp — Wave B replaced the Wave A PVS-only stub with a real
+// portal-graph walk + frustum clip. See PortalClip.h for the helper surface.
 
 }  // namespace psynder::world::bsp
