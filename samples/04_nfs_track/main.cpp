@@ -34,6 +34,7 @@
 
 #include "common/PngWriter.h"
 
+#include "asset/Vfs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
@@ -41,15 +42,34 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
+#include "ui/rml/Rml.h"
 #include "world/outdoor/Terrain.h"
 
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
+
+// ── Wave-D HUD live binding ───────────────────────────────────────────────
+//
+// The public RmlUi binding (engine/ui/rml/Rml.h) does not yet expose per-
+// element setters — the in-tree RML/RCSS subset only ships static parse +
+// cascade + layout.  Lane 17 already has a `test_only::reload_with_source`
+// surface that re-parses + re-cascades an existing document in-place; we
+// forward-declare it here (same shape as tests/unit/ui_rml_lua.cpp) so we
+// can re-template the HUD each frame with the current vehicle telemetry
+// baked in.  This is exactly what a data-binding setter will do once the
+// `PSYNDER_VENDOR_RMLUI=ON` upstream path lands; the sample-level usage
+// pattern stays identical.
+namespace psynder::ui::rml::test_only {
+bool reload_with_source(std::string_view name,
+                        std::string_view rml_src,
+                        std::string_view rcss_src);
+}  // namespace psynder::ui::rml::test_only
 
 using namespace psynder;
 
@@ -447,6 +467,131 @@ void clear_depth_far(render::Framebuffer& fb) noexcept {
     for (usize i = 0; i < n; ++i) fb.depth[i] = packed;
 }
 
+// ─── HUD live-binding helpers ────────────────────────────────────────────
+//
+// Vehicle telemetry pushed into hud.rml each frame.  Speed comes from the
+// chassis position delta the sim already computes (`car_speed`, m/s).  The
+// public physics API doesn't expose `engine_rpm()` so we derive an RPM
+// estimate from wheel ω: wheel ω ≈ v / r, and engine ω ≈ wheel ω × gear ×
+// final, mapped to rpm.  Numbers are calibrated to feel right against the
+// in-engine 6-speed gearbox (idle 800, redline 7000); they don't need to be
+// physically exact — the M7 milestone is the *binding wiring*, not a
+// dyno-accurate cluster.
+struct HudTelemetry {
+    f32  speed_mps   = 0.0f;
+    f32  throttle    = 0.0f;     // 0..1
+    f32  brake       = 0.0f;     // 0..1
+    f32  steer       = 0.0f;     // rad (unused for visuals, logged)
+    f32  wheel_radius= 0.35f;    // m
+};
+
+// Derive an engine-RPM estimate from forward speed.  Picks a sensible gear
+// from the current speed (1st ~0-12 m/s, 2nd ~12-20, 3rd ~20-30, ...) so
+// the readout climbs and resets across shifts the way a real cluster does.
+// Returns (rpm, gear_index_1to6) — gear_index 0 is neutral (idle), -1 reverse.
+struct EngineEstimate { f32 rpm; i32 gear; };
+
+EngineEstimate estimate_engine(f32 speed_mps, f32 throttle, f32 wheel_radius) noexcept {
+    constexpr f32 kIdle      = 800.0f;
+    constexpr f32 kRedline   = 7000.0f;
+    constexpr f32 kFinal     = 3.7f;
+    // Gear ratios: gentle slope, 6-speed pattern.
+    constexpr std::array<f32, 6> kGearRatio = {3.5f, 2.4f, 1.8f, 1.4f, 1.1f, 0.9f};
+
+    if (speed_mps < 0.5f) {
+        const f32 rpm = kIdle + throttle * 1200.0f;
+        return EngineEstimate{rpm, throttle > 0.05f ? 1 : 0};
+    }
+
+    // Pick gear by speed band so each gear holds ~3000-rpm window before a
+    // visual shift up.  Bands chosen so 6th is reached above ~50 m/s.
+    i32 gear = 1;
+    if      (speed_mps > 50.0f) gear = 6;
+    else if (speed_mps > 38.0f) gear = 5;
+    else if (speed_mps > 28.0f) gear = 4;
+    else if (speed_mps > 19.0f) gear = 3;
+    else if (speed_mps > 11.0f) gear = 2;
+    else                        gear = 1;
+
+    const f32 wheel_omega = speed_mps / wheel_radius;                 // rad/s
+    const f32 engine_omega = wheel_omega * kGearRatio[gear - 1] * kFinal;
+    f32 rpm = engine_omega * 60.0f / math::kTwoPi;
+    if (rpm < kIdle)    rpm = kIdle;
+    if (rpm > kRedline) rpm = kRedline;
+    return EngineEstimate{rpm, gear};
+}
+
+// Re-template the hud.rml document with current telemetry baked in.  The
+// in-tree RmlUi subset does not have a per-property setter API yet, so we
+// rebuild the RML source per-frame and call the engine-side test_only
+// reload surface (which re-parses + re-cascades in place, preserving the
+// document's visibility).  Cheap: parse + cascade for ~16 elements runs in
+// the tens of microseconds.
+std::string build_hud_rml(f32 speed_mps, f32 rpm, i32 gear,
+                          f32 throttle, f32 brake) {
+    const u32 speed_kmh   = static_cast<u32>(std::round(speed_mps * 3.6f));
+    // RPM bar: scale 800..7000 → 0..340 px (match width in hud.rcss).
+    constexpr f32 kIdle    = 800.0f;
+    constexpr f32 kRedline = 7000.0f;
+    constexpr u32 kBarW    = 340u;
+    f32 rpm_norm = (rpm - kIdle) / (kRedline - kIdle);
+    if (rpm_norm < 0.0f) rpm_norm = 0.0f;
+    if (rpm_norm > 1.0f) rpm_norm = 1.0f;
+    const u32 rpm_fill_px = static_cast<u32>(rpm_norm * static_cast<f32>(kBarW));
+
+    constexpr u32 kPedalH = 170u;
+    const u32 thr_fill_px = static_cast<u32>(std::min(1.0f, throttle) * static_cast<f32>(kPedalH));
+    const u32 brk_fill_px = static_cast<u32>(std::min(1.0f, brake)    * static_cast<f32>(kPedalH));
+    // Throttle/brake bars grow from the bottom: anchor top = 30 + (H - fill).
+    const u32 thr_top = 30u + (kPedalH - thr_fill_px);
+    const u32 brk_top = 30u + (kPedalH - brk_fill_px);
+
+    char gear_ch = 'N';
+    if      (gear == -1) gear_ch = 'R';
+    else if (gear ==  0) gear_ch = 'N';
+    else if (gear >= 1 && gear <= 6) gear_ch = static_cast<char>('0' + gear);
+
+    // Inline style overrides for the dynamic widgets.  The RCSS file
+    // supplies base layout + colours; per-frame `style="..."` attributes
+    // win in the cascade and reflect telemetry without restyling the
+    // panels themselves.
+    char buf[2048];
+    std::snprintf(buf, sizeof(buf),
+        "<rml><head><title>HUD</title>"
+        "<link rel=\"stylesheet\" href=\"hud.rcss\"/></head><body>"
+        "<div id=\"hud-root\">"
+          "<div id=\"speed-panel\" class=\"panel\">"
+            "<div id=\"speed-value\" class=\"speed-number\">%u</div>"
+            "<div id=\"speed-unit\"  class=\"speed-unit\">KM/H</div>"
+          "</div>"
+          "<div id=\"rpm-panel\" class=\"panel\">"
+            "<div id=\"rpm-label\" class=\"label\">RPM</div>"
+            "<div id=\"rpm-track\" class=\"bar bar-track\"></div>"
+            "<div id=\"rpm-fill\"  class=\"bar bar-fill rpm\" "
+              "style=\"width:%u\"></div>"
+            "<div id=\"rpm-redline\" class=\"bar bar-redline\"></div>"
+            "<div id=\"gear-letter\" class=\"gear\">%c</div>"
+          "</div>"
+          "<div id=\"pedal-panel\" class=\"panel\">"
+            "<div id=\"thr-label\"  class=\"pedal-label\">THR</div>"
+            "<div id=\"thr-track\"  class=\"pedal-track\"></div>"
+            "<div id=\"thr-fill\"   class=\"pedal-fill throttle\" "
+              "style=\"top:%u; height:%u\"></div>"
+            "<div id=\"brk-label\"  class=\"pedal-label brk\">BRK</div>"
+            "<div id=\"brk-track\"  class=\"pedal-track brk\"></div>"
+            "<div id=\"brk-fill\"   class=\"pedal-fill brake\" "
+              "style=\"top:%u; height:%u\"></div>"
+          "</div>"
+        "</div>"
+        "</body></rml>",
+        speed_kmh,
+        rpm_fill_px,
+        gear_ch,
+        thr_top, thr_fill_px,
+        brk_top, brk_fill_px);
+    return std::string(buf);
+}
+
 // Build a chassis-local frame from a forward (XZ) vector.
 inline math::Mat4 yaw_from_forward(math::Vec3 fwd) noexcept {
     fwd.y = 0.0f;
@@ -544,8 +689,40 @@ int main(int argc, char** argv) {
     math::Quat cur_rot  = prev_rot;
     math::Vec3 car_fwd  = v3(1.0f, 0.0f, 0.0f);   // initial heading: +X
     f32        car_speed = 0.0f;
+    // Last-tick driver outputs — surfaced to the HUD so the pedal indicators
+    // reflect what the auto-driver is asking for, not the noisy chassis
+    // accelerations.
+    f32        hud_throttle = 0.0f;
+    f32        hud_brake    = 0.0f;
+    f32        hud_steer    = 0.0f;
 
     Driver driver{};
+
+    // ─── HUD / RmlUi (Wave-D M7) ────────────────────────────────────────
+    // Mount the sample's `assets/` directory under the asset VFS so the
+    // engine-side RmlUi binding can read hud.rml and hud.rcss through the
+    // same surface a future .lmpak distribution would use.  The compile-time
+    // PSY_SAMPLE_04_ASSET_DIR define is wired by CMakeLists.txt.
+    bool hud_active = false;
+    if (psynder::ui::rml::initialize()) {
+#ifdef PSY_SAMPLE_04_ASSET_DIR
+        const std::string_view kAssetDir = PSY_SAMPLE_04_ASSET_DIR;
+        const bool mounted = psynder::asset::Vfs::Get().mount_directory(kAssetDir);
+        if (!mounted) {
+            PSY_LOG_WARN("sample_04: failed to mount HUD asset dir {}", kAssetDir);
+        }
+#endif
+        if (psynder::ui::rml::load_document("hud.rml", "hud")) {
+            psynder::ui::rml::show("hud");
+            hud_active = true;
+            PSY_LOG_INFO("sample_04: HUD loaded (hud.rml + hud.rcss)");
+        } else {
+            PSY_LOG_WARN("sample_04: RmlUi load_document(\"hud.rml\") failed; "
+                         "HUD disabled");
+        }
+    } else {
+        PSY_LOG_WARN("sample_04: RmlUi initialize() failed; HUD disabled");
+    }
 
     PSY_LOG_INFO("Psynder sample 04 running{}",
                  args.smoke_frames > 0
@@ -629,6 +806,11 @@ int main(int argc, char** argv) {
             if (throttle > 1.0f) throttle = 1.0f;
             physics::vehicle::set_throttle(veh, throttle);
             physics::vehicle::set_brake(veh, brake);
+            // Capture for the HUD — the last driver decision per render
+            // frame is the one the dashboard reflects (matches a real car's
+            // pedal throw, smoothed by the sim's 120 Hz under-sampling).
+            hud_throttle = throttle;
+            hud_brake    = brake;
 
             // ── Step ──────────────────────────────────────────────────
             world.step(kSimDt);
@@ -737,6 +919,23 @@ int main(int argc, char** argv) {
         }
 
         rasterizer.end_frame();
+
+        // ── HUD update + render (Wave-D M7) ─────────────────────────────
+        //
+        // Bake current telemetry into a fresh RML source and reload the
+        // "hud" document in place; then tick the binding and submit it to
+        // the same software framebuffer the scene rendered into.  The
+        // engine-side render() walks the cascaded layout boxes and draws
+        // them on top of the 3D scene without disturbing depth.
+        if (hud_active) {
+            const EngineEstimate ee = estimate_engine(car_speed, hud_throttle, 0.35f);
+            const std::string rml_src = build_hud_rml(
+                car_speed, ee.rpm, ee.gear, hud_throttle, hud_brake);
+            psynder::ui::rml::test_only::reload_with_source("hud", rml_src, "");
+            psynder::ui::rml::update(dt);
+            psynder::ui::rml::render(fb);
+        }
+
         window->present(fb);
 
         ++frame;
@@ -755,6 +954,8 @@ int main(int argc, char** argv) {
         if (!ok) {
             PSY_LOG_ERROR("sample_04: failed to write capture to {}",
                           args.capture_out);
+            if (hud_active) psynder::ui::rml::hide("hud");
+            psynder::ui::rml::shutdown();
             physics::vehicle::destroy(veh);
             world.destroy_body(chassis);
             platform::destroy_window(window);
@@ -762,6 +963,11 @@ int main(int argc, char** argv) {
         }
         PSY_LOG_INFO("sample_04: wrote capture to {}", args.capture_out);
     }
+
+    if (hud_active) {
+        psynder::ui::rml::hide("hud");
+    }
+    psynder::ui::rml::shutdown();
 
     physics::vehicle::destroy(veh);
     world.destroy_body(chassis);
