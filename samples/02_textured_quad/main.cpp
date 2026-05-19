@@ -26,10 +26,13 @@
 
 #include "core/Log.h"
 #include "core/Types.h"
+#include "editor/core/Editor.h"
+#include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
+#include "ui/imm/DebugHud.h"
 
 #include <array>
 #include <cmath>
@@ -206,8 +209,32 @@ int main(int argc, char** argv) {
     const u64 t0    = platform::Clock::ticks_now();
     u32       frame = 0;
 
+    // 60-sample ring of recent frame times (ms) for the debug HUD's strip
+    // chart. Wraps via `frame % kFrameHistory`; the HUD's own internal
+    // averaging looks at `avg_frame_ms` so we keep this lightweight.
+    constexpr usize kFrameHistory = 60;
+    std::array<f32, kFrameHistory> frame_ms_ring{};
+    u64 prev_frame_ticks = t0;
+
     while (!window->should_close()) {
         window->poll_events();
+
+        if (auto* in = platform::input();
+            in && in->key_down(platform::KeyCode::Escape)) {
+            break;
+        }
+
+        // Per-frame wall-clock delta for HUD stats. Skipped on smoke runs
+        // because their time is frame-indexed (the chart would look weird).
+        const u64 now_ticks = platform::Clock::ticks_now();
+        const f32 frame_ms  = args.smoke_frames > 0
+                                  ? 16.6f
+                                  : static_cast<f32>(
+                                        platform::Clock::seconds(
+                                            now_ticks - prev_frame_ticks) *
+                                        1000.0);
+        prev_frame_ticks = now_ticks;
+        frame_ms_ring[frame % kFrameHistory] = frame_ms;
 
         // Clear colour + depth.
         render::raster::clear_framebuffer(fb, 0xFF182030u);
@@ -217,11 +244,18 @@ int main(int argc, char** argv) {
         // smoke runs we use a fixed phase (per-frame * step) so frame N is
         // deterministic and reproducible across hosts. The cmake helper
         // pins captures at a specific frame count so what we hand the
-        // golden gate is deterministic.
-        const f32 t = args.smoke_frames > 0
-                          ? static_cast<f32>(frame) * 0.05f
-                          : static_cast<f32>(platform::Clock::seconds(
-                                platform::Clock::ticks_now() - t0));
+        // golden gate is deterministic. Frozen in EDIT mode so the user
+        // sees a stable scene while inspecting / spawning props.
+        const editor::Mode edit_mode =
+            platform::input()
+                ? editor::sample_step(*platform::input(), fb)
+                : editor::Mode::Play;
+        const f32 t = (edit_mode == editor::Mode::Edit)
+                          ? static_cast<f32>(frame) * 0.0f
+                          : args.smoke_frames > 0
+                                ? static_cast<f32>(frame) * 0.05f
+                                : static_cast<f32>(platform::Clock::seconds(
+                                      platform::Clock::ticks_now() - t0));
 
         render::raster::ViewState view{};
         view.target     = fb;
@@ -258,6 +292,26 @@ int main(int argc, char** argv) {
         }
 
         rasterizer.end_frame();
+
+        // Debug HUD overlay — toggle via `r_debug_hud full` console var.
+        // The HUD reads the per-frame stats we filled at the top of the
+        // loop; if the cvar is `off` the call early-returns. Stays drawn
+        // after the rasterizer so it composites on top of the scene.
+        {
+            ui::imm::DebugHudStats stats{};
+            stats.frame_ms      = frame_ms;
+            stats.avg_frame_ms  = [&]{
+                f32 sum = 0.0f;
+                const usize n =
+                    static_cast<usize>(std::min<u32>(frame + 1u, kFrameHistory));
+                for (usize i = 0; i < n; ++i) sum += frame_ms_ring[i];
+                return n ? sum / static_cast<f32>(n) : 0.0f;
+            }();
+            stats.draw_calls    = kCratePositions.size();
+            stats.triangles     = kCratePositions.size() * 12u;
+            stats.active_voices = 0;
+            ui::imm::draw_debug_hud(fb, stats);
+        }
         window->present(fb);
 
         ++frame;
