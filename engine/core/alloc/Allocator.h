@@ -63,19 +63,78 @@ private:
 };
 
 // ─── TypedPool<T> — fixed-size free-list pool ───────────────────────────
+// Implementation lives in the header so any TU can instantiate without a
+// per-type explicit-instantiation dance in Allocator.cpp. `init` carves a
+// backing region into `element_count` slots and threads a free-list index
+// vector through it. `acquire` pops the next free index; `release` pushes
+// it back. The free-list is a u32-per-slot side table (kept separate from
+// the T storage so T can be arbitrarily aligned without bloating the
+// indices). All operations are O(1) and single-threaded -- callers are
+// expected to bind one pool per worker (DESIGN.md §4.2 "per-worker first,
+// shared last"), or wrap with their own lock if cross-thread is needed.
+//
+// Backing layout: caller passes a single `base` buffer big enough to hold
+// `element_count` * (sizeof(T) + sizeof(u32)). Storage lives at base;
+// the free-list index table lives immediately after, naturally aligned.
 template <class T>
 class TypedPool {
 public:
-    void  init(void* base, usize element_count) noexcept;
-    T*    acquire() noexcept;
-    void  release(T* p) noexcept;
-    void  reset() noexcept;
-    usize live() const noexcept;
+    static constexpr u32 kInvalidIndex = 0xFFFF'FFFFu;
+
+    void init(void* base, usize element_count) noexcept {
+        storage_ = static_cast<T*>(base);
+        // The free-list index table follows the storage, padded to alignof(u32).
+        std::uintptr_t after_storage =
+            reinterpret_cast<std::uintptr_t>(storage_) + sizeof(T) * element_count;
+        std::uintptr_t aligned =
+            (after_storage + alignof(u32) - 1) & ~static_cast<std::uintptr_t>(alignof(u32) - 1);
+        free_    = reinterpret_cast<u32*>(aligned);
+        cap_     = element_count;
+        next_    = 0;
+        live_    = 0;
+        // Lazy free-list seed: slots [0..cap_) get linked on demand inside
+        // acquire() so init() stays O(1) regardless of capacity.
+        first_free_ = kInvalidIndex;
+    }
+
+    T* acquire() noexcept {
+        if (live_ >= cap_) return nullptr;
+        u32 idx;
+        if (first_free_ != kInvalidIndex) {
+            idx = first_free_;
+            first_free_ = free_[idx];
+        } else {
+            idx = static_cast<u32>(next_++);
+        }
+        ++live_;
+        return storage_ + idx;
+    }
+
+    void release(T* p) noexcept {
+        if (!p || !storage_) return;
+        u32 idx = static_cast<u32>(p - storage_);
+        if (idx >= cap_) return;     // not from this pool; ignore.
+        free_[idx]   = first_free_;
+        first_free_  = idx;
+        if (live_ > 0) --live_;
+    }
+
+    void reset() noexcept {
+        next_       = 0;
+        live_       = 0;
+        first_free_ = kInvalidIndex;
+    }
+
+    usize live()     const noexcept { return live_; }
+    usize capacity() const noexcept { return cap_; }
+
 private:
-    T*    storage_ = nullptr;
-    u32*  free_    = nullptr;
-    usize cap_     = 0;
-    usize next_    = 0;
+    T*    storage_     = nullptr;
+    u32*  free_        = nullptr;
+    usize cap_         = 0;
+    usize next_        = 0;
+    usize live_        = 0;
+    u32   first_free_  = kInvalidIndex;
 };
 
 // ─── PageAllocator — OS-mediated, hugepages where supported ──────────────
