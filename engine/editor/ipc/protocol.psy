@@ -21,12 +21,24 @@
 # TypeScript module with the same shape. Both consumers MUST agree on the
 # version field — mismatches are logged + the connection is dropped.
 
-version 1
+version 2
+
+# Wave-B v2 bump: adds SceneDeltaFrame + slice-scoped pub/sub. v1 clients
+# remain wire-compatible: the only mandatory frame they decode (Welcome)
+# preserves its byte shape, and v1 client implementations that hit an
+# unknown opcode treat it as a no-op (Server side: see Server::client_loop;
+# panel side: see the React dispatcher's `default:` arm). Channels added in
+# v2 (selection / perf / schemas) carry slice-tagged deltas via the new
+# SceneDeltaFrame, so a v1 panel that never subscribes to those slices sees
+# no traffic at all.
 
 channel "log"
 channel "scene"
 channel "stats"
 channel "console"
+channel "selection"
+channel "perf"
+channel "schemas"
 
 struct Hello:
     protocol_version : u32
@@ -63,6 +75,22 @@ struct StatsTick:
     entities    : u32
 
 struct ConsoleCmd:
+    text : str
+
+# Wave-B: slice-scoped scene-delta envelope. The `slice` field names a logical
+# pub/sub topic ("selection", "perf", "schemas", …) so a single physical
+# channel ("scene") can multiplex updates that different React panels care
+# about independently. `payload` is opaque msgpack chosen by the producer —
+# the IPC layer never inspects it.
+struct SceneDeltaSlice:
+    slice   : str
+    payload : bin
+
+# Wave-B: ConsoleReply — the response that the engine echoes back after the
+# REPL evaluator handles a ConsoleCmd. `ok` is the success flag, `text` is
+# the formatted Lua result on success or the error string on failure.
+struct ConsoleReply:
+    ok   : bool
     text : str
 
 frame HelloFrame:
@@ -104,3 +132,13 @@ frame ConsoleFrame:
     opcode  = 19
     channel = "console"
     body    = ConsoleCmd
+
+frame SceneDeltaFrame:
+    opcode  = 20
+    channel = "scene"
+    body    = SceneDeltaSlice
+
+frame ConsoleReplyFrame:
+    opcode  = 21
+    channel = "console"
+    body    = ConsoleReply
