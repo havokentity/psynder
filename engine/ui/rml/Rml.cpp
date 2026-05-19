@@ -296,6 +296,25 @@ void update(f32 /*dt*/) {
     }
 }
 
+}  // namespace psynder::ui::rml
+
+// Mutable-document lookup used by the DataBind setters.  Defined at
+// detail-namespace scope rather than alongside the test_only surface so
+// the binding header (Rml_internal.h) can declare it once and both
+// internal callers (DataBind.cpp) and tests resolve to the same symbol.
+namespace psynder::ui::rml::detail {
+
+Document* find_mutable_document(std::string_view name) noexcept {
+    auto& s = ::psynder::ui::rml::state();
+    auto it = s.documents.find(std::string(name));
+    if (it == s.documents.end()) return nullptr;
+    return &it->second;
+}
+
+}  // namespace psynder::ui::rml::detail
+
+namespace psynder::ui::rml {
+
 void render(render::Framebuffer& target) {
     auto& s = state();
     if (!s.initialized) return;
