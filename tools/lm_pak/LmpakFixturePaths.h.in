@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: MIT
+// Configure-time generated — absolute path to the Wave-D fixture archive.
+//
+// The build system (tools/lm_pak/CMakeLists.txt) cooks the assets in
+// assets/fixtures/ and packs them into ${CMAKE_BINARY_DIR}/assets/demo.lmpak.
+// Tests use this path to load the archive without needing to know the build
+// directory layout at compile time.
+#pragma once
+
+#define PSYNDER_FIXTURE_LMPAK_PATH "@PSYNDER_FIXTURE_LMPAK_PATH@"
