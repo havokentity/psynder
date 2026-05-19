@@ -599,7 +599,11 @@ int main(int argc, char** argv) {
 
         window->present(fb);
 
-        if (smoke_frames > 0 && ++frame >= smoke_frames) {
+        // Bump unconditionally each iteration so the frame_ms_ring populates
+        // in interactive runs (smoke_frames == 0) too — otherwise the ring
+        // sits at index 0 forever and avg_frame_ms collapses to frame_ms.
+        ++frame;
+        if (smoke_frames > 0 && frame >= smoke_frames) {
             PSY_LOG_INFO("sample_05: smoke target reached ({}); exiting",
                          smoke_frames);
             break;
