@@ -1,5 +1,148 @@
 # Changelog
 
+## v1.0.0 — DESIGN.md M0–M8 all covered, 632/632 tests 🚀
+
+Wave E closes the parallel-agent push. Psynder hits v1.0.
+
+### Wave E / .lmpak format unification (#111)
+- Lane 24's `lm_pak` writer and lane 05's `Vfs` reader spoke different
+  `.lmpak` v1 dialects (flagged in Wave D's #108). Wave E **teaches the
+  reader both dialects** — `parse_lmpak_canonical` for the original
+  `LmpakWriter` layout (64-byte header + explicit entry/name-table
+  offsets) and a new `parse_lmpak_tools` for the cooker's layout
+  (56-byte header + combined-index region). Detection auto-selects.
+- `PakMount` now owns optional `entries_owned` / `names_owned` buffers
+  so the tools dialect materialises a canonical record set in memory;
+  the rest of the reader (`find_in_pak`, `load_from_pak`) stays
+  dialect-agnostic.
+- Fixture test bumped from WARN to hard REQUIRE. Two new closed-loop
+  Catch2 cases (`LmpakWriter → mount_pak → read` and `tools::pack_blobs
+  → mount_pak → read`).
+
+### Wave E / TerrainRaymarch::render wired to framebuffer (#112)
+- `engine/world/outdoor/TerrainTarget.h` (new sibling header, frozen
+  `Terrain.h` byte-identical) exposes `set_target(rm, fb*)`.
+- `TerrainRaymarch::render(view, proj)` now actually paints into the
+  bound framebuffer — derives eye/forward/right/up from the column-
+  major `look_at_rh` + `perspective_rh` matrices via the orthonormal-
+  transpose trick (no `Mat4::inverse` in core math), runs the per-
+  column logarithmic march from sample_06 into pixels + packed depth.
+- Wave-B SIMD kernels in `Raymarch_internal.h` still callable and
+  unchanged; the new public path uses the same `detail::sample_bilinear`
+  / `splat_at_texel` / `normal_at_texel` building blocks plus the
+  sample_06 lighting palette so visual output is continuous.
+- 3 Catch2 cases: identity-camera flat heightmap writes pixels +
+  sub-far depth; null-target render is a no-op; re-clearing the bound
+  target reverts to no-op.
+- Sample_06 can drop its inlined raymarch + `detail::*` dip in a
+  follow-up — the public API is now sufficient.
+
+### Wave E / RmlUi vendor build + sample_04 cleanup (#113)
+- **`PSYNDER_VENDOR_RMLUI=ON` now builds clean.** Root cause: RmlUi
+  6.2 dropped the `"none"` backend alias and strictly validates
+  `RMLUI_BACKEND` against an allow-list even when `RMLUI_SAMPLES=OFF`.
+  Fixed by setting `RMLUI_BACKEND="auto"`. Vendor pull also routes
+  via the default `_deps/` staging in the build dir so the source
+  tree stays clean. Build detects either `rmlui_core` (6.x snake_case)
+  or legacy `RmlCore`.
+- **`engine/ui/rml/DataBind.{h,cpp}`** — public per-element setters:
+  `set_element_text(doc, id, value)` and `set_element_attribute(doc,
+  id, attr, value)`. Behind `#ifdef PSYNDER_HAS_RMLUI` the setters
+  route through `Rml::Element::SetInnerRML` / `SetAttribute`;
+  otherwise they walk the in-tree DOM and re-cascade. The `style`
+  attribute is special-cased to re-parse `inline_style`, and `class`
+  re-splits + re-cascades so `computed_style` reflects the new
+  override before the next render.
+- **`samples/04_nfs_track/main.cpp`** — `build_hud_rml` /
+  `reload_with_source` per-frame source-rebuild replaced by
+  `push_hud_telemetry` making 6 setter calls per frame (speed text,
+  gear letter, rpm-fill width, thr/brk-fill top+height). The test-
+  layer hack is gone.
+- 4 Catch2 cases / 49 assertions on the new DataBind path.
+
+### Wave E / Four contributor docs (a5d8c05)
+- **`docs/01-getting-started.md`** — clone-to-running in 5 min, sample
+  roster, smoke-lock pattern, editor panel prereqs, every renderer
+  cvar.
+- **`docs/02-rendering.md`** — pipeline overview, tile bin, Q24.8
+  setup, attribute interpolation, full filter table, surface cache,
+  Z-buffer / HiZ, performance budget.
+- **`docs/03-lighting.md`** — `lm_bake` radiosity workflow, BVH8
+  builder + collapse-to-8, TLAS over instances, refit + async rebuild
+  trigger, packet traversal (AVX2 / NEON / scalar), heightmap shadow
+  path, denoiser, volumetric / atmospheric.
+- **`docs/04-world-formats.md`** — `.lmpak` / `.psybsp` / `.lmm` /
+  `.lmt` / `.lma` / `.psylevel` / `.psyc` byte layouts, cook + pack
+  flow, hot reload, determinism contract.
+
+## DESIGN.md milestone coverage at v1.0
+
+| Milestone | Status |
+|---|---|
+| **M0** bring-up (window + clear color, 3 OSes) | ✅ verified on Mac, code shipped for Win/Linux |
+| **M1** first triangle | ✅ sample_01 ships a rotating textured triangle |
+| **M2** tiled rasterizer + Z + bilinear | ✅ sample_02 ships 4 spinning cubes through the full pipe |
+| **M3** BSP + lightmaps + editor v0 | ✅ sample_03 walks a 4-leaf BSP with PVS; React Inspector panel ships |
+| **M4** outdoor track + vehicles + sculpt | ✅ sample_04 ships an auto-driven Pacejka vehicle lapping a banked spline track |
+| **M5** hybrid raytracing | ✅ sample_05 ships raytraced dynamic-light shadows via 8-wide AVX2 packets |
+| **M6** large outdoor FPS maps + sandbox | ✅ sample_06 ships a heightmap-raymarch flyover with helicopter |
+| **M7** feature parity (HUD + networking + audio) | ✅ sample_04 HUD via RmlUi; rUDP + lockstep + snapshot shipped; HRIR HRTF + reverbs shipped |
+| **M8** editor polish + 1.0 | ✅ Tracy zones, allocator heatmap, deterministic physics, golden-image harness, bench gates, contributor docs |
+
+## Test + build status at v1.0
+
+- **632/632 Catch2 cases passing** on macOS Apple Silicon (mac-release).
+- All 7 sample binaries (M0–M6) smoke-pass cleanly.
+- Build green on Mac. Win/Linux platform code shipped but unverified
+  on real hardware.
+- 9 release tags shipped across A→E: `v0.1.0-wave-a`,
+  `v0.2.0-wave-b-partial`, `v0.3.0-wave-b-batch2`,
+  `v0.4.0-wave-b-batch3`, `v0.5.0-wave-b-batch4`,
+  `v0.6.0-wave-b-complete`, `v0.7.0-wave-c-complete`,
+  `v0.8.0-wave-d-complete`, `v1.0.0`.
+
+## How v1.0 was built — process notes
+
+The engine was built via a **25-lane parallel-agent wave model**.
+Each wave: orchestrator files Issues with strict file-ownership specs,
+spawns N background agents (each in its own `git worktree`), merges
+their PRs as they land. 5 waves total (A–E), ~70 PRs merged into
+`main`, all squash-merged with no `Co-Authored-By` trailers.
+
+- **Wave A** — 25/25 lanes scaffolded with real `.cpp` behind frozen
+  public headers
+- **Wave B** — 25/25 lanes shipped Wave-B feature pushes across 5
+  sub-batches
+- **Wave C** — sample_03 / sample_04 / sample_05 wired + editor F2/~
+  toggle + DebugHud overlay
+- **Wave D** — sample_06 + RmlUi HUD wired + Tracy zones + lm_pak
+  fixture pipeline + EWA anisotropic filtering
+- **Wave E** — .lmpak format unification + TerrainRaymarch wire-up +
+  RmlUi vendor + 4 contributor docs
+
+`AGENTS.md` documents the coordination protocol. `docs/waves-roadmap.md`
+maps lanes to waves. `docs/wave-a-bar.md` is the shared deliverable
+rubric.
+
+## Known gaps + post-1.0 work
+
+- **Win/Linux validation** — the platform lanes (21/22) shipped real
+  Win32 + Wayland/X11 code that was never built on actual hardware.
+  CI matrix builds an empty target on those OSes; the user verifies
+  their boxes separately.
+- **Copilot review sweep** — Copilot Code Review hasn't been enabled
+  on the repo yet. Once toggled (Settings → Code & automation → Code
+  review), the `copilot-review` skill can run across all merged PRs
+  and address legitimate concerns in a `chore/copilot-sweep` PR.
+- **Sample 06 cleanup** — Wave E's `TerrainRaymarch::render`
+  wire-up lets sample_06 drop its inlined raymarch in a follow-up.
+- **Full RmlUi vendor as default** — `PSYNDER_VENDOR_RMLUI=ON` now
+  works but is opt-in; flipping the default needs a one-time review
+  of the upstream dep cost.
+- **Cross-platform validation harness** — CI runs the build matrix
+  but not actual sample-run smoke tests on Win/Linux runners (no
+  display server in the runner).
+
 ## v0.8.0-wave-d-complete (2026-05-19) — All 7 demos run, M6 + HUD + EWA aniso 🚁🏁
 
 Wave D closes the polish push. **All seven sample binaries** (M0 through

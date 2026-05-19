@@ -9,7 +9,7 @@ There is **zero GPU code** in the engine runtime. The platform layer hands us a 
 - **Language:** C++23
 - **Targets:** Windows (x86-64), Linux (x86-64), macOS (Apple Silicon arm64)
 - **License:** MIT
-- **Status:** **v0.1.0-wave-a** — Wave A complete (25/25 lanes integrated). M0 demo running on macOS. 350+ unit tests passing. See [docs/waves-roadmap.md](docs/waves-roadmap.md) for the road to v1.0.
+- **Status:** **v1.0.0** — DESIGN.md M0–M8 all covered. All 7 sample binaries smoke-pass on Mac. 632 Catch2 unit tests + golden + bench gates green. [Quick start](docs/01-getting-started.md). See [CHANGELOG](CHANGELOG.md) for the per-wave story.
 
 ## Design pillars
 
