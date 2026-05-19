@@ -80,6 +80,18 @@ inline bool remove_constraint(u32 id) {
     return true;
 }
 
+// ─── Physgun (Wave-B wiring) ─────────────────────────────────────────────
+// Out-of-line in PhysgunApi.cpp because they touch the live editor state
+// and the constraint graph. Declared here so the IPC dispatcher (lane 19)
+// and per-platform input plumbing (lanes 21-23) can route into them
+// without including PhysgunApi.cpp's internals.
+u32  physgun_pick(math::Vec3 cursor_origin, math::Vec3 cursor_dir);
+void physgun_drag(math::Vec3 cursor_origin, math::Vec3 cursor_dir);
+void physgun_set_grab_distance(f32 metres);
+void physgun_rotate(math::Quat delta_rot);
+void physgun_scale(f32 delta_scale);
+u32  physgun_weld(u32 target_body_id);
+
 // ─── Undo / redo dispatch ────────────────────────────────────────────────
 inline bool undo_one() {
     auto& s = detail::get_state();
