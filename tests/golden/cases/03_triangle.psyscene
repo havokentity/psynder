@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT
+# Golden case 03 — filled triangle. Exercises the edge-function walker on
+# off-axis spans. Reasonably stable across compilers because the renderer
+# uses integer-clamped pixel-centre sampling.
+size 32 32
+clear 16 24 32
+triangle 4 28 28 28 16 4 90 200 90

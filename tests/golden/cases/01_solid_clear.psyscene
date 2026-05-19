@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Golden case 01 — solid clear. The simplest possible regression: the
+# rasterizer cleared the whole framebuffer to one colour.
+size 32 16
+clear 80 140 200
