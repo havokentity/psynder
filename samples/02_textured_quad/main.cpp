@@ -26,10 +26,13 @@
 
 #include "core/Log.h"
 #include "core/Types.h"
+#include "editor/core/Editor.h"
+#include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
+#include "ui/imm/DebugHud.h"
 
 #include <array>
 #include <cmath>
@@ -206,8 +209,39 @@ int main(int argc, char** argv) {
     const u64 t0    = platform::Clock::ticks_now();
     u32       frame = 0;
 
+    // 60-sample ring of recent frame times (ms) for the debug HUD's strip
+    // chart. Wraps via `frame % kFrameHistory`; the HUD's own internal
+    // averaging looks at `avg_frame_ms` so we keep this lightweight.
+    // Sized `u32` so `frame + 1u` and the `min` against it stay in the
+    // same domain (the comparable variant in PR #114 mixed `usize` and
+    // `u32`, which clang would have narrowed silently — pre-emptively
+    // avoiding that here).
+    constexpr u32 kFrameHistory = 60;
+    std::array<f32, kFrameHistory> frame_ms_ring{};
+    u64 prev_frame_ticks = t0;
+    // Smoke-mode default frame time stand-in (60 FPS budget = 1/60 s).
+    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
+
     while (!window->should_close()) {
         window->poll_events();
+
+        if (auto* in = platform::input();
+            in && in->key_down(platform::KeyCode::Escape)) {
+            break;
+        }
+
+        // Per-frame wall-clock delta for HUD stats. Smoke runs are
+        // frame-indexed so we use the 60 FPS budget stand-in to keep the
+        // chart deterministic across hosts.
+        const u64 now_ticks = platform::Clock::ticks_now();
+        const f32 frame_ms  = args.smoke_frames > 0
+                                  ? kSmokeFrameMs
+                                  : static_cast<f32>(
+                                        platform::Clock::seconds(
+                                            now_ticks - prev_frame_ticks) *
+                                        1000.0);
+        prev_frame_ticks = now_ticks;
+        frame_ms_ring[frame % kFrameHistory] = frame_ms;
 
         // Clear colour + depth.
         render::raster::clear_framebuffer(fb, 0xFF182030u);
@@ -217,11 +251,21 @@ int main(int argc, char** argv) {
         // smoke runs we use a fixed phase (per-frame * step) so frame N is
         // deterministic and reproducible across hosts. The cmake helper
         // pins captures at a specific frame count so what we hand the
-        // golden gate is deterministic.
-        const f32 t = args.smoke_frames > 0
-                          ? static_cast<f32>(frame) * 0.05f
-                          : static_cast<f32>(platform::Clock::seconds(
-                                platform::Clock::ticks_now() - t0));
+        // golden gate is deterministic. Frozen in EDIT mode so the user
+        // sees a stable scene while inspecting / spawning props.
+        const editor::Mode edit_mode =
+            platform::input()
+                ? editor::sample_step(*platform::input(), fb)
+                : editor::Mode::Play;
+        // EDIT mode pins `t` to a constant so the scene is frozen for
+        // inspection. Smoke mode advances per frame for deterministic
+        // captures; otherwise we tick off the wall clock.
+        const f32 t = (edit_mode == editor::Mode::Edit)
+                          ? 0.0f
+                          : args.smoke_frames > 0
+                                ? static_cast<f32>(frame) * 0.05f
+                                : static_cast<f32>(platform::Clock::seconds(
+                                      platform::Clock::ticks_now() - t0));
 
         render::raster::ViewState view{};
         view.target     = fb;
@@ -258,6 +302,28 @@ int main(int argc, char** argv) {
         }
 
         rasterizer.end_frame();
+
+        // Debug HUD overlay — toggle via `r_debug_hud full` console var.
+        // The HUD reads the per-frame stats we filled at the top of the
+        // loop; if the cvar is `off` the call early-returns. Stays drawn
+        // after the rasterizer so it composites on top of the scene.
+        {
+            ui::imm::DebugHudStats stats{};
+            stats.frame_ms      = frame_ms;
+            stats.avg_frame_ms  = [&]() noexcept {
+                // Walk only the populated prefix of the ring. `n` matches
+                // `kFrameHistory`'s `u32` type so we don't mix domains.
+                const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
+                if (n == 0u) return 0.0f;
+                f32 sum = 0.0f;
+                for (u32 i = 0; i < n; ++i) sum += frame_ms_ring[i];
+                return sum / static_cast<f32>(n);
+            }();
+            stats.draw_calls    = kCratePositions.size();
+            stats.triangles     = kCratePositions.size() * 12u;
+            stats.active_voices = 0;
+            ui::imm::draw_debug_hud(fb, stats);
+        }
         window->present(fb);
 
         ++frame;
