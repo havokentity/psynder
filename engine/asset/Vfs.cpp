@@ -188,7 +188,11 @@ struct Mmap {
 };
 
 // A parsed .lmpak. The `mmap` owns the file mapping for its lifetime;
-// `entries` / `names` are pointers into that mapping.
+// `entries` / `names` are pointers into that mapping for the canonical
+// writer (LmpakWriter / lane 05) layout. For the alternate layout emitted
+// by `tools/lm_pak` we materialize the entry table + name pool into the
+// owned `entries_owned` / `names_owned` buffers and point at those — same
+// in-memory shape, different on-disk dialect.
 struct PakMount {
     fs::path             archive_path;
     Mmap                 map;
@@ -197,6 +201,11 @@ struct PakMount {
     const char*          names       = nullptr;     // base of name pool
     usize                names_size  = 0;
     bool                 sorted      = false;
+
+    // Owned storage for the tools/lm_pak dialect. Populated only when
+    // `parse_lmpak_tools` succeeds; left empty for the canonical layout.
+    std::vector<LmpakEntry> entries_owned;
+    std::vector<char>       names_owned;
 };
 
 struct DirMount {
@@ -279,8 +288,52 @@ VfsState& State() {
 }
 
 // ─── .lmpak parse helpers ────────────────────────────────────────────────
+//
+// Two on-disk dialects share the same magic+version word but disagree on
+// header layout after byte 16:
+//
+//   Canonical (LmpakWriter, lane 05): 64-byte header with explicit
+//     entry_table_offset, name_table_offset, name_table_size,
+//     blob_section_offset, blob_section_size, build_unix_time. Layout on
+//     disk is [hdr | payloads (8-byte aligned) | entry_table | name_pool].
+//     This is what `parse_lmpak_canonical` below understands.
+//
+//   Tools (tools/lm_pak/Lmpak.cpp): 56-byte header followed by 24 bytes of
+//     reserved zero. Carries only index_offset + index_bytes; the index
+//     region holds a packed array of 48-byte records (hash, offset, stored,
+//     raw, path_off, path_len, flags, crc32) followed by the path-string
+//     blob. Payloads are tightly packed (no 8-byte alignment). Parsed by
+//     `parse_lmpak_tools`, which materializes a canonical LmpakEntry[] +
+//     name pool into PakMount's owned buffers so the rest of the reader is
+//     dialect-agnostic.
+//
+// Detection: try the canonical interpretation first; if any sanity check
+// fails, fall through to the tools dialect. The discriminator is robust
+// because the tools header zero-fills bytes 32..55, which makes the
+// canonical reading see name_table_size=0 / blob_section_offset=0 — both
+// invalid for the canonical layout whenever entry_count > 0 (and even for
+// entry_count=0, entry_table_offset would equal kToolsHeaderSize=56 < the
+// canonical 64-byte header size, also failing the canonical check).
 
-bool parse_lmpak(PakMount& m) {
+// Tools-dialect constants — kept local to this TU so we don't reach across
+// into the lane-24 namespace (which would force a header dependency).
+constexpr usize kToolsHeaderSize  = 56;
+constexpr usize kToolsRecordBytes = 48;
+constexpr u32   kToolsEntryZstd   = 1u << 0;
+
+template <class T>
+bool read_le_local(const u8* base, usize bytes, usize offset, T& out) {
+    if (offset + sizeof(T) > bytes) return false;
+    using U = std::make_unsigned_t<T>;
+    U u = 0;
+    for (usize i = 0; i < sizeof(T); ++i) {
+        u |= static_cast<U>(base[offset + i]) << (8 * i);
+    }
+    out = static_cast<T>(u);
+    return true;
+}
+
+bool parse_lmpak_canonical(PakMount& m) {
     if (m.map.bytes < sizeof(LmpakHeader)) return false;
 
     LmpakHeader hdr{};
@@ -295,6 +348,7 @@ bool parse_lmpak(PakMount& m) {
     const u64 nt_off = hdr.name_table_offset;
     const u64 nt_end = nt_off + hdr.name_table_size;
     if (nt_off < sizeof(LmpakHeader) || nt_end > m.map.bytes) return false;
+    if (hdr.entry_count > 0 && hdr.name_table_size == 0) return false;
 
     m.entries     = reinterpret_cast<const LmpakEntry*>(m.map.base + et_off);
     m.entry_count = hdr.entry_count;
@@ -309,6 +363,111 @@ bool parse_lmpak(PakMount& m) {
         if (u64(e.name_offset) + u64(e.name_len) > hdr.name_table_size) return false;
     }
     return true;
+}
+
+// Parse the tools/lm_pak dialect. On success, fills the owned buffers in
+// `m` with an entry table and name pool in canonical (LmpakEntry / lane
+// 05) shape and points `m.entries` / `m.names` at them.
+bool parse_lmpak_tools(PakMount& m) {
+    const u8* const base = m.map.base;
+    const usize bytes = m.map.bytes;
+    if (bytes < kToolsHeaderSize) return false;
+
+    u32 magic = 0;
+    if (!read_le_local<u32>(base, bytes, 0, magic) || magic != lmpak::kMagic) return false;
+    u32 version = 0;
+    if (!read_le_local<u32>(base, bytes, 4, version) || version != lmpak::kVersion) return false;
+
+    u32 archive_flags = 0;
+    u32 entry_count = 0;
+    u64 index_offset = 0;
+    u64 index_bytes_field = 0;
+    if (!read_le_local<u32>(base, bytes,  8, archive_flags))    return false;
+    if (!read_le_local<u32>(base, bytes, 12, entry_count))      return false;
+    if (!read_le_local<u64>(base, bytes, 16, index_offset))     return false;
+    if (!read_le_local<u64>(base, bytes, 24, index_bytes_field))return false;
+
+    if (index_offset < kToolsHeaderSize) return false;
+    if (index_offset + index_bytes_field > bytes) return false;
+    const u64 records_bytes = u64(entry_count) * kToolsRecordBytes;
+    if (records_bytes > index_bytes_field) return false;
+
+    const usize cursor_base = static_cast<usize>(index_offset);
+    const usize string_blob_off = cursor_base + static_cast<usize>(records_bytes);
+    const u64   string_blob_bytes = index_bytes_field - records_bytes;
+    if (string_blob_off + string_blob_bytes > bytes) return false;
+
+    // Walk the records, build canonical entries + name pool.
+    m.entries_owned.clear();
+    m.entries_owned.reserve(entry_count);
+    m.names_owned.clear();
+    m.names_owned.reserve(static_cast<usize>(string_blob_bytes) + entry_count);
+
+    bool sorted_check = true;
+    u64 prev_hash = 0;
+
+    for (u32 i = 0; i < entry_count; ++i) {
+        const usize rec = cursor_base + static_cast<usize>(i) * kToolsRecordBytes;
+        u64 hash = 0, offset = 0, stored = 0, raw = 0;
+        u32 path_off = 0, path_len = 0, eflags = 0, crc32 = 0;
+        if (!read_le_local<u64>(base, bytes, rec +  0, hash))   return false;
+        if (!read_le_local<u64>(base, bytes, rec +  8, offset)) return false;
+        if (!read_le_local<u64>(base, bytes, rec + 16, stored)) return false;
+        if (!read_le_local<u64>(base, bytes, rec + 24, raw))    return false;
+        if (!read_le_local<u32>(base, bytes, rec + 32, path_off)) return false;
+        if (!read_le_local<u32>(base, bytes, rec + 36, path_len)) return false;
+        if (!read_le_local<u32>(base, bytes, rec + 40, eflags))   return false;
+        if (!read_le_local<u32>(base, bytes, rec + 44, crc32))    return false;
+        (void)crc32;
+
+        if (offset + stored > bytes) return false;
+        if (u64(path_off) + u64(path_len) > string_blob_bytes) return false;
+        if (path_len > 0xFFFFu) return false;  // doesn't fit in LmpakEntry::name_len
+
+        // Reserve a slot in the owned name pool: copy path bytes + NUL.
+        const u32 dst_off = static_cast<u32>(m.names_owned.size());
+        m.names_owned.insert(
+            m.names_owned.end(),
+            reinterpret_cast<const char*>(base + string_blob_off + path_off),
+            reinterpret_cast<const char*>(base + string_blob_off + path_off + path_len));
+        m.names_owned.push_back('\0');
+
+        LmpakEntry ent{};
+        ent.name_hash    = hash;
+        ent.offset       = offset;
+        ent.size         = stored;
+        // tools writer records `raw` = uncompressed size; if the entry is
+        // uncompressed the writer sets stored == raw, so this is correct
+        // either way and matches LmpakEntry::uncompressed semantics.
+        ent.uncompressed = raw;
+        ent.name_offset  = dst_off;
+        ent.name_len     = static_cast<u16>(path_len);
+        ent.flags        = (eflags & kToolsEntryZstd) ? lmpak::kEntryZstd : u16{0};
+        m.entries_owned.push_back(ent);
+
+        if (i > 0 && hash < prev_hash) sorted_check = false;
+        prev_hash = hash;
+    }
+
+    m.entries     = m.entries_owned.data();
+    m.entry_count = entry_count;
+    m.names       = m.names_owned.data();
+    m.names_size  = m.names_owned.size();
+    // The tools writer always sorts records by hash before emitting, but
+    // verify locally so a hand-tweaked archive doesn't break find_in_pak.
+    m.sorted      = sorted_check;
+    return true;
+}
+
+bool parse_lmpak(PakMount& m) {
+    if (parse_lmpak_canonical(m)) return true;
+    // Canonical parse failed — wipe any partial state and retry as tools dialect.
+    m.entries     = nullptr;
+    m.entry_count = 0;
+    m.names       = nullptr;
+    m.names_size  = 0;
+    m.sorted      = false;
+    return parse_lmpak_tools(m);
 }
 
 const LmpakEntry* find_in_pak(const PakMount& m, u64 path_hash) {
