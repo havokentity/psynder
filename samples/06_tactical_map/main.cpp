@@ -11,15 +11,13 @@
 //     value-noise plus a single big ridge bump. The map is 1m/texel so the
 //     world covers 256m on a side; gentle rolling hills with one tall ridge
 //     across the centre. Spacing/height_scale chosen so peaks reach ~30m.
-//   * Raymarcher: we drive the scalar reference kernel from
-//     `world::outdoor::detail::march_ray` directly — one ray per framebuffer
-//     column at this pixel's NDC, with the same view + projection used by
-//     the rasterizer for the props. The header-only kernel is the same code
-//     lane 11's unit test pins. We compute world-space hits, derive a
-//     splat-blended diffuse color, and write the corresponding NDC z into
-//     the framebuffer's depth slot (24-bit float bit-pattern, identical
-//     packing to `render::raster::pack_depth` so subsequent raster Z-tests
-//     compare the same way).
+//   * Raymarcher: we drive the public `world::outdoor::TerrainRaymarch`
+//     via `set_target(rm, &fb)` (sibling header `TerrainTarget.h`) +
+//     `rm.render(view, proj)`. The Wave-E #112 wire-up paints terrain
+//     pixels into the bound framebuffer + writes 24-bit-packed NDC z
+//     (identical to `render::raster::pack_depth` so subsequent raster
+//     Z-tests compare the same way). Sky is filled separately before
+//     the terrain render — the public API leaves unhit pixels alone.
 //   * Skybox: dawn gradient. Vertical (screen-Y) — warm orange at horizon
 //     fading to cool blue at zenith. Drawn into pixels the raymarcher
 //     didn't paint; tiles already at far-Z so the rasterizer never clobbers
@@ -43,9 +41,8 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
-#include "world/outdoor/Heightmap_internal.h"
-#include "world/outdoor/Raymarch_internal.h"
 #include "world/outdoor/Terrain.h"
+#include "world/outdoor/TerrainTarget.h"
 
 #include <algorithm>
 #include <array>
@@ -220,39 +217,6 @@ std::vector<u16> build_heightmap() {
     return heights;
 }
 
-// ─── Splat → RGB ─────────────────────────────────────────────────────────
-// The raymarcher's `splat_at_texel` returns 4-weight grass/rock/sand/snow.
-// We collapse to a single RGB by blending against four reference colours.
-// Distance-based haze fades terrain toward the sky color near the horizon.
-PSY_FORCEINLINE u32 splat_to_rgb(world::outdoor::detail::SplatWeights s,
-                                 f32 ndotl, f32 dist) noexcept {
-    // Reference palette tuned for the dawn lighting.
-    constexpr f32 grass[3] = {  98.0f, 122.0f,  60.0f };
-    constexpr f32 rock [3] = { 118.0f, 102.0f,  82.0f };
-    constexpr f32 sand [3] = { 198.0f, 178.0f, 120.0f };
-    constexpr f32 snow [3] = { 230.0f, 232.0f, 240.0f };
-    f32 r = grass[0]*s.w[0] + rock[0]*s.w[1] + sand[0]*s.w[2] + snow[0]*s.w[3];
-    f32 g = grass[1]*s.w[0] + rock[1]*s.w[1] + sand[1]*s.w[2] + snow[1]*s.w[3];
-    f32 b = grass[2]*s.w[0] + rock[2]*s.w[1] + sand[2]*s.w[2] + snow[2]*s.w[3];
-
-    // Lambert against a low-east sun (warm light).
-    constexpr f32 sun_r = 1.20f, sun_g = 0.92f, sun_b = 0.74f;
-    constexpr f32 amb_r = 0.32f, amb_g = 0.34f, amb_b = 0.46f;
-    const f32 nl = ndotl < 0.0f ? 0.0f : ndotl;
-    r *= (amb_r + sun_r * nl);
-    g *= (amb_g + sun_g * nl);
-    b *= (amb_b + sun_b * nl);
-
-    // Distance haze: blend toward warm-orange dawn horizon at far ranges.
-    constexpr f32 haze_r = 200.0f, haze_g = 150.0f, haze_b = 110.0f;
-    const f32 fog = std::min(1.0f, dist / 360.0f);
-    r = r * (1.0f - fog) + haze_r * fog;
-    g = g * (1.0f - fog) + haze_g * fog;
-    b = b * (1.0f - fog) + haze_b * fog;
-
-    return pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
-}
-
 // ─── Sky gradient ────────────────────────────────────────────────────────
 // Vertical screen-Y gradient: warm orange near the horizon (bottom of the
 // upper-screen band), cool blue at zenith.
@@ -314,141 +278,17 @@ CameraView make_flyover_camera(f32 t_seconds) {
     return c;
 }
 
-// Build a primary ray direction for the (px+0.5, py+0.5) pixel sample.
-PSY_FORCEINLINE math::Vec3 primary_ray_dir(const CameraView& cam, u32 px, u32 py) noexcept {
-    const f32 nx = (static_cast<f32>(px) + 0.5f) / static_cast<f32>(kFbW);
-    const f32 ny = (static_cast<f32>(py) + 0.5f) / static_cast<f32>(kFbH);
-    const f32 sx = (2.0f * nx - 1.0f) * cam.aspect * cam.fov_tan;
-    const f32 sy = (1.0f - 2.0f * ny) * cam.fov_tan;
-    math::Vec3 d{
-        cam.fwd.x + cam.right.x * sx + cam.up.x * sy,
-        cam.fwd.y + cam.right.y * sx + cam.up.y * sy,
-        cam.fwd.z + cam.right.z * sx + cam.up.z * sy,
-    };
-    return math::normalize(d);
-}
-
-// Compute the NDC z (in [0,1]) for a world-space point given the same proj/
-// view used by the rasterizer. We do the full clip-space transform and
-// perspective divide so the depth value compares byte-identical to the
-// rasterizer's per-pixel z under `pack_depth`.
-PSY_FORCEINLINE f32 ndc_z_for_world(const CameraView& cam, math::Vec3 wp) noexcept {
-    const math::Vec4 v{wp.x, wp.y, wp.z, 1.0f};
-    const math::Vec4 vview = math::mul(cam.view, v);
-    const math::Vec4 vclip = math::mul(cam.proj, vview);
-    if (vclip.w <= 1e-6f) return 1.0f;
-    f32 z = vclip.z / vclip.w;
-    // GL-style perspective_rh returns clip-space z in [-1, +1] post-divide;
-    // map to [0, 1] for the Z buffer storage.
-    z = z * 0.5f + 0.5f;
-    if (z < 0.0f) return 0.0f;
-    if (z > 1.0f) return 1.0f;
-    return z;
-}
-
-// ─── Raymarch the terrain into pixels + depth ────────────────────────────
+// ─── Sky pre-fill ───────────────────────────────────────────────────────
 //
-// For each framebuffer pixel we cast a ray and walk it (logarithmic step)
-// until we hit terrain or run out of distance. Hits are coloured via the
-// splat→RGB blend and have their NDC z packed into the depth slot so the
-// rasterizer's subsequent submits Z-test correctly.
-void render_terrain(const world::outdoor::HeightmapDesc& hm,
-                    const CameraView& cam,
-                    render::Framebuffer& fb,
-                    std::vector<u8>& hit_mask) {
+// `TerrainRaymarch::render` (Wave E #112) paints terrain pixels only —
+// it leaves unhit pixels at whatever was in the framebuffer. Sweep the
+// sky gradient in first; the public render then writes terrain over it.
+void fill_sky(render::Framebuffer& fb) noexcept {
     auto* pixels = reinterpret_cast<u32*>(fb.pixels);
-
-    // Lambert sun direction: low east-northeast, golden hour.
-    const math::Vec3 sun_dir =
-        math::normalize(math::Vec3{ 0.55f, 0.50f, 0.20f });
-
-    // World "floor" for the map AABB so we can reject rays whose endpoint
-    // is unambiguously above the maximum terrain height.
-    constexpr f32 kMaxTerrainY = 32.0f;   // ≥ kHmHeightScl * 65535 + slack
-    constexpr f32 kStepNear    = 0.4f;    // m per first march step
-    constexpr f32 kStepFar     = 6.0f;    // m per step at the horizon
-    constexpr f32 kStepFalloff = 90.0f;   // distance at which steps double-ish
-    constexpr f32 kMaxT        = 420.0f;  // longest ray, in metres
-
     for (u32 y = 0; y < kFbH; ++y) {
         const u32 sky_color = sample_sky_row(y);
         for (u32 x = 0; x < kFbW; ++x) {
-            const usize idx = static_cast<usize>(y) * kFbW + x;
-            const math::Vec3 dir = primary_ray_dir(cam, x, y);
-
-            // Skip rays that go up — they only ever see the sky.
-            if (dir.y > 0.005f && cam.eye.y > kMaxTerrainY) {
-                pixels[idx] = sky_color;
-                hit_mask[idx] = 0;
-                continue;
-            }
-
-            // Variable-step march. We follow `march_ray` semantics: walk
-            // forward, sample bilinear height, refine on the cross-under.
-            f32 prev_t  = 0.0f;
-            f32 prev_ry = cam.eye.y;
-            f32 prev_th = world::outdoor::detail::sample_bilinear(
-                              hm, cam.eye.x, cam.eye.z);
-
-            bool hit = false;
-            f32  hit_t = 0.0f;
-
-            f32 t = kStepNear;
-            while (t <= kMaxT) {
-                const f32 wx = cam.eye.x + dir.x * t;
-                const f32 wy = cam.eye.y + dir.y * t;
-                const f32 wz = cam.eye.z + dir.z * t;
-                const f32 th = world::outdoor::detail::sample_bilinear(
-                                   hm, wx, wz);
-
-                if (wy <= th) {
-                    // Bisect once for sub-step accuracy (matches march_ray).
-                    const f32 dy_a = prev_ry - prev_th;     // > 0
-                    const f32 dy_b = wy     - th;            // ≤ 0
-                    const f32 denom = dy_a - dy_b;
-                    f32 frac = denom > 0.0f ? (dy_a / denom) : 0.0f;
-                    if (frac < 0.0f) frac = 0.0f;
-                    if (frac > 1.0f) frac = 1.0f;
-                    hit_t = prev_t + (t - prev_t) * frac;
-                    hit = true;
-                    break;
-                }
-                prev_t  = t;
-                prev_ry = wy;
-                prev_th = th;
-                // Logarithmic step growth.
-                const f32 step = kStepNear + (kStepFar - kStepNear) *
-                                 std::min(1.0f, t / kStepFalloff);
-                t += step;
-            }
-
-            if (!hit) {
-                pixels[idx] = sky_color;
-                hit_mask[idx] = 0;
-                continue;
-            }
-
-            const math::Vec3 hit_pos{
-                cam.eye.x + dir.x * hit_t,
-                cam.eye.y + dir.y * hit_t,
-                cam.eye.z + dir.z * hit_t,
-            };
-
-            // Texel-snapped splat + normal for shading.
-            const i32 tx = static_cast<i32>(std::floor(hit_pos.x / kHmSpacing + 0.5f));
-            const i32 tz = static_cast<i32>(std::floor(hit_pos.z / kHmSpacing + 0.5f));
-            const auto       splat = world::outdoor::detail::splat_at_texel(hm, tx, tz);
-            const math::Vec3 n     = world::outdoor::detail::normal_at_texel(hm, tx, tz);
-            const f32        ndotl = math::dot(n, sun_dir);
-
-            pixels[idx] = splat_to_rgb(splat, ndotl, hit_t);
-
-            // Z-buffer.
-            if (fb.depth) {
-                const f32 z = ndc_z_for_world(cam, hit_pos);
-                fb.depth[idx] = pack_depth_u24(z);
-            }
-            hit_mask[idx] = 1;
+            pixels[static_cast<usize>(y) * kFbW + x] = sky_color;
         }
     }
 }
@@ -531,11 +371,37 @@ std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
         { cx -  40.0f, cz -  80.0f },
         { cx +  60.0f, cz -  90.0f },
     }};
+    // Bilinear sample of the u16 heightmap at world-space (x, z). Inlined
+    // so the sample doesn't depend on the `detail::*` raymarch internals
+    // (the public `TerrainRaymarch::render` is the canonical paint path).
+    auto sample_height_at = [&hm](f32 wx, f32 wz) noexcept -> f32 {
+        const f32 fx = wx / hm.spacing;
+        const f32 fz = wz / hm.spacing;
+        const i32 ix = static_cast<i32>(std::floor(fx));
+        const i32 iz = static_cast<i32>(std::floor(fz));
+        const f32 tx = fx - static_cast<f32>(ix);
+        const f32 tz = fz - static_cast<f32>(iz);
+        auto fetch = [&hm](i32 cx, i32 cz) noexcept -> f32 {
+            cx = std::clamp(cx, 0, static_cast<i32>(hm.size_x) - 1);
+            cz = std::clamp(cz, 0, static_cast<i32>(hm.size_z) - 1);
+            const usize idx =
+                static_cast<usize>(cz) * hm.size_x + static_cast<usize>(cx);
+            return static_cast<f32>(hm.heights[idx]) * hm.height_scale;
+        };
+        const f32 h00 = fetch(ix,     iz    );
+        const f32 h10 = fetch(ix + 1, iz    );
+        const f32 h01 = fetch(ix,     iz + 1);
+        const f32 h11 = fetch(ix + 1, iz + 1);
+        const f32 a = h00 * (1.0f - tx) + h10 * tx;
+        const f32 b = h01 * (1.0f - tx) + h11 * tx;
+        return a * (1.0f - tz) + b * tz;
+    };
+
     std::array<Tower, 6> towers{};
     for (u32 i = 0; i < 6; ++i) {
         const f32 wx = xz[i].x;
         const f32 wz = xz[i].y;
-        const f32 hy = world::outdoor::detail::sample_bilinear(hm, wx, wz);
+        const f32 hy = sample_height_at(wx, wz);
         towers[i].ground_pos  = { wx, hy, wz };
         towers[i].height      = 7.0f;
         towers[i].half_extent = 1.6f;
@@ -594,7 +460,6 @@ int main(int argc, char** argv) {
 
     std::vector<u32> pixels(static_cast<usize>(kFbW) * kFbH, 0u);
     std::vector<u32> depth (static_cast<usize>(kFbW) * kFbH, 0u);
-    std::vector<u8>  hit_mask(static_cast<usize>(kFbW) * kFbH, 0u);
 
     render::Framebuffer fb{};
     fb.width  = kFbW;
@@ -613,12 +478,14 @@ int main(int argc, char** argv) {
     hm_desc.height_scale = kHmHeightScl;
     hm_desc.heights      = heights.data();
 
-    // Wire the public TerrainRaymarch with the same desc — Wave A's render()
-    // is a no-op (the framebuffer-bound integration is lane 07's job), so
-    // we drive the per-column kernel ourselves below. We still register the
-    // backend so the API contract is exercised end-to-end.
+    // Wave E #112 made `TerrainRaymarch::render(view, proj)` paint into a
+    // bound framebuffer via the sibling `set_target` hook. The lighting +
+    // haze constants in `engine/world/outdoor/Terrain.cpp` are intentionally
+    // identical to the palette this sample used inline before Wave E, so
+    // visual output stays continuous after the cut-over.
     world::outdoor::TerrainRaymarch terrain_rm;
     terrain_rm.set_heightmap(hm_desc);
+    world::outdoor::set_target(terrain_rm, &fb);
 
     // ─── Scene props ─────────────────────────────────────────────────────
     const Mesh tower_mesh = build_cube_mesh(kColTowerBody, kColTowerRoof);
@@ -653,21 +520,17 @@ int main(int argc, char** argv) {
 
         const CameraView cam = make_flyover_camera(static_cast<f32>(t));
 
-        // ── Step 1: raymarch the terrain ───────────────────────────────
-        // Writes pixels + per-pixel NDC z; unhit pixels get the sky
-        // gradient and are left at far-Z = 1.0.
-        // Reset depth to far before the raymarch (we own the buffer here).
+        // ── Step 1: terrain via the public TerrainRaymarch ─────────────
+        // Reset depth to far before the raymarch (the public render writes
+        // only at hit pixels, identical packing to `pack_depth`).
         {
-            u32 far_packed = pack_depth_u24(1.0f);
+            const u32 far_packed = pack_depth_u24(1.0f);
             const usize n = static_cast<usize>(kFbW) * kFbH;
             for (usize i = 0; i < n; ++i) depth[i] = far_packed;
         }
-        render_terrain(hm_desc, cam, fb, hit_mask);
-
-        // Drive the public TerrainRaymarch::render() too so the call is
-        // exercised on the M6 demo path (Wave A no-ops; Wave B will plumb
-        // this through lane 07's tile bin queue and our pixels become a
-        // backup reference).
+        // Pre-fill sky — the public render leaves unhit pixels alone.
+        fill_sky(fb);
+        // Terrain paints over the sky at hit pixels.
         terrain_rm.render(cam.view, cam.proj);
 
         // ── Step 2: rasterizer for helicopter + watchtowers ────────────
