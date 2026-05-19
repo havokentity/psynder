@@ -1,0 +1,146 @@
+/* SPDX-License-Identifier: MIT
+ * Psynder sample 04 — NFS racing HUD stylesheet.
+ *
+ * Pairs with hud.rml.  Dark-on-light-grey panels: each panel is a
+ * semi-translucent slate slab with a slight grey edge, and accents
+ * (speed digits, RPM fill, redline) use desaturated dashboard colours
+ * — a Toyota MR2 / late-90s arcade colour set, not a neon AAA HUD.
+ *
+ * Viewport convention: pixel coordinates, top-left origin, 1280x720.
+ * The RPM fill width and gear letter are re-templated each frame from
+ * main.cpp via the test_only::reload_with_source surface (the in-tree
+ * RmlUi subset has no per-property setter yet, so the rebuild-each-tick
+ * approach is the simplest way to demonstrate the live binding M7
+ * milestone asks for).  Reload generation increments per frame; layout
+ * stays stable because all dimensions are static here.
+ */
+
+/* ── Defaults — inherited down the cascade. ──────────────────────────── */
+* {
+    color:     #e6e6e6;
+    font-size: 14;
+}
+
+/* ── Root anchor — transparent overlay across the whole viewport. ───── */
+#hud-root {
+    left:   0;
+    top:    0;
+    width:  1280;
+    height: 720;
+    background-color: transparent;
+}
+
+/* ── Generic panel chrome: dark-on-light-grey slate slab. ────────────── */
+.panel {
+    background-color: rgba(30, 34, 42, 220);
+}
+
+/* ── Speed panel: lower-centre, fixed-width digital readout. ─────────── */
+#speed-panel {
+    left:   500;
+    top:    580;
+    width:  280;
+    height: 120;
+}
+.speed-number {
+    left:    16;
+    top:     12;
+    width:   248;
+    height:  72;
+    color:   #f6f4ee;
+    font-size: 56;
+    background-color: transparent;
+}
+.speed-unit {
+    left:    16;
+    top:     88;
+    width:   248;
+    height:  22;
+    color:   #9aa4b2;
+    font-size: 16;
+    background-color: transparent;
+}
+
+/* ── RPM panel: lower-left, horizontal bar + redline + gear letter. ──── */
+#rpm-panel {
+    left:    24;
+    top:     580;
+    width:   440;
+    height:  120;
+}
+#rpm-label {
+    left:   16;
+    top:    10;
+    width:  60;
+    height: 18;
+    color:  #9aa4b2;
+    font-size: 14;
+    background-color: transparent;
+}
+.bar { left: 16; height: 22; }
+.bar-track {
+    top:              36;
+    width:            340;
+    background-color: rgba(60, 64, 72, 255);
+}
+.bar-fill {
+    top:              36;
+    width:            340;
+    background-color: #cfa44a;
+}
+.rpm { background-color: #d8a83c; }
+
+/* Redline tick: short red sliver at ~85% of the bar's length. */
+.bar-redline {
+    left:             305;
+    top:              30;
+    width:            48;
+    height:           34;
+    background-color: rgba(190, 56, 56, 220);
+}
+
+.gear {
+    left:    370;
+    top:     14;
+    width:   58;
+    height:  92;
+    color:   #f6f4ee;
+    font-size: 58;
+    background-color: rgba(20, 22, 28, 220);
+}
+
+/* ── Pedal panel: lower-right, two vertical bars for THR / BRK. ──────── */
+#pedal-panel {
+    left:    1080;
+    top:     480;
+    width:   176;
+    height:  220;
+}
+.pedal-label {
+    left:   18;
+    top:    8;
+    width:  44;
+    height: 16;
+    color:  #9aa4b2;
+    font-size: 13;
+    background-color: transparent;
+}
+.pedal-label.brk { left: 100; }
+
+.pedal-track {
+    left:             20;
+    top:              30;
+    width:            40;
+    height:           170;
+    background-color: rgba(60, 64, 72, 255);
+}
+.pedal-track.brk { left: 102; }
+
+.pedal-fill {
+    left:             20;
+    top:              30;
+    width:            40;
+    height:           170;
+}
+.pedal-fill.throttle { background-color: #4f9d4a; }
+.pedal-fill.brake    { left: 102; background-color: #b94a4a; }
