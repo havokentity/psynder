@@ -1,0 +1,60 @@
+<!-- SPDX-License-Identifier: MIT
+     Psynder sample 04 — NFS-style racing HUD.
+
+     A pure visual dashboard rendered as an overlay through lane 17's
+     in-tree RML/RCSS subset.  Bound from main.cpp by re-injecting the
+     document each frame with the latest vehicle telemetry baked in
+     (the in-tree backend's data-binding surface lands later — until
+     then, sample-04 demonstrates the asset-VFS / mount_directory /
+     load_document / show / render plumbing end-to-end).
+
+     The data model main.cpp pushes:
+
+       - `hud.speed_kmh`  (u32)   driver-facing speed readout
+       - `hud.rpm_pct`    (0..100) bar fill, redline visual ≥80%
+       - `hud.gear`       (char)  "1".."6" or "R" / "N"
+       - `hud.throttle`   (0..100) green vertical indicator
+       - `hud.brake`      (0..100) red vertical indicator
+
+     Layout is anchored to a 1280×720 viewport (matches main.cpp's
+     window descriptor).  Mostly bottom-screen so it doesn't crowd
+     the chase-cam track. -->
+<rml>
+  <head>
+    <title>HUD</title>
+    <link rel="stylesheet" href="hud.rcss"/>
+  </head>
+  <body>
+    <div id="hud-root">
+
+      <!-- ── Lower-centre: large speed readout (km/h). ─────────────────── -->
+      <div id="speed-panel" class="panel">
+        <div id="speed-value" class="speed-number">--</div>
+        <div id="speed-unit"  class="speed-unit">KM/H</div>
+      </div>
+
+      <!-- ── Lower-left: RPM bar with redline highlight + gear letter. ── -->
+      <div id="rpm-panel" class="panel">
+        <div id="rpm-label" class="label">RPM</div>
+        <div id="rpm-track" class="bar bar-track">
+          <div id="rpm-fill" class="bar bar-fill rpm"></div>
+        </div>
+        <div id="rpm-redline" class="bar bar-redline"></div>
+        <div id="gear-letter" class="gear">N</div>
+      </div>
+
+      <!-- ── Lower-right: vertical throttle + brake indicators. ───────── -->
+      <div id="pedal-panel" class="panel">
+        <div id="thr-label"  class="pedal-label">THR</div>
+        <div id="thr-track"  class="pedal-track">
+          <div id="thr-fill" class="pedal-fill throttle"></div>
+        </div>
+        <div id="brk-label"  class="pedal-label brk">BRK</div>
+        <div id="brk-track"  class="pedal-track brk">
+          <div id="brk-fill" class="pedal-fill brake"></div>
+        </div>
+      </div>
+
+    </div>
+  </body>
+</rml>
