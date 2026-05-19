@@ -14,12 +14,26 @@ if(TARGET Catch2::Catch2WithMain)
         psynder_core psynder_math psynder_simd psynder_scene
         psynder_world_bsp psynder_world_outdoor
         psynder_render_raster psynder_render_rt psynder_render_post
-        psynder_asset psynder_audio psynder_net
+        psynder_asset psynder_audio psynder_net psynder_platform
         psynder_ui_imm psynder_editor_core
     )
     # Lane-19 (editor-ipc) tests need to link against the IPC server library.
     if(TARGET psynder_editor_ipc)
         target_link_libraries(psynder_unit PRIVATE psynder_editor_ipc)
+    endif()
+    # Platform lanes (21/22/23) export internal symbols for host-specific
+    # tests; link the host's platform lib directly so those tests resolve.
+    if(TARGET psynder_platform_macos)
+        target_link_libraries(psynder_unit PRIVATE psynder_platform_macos)
+    endif()
+    if(TARGET psynder_platform_win32)
+        target_link_libraries(psynder_unit PRIVATE psynder_platform_win32)
+    endif()
+    if(TARGET psynder_platform_linux)
+        target_link_libraries(psynder_unit PRIVATE psynder_platform_linux)
+    endif()
+    if(TARGET psynder_platform_shim)
+        target_link_libraries(psynder_unit PRIVATE psynder_platform_shim)
     endif()
     include(Catch)
     catch_discover_tests(psynder_unit)
