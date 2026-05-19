@@ -5,6 +5,8 @@
 
 #if defined(PSYNDER_PLATFORM_WIN32)
 
+#include "core/Log.h"
+
 #include <cstring>
 
 #pragma comment(lib, "dinput8.lib")

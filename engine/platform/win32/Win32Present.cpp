@@ -18,6 +18,8 @@
 
 #if defined(PSYNDER_PLATFORM_WIN32)
 
+#include "core/Log.h"
+
 #include <algorithm>
 #include <cstring>
 
