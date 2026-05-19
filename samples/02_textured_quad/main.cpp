@@ -1,18 +1,28 @@
 // SPDX-License-Identifier: MIT
-// Psynder — Sample 02 / M2 demo. Rotating "crate room" — a few axis-aligned
-// boxes with the same crate texture, viewed through a perspective camera.
+// Psynder — Sample 02 / M2 demo. Rotating "crate room" — a small set of
+// unit cubes spinning on the floor, viewed through a perspective camera.
 //
-// M2 ships once lane 07's tiled rasterizer lands bilinear + mipmaps + Z. Per
-// the lane 25 brief, this sample is allowed to land **returning early** if
-// lane 07's full bilinear pipeline hasn't shipped yet — it just needs to
-// build, link, and exit cleanly so CI keeps running. When the rasterizer is
-// real, the body below kicks in: build the room geometry once, submit a
-// DrawItem per face per frame, present.
+// Wave-B brings the rasterizer up to tiled-binner + bilinear + Z (lane 07
+// landed those in this wave). Sample 02 is the demo target for M2 per
+// DESIGN.md §13: rotating crate room with the new pipeline. The crates use
+// per-face vertex colours rather than texture binds because the public
+// rasterizer surface (DrawItem) still routes textures via `MaterialId`,
+// and lane 05 / 24's material binding plumbing arrives in Wave-C — the
+// shape is correct regardless, and the geometry exercises every hot path
+// in the rasterizer (vertex transform → triangle setup → tile bin →
+// perspective-correct interpolation → Z reject).
 //
 // CLI flags:
-//   --smoke-frames=N    Headless CI run for N frames then exit.
-//   --force-full        Skip the M2-readiness gate and run the full path
-//                       anyway (useful for local-dev once lane 07 lands).
+//   --smoke-frames=N         Headless CI run for N frames then exit.
+//   --smoke-frames N         Same, space-separated (matches cmake helper
+//                            invocation in cmake/Goldens.cmake).
+//   --smoke-capture-out PATH Write the last rendered framebuffer to PATH
+//                            (or PATH may be `=`-suffixed). The file is a
+//                            valid 24-bit RGB PNG. Used by the
+//                            psynder_add_golden_cell() ctest cells to
+//                            produce the actual-image-this-run output.
+
+#include "common/PngWriter.h"
 
 #include "core/Log.h"
 #include "core/Types.h"
@@ -24,6 +34,8 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -32,76 +44,123 @@ using namespace psynder;
 namespace {
 
 struct Args {
-    u32  smoke_frames = 0;
-    bool force_full   = false;
+    u32         smoke_frames = 0;
+    std::string capture_out;
 };
+
+u32 parse_uint(std::string_view v) noexcept {
+    u32 out = 0;
+    for (char c : v) {
+        if (c < '0' || c > '9') return 0;
+        out = out * 10u + static_cast<u32>(c - '0');
+    }
+    return out;
+}
 
 Args parse_args(int argc, char** argv) {
     Args a{};
-    constexpr std::string_view kSmoke = "--smoke-frames=";
+    constexpr std::string_view kSmoke   = "--smoke-frames=";
+    constexpr std::string_view kSmokeSp = "--smoke-frames";
+    constexpr std::string_view kCapEq   = "--smoke-capture-out=";
+    constexpr std::string_view kCapSp   = "--smoke-capture-out";
     for (int i = 1; i < argc; ++i) {
         std::string_view s{argv[i]};
         if (s.starts_with(kSmoke)) {
-            u32 out = 0;
-            for (char c : s.substr(kSmoke.size())) {
-                if (c < '0' || c > '9') { out = 0; break; }
-                out = out * 10u + static_cast<u32>(c - '0');
-            }
-            a.smoke_frames = out;
-        } else if (s == "--force-full") {
-            a.force_full = true;
+            a.smoke_frames = parse_uint(s.substr(kSmoke.size()));
+        } else if (s == kSmokeSp && i + 1 < argc) {
+            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
+        } else if (s.starts_with(kCapEq)) {
+            a.capture_out = std::string(s.substr(kCapEq.size()));
+        } else if (s == kCapSp && i + 1 < argc) {
+            a.capture_out = argv[++i];
         }
     }
     return a;
 }
 
-// M2-readiness probe. The rasterizer is a stub today; once lane 07 lands
-// real bilinear + Z, this gate flips to true and the sample runs the full
-// crate-room path. The probe is intentionally trivial — we don't want to
-// poke at internal state, just check whether end_frame() draws ANY pixels
-// into a framebuffer it was given. The detection is heuristic; --force-full
-// overrides it.
-bool rasterizer_ready_for_m2() {
-    using namespace render;
-    std::array<u32, 64 * 64> px{};
-    for (u32& p : px) p = 0xDEADBEEFu;
+// Unit cube — 24 verts (4 per face × 6 faces), per-face colour packed into
+// the Vertex::color slot so the perspective-correct interpolator routes it
+// through the (r/w, g/w, b/w) channels — same path the texture pipeline
+// will eventually use. Z faces forward (-Z), so the front of each crate
+// faces the camera at angle 0.
+constexpr u32 pack_rgba(u8 r, u8 g, u8 b, u8 a = 255) noexcept {
+    return static_cast<u32>(r)
+         | (static_cast<u32>(g) << 8)
+         | (static_cast<u32>(b) << 16)
+         | (static_cast<u32>(a) << 24);
+}
 
-    Framebuffer fb{};
-    fb.width  = 64;
-    fb.height = 64;
-    fb.pitch  = 64 * 4;
-    fb.format = PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(px.data());
+constexpr u32 kColPosX = pack_rgba(220, 110,  60);  // warm orange
+constexpr u32 kColNegX = pack_rgba(160,  90,  50);  // dim orange
+constexpr u32 kColPosY = pack_rgba(220, 200, 130);  // top lighter
+constexpr u32 kColNegY = pack_rgba( 80,  60,  40);  // floor darker
+constexpr u32 kColPosZ = pack_rgba(200, 100,  60);  // mid orange
+constexpr u32 kColNegZ = pack_rgba(140,  80,  50);  // back dim
 
-    raster::ViewState view{};
-    view.target     = fb;
-    view.view       = math::identity4();
-    view.projection = math::identity4();
+// 24 vertices for a unit cube centered at origin, ±0.5 on each axis.
+const std::array<render::raster::Vertex, 24> kCubeVerts{{
+    // +X face (BL → TL → TR → BR in face-local space)
+    { { 0.5f,-0.5f,-0.5f}, { 1,0,0}, {0,1}, {0,0}, kColPosX },
+    { { 0.5f, 0.5f,-0.5f}, { 1,0,0}, {0,0}, {0,0}, kColPosX },
+    { { 0.5f, 0.5f, 0.5f}, { 1,0,0}, {1,0}, {0,0}, kColPosX },
+    { { 0.5f,-0.5f, 0.5f}, { 1,0,0}, {1,1}, {0,0}, kColPosX },
+    // -X face
+    { {-0.5f,-0.5f, 0.5f}, {-1,0,0}, {0,1}, {0,0}, kColNegX },
+    { {-0.5f, 0.5f, 0.5f}, {-1,0,0}, {0,0}, {0,0}, kColNegX },
+    { {-0.5f, 0.5f,-0.5f}, {-1,0,0}, {1,0}, {0,0}, kColNegX },
+    { {-0.5f,-0.5f,-0.5f}, {-1,0,0}, {1,1}, {0,0}, kColNegX },
+    // +Y face (top)
+    { {-0.5f, 0.5f,-0.5f}, {0, 1,0}, {0,1}, {0,0}, kColPosY },
+    { {-0.5f, 0.5f, 0.5f}, {0, 1,0}, {0,0}, {0,0}, kColPosY },
+    { { 0.5f, 0.5f, 0.5f}, {0, 1,0}, {1,0}, {0,0}, kColPosY },
+    { { 0.5f, 0.5f,-0.5f}, {0, 1,0}, {1,1}, {0,0}, kColPosY },
+    // -Y face (bottom)
+    { {-0.5f,-0.5f, 0.5f}, {0,-1,0}, {0,1}, {0,0}, kColNegY },
+    { {-0.5f,-0.5f,-0.5f}, {0,-1,0}, {0,0}, {0,0}, kColNegY },
+    { { 0.5f,-0.5f,-0.5f}, {0,-1,0}, {1,0}, {0,0}, kColNegY },
+    { { 0.5f,-0.5f, 0.5f}, {0,-1,0}, {1,1}, {0,0}, kColNegY },
+    // +Z face
+    { {-0.5f,-0.5f, 0.5f}, {0,0, 1}, {0,1}, {0,0}, kColPosZ },
+    { { 0.5f,-0.5f, 0.5f}, {0,0, 1}, {1,1}, {0,0}, kColPosZ },
+    { { 0.5f, 0.5f, 0.5f}, {0,0, 1}, {1,0}, {0,0}, kColPosZ },
+    { {-0.5f, 0.5f, 0.5f}, {0,0, 1}, {0,0}, {0,0}, kColPosZ },
+    // -Z face (front when camera looks down -Z)
+    { { 0.5f,-0.5f,-0.5f}, {0,0,-1}, {0,1}, {0,0}, kColNegZ },
+    { {-0.5f,-0.5f,-0.5f}, {0,0,-1}, {1,1}, {0,0}, kColNegZ },
+    { {-0.5f, 0.5f,-0.5f}, {0,0,-1}, {1,0}, {0,0}, kColNegZ },
+    { { 0.5f, 0.5f,-0.5f}, {0,0,-1}, {0,0}, {0,0}, kColNegZ },
+}};
 
-    // A trivial centered triangle covering most of the framebuffer.
-    const std::array<raster::Vertex, 3> verts{{
-        { {-0.8f, -0.8f, 0.0f}, {0,0,1}, {0,1}, {0,0}, 0xFF00FF00u },
-        { { 0.8f, -0.8f, 0.0f}, {0,0,1}, {1,1}, {0,0}, 0xFF00FF00u },
-        { { 0.0f,  0.8f, 0.0f}, {0,0,1}, {0.5f,0}, {0,0}, 0xFF00FF00u },
-    }};
-    const std::array<u32, 3> indices{0,1,2};
+// 36 indices — two triangles per face, wound CCW in the post-flip screen
+// frame (matches the front-face convention in TriSetup.cpp).
+constexpr std::array<u32, 36> kCubeIndices{
+     0, 1, 2,  0, 2, 3,
+     4, 5, 6,  4, 6, 7,
+     8, 9,10,  8,10,11,
+    12,13,14, 12,14,15,
+    16,17,18, 16,18,19,
+    20,21,22, 20,22,23,
+};
 
-    raster::DrawItem item{};
-    item.vertices     = verts.data();
-    item.vertex_count = static_cast<u32>(verts.size());
-    item.indices      = indices.data();
-    item.index_count  = static_cast<u32>(indices.size());
-    item.model        = math::identity4();
+// Crate placements inside the room. Four cubes form a small clump in front
+// of the camera; the camera looks down -Z so all four are visible.
+const std::array<math::Vec3, 4> kCratePositions{{
+    {-1.3f, 0.0f, -3.0f},
+    { 1.3f, 0.0f, -3.0f},
+    {-0.6f, 0.0f, -5.0f},
+    { 0.7f, 1.2f, -5.5f},
+}};
 
-    auto& r = raster::Rasterizer::Get();
-    r.begin_frame(view);
-    r.submit(item);
-    r.end_frame();
-
-    // Any pixel changed away from 0xDEADBEEF means the rasterizer wrote
-    // something. The stub never writes; lane 07's real impl will.
-    for (u32 p : px) if (p != 0xDEADBEEFu) return true;
-    return false;
+void clear_depth_far(render::Framebuffer& fb) noexcept {
+    if (!fb.depth) return;
+    // 1.0 packed the same way pack_depth() does inside TileRaster.cpp —
+    // the top 24 bits of the f32 1.0 representation, low byte zeroed.
+    u32 packed_far = 0;
+    const f32 one = 1.0f;
+    std::memcpy(&packed_far, &one, sizeof(packed_far));
+    packed_far &= 0xFFFFFF00u;
+    const usize n = static_cast<usize>(fb.width) * fb.height;
+    for (usize i = 0; i < n; ++i) fb.depth[i] = packed_far;
 }
 
 }  // namespace
@@ -109,26 +168,6 @@ bool rasterizer_ready_for_m2() {
 int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
 
-    const bool ready = args.force_full || rasterizer_ready_for_m2();
-    if (!ready) {
-        PSY_LOG_INFO("sample_02: lane 07 tiled-raster + bilinear not yet ready; "
-                     "exiting clean (--force-full to override).");
-        // Touch the window factory anyway so the platform layer is exercised
-        // even on the early-return path — that's the M2 smoke contract.
-        platform::WindowDesc desc{};
-        desc.title         = "Psynder — sample 02 (crate room, stub)";
-        desc.window_width  = 640;
-        desc.window_height = 360;
-        desc.render_width  = 320;
-        desc.render_height = 180;
-        if (auto* w = platform::create_window(desc)) {
-            w->poll_events();
-            platform::destroy_window(w);
-        }
-        return EXIT_SUCCESS;
-    }
-
-    // ─── Full M2 path ───────────────────────────────────────────────────
     platform::WindowDesc desc{};
     desc.title         = "Psynder — sample 02 (crate room)";
     desc.window_width  = 1280;
@@ -144,7 +183,8 @@ int main(int argc, char** argv) {
     }
 
     std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    std::vector<u32> depth (static_cast<usize>(desc.render_width) * desc.render_height, 0xFFFFFFFFu);
+    std::vector<u32> depth (static_cast<usize>(desc.render_width) * desc.render_height, 0);
+
     render::Framebuffer fb{};
     fb.width  = desc.render_width;
     fb.height = desc.render_height;
@@ -153,84 +193,42 @@ int main(int argc, char** argv) {
     fb.pixels = reinterpret_cast<u8*>(pixels.data());
     fb.depth  = depth.data();
 
-    // Unit cube, 8 vertices, 12 triangles (24 indices for two-tri strips per
-    // face × 6 faces — 36 indices). Texture wraps per face.
-    const std::array<render::raster::Vertex, 24> verts{{
-        // +X face
-        { { 1,-1,-1}, { 1,0,0}, {0,1}, {0,0}, 0xFFFFFFFFu },
-        { { 1, 1,-1}, { 1,0,0}, {0,0}, {0,0}, 0xFFFFFFFFu },
-        { { 1, 1, 1}, { 1,0,0}, {1,0}, {0,0}, 0xFFFFFFFFu },
-        { { 1,-1, 1}, { 1,0,0}, {1,1}, {0,0}, 0xFFFFFFFFu },
-        // -X face
-        { {-1,-1, 1}, {-1,0,0}, {0,1}, {0,0}, 0xFFFFFFFFu },
-        { {-1, 1, 1}, {-1,0,0}, {0,0}, {0,0}, 0xFFFFFFFFu },
-        { {-1, 1,-1}, {-1,0,0}, {1,0}, {0,0}, 0xFFFFFFFFu },
-        { {-1,-1,-1}, {-1,0,0}, {1,1}, {0,0}, 0xFFFFFFFFu },
-        // +Y face
-        { {-1, 1,-1}, {0, 1,0}, {0,1}, {0,0}, 0xFFFFFFFFu },
-        { {-1, 1, 1}, {0, 1,0}, {0,0}, {0,0}, 0xFFFFFFFFu },
-        { { 1, 1, 1}, {0, 1,0}, {1,0}, {0,0}, 0xFFFFFFFFu },
-        { { 1, 1,-1}, {0, 1,0}, {1,1}, {0,0}, 0xFFFFFFFFu },
-        // -Y face
-        { {-1,-1, 1}, {0,-1,0}, {0,1}, {0,0}, 0xFFFFFFFFu },
-        { {-1,-1,-1}, {0,-1,0}, {0,0}, {0,0}, 0xFFFFFFFFu },
-        { { 1,-1,-1}, {0,-1,0}, {1,0}, {0,0}, 0xFFFFFFFFu },
-        { { 1,-1, 1}, {0,-1,0}, {1,1}, {0,0}, 0xFFFFFFFFu },
-        // +Z face
-        { {-1,-1, 1}, {0,0, 1}, {0,1}, {0,0}, 0xFFFFFFFFu },
-        { { 1,-1, 1}, {0,0, 1}, {1,1}, {0,0}, 0xFFFFFFFFu },
-        { { 1, 1, 1}, {0,0, 1}, {1,0}, {0,0}, 0xFFFFFFFFu },
-        { {-1, 1, 1}, {0,0, 1}, {0,0}, {0,0}, 0xFFFFFFFFu },
-        // -Z face
-        { { 1,-1,-1}, {0,0,-1}, {0,1}, {0,0}, 0xFFFFFFFFu },
-        { {-1,-1,-1}, {0,0,-1}, {1,1}, {0,0}, 0xFFFFFFFFu },
-        { {-1, 1,-1}, {0,0,-1}, {1,0}, {0,0}, 0xFFFFFFFFu },
-        { { 1, 1,-1}, {0,0,-1}, {0,0}, {0,0}, 0xFFFFFFFFu },
-    }};
-    const std::array<u32, 36> indices{
-         0, 1, 2,  0, 2, 3,
-         4, 5, 6,  4, 6, 7,
-         8, 9,10,  8,10,11,
-        12,13,14, 12,14,15,
-        16,17,18, 16,18,19,
-        20,21,22, 20,22,23,
-    };
-
     auto& rasterizer = render::raster::Rasterizer::Get();
 
-    PSY_LOG_INFO("Psynder sample 02 running{}",
+    PSY_LOG_INFO("Psynder sample 02 running{}{}",
                  args.smoke_frames > 0
                      ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
-                     : std::string{});
+                     : std::string{},
+                 args.capture_out.empty()
+                     ? std::string{}
+                     : fmt::format(" — capture to {}", args.capture_out));
 
     const u64 t0    = platform::Clock::ticks_now();
     u32       frame = 0;
 
-    // Crate positions inside the room.
-    const std::array<math::Vec3, 4> crate_positions{{
-        {-2.5f, 0, -3.0f}, { 2.5f, 0, -3.0f},
-        {-1.0f, 0, -5.5f}, { 1.0f, 0, -5.5f},
-    }};
-
     while (!window->should_close()) {
         window->poll_events();
 
+        // Clear colour + depth.
         render::raster::clear_framebuffer(fb, 0xFF182030u);
-        // Clear depth to far.
-        if (fb.depth) {
-            for (usize i = 0, n = static_cast<usize>(fb.width) * fb.height; i < n; ++i) {
-                fb.depth[i] = 0xFFFFFFFFu;
-            }
-        }
+        clear_depth_far(fb);
 
-        const f32 t = static_cast<f32>(platform::Clock::seconds(
-                          platform::Clock::ticks_now() - t0));
+        // Drive the spin off the wall clock so non-smoke runs animate; for
+        // smoke runs we use a fixed phase (per-frame * step) so frame N is
+        // deterministic and reproducible across hosts. The cmake helper
+        // pins captures at a specific frame count so what we hand the
+        // golden gate is deterministic.
+        const f32 t = args.smoke_frames > 0
+                          ? static_cast<f32>(frame) * 0.05f
+                          : static_cast<f32>(platform::Clock::seconds(
+                                platform::Clock::ticks_now() - t0));
 
         render::raster::ViewState view{};
         view.target     = fb;
         view.view       = math::look_at_rh(
-                              math::Vec3{0, 1.5f, 2.0f}, math::Vec3{0, 0, -3},
-                              math::Vec3{0, 1, 0});
+                              math::Vec3{0, 1.5f, 1.5f},   // eye
+                              math::Vec3{0, 0.0f, -3.0f},  // target
+                              math::Vec3{0, 1.0f, 0.0f});  // up
         view.projection = math::perspective_rh(
                               60.0f * math::kDegToRad,
                               static_cast<f32>(desc.render_width) /
@@ -241,27 +239,49 @@ int main(int argc, char** argv) {
 
         rasterizer.begin_frame(view);
 
-        for (const math::Vec3& pos : crate_positions) {
-            render::raster::DrawItem item{};
-            item.vertices     = verts.data();
-            item.vertex_count = static_cast<u32>(verts.size());
-            item.indices      = indices.data();
-            item.index_count  = static_cast<u32>(indices.size());
+        for (usize i = 0; i < kCratePositions.size(); ++i) {
+            const math::Vec3 pos = kCratePositions[i];
+            // Each crate spins at a slightly different rate to make the
+            // depth interactions visible.
+            const f32 spin = t * (0.35f + 0.12f * static_cast<f32>(i));
             const math::Mat4 tr = math::translate(pos);
             const math::Mat4 ro = math::rotate_quat(
-                math::quat_from_axis_angle(math::Vec3{0,1,0}, t * 0.4f));
-            item.model = math::mul(tr, ro);
+                math::quat_from_axis_angle(math::Vec3{0, 1, 0}, spin));
+
+            render::raster::DrawItem item{};
+            item.vertices     = kCubeVerts.data();
+            item.vertex_count = static_cast<u32>(kCubeVerts.size());
+            item.indices      = kCubeIndices.data();
+            item.index_count  = static_cast<u32>(kCubeIndices.size());
+            item.model        = math::mul(tr, ro);
             rasterizer.submit(item);
         }
 
         rasterizer.end_frame();
         window->present(fb);
 
-        if (args.smoke_frames > 0 && ++frame >= args.smoke_frames) {
+        ++frame;
+        if (args.smoke_frames > 0 && frame >= args.smoke_frames) {
             PSY_LOG_INFO("sample_02: smoke target reached ({}); exiting",
                          args.smoke_frames);
             break;
         }
+    }
+
+    // Capture the final frame to PNG if requested. We do this AFTER the
+    // last frame's submit/end_frame so the image we hand the golden gate
+    // is fully rendered, not a torn intermediate.
+    if (!args.capture_out.empty()) {
+        const bool ok = samples::write_png_rgba8_framebuffer(
+            args.capture_out.c_str(), pixels.data(),
+            fb.width, fb.height);
+        if (!ok) {
+            PSY_LOG_ERROR("sample_02: failed to write capture to {}",
+                          args.capture_out);
+            platform::destroy_window(window);
+            return EXIT_FAILURE;
+        }
+        PSY_LOG_INFO("sample_02: wrote capture to {}", args.capture_out);
     }
 
     platform::destroy_window(window);
