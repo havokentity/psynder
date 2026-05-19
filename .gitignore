@@ -1,0 +1,47 @@
+build/
+dist/
+.cache/
+.idea/
+.vscode/
+.fleet/
+.assistant/
+.DS_Store
+compile_commands.json
+CMakeUserPresets.json
+
+# Build artifacts
+*.o
+*.obj
+*.dylib
+*.so
+*.a
+*.exe
+*.pdb
+*.dSYM/
+
+# Editor / IDE scratch
+*.swp
+*.swo
+
+# Engine local config / state
+psynder.cfg
+console_history.txt
+favorites.cfg
+
+# Local Windows convenience scripts
+build_win.bat
+
+# Throwaway scene / scratch files
+*.psyc.tmp
+
+# Per-host capture dumps
+captures/
+
+# Third-party fetched-at-build vendored sources (vcpkg, FetchContent)
+third_party/_build/
+third_party/_vcpkg/
+
+# Editor web bundle build artifacts (Vite)
+engine/editor/web/dist/
+engine/editor/web/node_modules/
+engine/editor/web/.vite/

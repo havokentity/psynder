@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: MIT
+// Psynder — platform abstraction. The CPU does everything except present.
+// Lanes 21 / 22 / 23 each implement this for win32 / linux / macos.
+//
+// The platform provides: window, framebuffer present (scaled blit), input,
+// timing, audio device, file-system queries. Nothing else.
+
+#pragma once
+
+#include "core/Types.h"
+#include "render/Framebuffer.h"
+
+#include <string>
+#include <string_view>
+
+namespace psynder::platform {
+
+// ─── Window / surface ────────────────────────────────────────────────────
+enum class ScaleMode : u8 {
+    Nearest,
+    Linear,
+    Integer,    // snap to integer multiples for pixel-perfect upscale
+};
+
+enum class AspectMode : u8 {
+    Letterbox,  // default
+    Stretch,
+    Crop,
+};
+
+struct WindowDesc {
+    std::string title           = "Psynder";
+    u32         window_width    = 1280;
+    u32         window_height   = 720;
+    u32         render_width    = 1280;
+    u32         render_height   = 720;
+    ScaleMode   scale_mode      = ScaleMode::Linear;
+    AspectMode  aspect_mode     = AspectMode::Letterbox;
+    bool        fullscreen      = false;
+    bool        resizable       = true;
+    bool        vsync           = true;
+};
+
+class Window {
+public:
+    virtual ~Window() = default;
+
+    virtual void poll_events() = 0;
+    virtual bool should_close() const = 0;
+
+    // Present a CPU framebuffer. The platform handles scaled blit per the
+    // window's current size + ScaleMode + AspectMode.
+    virtual void present(const render::Framebuffer& fb) = 0;
+
+    // Mutable parts
+    virtual void set_title(std::string_view title) = 0;
+    virtual u32  window_width()  const = 0;
+    virtual u32  window_height() const = 0;
+};
+
+Window* create_window(const WindowDesc& desc);
+void    destroy_window(Window* w);
+
+// ─── Input ───────────────────────────────────────────────────────────────
+enum class KeyCode : u16 {
+    Unknown = 0,
+    Escape, Enter, Space, Tab, Backspace,
+    Left, Right, Up, Down,
+    A, B, C, D, E, F, G, H, I, J, K, L, M,
+    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    Tilde,    // ~ — toggles editor mode per DESIGN.md §10.8
+    LeftShift, RightShift,
+    LeftCtrl,  RightCtrl,
+    LeftAlt,   RightAlt,
+    Count,
+};
+
+struct MouseState {
+    f32 x = 0, y = 0;
+    f32 dx = 0, dy = 0;
+    f32 wheel = 0;
+    bool left = false, right = false, middle = false;
+};
+
+class Input {
+public:
+    virtual ~Input() = default;
+    virtual bool key_down(KeyCode k) const = 0;
+    virtual bool key_pressed(KeyCode k) const = 0;
+    virtual const MouseState& mouse() const = 0;
+};
+
+Input* input();
+
+// ─── Timing ──────────────────────────────────────────────────────────────
+struct Clock {
+    static u64 ticks_now();
+    static u64 ticks_per_second();
+    static f64 seconds(u64 ticks);
+};
+
+// ─── Process / FS helpers ────────────────────────────────────────────────
+std::string executable_path();
+std::string user_config_dir();
+std::string current_working_directory();
+bool        file_exists(std::string_view path);
+
+}  // namespace psynder::platform
