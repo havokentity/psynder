@@ -48,6 +48,7 @@
 
 #include "JobSystem.h"
 
+#include "AlignedAlloc_internal.h"
 #include "ChaseLevDeque_internal.h"
 #include "HeteroPool_internal.h"
 #include "JobPool_internal.h"
@@ -510,10 +511,7 @@ void JobSystem::start(u32 worker_count) {
     g_sched.throughput_workers = hetero ? e_workers : 0u;
 
     g_sched.workers = static_cast<Worker*>(
-        std::aligned_alloc(kCacheLine,
-                           ((sizeof(Worker) * worker_count + kCacheLine - 1) /
-                            kCacheLine) *
-                               kCacheLine));
+        detail::aligned_xalloc(kCacheLine, sizeof(Worker) * worker_count));
     for (u32 i = 0; i < worker_count; ++i) {
         new (&g_sched.workers[i]) Worker();
         g_sched.workers[i].deque.init(kDequeCapacity);
@@ -555,7 +553,7 @@ void JobSystem::stop() {
         g_sched.workers[i].deque.deinit();
         g_sched.workers[i].~Worker();
     }
-    std::free(g_sched.workers);
+    detail::aligned_xfree(g_sched.workers);
     g_sched.workers = nullptr;
     g_sched.main_inbox.deinit();
     g_sched.latency_inbox.deinit();
