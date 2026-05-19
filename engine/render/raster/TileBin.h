@@ -30,7 +30,12 @@ struct PSY_CACHELINE_ALIGN DrawCmd {
                                            // bits 2-7: surface-cache eligibility
     // Surface-cache dispatch (DESIGN.md §7.6).
     u8              shading_path = 0;      // ShadingPath enum
-    u8              _spad[3]     = {};
+    // Per-draw EWA anisotropy cap (1/2/4/8/16). 1 ⇒ no anisotropy; the
+    // inner loop falls back to bilinear / trilinear. Set by Rasterizer
+    // end_frame from the r_anisotropy cvar (DESIGN.md §7.5). Clamped to
+    // the canonical set so the inner-loop dispatch is a small switch.
+    u8              aniso_max    = 1;
+    u8              _spad[2]     = {};
     const u32*      surface_cache_payload = nullptr;  // pre-multiplied chunk
     u32             surface_cache_width   = 0;
     u32             surface_cache_height  = 0;
