@@ -143,6 +143,151 @@ PSY_FORCEINLINE f32 compute_mip_lod(const Texture& tex,
     return 0.5f * std::log2(d2_max);
 }
 
+// ─── EWA-approximation anisotropic sampler (DESIGN.md §7.5) ──────────────
+// Given the texture-space ellipse defined by the per-pixel UV gradients
+// (du/dx, dv/dx, du/dy, dv/dy) at the shaded sample, walk N samples
+// along the ellipse's MAJOR axis, each a bilinear lookup, and average
+// them with cosine-shaped (Gaussian-like) weights. N is clamped to the
+// caller's max_anisotropy.
+//
+// The "exact" EWA filter walks the bounding box of the ellipse and
+// weights by a Gaussian over the elliptical Mahalanobis distance — the
+// canonical Heckbert '89 form. For a software CPU rasterizer that cost
+// scales as O(major*minor) per pixel, which blows the §7.5 budget. The
+// industry-standard approximation (Schilling/Texas, Mali Aniso) walks
+// only the major axis and replaces the Gaussian with a cosine bell;
+// O(N) per pixel, indistinguishable past 4 taps for natural textures.
+//
+// When the ellipse degenerates to a circle (major ≈ minor) we fall back
+// to bilinear on the per-draw mip level — this is exactly what an
+// isotropic filter would produce, so the dispatch above can call this
+// unconditionally and still get the right answer.
+//
+// All math in floats; no allocations; no virtual.
+PSY_FORCEINLINE u32 aniso_sample(const Texture::MipLevel& mip,
+                                 f32 u, f32 v,
+                                 f32 du_dx, f32 du_dy,
+                                 f32 dv_dx, f32 dv_dy,
+                                 u32 max_anisotropy) noexcept {
+    if (!mip.texels || mip.width == 0 || mip.height == 0) return 0xFF888888u;
+
+    // Map the screen-space (du/dx, dv/dx) and (du/dy, dv/dy) into
+    // texel-space axis vectors. The ellipse is the image of the unit
+    // pixel square (a circle of radius 0.5) under the UV gradient
+    // jacobian. In texel space, the two axes are:
+    //   ax = (du/dx * W, dv/dx * H)
+    //   ay = (du/dy * W, dv/dy * H)
+    const f32 wf = static_cast<f32>(mip.width);
+    const f32 hf = static_cast<f32>(mip.height);
+    const f32 ax_x = du_dx * wf;
+    const f32 ax_y = dv_dx * hf;
+    const f32 ay_x = du_dy * wf;
+    const f32 ay_y = dv_dy * hf;
+
+    const f32 lx2 = ax_x * ax_x + ax_y * ax_y;
+    const f32 ly2 = ay_x * ay_x + ay_y * ay_y;
+
+    // Pick major / minor from the two axes. The longer one is the
+    // walking direction; the shorter governs the per-tap mip level.
+    f32 maj_x, maj_y, maj2, min2;
+    if (lx2 >= ly2) {
+        maj_x = ax_x; maj_y = ax_y;
+        maj2  = lx2;  min2 = ly2;
+    } else {
+        maj_x = ay_x; maj_y = ay_y;
+        maj2  = ly2;  min2 = lx2;
+    }
+
+    // Number of taps along the major axis: round(major / minor),
+    // clamped to [1, max_anisotropy]. If max_anisotropy ≤ 1 we collapse
+    // to a single bilinear sample (the isotropic case).
+    u32 N;
+    if (max_anisotropy <= 1 || min2 <= 0.0f) {
+        N = 1;
+    } else {
+        const f32 ratio = std::sqrt(maj2 / min2);
+        u32 n_raw = static_cast<u32>(ratio + 0.5f);
+        if (n_raw < 1) n_raw = 1;
+        if (n_raw > max_anisotropy) n_raw = max_anisotropy;
+        N = n_raw;
+    }
+
+    if (N == 1) {
+        // Isotropic / degenerate: one bilinear sample on this mip.
+        return sample_bilinear_mip(mip, u, v);
+    }
+
+    // Convert the major axis back to UV-space step per tap. The major
+    // axis spans (maj_x, maj_y) in TEXEL space; in UV space that's
+    // (maj_x / W, maj_y / H). We walk from -0.5 maj to +0.5 maj across
+    // (N-1) tap intervals, centred on the sample point.
+    const f32 step_u = (maj_x / wf) / static_cast<f32>(N);
+    const f32 step_v = (maj_y / hf) / static_cast<f32>(N);
+
+    // Cosine-bell weights:  w(i) = cos(pi/2 * (2i - (N-1)) / (N-1))
+    // (so the centre tap weights ~1 and the ends weight ~0). For N=2 we
+    // weight both taps equally (the cosine evaluates to 0 at ±1, which
+    // would zero-out the sample — collapse to flat weights instead).
+    f32 acc_r = 0.0f, acc_g = 0.0f, acc_b = 0.0f, acc_a = 0.0f, acc_w = 0.0f;
+    const f32 half = static_cast<f32>(N - 1) * 0.5f;
+
+    for (u32 i = 0; i < N; ++i) {
+        const f32 off = static_cast<f32>(i) - half;  // [-half, +half]
+        const f32 uu = u + step_u * off;
+        const f32 vv = v + step_v * off;
+
+        // Weight: cosine bell normalised by half. For N=2 -> cos(±pi/2)=0,
+        // so substitute equal weights.
+        f32 w;
+        if (N <= 2) {
+            w = 1.0f;
+        } else {
+            const f32 t = off / half;            // ∈ [-1, +1]
+            w = std::cos(t * 1.5707963267948966f); // cos(pi/2 * t)
+            if (w < 0.0f) w = 0.0f;
+        }
+
+        const u32 s = sample_bilinear_mip(mip, uu, vv);
+        acc_r += static_cast<f32>( s        & 0xFFu) * w;
+        acc_g += static_cast<f32>((s >>  8) & 0xFFu) * w;
+        acc_b += static_cast<f32>((s >> 16) & 0xFFu) * w;
+        acc_a += static_cast<f32>((s >> 24) & 0xFFu) * w;
+        acc_w += w;
+    }
+
+    if (acc_w <= 0.0f) {
+        // Pathological fallback — every weight clamped to zero. Should
+        // be unreachable for N >= 2 but defend against numerical edge.
+        return sample_bilinear_mip(mip, u, v);
+    }
+
+    const f32 inv = 1.0f / acc_w;
+    auto sat = [inv](f32 c) noexcept {
+        const f32 r = c * inv;
+        if (r <= 0.0f)   return 0u;
+        if (r >= 255.0f) return 255u;
+        return static_cast<u32>(r + 0.5f);
+    };
+    return  sat(acc_r)
+         | (sat(acc_g) <<  8)
+         | (sat(acc_b) << 16)
+         | (sat(acc_a) << 24);
+}
+
+// Anisotropic sample on the mip-0 of `tex` — keeps the (cap=max_aniso)
+// behaviour without needing a per-call mip pick. The major/minor walk
+// happens against the highest-detail level; per-tap mip biasing is a
+// future refinement (DESIGN.md §7.5).
+PSY_FORCEINLINE u32 sample_aniso(const Texture& tex,
+                                 f32 u, f32 v,
+                                 f32 du_dx, f32 du_dy,
+                                 f32 dv_dx, f32 dv_dy,
+                                 u32 max_anisotropy) noexcept {
+    Texture::MipLevel m0{ tex.texels, tex.width, tex.height, tex.pitch };
+    return aniso_sample(m0, u, v, du_dx, du_dy, dv_dx, dv_dy,
+                        max_anisotropy);
+}
+
 // ─── Pack/unpack f32 depth ───────────────────────────────────────────────
 // Framebuffer.depth is u32; we store 24-bit float Z + 8-bit stencil
 // (DESIGN.md §7.4). For the M1 path we keep stencil 0 and pack Z as a
@@ -304,35 +449,66 @@ void rasterize_tile(const Framebuffer& fb,
         const bool surface_cached = (path == ShadingPath::SurfaceCached) &&
                                     d.surface_cache_payload != nullptr;
 
-        // Trilinear mip-LOD per draw — for now we use the screen-space
-        // 1-pixel finite diff at the triangle's centroid. The proper
-        // quad-level dy derivative arrives once the 2x2 quad walk lands
-        // its full version. Static within a draw to keep SIMD-coherent.
-        f32 draw_mip_lod = 0.0f;
-        if (has_tex && tex->mip_count > 1 && !affine) {
-            const f32 fb_inv = 1.0f / static_cast<f32>(std::max(1, fb_w));
-            // Approximate (du/dx, dv/dx) from the triangle's 1-pixel walk:
-            // pixel-step in barycentric Δw_i = ex_i_dx * inv_area2x.
+        // Per-draw screen→texture jacobian: (du/dx, dv/dx, du/dy, dv/dy)
+        // approximated from the 1-pixel finite diff at the triangle's
+        // centroid. Used by both the mip-LOD picker and the EWA aniso
+        // dispatcher. Affine draws skip the divide; the bias is fine for
+        // these per-draw constants. Computed once per draw so the inner
+        // pixel loop stays branch-light.
+        f32 draw_du_dx = 0.0f, draw_dv_dx = 0.0f;
+        f32 draw_du_dy = 0.0f, draw_dv_dy = 0.0f;
+        if (has_tex && !affine) {
             const f32 dw0_dx = static_cast<f32>(ex0_dx) * t.inv_area2x;
             const f32 dw1_dx = static_cast<f32>(ex1_dx) * t.inv_area2x;
             const f32 dw2_dx = static_cast<f32>(ex2_dx) * t.inv_area2x;
             const f32 dw0_dy = static_cast<f32>(ex0_dy) * t.inv_area2x;
             const f32 dw1_dy = static_cast<f32>(ex1_dy) * t.inv_area2x;
             const f32 dw2_dy = static_cast<f32>(ex2_dy) * t.inv_area2x;
-            const f32 du_dx = dw0_dx * t.v0.u_over_w
-                            + dw1_dx * t.v1.u_over_w
-                            + dw2_dx * t.v2.u_over_w;
-            const f32 dv_dx = dw0_dx * t.v0.v_over_w
-                            + dw1_dx * t.v1.v_over_w
-                            + dw2_dx * t.v2.v_over_w;
-            const f32 du_dy = dw0_dy * t.v0.u_over_w
-                            + dw1_dy * t.v1.u_over_w
-                            + dw2_dy * t.v2.u_over_w;
-            const f32 dv_dy = dw0_dy * t.v0.v_over_w
-                            + dw1_dy * t.v1.v_over_w
-                            + dw2_dy * t.v2.v_over_w;
-            draw_mip_lod = compute_mip_lod(*tex, du_dx, dv_dx, du_dy, dv_dy);
-            (void)fb_inv;
+            draw_du_dx = dw0_dx * t.v0.u_over_w
+                       + dw1_dx * t.v1.u_over_w
+                       + dw2_dx * t.v2.u_over_w;
+            draw_dv_dx = dw0_dx * t.v0.v_over_w
+                       + dw1_dx * t.v1.v_over_w
+                       + dw2_dx * t.v2.v_over_w;
+            draw_du_dy = dw0_dy * t.v0.u_over_w
+                       + dw1_dy * t.v1.u_over_w
+                       + dw2_dy * t.v2.u_over_w;
+            draw_dv_dy = dw0_dy * t.v0.v_over_w
+                       + dw1_dy * t.v1.v_over_w
+                       + dw2_dy * t.v2.v_over_w;
+        }
+
+        // Trilinear mip-LOD per draw — derived from the jacobian above.
+        f32 draw_mip_lod = 0.0f;
+        if (has_tex && tex->mip_count > 1 && !affine) {
+            draw_mip_lod = compute_mip_lod(*tex,
+                                           draw_du_dx, draw_dv_dx,
+                                           draw_du_dy, draw_dv_dy);
+        }
+
+        // EWA aniso dispatch — engage when:
+        //   1. The draw's r_anisotropy cap is ≥ 2, AND
+        //   2. The texture-space ellipse is significantly elongated
+        //      (major/minor > 2 ⇒ enough stretch to be visible past
+        //      bilinear/trilinear).
+        // Picked once per draw; the inner pixel loop branches on a const
+        // bool (no per-pixel dispatch). DESIGN.md §7.5.
+        bool use_aniso = false;
+        u32  draw_aniso_max = d.aniso_max;
+        if (has_tex && !affine && draw_aniso_max >= 2) {
+            const f32 wf = static_cast<f32>(tex->width);
+            const f32 hf = static_cast<f32>(tex->height);
+            const f32 ax_x = draw_du_dx * wf;
+            const f32 ax_y = draw_dv_dx * hf;
+            const f32 ay_x = draw_du_dy * wf;
+            const f32 ay_y = draw_dv_dy * hf;
+            const f32 lx2 = ax_x*ax_x + ax_y*ax_y;
+            const f32 ly2 = ay_x*ay_x + ay_y*ay_y;
+            const f32 maj2 = std::max(lx2, ly2);
+            const f32 min2 = std::min(lx2, ly2);
+            // major/minor > 2 ⇒ maj² / min² > 4. Guard against min2 = 0
+            // by requiring a measurable minor axis.
+            use_aniso = (min2 > 0.0f) && (maj2 > 4.0f * min2);
         }
 
         // Iterate rows in the tile-clipped bbox
@@ -419,11 +595,22 @@ void rasterize_tile(const Framebuffer& fb,
                             const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f/255.0f);
                             out_rgba = pack_rgba(r * tr, g * tg, b * tb, a * ta);
                         } else if (has_tex) {
-                            // OnTheFly: sample base texture (bilinear or
-                            // trilinear depending on mip availability).
-                            const u32 t_rgba = (tex->mip_count > 1)
-                                ? sample_trilinear(*tex, u, v, draw_mip_lod)
-                                : sample_bilinear(*tex, u, v);
+                            // OnTheFly: sample base texture. Three paths,
+                            // picked by per-draw const bools above:
+                            //   use_aniso  → EWA major-axis walk
+                            //   mip_count>1→ trilinear
+                            //   otherwise  → bilinear
+                            u32 t_rgba;
+                            if (use_aniso) {
+                                t_rgba = sample_aniso(*tex, u, v,
+                                                      draw_du_dx, draw_du_dy,
+                                                      draw_dv_dx, draw_dv_dy,
+                                                      draw_aniso_max);
+                            } else if (tex->mip_count > 1) {
+                                t_rgba = sample_trilinear(*tex, u, v, draw_mip_lod);
+                            } else {
+                                t_rgba = sample_bilinear(*tex, u, v);
+                            }
                             const f32 tr = static_cast<f32>(t_rgba       & 0xFFu) * (1.0f/255.0f);
                             const f32 tg = static_cast<f32>((t_rgba >>  8) & 0xFFu) * (1.0f/255.0f);
                             const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f/255.0f);
