@@ -29,8 +29,8 @@ struct PeerState {
     PeerId        id{};                   // self-id used by the OWNER side
     u16           remote_port = 0;
     u32           peer_index  = 0;        // stable index 0..max_peers-1
-    Reliability   send;
-    AckTracker    recv;
+    Reliability   send{};
+    AckTracker    recv{};
     // Buffered in-order delivery: payloads we received but with a hole in
     // front of them. Keyed by seq. Once `next_deliver` advances we drain.
     std::unordered_map<u32, std::vector<u8>> ooo_buffer;
@@ -55,6 +55,18 @@ public:
 
     bool start(const HostDesc& desc) noexcept;
     void stop() noexcept;
+
+    // Select the selective-ACK window depth for new peers. Must be called
+    // before `start()` (or before any peer is registered) so the per-peer
+    // Reliability + AckTracker pair builds with the matching width.
+    //
+    // Default is WindowSize::Bits32 — Wave-A wire layout, ABI-compatible
+    // with HostDesc-only callers. Selecting Bits64 / Bits128 widens the
+    // selective-ACK bitmap, the receive history, and the send-ring cap.
+    //
+    // Lane-14 internal API; the public Net.h surface remains frozen.
+    void set_window_size(WindowSize sz) noexcept { window_size_ = sz; }
+    WindowSize window_size() const noexcept { return window_size_; }
 
     // Returns the local port we're bound to.
     u16 local_port() const noexcept { return port_; }
@@ -123,6 +135,7 @@ private:
     u32                                               tick_    = 0;
     u32                                               next_peer_handle_ = 1;
     u32                                               next_peer_index_  = 0;
+    WindowSize                                        window_size_ = WindowSize::Bits32;
     std::unordered_map<u32, PeerState>                peers_;        // by PeerId.raw
     std::vector<InboundMessage>                       inbox_;        // pending delivery
     AoiFilter                                         aoi_;
