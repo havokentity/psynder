@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <new>
 #include <type_traits>
+#include <utility>   // std::forward — libc++ pulls it in transitively, libstdc++/MSVC do not
 
 namespace psynder::mem {
 
