@@ -13,7 +13,14 @@
 // sampled with nearest-neighbour filtering (M1 spec — bilinear lands at M2).
 //
 // CLI flags:
-//   --smoke-frames=N    Headless CI run for N frames then exit.
+//   --smoke-frames=N         Headless CI run for N frames then exit.
+//   --smoke-frames N         Same, space-separated (matches the cmake helper
+//                            invocation in cmake/Goldens.cmake).
+//   --smoke-capture-out PATH Write the final rendered framebuffer to PATH
+//                            as a valid 24-bit RGB PNG. Used by the
+//                            psynder_add_golden_cell() ctest cells.
+
+#include "common/PngWriter.h"
 
 #include "core/Log.h"
 #include "core/Types.h"
@@ -37,20 +44,39 @@ using namespace psynder;
 namespace {
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────
-u32 parse_smoke_frames(int argc, char** argv) {
-    constexpr std::string_view kFlag = "--smoke-frames=";
+struct Args {
+    u32         smoke_frames = 0;
+    std::string capture_out;
+};
+
+u32 parse_uint(std::string_view v) noexcept {
+    u32 out = 0;
+    for (char c : v) {
+        if (c < '0' || c > '9') return 0;
+        out = out * 10u + static_cast<u32>(c - '0');
+    }
+    return out;
+}
+
+Args parse_args(int argc, char** argv) {
+    Args a{};
+    constexpr std::string_view kFlag   = "--smoke-frames=";
+    constexpr std::string_view kFlagSp = "--smoke-frames";
+    constexpr std::string_view kCapEq  = "--smoke-capture-out=";
+    constexpr std::string_view kCapSp  = "--smoke-capture-out";
     for (int i = 1; i < argc; ++i) {
-        std::string_view a{argv[i]};
-        if (a.starts_with(kFlag)) {
-            u32 out = 0;
-            for (char c : a.substr(kFlag.size())) {
-                if (c < '0' || c > '9') return 0;
-                out = out * 10u + static_cast<u32>(c - '0');
-            }
-            return out;
+        std::string_view s{argv[i]};
+        if (s.starts_with(kFlag)) {
+            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
+        } else if (s == kFlagSp && i + 1 < argc) {
+            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
+        } else if (s.starts_with(kCapEq)) {
+            a.capture_out = std::string(s.substr(kCapEq.size()));
+        } else if (s == kCapSp && i + 1 < argc) {
+            a.capture_out = argv[++i];
         }
     }
-    return 0;
+    return a;
 }
 
 // ─── Tiny PPM (P6) loader — RGB8, no comments ────────────────────────────
@@ -180,7 +206,8 @@ void raster_triangle_nearest(render::Framebuffer& fb,
 }  // namespace
 
 int main(int argc, char** argv) {
-    const u32 smoke_frames = parse_smoke_frames(argc, argv);
+    const Args args         = parse_args(argc, argv);
+    const u32  smoke_frames = args.smoke_frames;
 
     platform::WindowDesc desc{};
     desc.title         = "Psynder — sample 01 (textured triangle)";
@@ -240,7 +267,12 @@ int main(int argc, char** argv) {
     while (!window->should_close()) {
         window->poll_events();
 
-        const f64 t = platform::Clock::seconds(platform::Clock::ticks_now() - t0);
+        // Smoke runs pin time to frame index so the captured PNG is bit-
+        // identical across runs / hosts (golden-image determinism).
+        const f64 t = smoke_frames > 0
+                          ? static_cast<f64>(frame) * (1.0 / 60.0)
+                          : platform::Clock::seconds(
+                                platform::Clock::ticks_now() - t0);
 
         render::raster::clear_framebuffer(fb, 0xFF202028u);   // dark slate
 
@@ -292,6 +324,19 @@ int main(int argc, char** argv) {
             PSY_LOG_INFO("sample_01: smoke target reached ({}); exiting", smoke_frames);
             break;
         }
+    }
+
+    if (!args.capture_out.empty()) {
+        const bool ok = samples::write_png_rgba8_framebuffer(
+            args.capture_out.c_str(), pixels.data(),
+            fb.width, fb.height);
+        if (!ok) {
+            PSY_LOG_ERROR("sample_01: failed to write capture to {}",
+                          args.capture_out);
+            platform::destroy_window(window);
+            return EXIT_FAILURE;
+        }
+        PSY_LOG_INFO("sample_01: wrote capture to {}", args.capture_out);
     }
 
     platform::destroy_window(window);

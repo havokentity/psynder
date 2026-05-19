@@ -10,6 +10,7 @@ add_executable(sample_02_textured_quad ${SRC})
 target_link_libraries(sample_02_textured_quad PRIVATE
     psynder_core psynder_math psynder_simd psynder_jobs
     psynder_render_raster psynder_render_post psynder_asset psynder_platform
+    psynder_samples_common
 )
 
 # Smoke add_test() lives in tests/CMakeLists.txt because the root project

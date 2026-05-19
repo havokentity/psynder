@@ -6,20 +6,33 @@
 // stdout (or to --json-out=PATH). CI parses the JSON against a baseline
 // and fails the PR when any bench regresses by > 2% (DESIGN.md §14).
 //
-// The two microbenches:
+// The microbenches:
 //
-//   raster_tile_clear     — pixels-per-second on 64×64 framebuffer clear.
-//                           Stand-in for the per-tile inner loop until lane
-//                           07's full tile binner lands; once it does, this
-//                           bench gets retargeted to a full per-tile draw.
+//   raster_tile_clear           — pixels-per-second on a 64×64 framebuffer
+//                                 clear. Pure memset-shaped path; serves as
+//                                 a baseline check that the clear loop hasn't
+//                                 regressed independent of the binner.
 //
-//   physics_island_step   — N rigid bodies integrated through a fixed dt
-//                           (Euler + naive O(N²) pair pass). The shape and
-//                           memory layout mirror what lane 13's per-island
-//                           solver will exercise; the regression signal is
-//                           "is the basic SoA loop still fast?". Once lane
-//                           13 ships its real World::step(), this bench
-//                           will switch to driving the public API.
+//   raster_pipeline_tile{32,64,128}
+//                               — drives the full tile pipeline (begin_frame
+//                                 → submit fullscreen quad → end_frame) at
+//                                 each of the three ADR-002 tile sizes. The
+//                                 r_tile_size cvar is swapped between runs
+//                                 so each measurement exercises the matching
+//                                 specialization (32×32, 64×64, 128×128).
+//                                 Per ADR-002 the gate runs all three on
+//                                 every commit; per-platform defaults may
+//                                 diverge once we have data, but the suite
+//                                 stays uniform.
+//
+//   physics_island_step         — N rigid bodies integrated through a fixed
+//                                 dt (Euler + naive O(N²) pair pass). The
+//                                 shape and memory layout mirror what lane
+//                                 13's per-island solver will exercise; the
+//                                 regression signal is "is the basic SoA
+//                                 loop still fast?". Once lane 13 ships its
+//                                 real World::step(), this bench will switch
+//                                 to driving the public API.
 //
 // CLI flags:
 //   --smoke                 Fast mode for ctest (1 iter per bench).
@@ -31,9 +44,11 @@
 
 #include "core/Log.h"
 #include "core/Types.h"
+#include "core/console/Console.h"
 #include "math/Math.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
+#include "render/raster/TestMesh.h"
 
 #include <algorithm>
 #include <array>
@@ -110,7 +125,99 @@ BenchResult bench_raster_tile_clear(u64 iters) {
     return r;
 }
 
-// ─── bench 2: physics island step ────────────────────────────────────────
+// ─── bench 2: full tile-pipeline at a configurable tile size ─────────────
+// Drives Rasterizer::end_frame() through the binner + per-tile rasterizer
+// path with the requested ADR-002 tile-size specialization engaged. The
+// fullscreen-quad helper from engine/render/raster/TestMesh.h covers every
+// tile in a 640×360 framebuffer, so the binner emits a tile entry per tile
+// and the per-tile rasterizer walks every pixel — exactly what we want to
+// gate against per-tile cost regressions.
+//
+// `tile_size` must be one of {32, 64, 128}. The bench writes the chosen
+// size through `SetCVarOverride("r_tile_size", ...)` which the rasterizer
+// reads on each begin_frame; the matching specialization is selected via
+// select_tile_raster_fn() inside lane 07's end_frame(). The throughput
+// reported is screen-pixels-per-second so values are comparable across the
+// three tile sizes (the framebuffer dimensions are constant).
+BenchResult bench_raster_pipeline_tile(u32 tile_size, u64 iters) {
+    constexpr u32 W = 640;
+    constexpr u32 H = 360;
+
+    // Pre-register the cvar so SetCVarOverride takes effect even on a
+    // cold console (the rasterizer registers it lazily on first frame).
+    console::Console::Get().RegisterCVar(
+        "r_tile_size", "64",
+        "Per-tile rasterizer tile dimension (32 / 64 / 128). See ADR-002.",
+        0);
+    console::Console::Get().SetCVarOverride(
+        "r_tile_size", std::to_string(tile_size));
+
+    std::vector<u32> pixels(static_cast<usize>(W) * H, 0);
+    std::vector<u32> depth (static_cast<usize>(W) * H, 0);
+
+    render::Framebuffer fb{};
+    fb.width  = W;
+    fb.height = H;
+    fb.pitch  = W * 4;
+    fb.format = render::PixelFormat::RGBA8;
+    fb.pixels = reinterpret_cast<u8*>(pixels.data());
+    fb.depth  = depth.data();
+
+    const auto mesh = render::raster::test_mesh::fullscreen_quad();
+    render::raster::DrawItem d{};
+    d.vertices     = mesh.vertices;
+    d.vertex_count = mesh.vertex_count;
+    d.indices      = mesh.indices;
+    d.index_count  = mesh.index_count;
+    d.model        = math::identity4();
+
+    render::raster::ViewState v{};
+    v.target     = fb;
+    v.view       = math::look_at_rh(math::Vec3{0, 0, 2},
+                                    math::Vec3{0, 0, 0},
+                                    math::Vec3{0, 1, 0});
+    v.projection = math::perspective_rh(
+        60.0f * math::kDegToRad,
+        static_cast<f32>(W) / static_cast<f32>(H),
+        0.1f, 100.0f);
+    v.tile_w = tile_size;
+    v.tile_h = tile_size;
+
+    auto& r = render::raster::Rasterizer::Get();
+
+    // Warm-up so first-touch faulting + the rasterizer's lazy cvar init
+    // don't contaminate the measured loop.
+    for (u64 i = 0; i < std::min<u64>(iters, 4); ++i) {
+        render::raster::clear_framebuffer(fb, 0xFF000000u);
+        r.begin_frame(v);
+        r.submit(d);
+        r.end_frame();
+    }
+    do_not_optimize(pixels);
+
+    const auto t0 = Clock::now();
+    for (u64 i = 0; i < iters; ++i) {
+        render::raster::clear_framebuffer(fb, 0xFF000000u);
+        r.begin_frame(v);
+        r.submit(d);
+        r.end_frame();
+    }
+    do_not_optimize(pixels);
+    const auto t1 = Clock::now();
+    const f64 ns = elapsed_ns(t0, t1);
+
+    BenchResult br{};
+    br.name        = "raster_pipeline_tile" + std::to_string(tile_size);
+    br.iterations  = iters;
+    br.ns_per_iter = ns / static_cast<f64>(iters);
+    const f64 pixels_total = static_cast<f64>(iters) *
+                             static_cast<f64>(W) * static_cast<f64>(H);
+    br.throughput      = (ns > 0) ? (pixels_total * 1.0e9 / ns) : 0.0;
+    br.throughput_unit = "pixels/s";
+    return br;
+}
+
+// ─── bench 3: physics island step ────────────────────────────────────────
 // Stand-in until lane 13 ships psynder::physics::World::step(). Mirrors the
 // SoA layout the real per-island solver will use (positions, velocities,
 // inverse mass) and runs a simple semi-implicit Euler integration with a
@@ -291,13 +398,25 @@ Args parse_args(int argc, char** argv) {
 int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
 
-    const u64 raster_iters  = args.smoke ? 8
-                            : (args.iters ? args.iters : 50'000);
-    const u64 physics_iters = args.smoke ? 4
-                            : (args.iters ? args.iters : 5'000);
+    const u64 raster_iters    = args.smoke ? 8
+                              : (args.iters ? args.iters : 50'000);
+    // The full-pipeline bench is ~3 orders of magnitude heavier than the
+    // bare clear loop (it transforms vertices, sets up triangles, bins
+    // into tiles, and walks every covered pixel). Scale iterations down so
+    // a non-smoke run stays under a second per tile size on a desktop CPU.
+    const u64 pipeline_iters  = args.smoke ? 1
+                              : (args.iters ? args.iters : 200);
+    const u64 physics_iters   = args.smoke ? 4
+                              : (args.iters ? args.iters : 5'000);
 
     std::vector<BenchResult> results;
     results.push_back(bench_raster_tile_clear(raster_iters));
+    // Per ADR-002, the gate runs all three tile-size specializations on
+    // every commit — that's the only way "regress >2% on the chosen tile
+    // size" is meaningful when the size is runtime-selectable.
+    results.push_back(bench_raster_pipeline_tile( 32, pipeline_iters));
+    results.push_back(bench_raster_pipeline_tile( 64, pipeline_iters));
+    results.push_back(bench_raster_pipeline_tile(128, pipeline_iters));
     results.push_back(bench_physics_island_step(physics_iters));
 
     // Human-readable summary on stderr so it doesn't pollute the JSON pipe.
