@@ -3,3 +3,35 @@
 add_subdirectory(unit)
 add_subdirectory(golden)
 add_subdirectory(bench)
+
+# ─── Sample smoke tests ──────────────────────────────────────────────────
+# Registered here because the root CMakeLists.txt only calls enable_testing()
+# AFTER add_subdirectory(samples), so any add_test() calls inside sample
+# subdirs are silently dropped. We register them in tests/ instead — same
+# net effect, and the sample targets are visible by name globally.
+#
+# All sample smokes share a single RESOURCE_LOCK so ctest -j N never runs
+# two of them at once on the same Mac runner (see AGENTS.md mac-serialization).
+if(PSYNDER_BUILD_SAMPLES)
+    if(TARGET sample_00_clear)
+        add_test(NAME sample_00_clear_smoke
+                 COMMAND sample_00_clear --smoke-frames=4)
+        set_tests_properties(sample_00_clear_smoke PROPERTIES
+            RESOURCE_LOCK "psynder_platform_singleton"
+            TIMEOUT 30)
+    endif()
+    if(TARGET sample_01_triangle)
+        add_test(NAME sample_01_triangle_smoke
+                 COMMAND sample_01_triangle --smoke-frames=4)
+        set_tests_properties(sample_01_triangle_smoke PROPERTIES
+            RESOURCE_LOCK "psynder_platform_singleton"
+            TIMEOUT 30)
+    endif()
+    if(TARGET sample_02_textured_quad)
+        add_test(NAME sample_02_textured_quad_smoke
+                 COMMAND sample_02_textured_quad --smoke-frames=4)
+        set_tests_properties(sample_02_textured_quad_smoke PROPERTIES
+            RESOURCE_LOCK "psynder_platform_singleton"
+            TIMEOUT 30)
+    endif()
+endif()
