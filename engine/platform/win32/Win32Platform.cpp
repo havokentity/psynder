@@ -16,6 +16,8 @@
 
 #include <shlobj.h>
 
+#include <string>
+
 #pragma comment(lib, "shell32.lib")
 
 namespace psynder::platform {

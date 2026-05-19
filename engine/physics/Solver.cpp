@@ -6,6 +6,8 @@
 #include "Solver.h"
 #include "internal/Kernels.h"
 
+#include <vector>
+
 namespace psynder::physics::detail {
 
 void detect_islands(std::vector<Contact>& contacts,

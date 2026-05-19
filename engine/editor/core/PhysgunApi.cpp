@@ -28,6 +28,8 @@
 #include "Physgun.h"
 #include "Undo.h"
 
+#include <vector>
+
 namespace psynder::editor {
 
 namespace {

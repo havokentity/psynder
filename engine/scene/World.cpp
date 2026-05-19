@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstring>
 #include <utility>
+#include <vector>
 
 namespace psynder::scene {
 

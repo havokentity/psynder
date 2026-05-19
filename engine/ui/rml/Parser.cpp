@@ -28,6 +28,8 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace psynder::ui::rml::detail {
 

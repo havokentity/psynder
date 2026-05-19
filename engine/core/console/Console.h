@@ -23,6 +23,7 @@
 #include "../Log.h"
 #include "../Types.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>

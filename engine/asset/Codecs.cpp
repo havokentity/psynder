@@ -19,6 +19,7 @@
 #include "Codecs.h"
 
 #include <cstring>
+#include <vector>
 
 namespace psynder::asset {
 

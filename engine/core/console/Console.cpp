@@ -23,7 +23,11 @@
 #include <charconv>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace psynder::console {
 

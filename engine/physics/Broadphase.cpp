@@ -11,6 +11,7 @@
 #include "jobs/JobSystem.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace psynder::physics::detail {
 

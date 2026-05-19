@@ -14,6 +14,9 @@ extern "C" {
 #  pragma GCC diagnostic pop
 #endif
 
+#include <string>
+#include <utility>
+
 namespace psynder::script::detail {
 
 namespace {

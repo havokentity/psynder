@@ -13,6 +13,8 @@
 #   define PSYNDER_ASSET_HAS_ZSTD 0
 #endif
 
+#include <vector>
+
 namespace psynder::asset::lmpak {
 
 bool zstd_available() noexcept {

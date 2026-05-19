@@ -15,6 +15,8 @@
 #include "world/outdoor/Terrain.h"
 
 #include <cmath>
+#include <utility>
+#include <vector>
 
 namespace pwo  = psynder::world::outdoor;
 namespace pwod = psynder::world::outdoor::detail;

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace psynder::ui::rml::detail {
 

@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace psynder::tools::cook {
 

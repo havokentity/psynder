@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <unordered_set>
+#include <vector>
 
 using namespace psynder;
 using namespace psynder::physics::detail;
