@@ -79,8 +79,9 @@ PSY_FORCEINLINE FrameState& frame_state() noexcept {
 
 // cvars (lane 01 console singleton; registered lazily on first use).
 struct Cvars {
-    console::CVar* r_affine    = nullptr;
-    console::CVar* r_tile_size = nullptr;
+    console::CVar* r_affine     = nullptr;
+    console::CVar* r_tile_size  = nullptr;
+    console::CVar* r_anisotropy = nullptr;
     Cvars() {
         r_affine    = console::Console::Get().RegisterCVar(
             "r_affine", "0",
@@ -89,6 +90,11 @@ struct Cvars {
         r_tile_size = console::Console::Get().RegisterCVar(
             "r_tile_size", "64",
             "Per-tile rasterizer tile dimension (32 / 64 / 128). See ADR-002.",
+            console::CVAR_ARCHIVE);
+        r_anisotropy = console::Console::Get().RegisterCVar(
+            "r_anisotropy", "1",
+            "Max anisotropic sample count for the EWA filter (1/2/4/8/16). "
+            "1 = bilinear/trilinear only. DESIGN.md §7.5.",
             console::CVAR_ARCHIVE);
     }
 };
@@ -137,6 +143,19 @@ void Rasterizer::end_frame() {
     // per index triple into a TriSetup array.
     const math::Mat4 view_proj = math::mul(fs.view.projection, fs.view.view);
 
+    // Aniso cap is read once per frame from r_anisotropy; clamp to the
+    // canonical set {1,2,4,8,16}. Out-of-range / negative inputs collapse
+    // to 1 (DESIGN.md §7.5; tests cover the clamp).
+    u8 frame_aniso_max = 1;
+    if (auto* cv = cvars().r_anisotropy; cv) {
+        const i32 a = cv->GetInt();
+        if      (a >= 16) frame_aniso_max = 16;
+        else if (a >=  8) frame_aniso_max =  8;
+        else if (a >=  4) frame_aniso_max =  4;
+        else if (a >=  2) frame_aniso_max =  2;
+        else              frame_aniso_max =  1;
+    }
+
     for (u32 di = 0; di < fs.draw_count; ++di) {
         const DrawItem& d = fs.draw_items[di];
         if (!d.vertices || d.vertex_count == 0 ||
@@ -181,6 +200,7 @@ void Rasterizer::end_frame() {
         cmd.tri_count   = tri_count;
         cmd.material_id = d.material.raw;
         cmd.flags       = d.flags;
+        cmd.aniso_max   = frame_aniso_max;
         // ── Surface-cache classify (DESIGN.md §7.6 / ADR-001) ───────────
         SurfaceDesc sd{};
         sd.surface_id       = d.material.raw;
