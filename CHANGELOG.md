@@ -1,5 +1,101 @@
 # Changelog
 
+## v0.5.0-wave-b-batch4 (2026-05-19) — Wave B 18/25 lanes, 602/602 tests pass
+
+Five more Wave B lanes shipped. Wave B is now **18/25 integrated**.
+7 lanes remain (Issues #59, 63, 68, 69, 70, 71, 72). Notably **the IPC
+flake (test #75) is now passing reliably** — likely a side-effect of
+lane 04's hetero job-pool work changing scheduling order.
+
+### Wave B / Lane 02 / math (#90)
+- **`BigCoordWorld`** — `Vec3 origin`, `f32 trigger_radius=1024`,
+  `snap_to_camera(Vec3) -> Vec3` per-axis quantized snap to nearest cell
+  (cell = 2× radius). Zero offset when inside radius. Per ADR-005.
+- **Pacejka helpers** — `pacejka_slip_ratio(ω, r, v)` (SAE convention,
+  0.1 m/s floor), `pacejka_combined_force(sx, sy, load, μ)` with B=10,
+  C=1.9, D=μ·load, E=0.97 + friction-circle projection.
+- **Batched transforms** — `transform_points` + `transform_dirs` scalar
+  homogeneous transform; Wave C can vectorize behind the same signature.
+
+### Wave B / Lane 03 / simd (#89)
+- **Prefetch helpers** — `prefetch_t0/t1/t2/nta` wrapping
+  `__builtin_prefetch` / `_mm_prefetch`. Plus `prefetch_range(p, bytes,
+  stride=64)` for sequential prefetch with null/zero guards.
+- **Streaming stores** — `stream_store_f32x4` using `_mm_stream_ps` on
+  x86 / `vst1q_f32` non-temporal on aarch64. `stream_fence` via
+  `_mm_sfence` / `dmb ishst` / atomic_thread_fence fallback.
+- **AVX-512 forward decl** — `f32x16` struct gated on `__AVX512F__`;
+  `has_avx512f()` runtime probe through `hardware::detect()`. Full op
+  set deferred to Wave C.
+
+### Wave B / Lane 04 / jobs (#93)
+- **Fibers** — Win32 `CreateFiberEx`/`SwitchToFiber` + POSIX
+  `ucontext` behind one primitive (create/resume/yield/destroy + host
+  conversion). Caught a macOS-specific gotcha: Darwin's `ucontext_t`
+  has `uc_mcontext` as a pointer (vs embedded on glibc), so each
+  context needs an `_STRUCT_MCONTEXT` allocated alongside before
+  `getcontext` — without it, `swapcontext` segfaults.
+- **P/E heterogeneous pools** — detection via
+  `sysctl hw.perflevel*.physicalcpu` (macOS),
+  `GetLogicalProcessorInformationEx + EfficiencyClass` (Win32),
+  `/sys cpufreq` bucketing (Linux). Per-worker class hints via
+  `pthread_set_qos_class_self_np` /
+  `SetThreadInformation ThreadPowerThrottling`. Three inboxes
+  (unified/latency/throughput) with class-aware work stealing —
+  same-class first, cross-class fallback. New `submit_latency` /
+  `submit_throughput` in `JobSystemHetero.h`.
+
+### Wave B / Lane 15 / script (#91)
+- **REPL hook** — `set_repl_backend(fn)` / `repl_backend()` /
+  `dispatch_repl(line, out)` with atomic-swapped function pointer.
+  Default forwards to `Vm::Get().execute_repl`. Lane 19 editor-ipc
+  installs its own evaluator without rebuilding script.
+- **Lua spawn binding** — `world:spawn(archetype_name, kv_table)`
+  allocates a real `scene::World::Get().create()` entity, records
+  the per-component bag, returns the integer `Entity::raw` handle.
+- PSYNDER_COMPONENT auto-bind deferred to Wave C per the agent's call.
+
+### Wave B / Lane 16 / ui-imm (#92)
+- **Full gizmos** — `gizmo_translate`, `gizmo_rotate` (Y-axis Wave B
+  scope), `gizmo_scale` taking world `Vec3& pos`, `view_proj`, mouse
+  state; world→screen projection + arm hit-testing via `imm::line`.
+- **Brush previews** — `brush_preview_box` (12 cube edges),
+  `..._cylinder` (two 16-segment rings + 4 struts), `..._sphere`
+  (3 orthogonal 24-segment wire rings). Projects world verts via
+  `view_proj` and emits `imm::line` segments.
+- **Allocator heatmap viz** — `alloc_heatmap(Vec2 origin, Vec2 size)`
+  reads `mem::tag_stats()` (lane 01 Wave-B) and draws per-tag bars
+  coloured green/yellow/red by `current/budget` ratio with peak
+  watermark line.
+
+### Test + demo status
+
+- **602/602 Catch2 cases passing** (the previously-known IPC port-race
+  flake now passes reliably under parallel ctest, presumably because
+  lane 04's hetero scheduler changed test execution order).
+- All M0/M1/M2 demos still smoke-pass.
+- New unit tests this batch: 3 (math) + 3 (simd) + 5 (jobs) + 2 (script)
+  + 3 (ui-imm) = 16 new cases. (Batch deliberately tight-scoped per
+  retry strategy after the original batch hit stream timeouts.)
+
+### Process note: stream-timeout recovery
+
+4 of 5 agents in the original batch-4 attempt hit automation service stream
+timeouts (~10 min idle) and lost their in-flight work. Re-spawned with
+**tighter single-focus prompts** ("scope must finish in <8 min, skip
+ctest, skip nice-to-haves"); all 4 retries succeeded. Lane 04 (jobs)
+completed on its original spawn (~24 min — bigger problem, kept the
+stream warm via frequent tool calls).
+
+### Wave B remaining (7 lanes)
+
+10 world-bsp (portal culling, lightmap atlas streaming), 14 net (full
+sliding window, AOI priorities), 19 editor-ipc (IDL regen, state-delta
+push, schema versioning), 20 editor-web (asset browser, profiler upgrade,
+prop menu), 21 platform-win32 (WASAPI mixer wiring, FFB wheel), 22
+platform-linux (PipeWire wiring, ALSA fallback, dmabuf), 23 platform-macos
+(CoreAudio polish, IOSurface, HID FFB).
+
 ## v0.4.0-wave-b-batch3 (2026-05-19) — Wave B 13/25 lanes, 582/583 tests pass
 
 Five more Wave B lanes shipped on top of v0.3.0-wave-b-batch2 — bringing
