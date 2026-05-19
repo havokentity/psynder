@@ -17,15 +17,17 @@
 // so leaving zones sprinkled through the codebase costs nothing.
 //
 // When PSYNDER_ENABLE_TRACY is on, the macros forward to <tracy/Tracy.hpp>:
-//   PSY_ZONE(name)      -> ZoneScopedN(name)
-//   PSY_ZONE_FRAME()    -> FrameMark
-//   PSY_ZONE_ALLOC(p,n) -> TracyAlloc(p,n) for allocator instrumentation
-//   PSY_ZONE_FREE(p)    -> TracyFree(p)
-//   PSY_ZONE_MSG(s,n)   -> TracyMessage(s,n)
+//   PSY_ZONE(name)              -> ZoneScopedN(name)
+//   PSY_TRACE_ZONE(name)        -> ZoneScopedN(name)  (Wave B preferred spelling)
+//   PSY_TRACE_ZONE_COLOR(n, rgb)-> ZoneScopedNC(n, rgb)
+//   PSY_ZONE_FRAME()            -> FrameMark
+//   PSY_ZONE_ALLOC(p,n)         -> TracyAlloc(p,n) for allocator instrumentation
+//   PSY_ZONE_FREE(p)            -> TracyFree(p)
+//   PSY_ZONE_MSG(s,n)           -> TracyMessage(s,n)
 //
-// The tracy CMake option lives in the root CMakeLists.txt; this header
-// just keys off the preprocessor define so callers don't need to thread
-// CMake conditionals through their own subdirectory.
+// The tracy CMake option lives in the root CMakeLists.txt; lane 01 owns
+// the FetchContent wiring under engine/core/CMakeLists.txt so callers
+// don't need to thread CMake conditionals through their own subdirectory.
 
 #pragma once
 
@@ -42,6 +44,13 @@
 #   define PSY_ZONE_ALLOC(ptr, size)  TracyAlloc(ptr, size)
 #   define PSY_ZONE_FREE(ptr)         TracyFree(ptr)
 
+// ─── Wave B preferred spellings ──────────────────────────────────────────
+// PSY_TRACE_ZONE(name) is an alias of PSY_ZONE(name); PSY_TRACE_ZONE_COLOR
+// adds a uint32_t 0xRRGGBB tint so callers can colour their per-subsystem
+// zones (raster=blue, physics=green, audio=purple, ...) in the Tracy GUI.
+#   define PSY_TRACE_ZONE(name)            ZoneScopedN(name)
+#   define PSY_TRACE_ZONE_COLOR(name, rgb) ZoneScopedNC(name, (rgb))
+
 #else
 
 #   define PSY_ZONE(name)             do {} while (0)
@@ -52,5 +61,8 @@
 #   define PSY_ZONE_MSG(str, n)       do {} while (0)
 #   define PSY_ZONE_ALLOC(ptr, size)  do {} while (0)
 #   define PSY_ZONE_FREE(ptr)         do {} while (0)
+
+#   define PSY_TRACE_ZONE(name)            do {} while (0)
+#   define PSY_TRACE_ZONE_COLOR(name, rgb) do {} while (0)
 
 #endif

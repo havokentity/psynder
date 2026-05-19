@@ -22,9 +22,14 @@
 //     peak, and budget per tag; the editor heatmap reads these every frame.
 
 #include "Allocator.h"
+#include "FlightRecorder.h"
+#include "Heatmap.h"
+
+#include "../Tracy.h"
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -140,6 +145,7 @@ LinearArena& LinearArena::operator=(LinearArena&& o) noexcept {
 }
 
 void* LinearArena::alloc(usize bytes, usize align) noexcept {
+    PSY_TRACE_ZONE_COLOR("mem.LinearArena.alloc", 0x4E9A06u);
     if (!base_ || bytes == 0) return nullptr;
     // Power-of-two alignment is a precondition; arenas don't try to handle
     // weird alignments. The bump is unconditional, so misaligned input
@@ -149,10 +155,25 @@ void* LinearArena::alloc(usize bytes, usize align) noexcept {
     auto next    = aligned + bytes;
     if (next > reinterpret_cast<std::uintptr_t>(base_) + cap_) return nullptr;
     head_ = reinterpret_cast<u8*>(next);
+    // Account the actual consumed-from-arena bytes (alignment hole included),
+    // and feed the flight recorder. Both are advisory and lock-free.
+    const usize consumed = static_cast<usize>(next - cur);
+    account_add(tag_, consumed);
+    PSY_FLIGHT_RECORD(+1, bytes, tag_);
+    PSY_ZONE_ALLOC(reinterpret_cast<void*>(aligned), bytes);
     return reinterpret_cast<void*>(aligned);
 }
 
-void  LinearArena::reset() noexcept   { head_ = base_; }
+void  LinearArena::reset() noexcept   {
+    // Return the arena's used bytes back to the per-tag counters so the
+    // heatmap reflects "outstanding from this arena" rather than "ever
+    // bumped through this arena". The lifetime peak is untouched on
+    // purpose: that's what the bench gate wants to see.
+    if (head_ > base_) {
+        account_sub(tag_, static_cast<usize>(head_ - base_));
+    }
+    head_ = base_;
+}
 usize LinearArena::used() const noexcept     { return static_cast<usize>(head_ - base_); }
 usize LinearArena::capacity() const noexcept { return cap_; }
 
@@ -167,7 +188,13 @@ usize LinearArena::capacity() const noexcept { return cap_; }
 // We return the actual byte count we reserved (rounded up to the platform's
 // page granularity) so callers can pass the same byte count to page_free.
 PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
+    PSY_TRACE_ZONE_COLOR("mem.page_alloc", 0xC4A000u);
     if (bytes == 0) return {};
+    // Record the request up front. The flight recorder tracks request
+    // sizes; the asymmetric page_free path records the actual returned
+    // bytes (post-rounding), which is what we care about for leak
+    // triage.
+    PSY_FLIGHT_RECORD(+1, bytes, Tag::Misc);
 
     // Round up to the (huge)page boundary depending on whether we're trying
     // for hugepages. Hugepage rounding makes the OS hint more likely to
@@ -246,7 +273,10 @@ PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
 }
 
 void page_free(PageBlock block) {
+    PSY_TRACE_ZONE_COLOR("mem.page_free", 0xC4A000u);
     if (!block.ptr || block.bytes == 0) return;
+    PSY_FLIGHT_RECORD(-1, block.bytes, Tag::Misc);
+    PSY_ZONE_FREE(block.ptr);
 #if defined(_WIN32)
     VirtualFree(block.ptr, 0, MEM_RELEASE);
 #elif defined(__APPLE__)
@@ -486,6 +516,187 @@ usize peak_usage(Tag tag) noexcept {
     auto idx = static_cast<usize>(tag);
     if (idx >= static_cast<usize>(Tag::Count)) return 0;
     return g_counters[idx].peak.load(std::memory_order_relaxed);
+}
+
+// ─── Heatmap (DESIGN.md §4.7 live heatmap + per-frame dump) ──────────────
+// tag_stat / tag_stats are pure reads against the same atomics that back
+// current_usage / peak_usage above; we just package the three values into
+// one struct so the editor doesn't have to issue six separate calls per
+// frame to render its bar chart. reset_peak_* clamp the lifetime peak
+// down to the current value, used to drive the "peak since last frame"
+// editor mode without touching the bench-gate lifetime view.
+TagStat tag_stat(Tag tag) noexcept {
+    TagStat s;
+    s.tag = tag;
+    auto idx = static_cast<usize>(tag);
+    if (idx >= static_cast<usize>(Tag::Count)) return s;
+    s.current = g_counters[idx].current.load(std::memory_order_relaxed);
+    s.peak    = g_counters[idx].peak.load(std::memory_order_relaxed);
+    s.budget  = g_counters[idx].budget.load(std::memory_order_relaxed);
+    return s;
+}
+
+std::array<TagStat, static_cast<usize>(Tag::Count)> tag_stats() noexcept {
+    std::array<TagStat, static_cast<usize>(Tag::Count)> out{};
+    for (usize i = 0; i < out.size(); ++i) {
+        out[i] = tag_stat(static_cast<Tag>(i));
+    }
+    return out;
+}
+
+void reset_peak(Tag tag) noexcept {
+    auto idx = static_cast<usize>(tag);
+    if (idx >= static_cast<usize>(Tag::Count)) return;
+    // Clamp peak down to the current value. The slight race between the
+    // current load and the peak store is fine: a peak slightly below the
+    // true watermark just means the next bump from account_add() will
+    // re-raise it, no correctness impact.
+    usize cur = g_counters[idx].current.load(std::memory_order_relaxed);
+    g_counters[idx].peak.store(cur, std::memory_order_relaxed);
+}
+
+void reset_peak_all() noexcept {
+    for (usize i = 0; i < static_cast<usize>(Tag::Count); ++i) {
+        reset_peak(static_cast<Tag>(i));
+    }
+}
+
+// ─── Flight recorder ─────────────────────────────────────────────────────
+// Lock-free MPSC-style ring: one global atomic serial counter, indexed
+// into a fixed-size array. Writers fetch_add to claim a slot, then
+// publish the entry; readers (dump) walk the serial range modulo
+// capacity to emit oldest-to-newest. Capacity is set on first init
+// (defaults to 1024 on first record if init wasn't called). The buffer
+// lives in dynamically-allocated memory so capacity isn't a compile-time
+// constant -- tests reconfigure it with smaller caps.
+namespace {
+
+constexpr usize kFlightDefaultCap = 1024;
+constexpr usize kFlightMaxCap     = 1 << 16;   // 64K entries upper bound
+
+struct FlightRing {
+    FlightEntry*       buf      = nullptr;
+    std::atomic<u64>   serial{0};
+    usize              capacity = 0;
+    usize              mask     = 0;
+};
+
+FlightRing& flight_ring() {
+    static FlightRing r;
+    return r;
+}
+
+std::mutex& flight_init_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+usize round_down_pow2(usize v) {
+    if (v == 0) return 0;
+    usize r = 1;
+    while ((r << 1) <= v && (r << 1) != 0) r <<= 1;
+    return r;
+}
+
+void flight_init_locked(usize capacity) {
+    auto& r = flight_ring();
+    if (r.buf) return;                                  // already initialised
+    if (capacity == 0)            capacity = kFlightDefaultCap;
+    if (capacity > kFlightMaxCap) capacity = kFlightMaxCap;
+    capacity = round_down_pow2(capacity);
+    if (capacity == 0) capacity = kFlightDefaultCap;
+    // PageAllocator is overkill for a 32 KiB buffer; std::malloc is fine
+    // here because the recorder is *outside* the engine's hot frame loop
+    // (init-time only, debug-only consumer).
+    r.buf      = static_cast<FlightEntry*>(
+        std::calloc(capacity, sizeof(FlightEntry)));
+    r.capacity = capacity;
+    r.mask     = capacity - 1;
+    r.serial.store(0, std::memory_order_relaxed);
+}
+
+}  // namespace
+
+void flight_recorder_init(usize capacity) noexcept {
+    std::lock_guard<std::mutex> g(flight_init_mutex());
+    auto& r = flight_ring();
+    if (r.buf) {
+        std::free(r.buf);
+        r.buf      = nullptr;
+        r.capacity = 0;
+        r.mask     = 0;
+    }
+    flight_init_locked(capacity);
+}
+
+void flight_recorder_record(u32 site, i32 op, u32 size, Tag tag) noexcept {
+    auto& r = flight_ring();
+    if (!r.buf) {
+        std::lock_guard<std::mutex> g(flight_init_mutex());
+        flight_init_locked(kFlightDefaultCap);
+    }
+    // After the (possible) init above, r.buf / r.mask are stable for the
+    // lifetime of the recorder (init clears and rebuilds atomically under
+    // the init mutex; we accept that a record racing with re-init may
+    // land in the old buffer just before it's freed -- the test path
+    // doesn't re-init while recording, and the engine boot path calls
+    // init() once at startup before any allocator is hit).
+    const u64 serial = r.serial.fetch_add(1, std::memory_order_relaxed);
+    const usize slot = static_cast<usize>(serial) & r.mask;
+    FlightEntry e;
+    e.serial = serial;
+    e.site   = site;
+    e.op     = op;
+    e.size   = size;
+    e.tag    = tag;
+    r.buf[slot] = e;
+}
+
+u64 flight_recorder_count() noexcept {
+    return flight_ring().serial.load(std::memory_order_relaxed);
+}
+
+usize flight_recorder_capacity() noexcept {
+    return flight_ring().capacity;
+}
+
+void flight_recorder_clear() noexcept {
+    std::lock_guard<std::mutex> g(flight_init_mutex());
+    auto& r = flight_ring();
+    if (r.buf && r.capacity) {
+        std::memset(r.buf, 0, r.capacity * sizeof(FlightEntry));
+    }
+    r.serial.store(0, std::memory_order_relaxed);
+}
+
+usize flight_recorder_dump(const char* path) noexcept {
+    if (!path) return 0;
+    auto& r = flight_ring();
+    if (!r.buf || r.capacity == 0) return 0;
+    std::FILE* f = std::fopen(path, "w");
+    if (!f) return 0;
+    const u64   total     = r.serial.load(std::memory_order_relaxed);
+    const u64   start     = (total > r.capacity) ? (total - r.capacity) : 0;
+    const u64   start_idx = start & r.mask;
+    usize       written   = 0;
+    std::fprintf(f, "# psynder flight recorder dump\n");
+    std::fprintf(f, "# serial,site,op,size,tag\n");
+    for (u64 s = start; s < total; ++s) {
+        const usize slot = static_cast<usize>(s) & r.mask;
+        const FlightEntry& e = r.buf[slot];
+        // Defensive: only emit entries whose serial actually matches.
+        // If we raced with a writer mid-record this filters out stale
+        // half-overwritten slots from earlier wraps.
+        if (e.serial != s) continue;
+        std::fprintf(f, "%llu,%u,%d,%u,%u\n",
+                     static_cast<unsigned long long>(e.serial),
+                     e.site, e.op, e.size,
+                     static_cast<unsigned>(e.tag));
+        ++written;
+    }
+    (void)start_idx;
+    std::fclose(f);
+    return written;
 }
 
 }  // namespace psynder::mem
