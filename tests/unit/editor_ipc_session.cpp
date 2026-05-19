@@ -159,6 +159,10 @@ std::string read_http_head(sock_t s, std::vector<::psynder::u8>& tail_after_head
 }
 
 // Read N bytes, drawing first from an in-memory tail then from the socket.
+// Bytes received past `want` are pushed back into `tail` so the next call
+// can consume them — without that spill the helper drops anything that
+// arrives in the same recv() chunk as the wanted prefix. (Hit when the
+// server flushes WS header + payload as a single packet on localhost.)
 std::vector<::psynder::u8> read_exact(sock_t s, size_t want,
                                       std::vector<::psynder::u8>& tail,
                                       std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
@@ -173,8 +177,14 @@ std::vector<::psynder::u8> read_exact(sock_t s, size_t want,
         char tmp[512];
         auto got = ::recv(s, tmp, sizeof(tmp), 0);
         if (got <= 0) break;
-        for (auto i = 0; i < got && out.size() < want; ++i) {
+        ::psynder::isize i = 0;
+        while (i < got && out.size() < want) {
             out.push_back(static_cast<::psynder::u8>(tmp[i]));
+            ++i;
+        }
+        while (i < got) {
+            tail.push_back(static_cast<::psynder::u8>(tmp[i]));
+            ++i;
         }
     }
     return out;
