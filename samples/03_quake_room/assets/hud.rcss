@@ -1,0 +1,165 @@
+/* SPDX-License-Identifier: MIT
+ * Psynder sample 03 — Quake-style room HUD stylesheet.
+ *
+ * Pairs with hud.rml.  Wave-B subset (see Parser.cpp): selectors
+ * {*, tag, #id, .class}, properties {left, top, width, height,
+ * background-color, color, font-size, display}.  Hot-reload swaps
+ * this file in atomically between frames (lane 17 Wave-B).
+ *
+ * Layout convention: pixel coordinates, top-left origin, viewport
+ * 1280x720.  The sample binary picks its viewport and the HUD scales
+ * via the `left`/`top` anchors below.
+ */
+
+/* ── Defaults — inherited down the cascade. ──────────────────────────── */
+* {
+    color:     #f4f4f4;
+    font-size: 14;
+}
+
+/* ── Root anchor — transparent overlay across the whole viewport. ───── */
+#hud-root {
+    left:   0;
+    top:    0;
+    width:  1280;
+    height: 720;
+    background-color: transparent;
+}
+
+/* ── Generic panel chrome: dark semi-translucent slab. ───────────────── */
+.panel {
+    background-color: rgba(12, 14, 20, 200);
+}
+
+/* Stat block — bottom-left, ~280px wide. */
+#stat-panel {
+    left:    24;
+    top:    580;
+    width:  280;
+    height: 120;
+}
+
+#health-label, #armor-label {
+    left:  12;
+    top:   8;
+    width: 80;
+    height: 18;
+    color: #b8c5d0;
+    font-size: 13;
+}
+#armor-label { top: 64; }
+
+/* Status bars — outer track + inner fill. */
+.bar {
+    left:   12;
+    height: 18;
+}
+.bar-track {
+    width:            240;
+    background-color: rgba(40, 44, 52, 255);
+}
+.bar-fill {
+    width:            240;     /* script slams this every frame */
+    background-color: #2ecc40;
+}
+
+#health-track { top: 28; }
+#armor-track  { top: 84; }
+
+.health { background-color: #e74c3c; }   /* red */
+.armor  { background-color: #3498db; }   /* blue */
+
+/* ── Ammo counter — bottom-right. ────────────────────────────────────── */
+#ammo-panel {
+    left:    944;     /* 1280 - 24 - 312 */
+    top:     580;
+    width:   312;
+    height:  120;
+}
+#ammo-label {
+    left:  16;
+    top:   12;
+    width: 80;
+    height: 18;
+    color: #b8c5d0;
+    font-size: 13;
+}
+#ammo-count {
+    left:   16;
+    top:    40;
+    width:  280;
+    height: 64;
+    color:  #f8e71c;
+    font-size: 48;
+}
+.number {
+    background-color: transparent;
+}
+
+/* ── Minimap — top-right square. ─────────────────────────────────────── */
+#minimap-panel {
+    left:    1080;
+    top:     24;
+    width:   176;
+    height:  176;
+}
+.minimap-frame {
+    left:   8;
+    top:    8;
+    width:  160;
+    height: 160;
+    background-color: rgba(24, 28, 36, 255);
+}
+.minimap-player {
+    /* Centred player blip; sample script translates it each frame. */
+    left:   76;
+    top:    76;
+    width:  8;
+    height: 8;
+    background-color: #f4f4f4;
+}
+
+/* ── Crosshair — small pip dead-centre. ──────────────────────────────── */
+.crosshair {
+    left:   636;     /* 1280/2 - 4 */
+    top:    356;     /* 720/2  - 4 */
+    width:  8;
+    height: 8;
+    background-color: rgba(244, 244, 244, 200);
+}
+
+/* ── Pause menu — centred slab, toggled via display:none. ────────────── */
+.pause-menu {
+    left:   480;     /* 1280/2 - 320/2 */
+    top:    220;     /* 720/2  - 280/2 */
+    width:  320;
+    height: 280;
+    background-color: rgba(16, 18, 24, 240);
+}
+.hidden {
+    display: none;
+}
+.title {
+    left:   60;
+    top:    24;
+    width:  200;
+    height: 36;
+    color:  #f8e71c;
+    font-size: 30;
+    background-color: transparent;
+}
+.menu-button {
+    left:   40;
+    width:  240;
+    height: 40;
+    color:  #f4f4f4;
+    background-color: rgba(40, 44, 52, 255);
+}
+#resume  { top:  80; }
+#options { top: 128; }
+#quit    { top: 176; }
+
+.menu-button.quit {
+    color:            #ffffff;
+    background-color: rgba(200, 60, 60, 255);
+}

@@ -15,9 +15,14 @@
 // `PSYNDER_VENDOR_RMLUI=ON` swaps the backend to upstream RmlUi via
 // FetchContent + FreeType while keeping this exact public API.
 //
-// Hot reload: every successful load_document registers a VFS watch on
-// both the .rml and the .rcss virtual paths; update() reparses any
-// document whose generation counter advanced between frames.
+// Hot reload (Wave-B): every successful load_document registers a VFS
+// watch on both the .rml and the .rcss virtual paths via lane 05's
+// `Vfs::watch`.  The watcher fires `needs_reload = true` from the asset
+// poll thread; update() (on the engine main thread, between frames)
+// reparses the source pair into temporaries and atomically swaps the
+// DOM + stylesheet into place.  Document identity (the map slot keyed
+// by name) is preserved across reload so Lua scripts that hold the
+// document name keep working; show/hide state is preserved too.
 
 #include "Rml.h"
 #include "Rml_internal.h"
@@ -63,10 +68,50 @@ State& state() {
     return s;
 }
 
+// Parse a .rml/.rcss source pair into a fresh DOM + stylesheet.  Used
+// both by load_document (initial load) and the hot-reload sweep.  We
+// build into a temporary so the caller can swap atomically on success
+// without ever exposing a partially-parsed document to render().
+struct ParsedPair {
+    detail::Element             root;
+    std::vector<detail::Rule>   sheet;
+    bool                        ok = false;
+};
+
+[[nodiscard]] ParsedPair parse_pair_from_sources(std::string_view rml_src,
+                                                 std::string_view rcss_src,
+                                                 std::string_view diag_rml_path,
+                                                 std::string_view diag_rcss_path) {
+    ParsedPair pp{};
+    auto res = detail::parse_rml(rml_src, pp.root);
+    if (!res.ok) {
+        PSY_LOG_WARN("rml: parse error in '{}' (line {}): {}",
+                     std::string(diag_rml_path), res.error_line, res.error);
+        return pp;
+    }
+    if (!rcss_src.empty()) {
+        auto cssr = detail::parse_rcss(rcss_src, pp.sheet);
+        if (!cssr.ok) {
+            PSY_LOG_WARN("rml: rcss parse error in '{}' (line {}): {}",
+                         std::string(diag_rcss_path), cssr.error_line, cssr.error);
+            // Continue with whatever rules made it through.
+        }
+    }
+    detail::apply_cascade(pp.root, pp.sheet);
+    pp.ok = true;
+    return pp;
+}
+
+// read_pair() outcomes — distinguishes "couldn't read source" (often
+// transient, e.g. VFS stub or in-flight editor save) from "read source
+// but it didn't parse" (designer error: log + give up until the next
+// watcher tick).
+enum class ReadOutcome : u8 { Ok, NoSource, ParseError };
+
 // Read both .rml + .rcss for a document via the VFS.  The doc's
 // rcss_virtual_path is derived by swapping the .rml extension; an .rml
 // without an .rcss is still valid (no styles cascaded).
-[[nodiscard]] bool read_pair(detail::Document& doc) {
+[[nodiscard]] ReadOutcome read_pair(detail::Document& doc) {
     auto& vfs = asset::Vfs::Get();
 
     // Read .rml
@@ -76,44 +121,42 @@ State& state() {
         // anything the caller might have pre-seeded.
         PSY_LOG_INFO("rml: VFS returned no bytes for '{}' (VFS stub)",
                      doc.rml_virtual_path);
-        return false;
+        return ReadOutcome::NoSource;
     }
     std::string_view rml_src(reinterpret_cast<const char*>(rml_blob.data),
                              rml_blob.bytes);
 
-    detail::Element root;
-    auto res = detail::parse_rml(rml_src, root);
-    if (!res.ok) {
-        PSY_LOG_WARN("rml: parse error in '{}' (line {}): {}",
-                     doc.rml_virtual_path, res.error_line, res.error);
-        return false;
-    }
-    doc.root = std::move(root);
-
     // Read companion .rcss if present.
+    std::string_view rcss_src;
+    asset::Blob css_blob{};
     if (!doc.rcss_virtual_path.empty()) {
-        asset::Blob css_blob = vfs.read(doc.rcss_virtual_path);
+        css_blob = vfs.read(doc.rcss_virtual_path);
         if (css_blob.data && css_blob.bytes > 0) {
-            std::string_view css_src(reinterpret_cast<const char*>(css_blob.data),
-                                     css_blob.bytes);
-            doc.sheet.clear();
-            auto cssr = detail::parse_rcss(css_src, doc.sheet);
-            if (!cssr.ok) {
-                PSY_LOG_WARN("rml: rcss parse error in '{}' (line {}): {}",
-                             doc.rcss_virtual_path, cssr.error_line, cssr.error);
-                // Continue with whatever rules made it through.
-            }
+            rcss_src = std::string_view(
+                reinterpret_cast<const char*>(css_blob.data),
+                css_blob.bytes);
         }
     }
 
-    detail::apply_cascade(doc.root, doc.sheet);
-    return true;
+    ParsedPair pp = parse_pair_from_sources(
+        rml_src, rcss_src, doc.rml_virtual_path, doc.rcss_virtual_path);
+    if (!pp.ok) return ReadOutcome::ParseError;
+
+    // Atomic swap-in: blow away the old DOM + sheet, install the new
+    // ones.  Caller is responsible for serialising with render() — we
+    // only ever do this from update() on the main thread.
+    doc.root  = std::move(pp.root);
+    doc.sheet = std::move(pp.sheet);
+    return ReadOutcome::Ok;
 }
 
 void watch_callback(std::string_view path, void* user) noexcept {
     auto* doc = static_cast<detail::Document*>(user);
     if (!doc) return;
-    doc->needs_reload = true;
+    // Watch fires from the VFS poll thread — set the atomic flag so the
+    // next update() pass on the main thread picks it up.  No mutex
+    // necessary because update() is the sole consumer.
+    doc->needs_reload.store(true, std::memory_order_release);
     (void)path;
 }
 
@@ -165,7 +208,8 @@ bool load_document(std::string_view virtual_path, std::string_view name) {
     doc.rml_virtual_path  = std::string(virtual_path);
     doc.rcss_virtual_path = companion_rcss_path(virtual_path);
 
-    const bool loaded = read_pair(doc);
+    const ReadOutcome outcome = read_pair(doc);
+    const bool loaded         = (outcome == ReadOutcome::Ok);
 
     // Register in any case so show/hide on an unresolved-on-disk document
     // can be retried via hot-reload once the VFS lights up.
@@ -215,13 +259,39 @@ void update(f32 /*dt*/) {
     ++s.generation;
 
     // Hot-reload sweep — any document whose VFS watcher flagged a change
-    // gets reparsed.
+    // gets reparsed.  Order:
+    //
+    //   1. Snapshot the dirty flag with exchange() so a watcher firing
+    //      mid-update enqueues another pass next frame instead of being
+    //      silently consumed.
+    //   2. read_pair() parses into temporaries; on success it atomically
+    //      replaces doc.root + doc.sheet.  The document's stable name
+    //      (the map key) and `visible` flag are *preserved*, so any
+    //      caller that holds the document name in script keeps working
+    //      across the reload — DOM identity is at the document-name
+    //      level, which is what designers' Lua scripts care about.
+    //   3. Bump reload_generation so a script can observe the swap.
+    //
+    // We only do the work on the main thread, between frames, so
+    // render() never sees a half-built DOM.
     for (auto& [name, doc] : s.documents) {
-        if (!doc.needs_reload) continue;
-        doc.needs_reload = false;
-        ++doc.reload_generation;
-        if (read_pair(doc)) {
-            PSY_LOG_INFO("rml: hot-reloaded '{}'", name);
+        bool dirty = doc.needs_reload.exchange(false, std::memory_order_acq_rel);
+        if (!dirty) continue;
+        const bool was_visible = doc.visible;
+        const u64 gen_before   = doc.reload_generation;
+        const ReadOutcome      outcome = read_pair(doc);
+        if (outcome == ReadOutcome::Ok) {
+            doc.visible           = was_visible;     // preserve show/hide
+            doc.reload_generation = gen_before + 1;
+            PSY_LOG_INFO("rml: hot-reloaded '{}' (gen {})", name,
+                         doc.reload_generation);
+        } else if (outcome == ReadOutcome::NoSource) {
+            // File temporarily unreadable (in-flight editor save, or
+            // VFS not yet mounted).  Re-arm so the next watcher tick
+            // gets another shot.  Parse errors are *not* re-armed —
+            // they're designer bugs and spamming the log every frame
+            // helps nobody.
+            doc.needs_reload.store(true, std::memory_order_release);
         }
     }
 }
@@ -327,6 +397,76 @@ bool fire_handler(std::string_view name,
         for (const auto& c : el->children) stack.emplace_back(&c);
     }
     return false;
+}
+
+// Payload-aware variant — used by the Wave-B event-table tests.  Builds
+// the `event` upvalue from `payload` before handing the body to the
+// installed Lua backend.
+bool fire_handler_with_payload(std::string_view name,
+                                std::string_view element_id,
+                                std::string_view event_name,
+                                const detail::EventPayload& payload) {
+    auto* doc = find_document(name);
+    if (!doc) return false;
+    std::vector<const detail::Element*> stack{ &doc->root };
+    while (!stack.empty()) {
+        const detail::Element* el = stack.back();
+        stack.pop_back();
+        if (el->id == element_id) {
+            auto it = el->handlers.find(std::string(event_name));
+            if (it == el->handlers.end()) return false;
+            return detail::dispatch_handler(event_name, it->second, payload);
+        }
+        for (const auto& c : el->children) stack.emplace_back(&c);
+    }
+    return false;
+}
+
+// Mark the document dirty as if the VFS watcher had fired.  Lets unit
+// tests exercise the update() hot-reload path without touching the
+// filesystem (the asset Vfs test surface poll_watchers_now() is a
+// separate integration story).
+bool mark_dirty(std::string_view name) {
+    auto& s = state();
+    auto it = s.documents.find(std::string(name));
+    if (it == s.documents.end()) return false;
+    it->second.needs_reload.store(true, std::memory_order_release);
+    return true;
+}
+
+// Run one tick of update() in-line so tests can assert what the
+// hot-reload sweep does on the dirty bit without a real frame loop.
+void run_update_tick() { ::psynder::ui::rml::update(0.f); }
+
+// Inject a fresh source pair into an *already-registered* document and
+// re-cascade — used by tests to simulate "designer edited the .rml,
+// VFS watcher fired".  Preserves the document's visibility + reload
+// generation.
+bool reload_with_source(std::string_view name,
+                        std::string_view rml_src,
+                        std::string_view rcss_src) {
+    auto& s = state();
+    auto it = s.documents.find(std::string(name));
+    if (it == s.documents.end()) return false;
+    auto& doc = it->second;
+    detail::Element              new_root;
+    std::vector<detail::Rule>    new_sheet;
+    auto rml_res = detail::parse_rml(rml_src, new_root);
+    if (!rml_res.ok) return false;
+    if (!rcss_src.empty()) {
+        auto css_res = detail::parse_rcss(rcss_src, new_sheet);
+        (void)css_res;
+    }
+    detail::apply_cascade(new_root, new_sheet);
+    doc.root  = std::move(new_root);
+    doc.sheet = std::move(new_sheet);
+    ++doc.reload_generation;
+    return true;
+}
+
+u64 reload_generation(std::string_view name) {
+    const auto* doc = find_document(name);
+    return doc ? doc->reload_generation : 0;
 }
 
 }  // namespace psynder::ui::rml::test_only
