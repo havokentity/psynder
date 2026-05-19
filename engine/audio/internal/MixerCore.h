@@ -48,6 +48,10 @@ struct Voice {
     u32         clip_raw = 0;
     f32         volume   = 0.0f;
     math::Vec3  position{0,0,0};
+    // Wave-B: per-voice velocity drives the Doppler pitch ratio at render
+    // time. Defaults to zero so existing call sites that don't yet provide
+    // a velocity behave identically to the Wave-A integer-cursor mixer.
+    math::Vec3  velocity{0,0,0};
     // playback cursor (frame index into clip's PCM stream)
     u32         cursor   = 0;
 };
@@ -455,11 +459,13 @@ private:
 // HRTF-spatialised stereo, mixed into `dst_stereo`.
 //
 // `freq_hz` lets tests drive the function with reproducible signal energy
-// for the "no-clip" invariant.
+// for the "no-clip" invariant. `doppler_ratio` is multiplied into the angular
+// step per frame; pass 1.0 (default) for the Wave-A behavior.
 PSY_FORCEINLINE void render_voice_into_stereo(
         const Voice& v, f32 freq_hz,
         u32 sample_rate, u32 frames,
-        f32* PSY_RESTRICT_ALIAS dst_stereo) noexcept {
+        f32* PSY_RESTRICT_ALIAS dst_stereo,
+        f32 doppler_ratio = 1.0f) noexcept {
     if (!v.active) return;
     // Compute azimuth from voice position assuming listener at origin facing +Z.
     // azimuth = atan2(x, z) ∈ [-π, π]; treat large |azimuth| as side/rear.
@@ -468,7 +474,8 @@ PSY_FORCEINLINE void render_voice_into_stereo(
     pan_equal_power(az, lg, rg);
     lg *= v.volume;
     rg *= v.volume;
-    const f32 omega = 2.0f * math::kPi * freq_hz / static_cast<f32>(sample_rate);
+    const f32 omega = 2.0f * math::kPi * freq_hz * doppler_ratio /
+                      static_cast<f32>(sample_rate);
     for (u32 i = 0; i < frames; ++i) {
         const f32 s = std::sin(omega * static_cast<f32>(v.cursor + i));
         dst_stereo[2*i + 0] += s * lg;
