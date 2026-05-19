@@ -1,5 +1,119 @@
 # Changelog
 
+## v0.8.0-wave-d-complete (2026-05-19) — All 7 demos run, M6 + HUD + EWA aniso 🚁🏁
+
+Wave D closes the polish push. **All seven sample binaries** (M0 through
+M6) now smoke-pass on Mac. The Quake-style HUD is wired into a sample
+for the first time. Tracy zones instrumented in core hot paths. EWA
+anisotropic filtering completes the DESIGN.md §7.5 filter table.
+End-to-end `lm_pak` fixture pipeline cooks real assets at build time.
+
+### Wave D / sample_06 / Tactical map (M6) (#109)
+- Project IGI / Delta Force-style aerial flyover. 512×288 internal
+  framebuffer (per-column raymarch budget).
+- 256×256 procedural heightmap (three octaves of value noise + a big
+  Z-axis Gaussian ridge + a SE bump). Peaks reach ~30m.
+- Direct drive of `world::outdoor::detail::*` per-column raymarch
+  internals (Wave-A `TerrainRaymarch::render` is still a no-op pending
+  lane-07 tile-queue integration — flagged for Wave E).
+- Shared Z packing matches `TileRaster::pack_depth` so the helicopter
+  and watchtowers Z-test correctly against the raymarched terrain
+  (DESIGN.md §9.2 shared-Z invariant).
+- Dawn skybox (warm orange near horizon → cool blue at zenith), 4-channel
+  splat blend (grass/rock/sand/snow), Lambert against a low-east sun
+  + distance-fog haze.
+- Six watchtowers placed in a hex ring around the centre, each
+  Y-snapped to the terrain. Scripted helicopter at 50m altitude
+  (body box + spinning 4-blade rotor, yaw aligned to flight path).
+- Half-circle camera flyover at ~30m altitude.
+
+### Wave D / sample_04 HUD wiring (M7) (#107)
+- `samples/04_nfs_track/assets/hud.rml` (62 lines) + `hud.rcss` (~125
+  lines) — dark-on-grey racing dashboard: large KM/H readout, RPM bar
+  with redline tick, gear letter, throttle/brake vertical indicators.
+  Anchored to a 1280×720 viewport.
+- `main.cpp` initializes `psynder::ui::rml`, mounts the assets dir,
+  loads `hud.rml` + shows it, calls `update/render` per frame.
+- Live telemetry: speed from chassis-position-derived velocity, RPM
+  from wheel ω × gear ratio × final drive with gear band-selected
+  from speed.
+- Wired via per-frame source rebuild + `reload_with_source` (same
+  path the unit tests use) — the in-tree RmlUi subset has no
+  per-element setters yet. Pattern swap-compatible with upstream
+  RmlUi data-binding when `PSYNDER_VENDOR_RMLUI=ON` lights up.
+
+### Wave D / Tracy zones (#106)
+- `engine/core/Tracy.h` extended with three new macros (existing
+  `PSY_TRACE_ZONE` / `PSY_TRACE_ZONE_COLOR` left untouched):
+  - `PSY_TRACE_FRAME(name)` → `FrameMarkNamed` / no-op
+  - `PSY_TRACE_PLOT_F32(name, value)` → `TracyPlot` / no-op
+  - `PSY_TRACE_MESSAGE(text)` → `TracyMessageL` / no-op
+- Instrumentation: `Log::emit`, `Console::Execute`, `Console::Drain`
+  wrapped in `PSY_TRACE_ZONE` (allocator hot paths were already
+  instrumented in Wave B).
+
+### Wave D / lm_pak fixture pipeline (#108)
+- `assets/fixtures/crate.png` (32×32 RGBA8 — synthesized from
+  `samples/01_triangle/assets/crate.ppm`) + `tone_440hz.wav` (1 s,
+  mono, 48 kHz, int16 PCM).
+- Build-time custom commands cook them via lane 24's `lm_cook`
+  → `crate.lmt` + `tone_440hz.lma`, then pack via `lm_pak` →
+  `build/${preset}/assets/demo.lmpak`. New target `psynder_fixture_pak`
+  builds with `ALL`.
+- Catch2 test loads the pack, verifies the FNV-1a-64 index (incl. case
+  insensitivity + hash-sort for binary search), extracts payloads,
+  confirms `LMT1`/`LMA1` magics survived the round-trip.
+- **Found** during integration: lane 24's `lm_pak` producer and lane
+  05's `Vfs` consumer speak different `.lmpak` v1 dialects. Documented
+  in the test as a probe (WARN on mount failure) so future format
+  unification surfaces here. Tracked for Wave E.
+
+### Wave D / Raster anisotropic filtering (#110)
+- **EWA** (elliptical-weighted-average) approximation per DESIGN.md
+  §7.5 — `aniso_sample()` walks N taps along the major axis of the
+  texture-space ellipse derived from per-quad UV gradients; each tap
+  a bilinear lookup, blended with cosine-bell weights.
+- `r_anisotropy` cvar (1/2/4/8/16, clamps out-of-range).
+- `DrawCmd.aniso_max` plumbed (1 byte added to the cache-line-aligned
+  `DrawCmd`; `TileBin.h` is lane-internal so no public-header
+  change).
+- Per-tile dispatch: `use_aniso = (cap ≥ 2) && (major² > 4·minor²)`
+  const-bool gate, no per-pixel branching.
+
+### Sample status (all 7 smoke-pass)
+
+| Sample | Milestone | Status |
+|---|---|---|
+| sample_00_clear | M0 | ✅ smoke ✅ visual (animated clear) |
+| sample_01_triangle | M1 | ✅ smoke ✅ visual (rotating crate triangle) |
+| sample_02_textured_quad | M2 | ✅ smoke ✅ visual (4 spinning cubes) |
+| sample_03_quake_room | M3 | ✅ smoke ✅ PVS branches verified |
+| sample_04_nfs_track | M4 + M7 HUD | ✅ smoke (Pacejka lap + RmlUi dashboard) |
+| sample_05_hybrid_night | M5 | ✅ smoke (raytraced shadows + 3 lights) |
+| sample_06_tactical_map | M6 | ✅ smoke (raymarch terrain + helicopter) |
+
+### Test + demo status
+
+- **623/623 Catch2 cases passing**, zero flakes.
+- All M0–M6 demos smoke-pass on Mac.
+- Tagged `v0.8.0-wave-d-complete`.
+
+### What's left for v1.0 (Wave E)
+
+1. **`TerrainRaymarch::render` → tile-queue integration** so sample_06
+   uses the public API instead of `detail::*` internals.
+2. **`.lmpak` format unification** — lane 24's producer and lane 05's
+   consumer to agree on a single v1 wire format. Probably bump to v2
+   and migrate.
+3. **Per-element RmlUi setters** — eliminate the per-frame source
+   rebuild in sample_04 (or vendor upstream RmlUi via
+   `PSYNDER_VENDOR_RMLUI=ON`).
+4. **Documentation pass** — `docs/01-getting-started.md`,
+   `docs/02-rendering.md`, contributor guide.
+5. **Win/Linux validation** on real hardware.
+6. **Copilot review sweep** — once user toggles Copilot on, run
+   `copilot-review` skill across all merged PRs.
+
 ## v0.7.0-wave-c-complete (2026-05-19) — M3/M4/M5 demos running, 616/616 tests 🚗⚡
 
 Wave C made the engine's milestone roadmap **visible**. All five sample
