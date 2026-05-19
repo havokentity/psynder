@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "AlignedAlloc_internal.h"
 #include "JobSystem.h"
 #include "core/Types.h"
 
@@ -105,19 +106,13 @@ class JobPool {
         capacity_ = capacity;
         // Slot 0 is the sentinel; valid slots are [1, capacity_].
         slots_ = static_cast<Job*>(
-            std::aligned_alloc(kCacheLine,
-                               ((sizeof(Job) * (capacity_ + 1) + kCacheLine - 1) /
-                                kCacheLine) *
-                                   kCacheLine));
+            aligned_xalloc(kCacheLine, sizeof(Job) * (capacity_ + 1)));
         for (u32 i = 0; i <= capacity_; ++i) {
             new (&slots_[i]) Job();
         }
         free_list_top_.store(static_cast<i64>(capacity_), std::memory_order_relaxed);
         free_list_ = static_cast<u32*>(
-            std::aligned_alloc(kCacheLine,
-                               ((sizeof(u32) * capacity_ + kCacheLine - 1) /
-                                kCacheLine) *
-                                   kCacheLine));
+            aligned_xalloc(kCacheLine, sizeof(u32) * capacity_));
         // Push slots 1..N onto the stack so claim() pops them in N..1 order.
         for (u32 i = 0; i < capacity_; ++i) {
             free_list_[i] = i + 1;
@@ -129,11 +124,11 @@ class JobPool {
             for (u32 i = 0; i <= capacity_; ++i) {
                 slots_[i].~Job();
             }
-            std::free(slots_);
+            aligned_xfree(slots_);
             slots_ = nullptr;
         }
         if (free_list_) {
-            std::free(free_list_);
+            aligned_xfree(free_list_);
             free_list_ = nullptr;
         }
         capacity_ = 0;

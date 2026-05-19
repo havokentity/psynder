@@ -9,6 +9,7 @@
 
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace psynder::world::bsp {
 

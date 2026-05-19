@@ -30,6 +30,7 @@ extern "C" {
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace psynder::script::detail {

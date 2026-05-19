@@ -21,7 +21,7 @@ option(PSYNDER_BUILD_TESTS           "Build unit / golden / bench tests under te
 option(PSYNDER_ENABLE_TRACY          "Enable Tracy profiler integration (debug builds default)" OFF)
 option(PSYNDER_ENABLE_SANITIZERS     "Enable ASan + UBSan (debug Linux/Mac only)"               OFF)
 option(PSYNDER_ENABLE_AVX2           "Build x86-64 AVX2 fast-path kernels"                       ON)
-option(PSYNDER_ENABLE_AVX512         "Build x86-64 AVX-512 wide-path kernels (opportunistic)"   ON)
+option(PSYNDER_ENABLE_AVX512         "Build x86-64 AVX-512 wide-path kernels (opportunistic)"   OFF)
 option(PSYNDER_ENABLE_LTO            "Link-time optimization for release builds"                ON)
 
 # ─── C++23, no exceptions / no RTTI in hot subsystems (per §3 DOTS rules) ─

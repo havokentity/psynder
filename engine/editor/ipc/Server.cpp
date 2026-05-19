@@ -36,6 +36,9 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
 
 // POSIX sockets — works on macOS + Linux. On Windows we'd want winsock2 +
 // WSAStartup; that lives behind the same fence as the platform-win32 lane.

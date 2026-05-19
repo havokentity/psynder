@@ -7,6 +7,8 @@
 #include "net/Net.h"
 #include "net/Snapshot.h"
 
+#include <array>
+
 using namespace psynder;
 using namespace psynder::net;
 

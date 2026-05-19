@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include "AlignedAlloc_internal.h"
 #include "core/Types.h"
 
 #include <atomic>
@@ -45,11 +46,7 @@ struct PSY_CACHELINE_ALIGN ChaseLevDeque {
         capacity_      = c;
         mask_          = c - 1;
         // Allocate aligned to a cache line so adjacent deques don't share.
-        void* mem = std::aligned_alloc(kCacheLine,
-                                       ((sizeof(std::atomic<u32>) * c +
-                                         kCacheLine - 1) /
-                                        kCacheLine) *
-                                           kCacheLine);
+        void* mem = aligned_xalloc(kCacheLine, sizeof(std::atomic<u32>) * c);
         buffer_ = static_cast<std::atomic<u32>*>(mem);
         for (u32 i = 0; i < c; ++i) {
             new (&buffer_[i]) std::atomic<u32>(0);
@@ -63,7 +60,7 @@ struct PSY_CACHELINE_ALIGN ChaseLevDeque {
             for (u32 i = 0; i < capacity_; ++i) {
                 buffer_[i].~atomic();
             }
-            std::free(buffer_);
+            aligned_xfree(buffer_);
             buffer_ = nullptr;
         }
         capacity_ = 0;

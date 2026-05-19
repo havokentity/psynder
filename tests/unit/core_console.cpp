@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace cn = psynder::console;
 

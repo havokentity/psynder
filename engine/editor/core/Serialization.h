@@ -34,6 +34,7 @@
 #include "editor/core/Sculpt.h"
 #include "editor/core/EditorState.h"
 
+#include <array>
 #include <cstring>
 #include <string_view>
 #include <vector>

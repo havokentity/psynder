@@ -20,6 +20,7 @@
 
 #include "platform/Platform.h"
 #include "LinuxPlatform_internal.h"
+#include "core/Log.h"
 
 #include <algorithm>
 #include <array>

@@ -33,6 +33,7 @@
 #include <new>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace psynder::log {

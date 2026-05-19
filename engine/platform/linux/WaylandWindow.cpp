@@ -93,10 +93,16 @@ namespace {
 // under XDG_RUNTIME_DIR. We never link to libc's deprecated SHM helpers.
 int create_anonymous_file(off_t size) noexcept {
 #ifdef __NR_memfd_create
-    int fd = ::syscall(__NR_memfd_create, "psynder-wl-shm", 0u);
-    if (fd >= 0) {
-        if (::ftruncate(fd, size) < 0) { ::close(fd); return -1; }
-        return fd;
+    {
+        // Scope the memfd `fd` so the mkostemp fallback below can reuse the
+        // name without "redefinition of 'fd'" on glibc. (Apple Clang's libc
+        // doesn't have __NR_memfd_create at all so the branch is dead there
+        // and the diagnostic never fires on Mac.)
+        int fd = ::syscall(__NR_memfd_create, "psynder-wl-shm", 0u);
+        if (fd >= 0) {
+            if (::ftruncate(fd, size) < 0) { ::close(fd); return -1; }
+            return fd;
+        }
     }
 #endif
     const char* runtime = std::getenv("XDG_RUNTIME_DIR");

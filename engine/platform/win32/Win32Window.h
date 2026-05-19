@@ -30,10 +30,15 @@ public:
     // True iff the underlying HWND + DXGI surface created successfully.
     bool valid() const noexcept { return hwnd_ != nullptr; }
 
-private:
     // The class-shared WndProc dispatches into Win32Window::wnd_proc().
+    // Public so register_window_class() (a free function in the anonymous
+    // namespace of Win32Window.cpp) can take its address when filling
+    // the WNDCLASSEXW.lpfnWndProc slot. The user-facing API surface is
+    // still the virtual `Window` contract — this is an MSVC requirement.
     static LRESULT CALLBACK static_wnd_proc(
         HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+
+private:
     LRESULT wnd_proc(UINT msg, WPARAM wparam, LPARAM lparam);
 
     // Raw-input registration — one mouse device with RIDEV_NOLEGACY off

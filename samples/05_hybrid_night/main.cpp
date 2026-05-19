@@ -21,10 +21,13 @@
 
 #include "core/Log.h"
 #include "core/Types.h"
+#include "editor/core/Editor.h"
+#include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
+#include "ui/imm/DebugHud.h"
 
 #include <algorithm>
 #include <array>
@@ -389,20 +392,50 @@ int main(int argc, char** argv) {
     std::vector<PixelHit> hits(
         static_cast<usize>(kShadowW) * kShadowH);
 
+    // 60-sample ring of frame-times (ms) for the debug HUD strip chart.
+    // `u32`-sized to keep `min(frame+1, kFrameHistory)` in a single
+    // domain (mirrors the pattern from PR #115's self-review).
+    constexpr u32 kFrameHistory = 60;
+    std::array<f32, kFrameHistory> frame_ms_ring{};
+    u64 prev_frame_ticks = t0;
+    // Smoke-mode frame-time stand-in (60 FPS budget = 1/60 s).
+    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
+
     while (!window->should_close()) {
         window->poll_events();
+
+        // Per-frame wall-clock delta for HUD stats. Smoke runs are
+        // frame-indexed so use the 60 FPS budget stand-in for determinism.
+        const u64 now_ticks = platform::Clock::ticks_now();
+        const f32 frame_ms  = smoke_frames > 0
+                                  ? kSmokeFrameMs
+                                  : static_cast<f32>(
+                                        platform::Clock::seconds(
+                                            now_ticks - prev_frame_ticks) *
+                                        1000.0);
+        prev_frame_ticks = now_ticks;
+        frame_ms_ring[frame % kFrameHistory] = frame_ms;
 
         // ESC quits.
         if (auto* in = platform::input(); in && in->key_down(platform::KeyCode::Escape)) {
             break;
         }
 
+        // Editor F2/~ toggle + PLAY/EDIT badge bottom-right. EDIT mode
+        // pins time so the user can inspect the BVH with a frozen scene.
+        const editor::Mode edit_mode =
+            platform::input()
+                ? editor::sample_step(*platform::input(), fb)
+                : editor::Mode::Play;
+
         // Smoke runs pin time to frame index so the captured PNG is
         // deterministic across hosts.
-        const f64 t = smoke_frames > 0
-                          ? static_cast<f64>(frame) * (1.0 / 60.0)
-                          : platform::Clock::seconds(
-                                platform::Clock::ticks_now() - t0);
+        const f64 t = (edit_mode == editor::Mode::Edit)
+                          ? 0.0
+                          : smoke_frames > 0
+                                ? static_cast<f64>(frame) * (1.0 / 60.0)
+                                : platform::Clock::seconds(
+                                      platform::Clock::ticks_now() - t0);
 
         orbit_lights(static_cast<f32>(t), lights);
         const Camera cam = make_orbit_camera(static_cast<f32>(t), aspect);
@@ -546,9 +579,31 @@ int main(int argc, char** argv) {
         upsample_bilinear(shadow_pixels.data(), kShadowW, kShadowH,
                           final_pixels.data(), kFbW, kFbH);
 
+        // Debug HUD overlay — `r_debug_hud full` enables. Per-frame stats
+        // plus an avg over the populated prefix of the ring.
+        {
+            ui::imm::DebugHudStats stats{};
+            stats.frame_ms      = frame_ms;
+            stats.avg_frame_ms  = [&]() noexcept {
+                const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
+                if (n == 0u) return 0.0f;
+                f32 sum = 0.0f;
+                for (u32 i = 0; i < n; ++i) sum += frame_ms_ring[i];
+                return sum / static_cast<f32>(n);
+            }();
+            stats.draw_calls    = 1;  // single rasterized full-screen blit
+            stats.triangles     = 0;  // raytraced — no rasterized geometry
+            stats.active_voices = 0;
+            ui::imm::draw_debug_hud(fb, stats);
+        }
+
         window->present(fb);
 
-        if (smoke_frames > 0 && ++frame >= smoke_frames) {
+        // Bump unconditionally each iteration so the frame_ms_ring populates
+        // in interactive runs (smoke_frames == 0) too — otherwise the ring
+        // sits at index 0 forever and avg_frame_ms collapses to frame_ms.
+        ++frame;
+        if (smoke_frames > 0 && frame >= smoke_frames) {
             PSY_LOG_INFO("sample_05: smoke target reached ({}); exiting",
                          smoke_frames);
             break;

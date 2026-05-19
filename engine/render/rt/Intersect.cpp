@@ -446,7 +446,7 @@ void blas_packet_occlusion_avx2(const detail::Bvh8State& bs,
                     for (u32 r = 0; r < 8; ++r, lane_bit = static_cast<u8>(lane_bit << 1)) {
                         if ((active & lane_bit) == 0) continue;
                         if ((live & lane_bit) == 0)   continue;
-                        if (ray_triangle_occluded(local_rays[r], tri)) {
+                        if (detail::ray_triangle_occluded(local_rays[r], tri)) {
                             done = static_cast<u8>(done | lane_bit);
                             live = static_cast<u8>(live & ~lane_bit);
                         }

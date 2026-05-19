@@ -11,6 +11,7 @@
 
 #include "Win32Input.h"
 #include "Win32KeyMap.h"
+#include "core/Log.h"
 
 #include <hidusage.h>
 #include <windowsx.h>      // GET_X_LPARAM / GET_Y_LPARAM
