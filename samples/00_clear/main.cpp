@@ -4,10 +4,19 @@
 // rasterizer-clear path on every supported OS.
 //
 // CLI flags:
-//   --smoke-frames=N    Run N frames then exit. Used by CI as a headless
-//                       liveness check; pairs with the AGENTS.md smoke lock
-//                       that serializes platform invocations on shared Mac
-//                       runners.
+//   --smoke-frames=N         Run N frames then exit. Used by CI as a headless
+//                            liveness check; pairs with the AGENTS.md smoke
+//                            lock that serializes platform invocations on
+//                            shared Mac runners.
+//   --smoke-frames N         Same, space-separated (matches the cmake helper
+//                            invocation in cmake/Goldens.cmake).
+//   --smoke-capture-out PATH Write the final rendered framebuffer to PATH
+//                            as a valid 24-bit RGB PNG. Used by the
+//                            psynder_add_golden_cell() ctest cells to grab
+//                            the actual-image-this-run output for the
+//                            clear-color golden.
+
+#include "common/PngWriter.h"
 
 #include "core/Log.h"
 #include "core/Types.h"
@@ -17,6 +26,7 @@
 #include "render/raster/Raster.h"
 
 #include <cstdlib>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -38,28 +48,41 @@ u32 parse_uint(std::string_view v) {
     return out;
 }
 
-u32 parse_smoke_frames(int argc, char** argv) {
-    constexpr std::string_view kFlag = "--smoke-frames=";
+struct Args {
+    u32         smoke_frames = 0;
+    std::string capture_out;
+};
+
+Args parse_args(int argc, char** argv) {
+    Args a{};
+    constexpr std::string_view kFlag   = "--smoke-frames=";
+    constexpr std::string_view kFlagSp = "--smoke-frames";
+    constexpr std::string_view kCapEq  = "--smoke-capture-out=";
+    constexpr std::string_view kCapSp  = "--smoke-capture-out";
     for (int i = 1; i < argc; ++i) {
-        std::string_view a{argv[i]};
-        if (a.starts_with(kFlag)) {
-            const u32 n = parse_uint(a.substr(kFlag.size()));
-            if (n == 0 && a.size() > kFlag.size()) {
+        std::string_view s{argv[i]};
+        if (s.starts_with(kFlag)) {
+            const u32 n = parse_uint(s.substr(kFlag.size()));
+            if (n == 0 && s.size() > kFlag.size()) {
                 PSY_LOG_WARN("sample_00: ignoring malformed --smoke-frames value");
             }
-            return n;
-        }
-        if (a == "--smoke-frames" && i + 1 < argc) {
-            return parse_uint(std::string_view{argv[i + 1]});
+            a.smoke_frames = n;
+        } else if (s == kFlagSp && i + 1 < argc) {
+            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
+        } else if (s.starts_with(kCapEq)) {
+            a.capture_out = std::string(s.substr(kCapEq.size()));
+        } else if (s == kCapSp && i + 1 < argc) {
+            a.capture_out = argv[++i];
         }
     }
-    return 0;
+    return a;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    const u32 smoke_frames = parse_smoke_frames(argc, argv);
+    const Args args         = parse_args(argc, argv);
+    const u32  smoke_frames = args.smoke_frames;
 
     platform::WindowDesc desc{};
     desc.title         = "Psynder — sample 00 (clear)";
@@ -96,7 +119,13 @@ int main(int argc, char** argv) {
     while (!window->should_close()) {
         window->poll_events();
 
-        const f64 t  = platform::Clock::seconds(platform::Clock::ticks_now() - t0);
+        // Drive the colour off frame index in smoke mode so the captured
+        // frame is identical across hosts (golden-image determinism). Real
+        // runs use wall-clock time so the animation looks smooth.
+        const f64 t = smoke_frames > 0
+                          ? static_cast<f64>(frame) * (1.0 / 60.0)
+                          : platform::Clock::seconds(
+                                platform::Clock::ticks_now() - t0);
         const u8  r  = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.7));
         const u8  g  = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.1 + 1.0));
         const u8  b  = static_cast<u8>(127.0 + 127.0 * std::sin(t * 0.9 + 2.0));
@@ -112,6 +141,19 @@ int main(int argc, char** argv) {
             PSY_LOG_INFO("sample_00: smoke target reached ({}); exiting", smoke_frames);
             break;
         }
+    }
+
+    if (!args.capture_out.empty()) {
+        const bool ok = samples::write_png_rgba8_framebuffer(
+            args.capture_out.c_str(), pixels.data(),
+            fb.width, fb.height);
+        if (!ok) {
+            PSY_LOG_ERROR("sample_00: failed to write capture to {}",
+                          args.capture_out);
+            platform::destroy_window(window);
+            return EXIT_FAILURE;
+        }
+        PSY_LOG_INFO("sample_00: wrote capture to {}", args.capture_out);
     }
 
     platform::destroy_window(window);
