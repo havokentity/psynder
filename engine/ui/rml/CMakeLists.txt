@@ -87,5 +87,11 @@ cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL
 function(psynder_ui_rml_link_into_unit_tests)
     if(TARGET psynder_unit AND TARGET psynder_ui_rml)
         target_link_libraries(psynder_unit PRIVATE psynder_ui_rml)
+        # The sample-HUD parse test (`ui_rml_hotreload.cpp`) resolves
+        # the shipped .rml/.rcss assets relative to the source tree.
+        # Pass the absolute path as a compile-time define so the test
+        # works from any build directory and any host.
+        target_compile_definitions(psynder_unit PRIVATE
+            PSYNDER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     endif()
 endfunction()

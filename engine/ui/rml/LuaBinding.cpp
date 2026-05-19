@@ -1,21 +1,31 @@
 // SPDX-License-Identifier: MIT
 // Psynder — Lua binding for RmlUi event handlers. Lane 17 owns.
 //
-// Wave-A: register a small Lua surface that designer .rml files can hook
-// through. Inline handler attributes (`onclick="lua:my_handler()"`) are
-// dispatched here by event name; this file owns the lookup + Lua VM
-// trampoline.
+// Wave-B: register a small Lua surface that designer .rml files can hook
+// through. Inline handler attributes (`onclick="lua:my_handler(event)"`)
+// are dispatched here by event name; this file owns the lookup, builds a
+// structured `event` table, and trampolines into the lane-15 VM via the
+// `set_lua_backend` function-pointer hook.
 //
-// Lane 15 (Vm) is stubbed today; we register through `execute_string` so
-// the binding lights up the moment the VM starts running real Lua.
-// PSYNDER_VENDOR_RMLUI=ON adds the upstream `Rml::Lua::Initialise` call,
-// but this dispatcher keeps owning the inline-attribute fast path.
+// The chunk we hand to the VM looks like:
+//
+//     local event = { kind = "click", target_id = "quit",
+//                     mouse_x = 320, mouse_y = 64, button = 0 }
+//     <handler-body>
+//
+// So designers can write `onclick="lua:on_quit(event)"` or just
+// `onclick="lua:print(event.target_id)"` and the payload Just Works.
+//
+// PSYNDER_VENDOR_RMLUI=ON additionally calls `Rml::Lua::Initialise`, but
+// the inline-attribute fast-path stays here because RmlUi's own Lua
+// plugin assumes a different event-binding shape.
 
 #include "Rml_internal.h"
 
 #include "core/Log.h"
 
 #include <atomic>
+#include <cstdio>
 #include <string>
 #include <string_view>
 
@@ -58,20 +68,82 @@ LuaExecFn current_backend() noexcept {
     return p ? p : &default_lua_exec;
 }
 
+// Escape a string for embedding inside a Lua "" string literal.  Handles
+// the cases that come up in .rml ids and event names: quotes, backslash,
+// newline, and stray control bytes.  We deliberately don't unicode-
+// normalise — the upstream RmlUi parser keeps element ids ASCII.
+std::string lua_str_escape(std::string_view in) {
+    std::string out;
+    out.reserve(in.size() + 2);
+    for (char c : in) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\%d", static_cast<int>(c));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+// Build the `local event = { ... }; ` prelude that gets prepended to the
+// handler body.  Numbers use plain decimal formatting since Lua parses
+// "1.5" → number unambiguously.
+std::string build_event_prelude(const EventPayload& p) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+        "local event = {kind=\"%s\", target_id=\"%s\", "
+        "mouse_x=%g, mouse_y=%g, button=%d};\n",
+        lua_str_escape(p.kind).c_str(),
+        lua_str_escape(p.target_id).c_str(),
+        static_cast<double>(p.mouse_x),
+        static_cast<double>(p.mouse_y),
+        static_cast<int>(p.button));
+    return std::string(buf);
+}
+
 }  // namespace
 
 void set_lua_backend(LuaExecFn backend) noexcept {
     g_lua_exec.store(backend, std::memory_order_release);
 }
 
-// Fire a single handler.  Returns true if the installed backend accepted
-// the chunk; false if there is no backend or it rejected it.
+// Fire a single handler with no structured payload (the empty-event
+// path).  Used by tests and for the rare case where a handler body
+// doesn't need the event surface.  Returns true if the installed backend
+// accepted the chunk; false if there is no backend or it rejected it.
 bool dispatch_handler(std::string_view event_name,
                       std::string_view handler_body) {
+    EventPayload empty{};
+    empty.kind = event_name;
+    return dispatch_handler(event_name, handler_body, empty);
+}
+
+// Payload-aware dispatch.  Wraps the body with a `local event = { ... }`
+// prelude so the handler can reference fields like `event.target_id`
+// without each .rml repeating the boilerplate.
+bool dispatch_handler(std::string_view event_name,
+                      std::string_view handler_body,
+                      const EventPayload& payload) {
     if (handler_body.empty()) return false;
     const auto body = strip_lua_prefix(handler_body);
+
+    std::string chunk;
+    chunk.reserve(body.size() + 128);
+    chunk += build_event_prelude(payload);
+    chunk.append(body.data(), body.size());
+
     const std::string chunk_name = std::string("rml:") + std::string(event_name);
-    return current_backend()(body, chunk_name);
+    return current_backend()(chunk, chunk_name);
 }
 
 // Register the cross-cutting Lua surface that .rml files can reference.

@@ -1,0 +1,80 @@
+<!-- SPDX-License-Identifier: MIT
+     Psynder sample 03 — Quake-style room HUD.
+
+     Player-facing HUD overlay rendered into the same software framebuffer
+     as the game (DESIGN.md §10.6).  Designed to exercise lane 17's
+     Wave-B surfaces:
+
+       - .rml + .rcss pair, hot-reload via the asset VFS (`Vfs::watch`).
+       - inline `onclick="lua:..."` handlers dispatched through
+         `detail::set_lua_backend` into lane 15's Vm::execute_repl.
+       - structured event payload — handlers read `event.target_id`,
+         `event.mouse_x`, `event.mouse_y`, `event.button`.
+
+     The data model:
+
+       - `hud.health` (0–100) drives the health bar width.
+       - `hud.ammo`   (0–N)   drives the ammo counter.
+       - `hud.armor`  (0–100) drives the armor pip.
+
+     Lane 25 wires this asset into the sample binary; lane 17 only
+     ships the asset.  See `hud.rcss` for the matching stylesheet. -->
+<rml>
+  <head>
+    <title>HUD</title>
+    <link rel="stylesheet" href="hud.rcss"/>
+  </head>
+  <body>
+
+    <!-- Anchor frame: covers the whole viewport, transparent so the
+         game scene shows through.  Children below position absolutely. -->
+    <div id="hud-root">
+
+      <!-- ── Bottom-left stat block: health + armor. ─────────────────── -->
+      <div id="stat-panel" class="panel">
+        <div id="health-label"   class="label">HEALTH</div>
+        <!-- Bar background; the inner fill child shrinks/grows with hud.health. -->
+        <div id="health-track"   class="bar bar-track">
+          <div id="health-fill"  class="bar bar-fill health"></div>
+        </div>
+
+        <div id="armor-label"    class="label">ARMOR</div>
+        <div id="armor-track"    class="bar bar-track">
+          <div id="armor-fill"   class="bar bar-fill armor"></div>
+        </div>
+      </div>
+
+      <!-- ── Bottom-right ammo counter. ───────────────────────────────── -->
+      <div id="ammo-panel" class="panel">
+        <div id="ammo-label" class="label">AMMO</div>
+        <div id="ammo-count" class="number"
+             onclick="lua:hud.on_ammo_click(event)">--</div>
+      </div>
+
+      <!-- ── Top-right minimap viewport.  The square shape is the
+             container; lane 25 paints the texture/map into the slot. ─── -->
+      <div id="minimap-panel" class="panel"
+           onmouseover="lua:hud.on_minimap_hover(event)">
+        <div id="minimap-frame" class="minimap-frame">
+          <div id="minimap-player" class="minimap-player"></div>
+        </div>
+      </div>
+
+      <!-- ── Center crosshair pip. ────────────────────────────────────── -->
+      <div id="crosshair" class="crosshair"></div>
+
+      <!-- ── Pause menu, hidden by default.  display: none toggled
+             from script.  All children dispatch through Lua. ──────────── -->
+      <div id="pause-menu" class="pause-menu hidden">
+        <div id="pause-title" class="title">PAUSED</div>
+        <button id="resume"   class="menu-button"
+                onclick="lua:engine.resume()">RESUME</button>
+        <button id="options"  class="menu-button"
+                onclick="lua:engine.open_options(event)">OPTIONS</button>
+        <button id="quit"     class="menu-button quit"
+                onclick="lua:engine.quit()">QUIT TO MENU</button>
+      </div>
+
+    </div>
+  </body>
+</rml>
