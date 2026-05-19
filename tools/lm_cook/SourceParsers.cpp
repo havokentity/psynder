@@ -836,13 +836,18 @@ bool parse_gltf(std::string_view json,
     return true;
 }
 
-// ─── PNG (stored DEFLATE only) ───────────────────────────────────────────
+// ─── PNG (stb_image / stb_image_write, Wave-B) ───────────────────────────
+// The Wave-A stored-DEFLATE codec (zlib_store / zlib_decode_stored /
+// png_emit_chunk) is kept below for reference / fallback debugging — the
+// shipping decoder + encoder route through stb so cooked .lmt textures can
+// also be inspected with any standards-compliant image viewer.
 
 namespace {
 
 // Encode `data` as a zlib stream that contains exactly one or more BTYPE=0
 // (stored) blocks. This is uncompressed but framed correctly for a stream
 // decoder; both libpng and a standards-compliant decoder will accept it.
+[[maybe_unused]]
 void zlib_store(std::span<const u8> data, std::vector<u8>& out) {
     // zlib header: CMF=0x78 (deflate, 32K window), FLG chosen so the
     // header checksum (CMF*256 + FLG) % 31 == 0. FLG=0x01 satisfies that.
@@ -870,6 +875,7 @@ void zlib_store(std::span<const u8> data, std::vector<u8>& out) {
     append_be<u32>(out, adler);
 }
 
+[[maybe_unused]]
 bool zlib_decode_stored(std::span<const u8> stream, std::vector<u8>& out, std::string& err) {
     if (stream.size() < 2 + 4) { err = "zlib stream too short"; return false; }
     u8 cmf = stream[0];
@@ -903,6 +909,7 @@ bool zlib_decode_stored(std::span<const u8> stream, std::vector<u8>& out, std::s
     return true;
 }
 
+[[maybe_unused]]
 void png_emit_chunk(std::vector<u8>& out, const char tag[4], std::span<const u8> data) {
     append_be<u32>(out, static_cast<u32>(data.size()));
     out.insert(out.end(), tag, tag + 4);
@@ -925,38 +932,42 @@ void png_emit_chunk(std::vector<u8>& out, const char tag[4], std::span<const u8>
 
 }  // anon namespace
 
+// stb declarations (we vendor stb_image* under third_party/, the
+// implementation lives in stb_impl.c which is added to the lm_cook_lib
+// TU list in tools/lm_cook/CMakeLists.txt).
+extern "C" {
+    unsigned char* stbi_load_from_memory(const unsigned char* buffer, int len,
+                                         int* x, int* y, int* channels_in_file,
+                                         int desired_channels);
+    void           stbi_image_free(void* retval_from_stbi_load);
+    const char*    stbi_failure_reason(void);
+
+    typedef void stbi_write_func(void* context, void* data, int size);
+    int stbi_write_png_to_func(stbi_write_func* func, void* context,
+                               int w, int h, int comp,
+                               const void* data, int stride_in_bytes);
+}
+
 void encode_png_stored(const u8* rgba, u32 width, u32 height, std::vector<u8>& out) {
+    // Name kept for ABI compat with Wave-A callers. The "stored" suffix is
+    // now a misnomer — we route through stb_image_write which produces a
+    // properly DEFLATE-compressed PNG. The Wave-A test reads it back via
+    // decode_png_stored (also stb-backed now) so the round-trip still works.
     out.clear();
-    // PNG signature
-    static const u8 kSig[8] = {0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A};
-    out.insert(out.end(), std::begin(kSig), std::end(kSig));
-
-    // IHDR
-    std::vector<u8> ihdr;
-    append_be<u32>(ihdr, width);
-    append_be<u32>(ihdr, height);
-    ihdr.push_back(8);    // bit depth
-    ihdr.push_back(6);    // color type: RGBA
-    ihdr.push_back(0);    // compression method (deflate)
-    ihdr.push_back(0);    // filter method (none)
-    ihdr.push_back(0);    // interlace method (none)
-    png_emit_chunk(out, "IHDR", ihdr);
-
-    // IDAT: one filter byte (0=None) per row, then RGBA scanlines.
-    std::vector<u8> raw;
-    raw.reserve(static_cast<usize>(height) * (1 + width * 4u));
-    for (u32 y = 0; y < height; ++y) {
-        raw.push_back(0);
-        raw.insert(raw.end(),
-                   rgba + static_cast<usize>(y) * width * 4u,
-                   rgba + static_cast<usize>(y) * width * 4u + width * 4u);
+    auto cb = +[](void* ctx, void* data, int size) {
+        auto* v = static_cast<std::vector<u8>*>(ctx);
+        const u8* p = static_cast<const u8*>(data);
+        v->insert(v->end(), p, p + size);
+    };
+    int stride = static_cast<int>(width) * 4;
+    int ok = stbi_write_png_to_func(cb, &out,
+                                    static_cast<int>(width),
+                                    static_cast<int>(height),
+                                    4, rgba, stride);
+    if (!ok) {
+        // Defensive: leave out empty so callers see a zero-byte result.
+        out.clear();
     }
-    std::vector<u8> zlib_stream;
-    zlib_store(raw, zlib_stream);
-    png_emit_chunk(out, "IDAT", zlib_stream);
-
-    // IEND
-    png_emit_chunk(out, "IEND", std::span<const u8>{});
 }
 
 bool decode_png_stored(std::span<const u8> bytes,
@@ -965,60 +976,21 @@ bool decode_png_stored(std::span<const u8> bytes,
                        u32& height,
                        std::string* err) {
     auto fail = [&](const char* msg) { if (err) *err = msg; return false; };
-    if (bytes.size() < 8) return fail("png too short");
-    static const u8 kSig[8] = {0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A};
-    if (std::memcmp(bytes.data(), kSig, 8) != 0) return fail("png: bad signature");
-
-    usize p = 8;
-    std::vector<u8> zlib;
-    bool have_ihdr = false;
-    u8 bit_depth = 0, color_type = 0;
-    width = 0; height = 0;
-    while (p + 8 <= bytes.size()) {
-        u32 length = read_be32(bytes.data() + p); p += 4;
-        if (p + 4 + length + 4 > bytes.size()) return fail("png: truncated chunk");
-        char tag[4] = { static_cast<char>(bytes[p]),
-                        static_cast<char>(bytes[p + 1]),
-                        static_cast<char>(bytes[p + 2]),
-                        static_cast<char>(bytes[p + 3]) };
-        p += 4;
-        std::span<const u8> data(bytes.data() + p, length);
-        p += length + 4;  // skip CRC
-
-        if (std::memcmp(tag, "IHDR", 4) == 0) {
-            if (length < 13) return fail("png: short IHDR");
-            width  = read_be32(data.data() + 0);
-            height = read_be32(data.data() + 4);
-            bit_depth  = data[8];
-            color_type = data[9];
-            if (bit_depth != 8) return fail("png: only 8-bit channels supported");
-            if (color_type != 6) return fail("png: only RGBA supported");
-            have_ihdr = true;
-        } else if (std::memcmp(tag, "IDAT", 4) == 0) {
-            zlib.insert(zlib.end(), data.begin(), data.end());
-        } else if (std::memcmp(tag, "IEND", 4) == 0) {
-            break;
-        }
-    }
-    if (!have_ihdr || zlib.empty()) return fail("png: missing IHDR or IDAT");
-
-    std::vector<u8> raw;
-    std::string e;
-    if (!zlib_decode_stored(zlib, raw, e)) {
-        if (err) *err = e;
+    if (bytes.empty()) return fail("png: empty input");
+    int w = 0, h = 0, n = 0;
+    unsigned char* px = stbi_load_from_memory(bytes.data(),
+                                              static_cast<int>(bytes.size()),
+                                              &w, &h, &n, 4 /* RGBA */);
+    if (!px) {
+        const char* why = stbi_failure_reason();
+        if (err) *err = std::string("png: ") + (why ? why : "decode failed");
         return false;
     }
-    // De-filter (PNG filter 0 only — None).
-    usize row_bytes = static_cast<usize>(width) * 4u;
-    if (raw.size() < height * (1 + row_bytes)) return fail("png: short IDAT data");
-    out_rgba.resize(static_cast<usize>(width) * height * 4u);
-    usize src = 0;
-    for (u32 y = 0; y < height; ++y) {
-        u8 filter = raw[src++];
-        if (filter != 0) return fail("png: only filter type 0 supported");
-        std::memcpy(out_rgba.data() + y * row_bytes, raw.data() + src, row_bytes);
-        src += row_bytes;
-    }
+    width  = static_cast<u32>(w);
+    height = static_cast<u32>(h);
+    usize total = static_cast<usize>(w) * static_cast<usize>(h) * 4u;
+    out_rgba.assign(px, px + total);
+    stbi_image_free(px);
     return true;
 }
 

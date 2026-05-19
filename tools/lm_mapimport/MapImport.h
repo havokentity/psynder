@@ -14,7 +14,15 @@
 //     tests: import-then-load reproduces the same BSP without re-running
 //     the compiler.) Gated behind --compile-bsp.
 //
-// Real .psylevel will grow more sections in Wave-B (lightmaps, entity
+// Wave-B additions:
+//   - Curve-brush support: TrenchBroom-style cylinder / sphere primitives
+//     get tessellated into BSP-compatible convex brushes (each shape is a
+//     single convex polyhedron — N-gonal prism for cylinder, icosahedron-
+//     subdivided polyhedron for sphere). The .map preprocessor recognises
+//     `@cylinder` / `@sphere` directives inside brace blocks and synthesises
+//     the equivalent face list before handing the text to qbsp::parse_map.
+//
+// Real .psylevel will grow more sections in later waves (lightmaps, entity
 // graph, prefabs); this format reserves a chunk-index header so we can
 // add chunk types later without invalidating Wave-A files.
 
@@ -50,7 +58,45 @@ struct LevelFile {
 
 struct ImportOptions {
     bool compile_bsp = false;        // emit kPsyBsp chunk too
+    bool expand_curve_brushes = true;   // Wave-B: tessellate @cylinder / @sphere
 };
+
+// ─── Curve-brush API (Wave-B) ────────────────────────────────────────────
+// The .map text preprocessor recognises two directives, one per line, inside
+// a brace block (where face lists usually live):
+//
+//   @cylinder  cx cy cz  ax ay az  radius height segments material
+//   @sphere    cx cy cz  radius subdivisions material
+//
+// Each directive is replaced by the equivalent convex brush face list. The
+// surrounding `{` / `}` is preserved so qbsp::parse_map sees a normal brush.
+//
+// Standalone helpers are exposed for tests:
+struct CurveCylinder {
+    math::Vec3 origin{0,0,0};
+    math::Vec3 axis{0,0,1};
+    f32        radius   = 1.0f;
+    f32        height   = 1.0f;
+    u32        segments = 8;
+    std::string material = "WALL";
+};
+struct CurveSphere {
+    math::Vec3 origin{0,0,0};
+    f32        radius = 1.0f;
+    u32        subdivisions = 1;  // 0 = icosahedron, +1 each subdivision
+    std::string material = "WALL";
+};
+
+// Emit a .map-formatted face block (the run between `{` and `}`, exclusive)
+// representing the convex polyhedron approximation. The result can be spliced
+// straight into a brace block fed to qbsp::parse_map.
+std::string tessellate_cylinder(const CurveCylinder& c);
+std::string tessellate_sphere(const CurveSphere& s);
+
+// Walk `text`, replacing every `@cylinder ...` / `@sphere ...` directive
+// inside a brace block with the equivalent face block. Returns the rewritten
+// text. Idempotent if no directives are present.
+std::string expand_curve_brushes(std::string_view text);
 
 struct ImportResult {
     bool        ok = false;

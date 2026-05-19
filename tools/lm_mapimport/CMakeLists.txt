@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # lm_mapimport — one-way TrenchBroom .map → .psylevel bridge.
-add_library(lm_mapimport_lib STATIC MapImport.cpp)
+add_library(lm_mapimport_lib STATIC MapImport.cpp CurveBrush.cpp)
 # Reuses the .map parser + BSP compiler from lm_qbsp_lib.
 target_link_libraries(lm_mapimport_lib
     PUBLIC psynder_core psynder_math psynder_world_bsp psynder_asset

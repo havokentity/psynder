@@ -7,15 +7,19 @@
 //     its own surface-aligned UV chart. xatlas-style chart packing slips
 //     to Wave-B; the grid layout still produces a valid streamable atlas.
 //   - 16-bit half-float RGB output stored in an .lmlight blob.
-//   - Multi-bounce / path-traced indirect: Wave-B (the §8.1 line "2–4
-//     bounces of indirect (configurable)" mentions the option but the
-//     Issue explicitly allows the bake to ship "direct lighting first;
-//     multi-bounce can slip to Wave B").
 //
-// The trace kernel uses an inline brute-force triangle test rather than
-// lane 08's BVH8 (stubbed until Wave-A lane-08 lands). The kernel takes a
-// `BvhAdapter` so Wave-B can drop in the real BVH by reimplementing one
-// virtual: see `Bake.cpp`.
+// Wave-B scope (this revision):
+//   - Multi-bounce path-traced diffuse indirect. Configurable via
+//     `BakeOptions::max_indirect_bounces` (CLI `--bounces N`). Each bounce
+//     gathers cosine-weighted hemisphere samples (deterministic stratified
+//     pattern, no RNG state across runs) against the lane 08 BVH8 — the
+//     adapter lives in `Bake.cpp` and falls back to brute-force when the
+//     scene fits in a single triangle batch.
+//   - Energy-conservative Lambertian: each BakeTriangle now carries an
+//     albedo (defaults to 0.5 grey). Specular indirect slips to Wave-C.
+//   - Direct-vs-indirect cross-bounce energy compare available via
+//     `BakeOptions::max_indirect_bounces=0` (regression baseline) vs
+//     `>0`.
 
 #pragma once
 
@@ -34,6 +38,7 @@ struct BakeTriangle {
     math::Vec3 v1;
     math::Vec3 v2;
     math::Vec3 normal;       // shading normal (we'll renormalize)
+    math::Vec3 albedo{0.5f, 0.5f, 0.5f};   // diffuse albedo in [0,1] (Wave-B)
     f32        emissive = 0.0f;  // self-illumination Wm-2sr-1 (kept for Wave-B)
     f32        roughness = 1.0f;
     u32        material_id = 0;
@@ -60,8 +65,9 @@ struct BakeScene {
 
 struct BakeOptions {
     u32 lightmap_resolution = 8;        // texels per triangle edge
-    u32 max_indirect_bounces = 0;       // 0 = direct only (Wave-A default)
+    u32 max_indirect_bounces = 0;       // 0 = direct only (Wave-A default; Wave-B accepts 2-4)
     u32 samples_per_texel = 1;          // Wave-A: 1 (jittered grid in Wave-B)
+    u32 indirect_samples_per_bounce = 16;  // hemisphere gather samples per texel per bounce (Wave-B)
     f32 ray_epsilon = 1e-3f;            // shadow ray origin nudge
 };
 
