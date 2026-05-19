@@ -5,6 +5,7 @@
 #include "Loopback.h"
 
 #include <algorithm>
+#include <tuple>
 #include <utility>
 
 namespace psynder::net {
@@ -56,11 +57,18 @@ PeerState* HostImpl::find_peer_by_port_(u16 port) noexcept {
 PeerId HostImpl::register_peer_(u16 remote_port) noexcept {
     if (peers_.size() >= max_peers_) return PeerId{};
     PeerId h{ next_peer_handle_++ };
-    PeerState ps;
+    // Build the per-peer reliability + ack tracker with the host's
+    // configured selective-ACK width (default Bits32 ⇒ Wave-A wire form).
+    auto [it, inserted] = peers_.emplace(
+        std::piecewise_construct,
+        std::forward_as_tuple(h.raw),
+        std::forward_as_tuple());
+    PeerState& ps = it->second;
     ps.id          = h;
     ps.remote_port = remote_port;
     ps.peer_index  = next_peer_index_++;
-    peers_.emplace(h.raw, std::move(ps));
+    ps.send        = Reliability(window_size_);
+    ps.recv        = AckTracker(window_size_);
     return h;
 }
 
