@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,33 @@ public:
         if (!zstd_compress(bytes, size, level, framed)) return false;
         add_zstd(std::move(path), std::move(framed), size);
         return true;
+    }
+
+    // Wave-B cooker entry point. Stages a payload with the cooker's default
+    // zstd compression level (6 — a balanced default that matches what the
+    // offline tool emits). The compressed flag in the on-disk entry table
+    // is set and both the compressed (LmpakEntry::size) and uncompressed
+    // (LmpakEntry::uncompressed) sizes are recorded, so the runtime reader
+    // can allocate the decompress buffer up front.
+    //
+    // If `compress` is false the entry is stored verbatim and the function
+    // never fails. If `compress` is true and the build lacks zstd support,
+    // this returns false and leaves the writer state untouched.
+    //
+    // Why level 6: zstd's published curve shows level 6 reaching ~96% of
+    // level 9's ratio at ~3× the throughput. Cooker time dominates pak
+    // builds for asset-heavy projects; the modest size delta is worth the
+    // win for iteration time. The default can still be overridden.
+    bool write_entry(std::string path, const u8* bytes, usize size,
+                     bool compress, int level = 6) {
+        return add_file(std::move(path), bytes, size, compress, level);
+    }
+
+    // Overload that takes a span<const u8> for ergonomic call sites.
+    bool write_entry(std::string path, std::span<const u8> bytes,
+                     bool compress, int level = 6) {
+        return write_entry(std::move(path), bytes.data(), bytes.size(),
+                           compress, level);
     }
 
     // Stage a pre-compressed entry. The caller is responsible for the

@@ -211,14 +211,22 @@ struct Mount {
 };
 
 // A watcher target. We store the resolved on-disk path and re-stat
-// every poll cycle; if mtime advances, fire on_changed.
+// every poll cycle. The watcher fires on three transitions:
+//   - mtime advance on an existing file
+//   - file disappears (rename / delete) on something that previously existed
+//   - file reappears at the watched vpath after a disappearance
+//
+// `valid` becomes true after the first poll records a baseline. `exists`
+// tracks the most recently observed presence so we only fire delete /
+// recreate edges, not every poll while the file is missing.
 struct WatchTarget {
     std::string                                  vpath;
     fs::path                                     resolved;
     fs::file_time_type                           last_write{};
     void (*cb)(std::string_view, void*) noexcept = nullptr;
     void*                                        user = nullptr;
-    bool                                         valid = false;
+    bool                                         valid  = false;
+    bool                                         exists = false;
 };
 
 // ─── File-scope state ────────────────────────────────────────────────────
@@ -421,6 +429,124 @@ void async_job_fn(void* user) noexcept {
 
 // ─── Watcher thread loop ─────────────────────────────────────────────────
 
+// Forward decl — the watcher poll re-resolves vpaths every cycle so
+// rename / delete edges fire even after the mount layout shifts. The
+// definition lives below to keep mount helpers grouped.
+fs::path resolve_for_watch(VfsState& s, std::string_view vpath);
+
+// Run one poll pass over every registered watcher. Shared between the
+// background thread and the in-line `poll_watchers_now()` test hook so
+// both paths obey the same delete/rename/recreate semantics.
+//
+// State machine per target:
+//   (initial)                 valid=false, exists=?
+//     → first poll, file is regular file       → valid=true, exists=true,
+//                                                last_write=now, NO fire
+//     → first poll, file is missing            → valid=true, exists=false,
+//                                                NO fire (baseline says
+//                                                "absent")
+//   (valid && exists == true)
+//     → poll says missing      → fire (delete/rename), exists=false
+//     → poll says mtime moved  → fire, last_write=now
+//   (valid && exists == false)
+//     → poll says file is back → fire (re-create), exists=true,
+//                                last_write=now
+//
+// If the underlying mount layout changes (e.g. a directory mount that
+// previously shadowed a pak is unmounted), we re-resolve every cycle.
+// That lets a "rename to a different mount" event still fire as a logical
+// change of `vpath`'s backing file.
+void poll_watchers_once(VfsState& s) {
+    std::vector<WatchTarget> snapshot;
+    {
+        std::lock_guard<std::mutex> g(s.mtx);
+        snapshot = s.watchers;
+    }
+
+    for (auto& w : snapshot) {
+        // Re-resolve the vpath: a delete or a rename within a mounted
+        // directory means `resolve_for_watch` returns empty (or a
+        // different path). The resolved path is the live ground truth.
+        fs::path live_path;
+        {
+            std::lock_guard<std::mutex> g(s.mtx);
+            live_path = resolve_for_watch(s, w.vpath);
+        }
+        const bool has_live = !live_path.empty();
+
+        std::error_code ec;
+        fs::file_time_type t{};
+        bool live_exists = false;
+        if (has_live) {
+            t = fs::last_write_time(live_path, ec);
+            // If the path resolved but the stat just-now failed (e.g.
+            // race with rename), treat it as missing this cycle.
+            live_exists = !ec;
+        }
+
+        if (!w.valid) {
+            // Baseline pass: record current state without firing.
+            std::lock_guard<std::mutex> g(s.mtx);
+            for (auto& real : s.watchers) {
+                if (real.vpath == w.vpath && real.user == w.user) {
+                    real.valid    = true;
+                    real.exists   = live_exists;
+                    if (live_exists) {
+                        real.last_write = t;
+                        real.resolved   = live_path;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Three edges:
+        bool should_fire = false;
+        bool new_exists  = w.exists;
+        fs::file_time_type new_mtime = w.last_write;
+        fs::path           new_path  = w.resolved;
+
+        if (w.exists && !live_exists) {
+            // Disappeared: rename-away or delete.
+            should_fire = true;
+            new_exists  = false;
+        } else if (!w.exists && live_exists) {
+            // Re-created at the watched vpath.
+            should_fire = true;
+            new_exists  = true;
+            new_mtime   = t;
+            new_path    = live_path;
+        } else if (live_exists && t != w.last_write) {
+            // Plain mtime change on an existing file.
+            should_fire = true;
+            new_mtime   = t;
+            new_path    = live_path;
+        } else if (live_exists && live_path != w.resolved) {
+            // The vpath now resolves through a different mount — treat as
+            // a change so consumers can re-load.
+            should_fire = true;
+            new_mtime   = t;
+            new_path    = live_path;
+        }
+
+        if (should_fire) {
+            {
+                std::lock_guard<std::mutex> g(s.mtx);
+                for (auto& real : s.watchers) {
+                    if (real.vpath == w.vpath && real.user == w.user) {
+                        real.exists     = new_exists;
+                        real.last_write = new_mtime;
+                        real.resolved   = new_path;
+                        break;
+                    }
+                }
+            }
+            if (w.cb) w.cb(w.vpath, w.user);
+        }
+    }
+}
+
 void watcher_loop(VfsState* sp) {
     using namespace std::chrono_literals;
     auto& s = *sp;
@@ -432,43 +558,7 @@ void watcher_loop(VfsState* sp) {
             });
             if (s.watch_stop.load(std::memory_order_acquire)) break;
         }
-        // Snapshot the watcher list under the public lock so add/remove
-        // races stay coherent.
-        std::vector<WatchTarget> snapshot;
-        {
-            std::lock_guard<std::mutex> g(s.mtx);
-            snapshot = s.watchers;
-        }
-
-        for (auto& w : snapshot) {
-            std::error_code ec;
-            auto t = fs::last_write_time(w.resolved, ec);
-            if (ec) continue;
-            if (!w.valid) {
-                // First poll: record baseline.
-                std::lock_guard<std::mutex> g(s.mtx);
-                for (auto& real : s.watchers) {
-                    if (real.vpath == w.vpath && real.user == w.user) {
-                        real.last_write = t;
-                        real.valid      = true;
-                        break;
-                    }
-                }
-                continue;
-            }
-            if (t != w.last_write) {
-                {
-                    std::lock_guard<std::mutex> g(s.mtx);
-                    for (auto& real : s.watchers) {
-                        if (real.vpath == w.vpath && real.user == w.user) {
-                            real.last_write = t;
-                            break;
-                        }
-                    }
-                }
-                if (w.cb) w.cb(w.vpath, w.user);
-            }
-        }
+        poll_watchers_once(s);
     }
 }
 
@@ -588,6 +678,7 @@ void Vfs::watch(std::string_view virtual_path,
         w.cb       = on_changed;
         w.user     = user;
         w.valid    = false;
+        w.exists   = false;  // set by the first poll
         s.watchers.push_back(std::move(w));
     }
     ensure_watcher_started(s);
@@ -617,41 +708,7 @@ bool watcher_thread_running() {
 }
 
 void poll_watchers_now() {
-    // Run one poll pass in-line, mirroring the watcher loop body.
-    auto& s = State();
-    std::vector<WatchTarget> snapshot;
-    {
-        std::lock_guard<std::mutex> g(s.mtx);
-        snapshot = s.watchers;
-    }
-    for (auto& w : snapshot) {
-        std::error_code ec;
-        auto t = fs::last_write_time(w.resolved, ec);
-        if (ec) continue;
-        if (!w.valid) {
-            std::lock_guard<std::mutex> g(s.mtx);
-            for (auto& real : s.watchers) {
-                if (real.vpath == w.vpath && real.user == w.user) {
-                    real.last_write = t;
-                    real.valid      = true;
-                    break;
-                }
-            }
-            continue;
-        }
-        if (t != w.last_write) {
-            {
-                std::lock_guard<std::mutex> g(s.mtx);
-                for (auto& real : s.watchers) {
-                    if (real.vpath == w.vpath && real.user == w.user) {
-                        real.last_write = t;
-                        break;
-                    }
-                }
-            }
-            if (w.cb) w.cb(w.vpath, w.user);
-        }
-    }
+    poll_watchers_once(State());
 }
 
 }  // namespace internal
