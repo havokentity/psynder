@@ -1,5 +1,91 @@
 # Changelog
 
+## v0.7.0-wave-c-complete (2026-05-19) — M3/M4/M5 demos running, 616/616 tests 🚗⚡
+
+Wave C made the engine's milestone roadmap **visible**. All five sample
+binaries (M0 → M5) now smoke-pass on Mac, each exercising a meaningful
+subsystem stack rather than rendering a stub clear-color.
+
+### Wave C / sample_03 / Quake room (M3) (#104)
+- Walking-POV BSP demo. Synthetic 4-leaf BSP map built in-memory
+  (Room A + corridor + Room B + solid-outside) with a real 4-node
+  tree splitting on Z then X. 3-cluster PVS bitmap wired so the
+  walker actually culls.
+- 18 quad faces with per-cluster colors (cool blue / green / warm
+  orange) so the BSP topology reads visually as you walk.
+- WASD + mouse-look camera via `platform::input()`. ESC quits.
+- Sweep verifies all three PVS branches fire: Room A→11 draws,
+  corridor→18 (sees both rooms), Room B→11.
+
+### Wave C / sample_04 / NFS track lap (M4) (#105)
+- Chase-cam vehicle lap of a closed oval built from 4 cubic-Bezier
+  `SplineRoadSegment`s with banking on the turns.
+- Track tessellated as an extruded strip — tarmac alternating per
+  segment + kerb stripe.
+- 1500 kg Pacejka vehicle (4 wheels, 450 N·m engine) auto-driven
+  by a P-controller pair: heading-error → steer (±0.55 rad),
+  speed-error → throttle/brake toward 20 m/s. 14 m look-ahead
+  advances along the closed loop.
+- Fixed-step 120 Hz physics with state interpolation. Chase camera
+  ~5.5 m back / ~2.2 m up, look-target pushed 6 m ahead. Wheels are
+  12-sided cylinders built at startup.
+
+### Wave C / sample_05 / Hybrid night (M5) (#102)
+- Night scene with **raytraced dynamic-light shadows**. Ground plane
+  + 5 colored cubes (red/green/blue/yellow/magenta). 3 orbiting RGB
+  point lights at different radii / speeds.
+- Per pixel: primary-ray TLAS intersection, then 8-wide
+  `trace_shadow_packet` shadow rays per light, with Lambert +
+  inverse-square attenuation. Dark-blue vertical-gradient skybox.
+- Quarter-resolution (256×144) with bilinear upsample to 512×288
+  to keep frame cost low.
+- Smooth orbital camera tour.
+
+### Wave C / editor mode toggle (#101)
+- `engine/editor/core/HotKey.{h,cpp}` — `editor::handle_input_frame(...)`
+  watches `Tilde` and `F2` via `key_pressed` (edge, not held).
+- `engine/editor/core/SampleHook.h` — header-only
+  `editor::sample_step(input, fb)` for samples to call once per frame:
+  draws the PLAY/EDIT badge in the bottom-right, returns current mode.
+  Samples can branch on it (freeze physics in Edit, etc.).
+
+### Wave C / debug HUD overlay (#103)
+- `engine/ui/imm/DebugHud.{h,cpp}` — `imm::draw_debug_hud(fb, stats)`
+  with three modes (Off/Compact/Full) gated by `r_debug_hud` cvar.
+- Full mode shows: frame time + FPS, 60-sample strip chart, lane-01
+  allocator heatmap, 6-line `PSY_DIAG_TIER1` ring.
+- Compact mode: header + strip chart only.
+
+### Sample status (all smoke-pass)
+
+| Sample | Milestone | Status |
+|---|---|---|
+| sample_00_clear | M0 | smoke ✓ visual ✓ |
+| sample_01_triangle | M1 | smoke ✓ |
+| sample_02_textured_quad | M2 | smoke ✓ visual ✓ (4 spinning cubes) |
+| sample_03_quake_room | M3 | smoke ✓ (PVS branches verified) |
+| sample_04_nfs_track | M4 | smoke ✓ (auto-driver laps the oval) |
+| sample_05_hybrid_night | M5 | smoke ✓ |
+
+Sample_06 (tactical map / M6) and any wired HUD samples are Wave D scope.
+
+### Test + demo status
+
+- **616/616 Catch2 cases passing** (zero flakes).
+- All M0/M1/M2/M3/M4/M5 demos smoke-pass.
+- Tagged `v0.7.0-wave-c-complete`.
+
+### What's left for v1.0
+
+- **Wave D — Sample 06 (tactical map M6) + HUD sample wiring (M7) +
+  Tracy zone instrumentation throughout hot paths (M8 polish) +
+  DynamicLightList API for production raytraced lighting.**
+- **Visual verification on Mac** — sample_03 / sample_04 / sample_05
+  now have real geometry; please confirm they look correct.
+- **Win/Linux validation** — still untested on actual hardware.
+- **Copilot review sweep** — pending the user toggling Copilot Code
+  Review on in repo settings.
+
 ## v0.6.0-wave-b-complete (2026-05-19) — Wave B 25/25 lanes, 612/612 tests pass 🎉
 
 Final Wave B batch shipped. **All 25 lanes integrated.** Wave B done.
