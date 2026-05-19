@@ -5,11 +5,13 @@
 // Usage:
 //   #include "core/Tracy.h"
 //   void run_frame() {
-//       PSY_ZONE_FRAME();            // marks one full frame
+//       PSY_TRACE_FRAME("main");         // marks one full frame (Wave D)
 //       {
-//           PSY_ZONE("vertex transform");
+//           PSY_TRACE_ZONE("vertex transform");
 //           // ...
 //       }
+//       PSY_TRACE_PLOT_F32("draws", float(draw_count));   // Wave D
+//       PSY_TRACE_MESSAGE("frame submitted");             // Wave D
 //   }
 //
 // When PSYNDER_ENABLE_TRACY is off (the default), every macro collapses
@@ -21,6 +23,9 @@
 //   PSY_TRACE_ZONE(name)        -> ZoneScopedN(name)  (Wave B preferred spelling)
 //   PSY_TRACE_ZONE_COLOR(n, rgb)-> ZoneScopedNC(n, rgb)
 //   PSY_ZONE_FRAME()            -> FrameMark
+//   PSY_TRACE_FRAME(name)       -> FrameMark / FrameMarkNamed(name) (Wave D)
+//   PSY_TRACE_PLOT_F32(name, v) -> TracyPlot(name, v) for live counter plots (Wave D)
+//   PSY_TRACE_MESSAGE(text)     -> TracyMessageL(text) one-off event log (Wave D)
 //   PSY_ZONE_ALLOC(p,n)         -> TracyAlloc(p,n) for allocator instrumentation
 //   PSY_ZONE_FREE(p)            -> TracyFree(p)
 //   PSY_ZONE_MSG(s,n)           -> TracyMessage(s,n)
@@ -51,6 +56,23 @@
 #   define PSY_TRACE_ZONE(name)            ZoneScopedN(name)
 #   define PSY_TRACE_ZONE_COLOR(name, rgb) ZoneScopedNC(name, (rgb))
 
+// ─── Wave D additions ────────────────────────────────────────────────────
+// PSY_TRACE_FRAME(name)     — call once per top-level frame to delimit a
+//                              frame on the Tracy timeline. When (name) is
+//                              a string literal we forward to FrameMarkNamed
+//                              so multiple top-level loops (main, audio,
+//                              physics tick) can each have their own track.
+// PSY_TRACE_PLOT_F32(n,v)   — push a float counter value at `now`. Tracy
+//                              graphs the value as a continuous plot;
+//                              callers use this to surface live counters
+//                              (allocator current/peak, queue depth, ...).
+// PSY_TRACE_MESSAGE(text)   — emit a one-off log line on the Tracy timeline.
+//                              Use for state transitions / one-shot events
+//                              (level loaded, world streamed in, etc.).
+#   define PSY_TRACE_FRAME(name)         FrameMarkNamed(name)
+#   define PSY_TRACE_PLOT_F32(name, val) TracyPlot(name, static_cast<float>(val))
+#   define PSY_TRACE_MESSAGE(text)       TracyMessageL(text)
+
 #else
 
 #   define PSY_ZONE(name)             do {} while (0)
@@ -64,5 +86,12 @@
 
 #   define PSY_TRACE_ZONE(name)            do {} while (0)
 #   define PSY_TRACE_ZONE_COLOR(name, rgb) do {} while (0)
+
+// Wave D no-op stubs. The cast to (void) inside the do-block keeps the
+// arguments from being flagged as unused while still expanding to a
+// zero-cost statement the optimizer drops outright.
+#   define PSY_TRACE_FRAME(name)         do { (void)sizeof(name); } while (0)
+#   define PSY_TRACE_PLOT_F32(name, val) do { (void)sizeof(name); (void)sizeof(val); } while (0)
+#   define PSY_TRACE_MESSAGE(text)       do { (void)sizeof(text); } while (0)
 
 #endif
