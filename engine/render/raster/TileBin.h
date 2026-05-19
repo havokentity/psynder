@@ -17,12 +17,24 @@ namespace psynder::render::raster {
 // One DrawItem-level draw command after vertex shading. Holds a pointer
 // to a contiguous array of TriSetup in the frame arena, plus a few flags.
 // 128 bytes / cache line per DESIGN.md §7.3 (give or take padding).
+//
+// Wave-B adds the surface-cache dispatch tag (DESIGN.md §7.6 / ADR-001).
+// The `shading_path` byte is set by Rasterizer::end_frame() from the
+// per-draw eligibility check; the tile rasterizer dispatches on it once
+// per draw, never per pixel.
 struct PSY_CACHELINE_ALIGN DrawCmd {
     const TriSetup* tris        = nullptr;
     u32             tri_count   = 0;
     u32             material_id = 0;
-    u32             flags       = 0;  // bit 0: alpha test, bit 1: affine
-    u32             _pad[3]     = {};
+    u32             flags       = 0;       // bit 0: alpha test, bit 1: affine,
+                                           // bits 2-7: surface-cache eligibility
+    // Surface-cache dispatch (DESIGN.md §7.6).
+    u8              shading_path = 0;      // ShadingPath enum
+    u8              _spad[3]     = {};
+    const u32*      surface_cache_payload = nullptr;  // pre-multiplied chunk
+    u32             surface_cache_width   = 0;
+    u32             surface_cache_height  = 0;
+    u32             _pad[2]      = {};
 };
 
 // A bin entry — (draw, triangle index) pair for one tile. Stored
@@ -49,11 +61,28 @@ struct TileGrid {
 // Texture descriptor handed to the bilinear sampler. The lane 07-local
 // texture is the minimum the rasterizer needs to shade — full asset
 // integration arrives with lane 05's Vfs / lane 24's lm_pak.
+//
+// Mip support (Wave B / DESIGN.md §7.5):
+//   `mip_count` ≥ 1; mip 0 is `texels`+`width`/`height`. Higher mips
+//   sit at the contiguous pointer chain in `mips[]`. When `mip_count`
+//   is 1, trilinear collapses to bilinear and `mips[]` is unused.
 struct Texture {
     const u32* texels = nullptr;
     u32        width  = 0;
     u32        height = 0;
     u32        pitch  = 0;  // texels per row
+
+    // Optional mip chain. mips[0] aliases the (texels, width, height,
+    // pitch) above; mips[1..mip_count-1] are the half-res successors.
+    static constexpr u32 kMaxMipLevels = 12;
+    struct MipLevel {
+        const u32* texels = nullptr;
+        u32        width  = 0;
+        u32        height = 0;
+        u32        pitch  = 0;
+    };
+    MipLevel mips[kMaxMipLevels] = {};
+    u32      mip_count = 1;
 };
 
 // Rasterize one tile's slice of triangles into the framebuffer. The

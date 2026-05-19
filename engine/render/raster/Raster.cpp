@@ -13,6 +13,7 @@
 #include "Raster.h"
 
 #include "EdgeEq.h"
+#include "SurfaceCache.h"
 #include "TileBin.h"
 
 #include "core/Types.h"
@@ -111,6 +112,9 @@ void Rasterizer::begin_frame(const ViewState& view) {
     fs.draw_count = 0;
     fs.in_frame   = true;
     (void)cvars();  // ensure cvar registration
+    // Bump the surface-cache frame index so hysteresis counts the right
+    // number of "consecutive eligible" frames per surface.
+    SurfaceCache::Get().begin_frame();
 }
 
 void Rasterizer::submit(const DrawItem& draw) {
@@ -177,6 +181,38 @@ void Rasterizer::end_frame() {
         cmd.tri_count   = tri_count;
         cmd.material_id = d.material.raw;
         cmd.flags       = d.flags;
+        // ── Surface-cache classify (DESIGN.md §7.6 / ADR-001) ───────────
+        SurfaceDesc sd{};
+        sd.surface_id       = d.material.raw;
+        sd.lightmap_version = 0;   // lane 10 wires the real version in
+                                   // Wave-B; until then keep 0 so the key
+                                   // is stable across frames for the same
+                                   // material.
+        sd.mip_level        = 0;   // single-mip materials for now; the mip
+                                   // selector in the inner loop picks the
+                                   // sample LOD for trilinear.
+        sd.flags            = d.flags;
+        const ShadingPath path = classify_surface(sd);
+        cmd.shading_path = static_cast<u8>(path);
+        // The actual pre-multiplied payload arrives via the surface cache
+        // slab when lane 18 fills it; for the Wave-B end-to-end we keep
+        // the payload pointer nullable so the inner loop falls through to
+        // OnTheFly if the slab hasn't been primed. The classifier still
+        // tags the draw, so downstream tools / tests see SurfaceCached.
+        if (path == ShadingPath::SurfaceCached) {
+            const u32 slot = SurfaceCache::Get().find(
+                sd.surface_id, sd.lightmap_version, sd.mip_level);
+            if (slot != SurfaceCache::kInvalid) {
+                const auto* e = SurfaceCache::Get().entry(slot);
+                if (e && e->byte_size != 0) {
+                    cmd.surface_cache_payload =
+                        reinterpret_cast<const u32*>(
+                            SurfaceCache::Get().payload_base() + e->byte_offset);
+                    cmd.surface_cache_width  = e->width;
+                    cmd.surface_cache_height = e->height;
+                }
+            }
+        }
         fs.draw_cmds[di] = cmd;
         (void)valid_tris;
     }
