@@ -81,15 +81,58 @@ TEST_CASE("setup_triangle: screen-CCW triangle is front-facing", "[raster][setup
     REQUIRE(t.inv_area2x > 0.0f);
 }
 
-TEST_CASE("setup_triangle: screen-CW triangle is back-face culled", "[raster][setup]") {
+TEST_CASE("setup_triangle: opposite-winding triangle still rasterizes (two-sided)",
+          "[raster][setup]") {
+    // The rasterizer is two-sided: a triangle that comes out back-facing in
+    // screen space is re-wound front-facing rather than culled, so neither
+    // winding silently drops polygons (which previously left holes in any
+    // mesh that wasn't wound to match the screen-space convention). Both this
+    // winding and its mirror must set up valid with a positive front-area.
+    TriSetup cw{};
+    const bool ok_cw = setup_triangle(ndc(-0.5f, -0.5f),
+                                      ndc(0.5f, -0.5f),
+                                      ndc(0.0f, 0.5f),
+                                      math::Vec2{0, 1},
+                                      math::Vec2{1, 1},
+                                      math::Vec2{0.5f, 0},
+                                      0xFFFFFFFFu,
+                                      0xFFFFFFFFu,
+                                      0xFFFFFFFFu,
+                                      640,
+                                      360,
+                                      cw);
+    REQUIRE(ok_cw);
+    REQUIRE(cw.valid);
+    REQUIRE(cw.inv_area2x > 0.0f);
+
+    TriSetup ccw{};
+    const bool ok_ccw = setup_triangle(ndc(-0.5f, -0.5f),
+                                       ndc(0.0f, 0.5f),
+                                       ndc(0.5f, -0.5f),
+                                       math::Vec2{0, 1},
+                                       math::Vec2{0.5f, 0},
+                                       math::Vec2{1, 1},
+                                       0xFFFFFFFFu,
+                                       0xFFFFFFFFu,
+                                       0xFFFFFFFFu,
+                                       640,
+                                       360,
+                                       ccw);
+    REQUIRE(ok_ccw);
+    REQUIRE(ccw.valid);
+    REQUIRE(ccw.inv_area2x > 0.0f);
+}
+
+TEST_CASE("setup_triangle: a zero-area (degenerate) triangle is still rejected", "[raster][setup]") {
+    // Two-sided rendering must NOT resurrect genuinely degenerate triangles —
+    // collinear / zero-area tris carry no coverage and stay culled.
     TriSetup t{};
-    // (BL, BR, TOP) in NDC y-up; after y-flip becomes CW in screen space.
-    const bool ok = setup_triangle(ndc(-0.5f, -0.5f),
-                                   ndc(0.5f, -0.5f),
-                                   ndc(0.0f, 0.5f),
-                                   math::Vec2{0, 1},
-                                   math::Vec2{1, 1},
+    const bool ok = setup_triangle(ndc(-0.5f, 0.0f),
+                                   ndc(0.0f, 0.0f),
+                                   ndc(0.5f, 0.0f),  // all three collinear
+                                   math::Vec2{0, 0},
                                    math::Vec2{0.5f, 0},
+                                   math::Vec2{1, 0},
                                    0xFFFFFFFFu,
                                    0xFFFFFFFFu,
                                    0xFFFFFFFFu,

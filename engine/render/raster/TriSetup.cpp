@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace psynder::render::raster {
 
@@ -28,9 +29,9 @@ PSY_FORCEINLINE u8 unpack_a(u32 c) noexcept {
 
 }  // namespace
 
-bool setup_triangle(const math::Vec4& cp0,
-                    const math::Vec4& cp1,
-                    const math::Vec4& cp2,
+bool setup_triangle(const math::Vec4& cp0_in,
+                    const math::Vec4& cp1_in,
+                    const math::Vec4& cp2_in,
                     math::Vec2 uv0,
                     math::Vec2 uv1,
                     math::Vec2 uv2,
@@ -44,9 +45,45 @@ bool setup_triangle(const math::Vec4& cp0,
     // primitive: triangles that straddle the near plane get culled here.
     // The proper polygon clipper is a Wave-B item; for the M1 sample the
     // model sits inside the frustum.
-    if (cp0.w <= 0.0f || cp1.w <= 0.0f || cp2.w <= 0.0f) {
+    if (cp0_in.w <= 0.0f || cp1_in.w <= 0.0f || cp2_in.w <= 0.0f) {
         out.valid = false;
         return false;
+    }
+
+    // Two-sided rasterization. The screen transform below flips Y (screen is
+    // Y-down), which inverts the sign of the signed area relative to the
+    // NDC winding — so a triangle's "front/back" sign here depends on how its
+    // source mesh was wound, and hand-built sample meshes (cubes, icospheres,
+    // BSP-room quads) are not all wound consistently. Rather than cull on a
+    // winding convention the meshes don't honour — which silently drops
+    // visible polygons and leaves holes that pop as geometry rotates — we
+    // render both sides: if the triangle comes out back-facing, swap two
+    // vertices so it sets up front-facing with correct edge functions and
+    // barycentrics. Closed meshes are visually unchanged (the genuine back
+    // faces stay Z-occluded by the front faces); only the wrongly-dropped
+    // triangles get filled. A per-draw single-sided cull mode for known
+    // watertight, consistently-wound meshes is a perf follow-up (issue #121).
+    math::Vec4 cp0 = cp0_in;
+    math::Vec4 cp1 = cp1_in;
+    math::Vec4 cp2 = cp2_in;
+
+    auto screen_area2x = [&](const math::Vec4& a, const math::Vec4& b, const math::Vec4& c) noexcept {
+        const f32 vwf = static_cast<f32>(viewport_w);
+        const f32 vhf = static_cast<f32>(viewport_h);
+        const f32 iwa = 1.0f / a.w, iwb = 1.0f / b.w, iwc = 1.0f / c.w;
+        const f32 ax = (a.x * iwa * 0.5f + 0.5f) * vwf;
+        const f32 ay = (1.0f - (a.y * iwa * 0.5f + 0.5f)) * vhf;
+        const f32 bx = (b.x * iwb * 0.5f + 0.5f) * vwf;
+        const f32 by = (1.0f - (b.y * iwb * 0.5f + 0.5f)) * vhf;
+        const f32 cx = (c.x * iwc * 0.5f + 0.5f) * vwf;
+        const f32 cy = (1.0f - (c.y * iwc * 0.5f + 0.5f)) * vhf;
+        return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    };
+
+    if (screen_area2x(cp0, cp1, cp2) < 0.0f) {
+        std::swap(cp1, cp2);
+        std::swap(uv1, uv2);
+        std::swap(col1, col2);
     }
 
     const f32 inv_w0 = 1.0f / cp0.w;
@@ -72,9 +109,10 @@ bool setup_triangle(const math::Vec4& cp0,
     const FxQ24_8 x2 = FxQ24_8::from_float(sx2);
     const FxQ24_8 y2 = FxQ24_8::from_float(sy2);
 
-    // Signed 2× area in Q48.16. Positive ⇒ CCW (front-facing).
+    // Signed 2× area in Q48.16; after the swap above this is > 0 for any
+    // non-degenerate triangle. Only true degenerates (zero area) are dropped.
     const i64 area2x = tri_area_2x(x0, y0, x1, y1, x2, y2);
-    if (area2x <= 0) {  // back-face or degenerate
+    if (area2x <= 0) {  // degenerate (zero-area / collinear)
         out.valid = false;
         return false;
     }
