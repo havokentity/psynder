@@ -44,7 +44,7 @@ std::vector<Triangle> make_wall_scene() {
 
 }  // namespace
 
-TEST_CASE("Packet-8 occlusion matches scalar — mixed-hit packet", "[render_rt][packet]") {
+TEST_CASE("Packet-8 occlusion matches scalar - mixed-hit packet", "[render_rt][packet]") {
     auto tris = make_wall_scene();
     Bvh8 blas;
     blas.build(tris.data(), static_cast<u32>(tris.size()));
@@ -81,7 +81,7 @@ TEST_CASE("Packet-8 occlusion matches scalar — mixed-hit packet", "[render_rt]
     }
 }
 
-TEST_CASE("Packet-8 occlusion matches scalar — all-hit packet", "[render_rt][packet]") {
+TEST_CASE("Packet-8 occlusion matches scalar - all-hit packet", "[render_rt][packet]") {
     auto tris = make_wall_scene();
     Bvh8 blas;
     blas.build(tris.data(), static_cast<u32>(tris.size()));
@@ -111,7 +111,7 @@ TEST_CASE("Packet-8 occlusion matches scalar — all-hit packet", "[render_rt][p
     }
 }
 
-TEST_CASE("Packet-8 occlusion matches scalar — all-miss packet", "[render_rt][packet]") {
+TEST_CASE("Packet-8 occlusion matches scalar - all-miss packet", "[render_rt][packet]") {
     auto tris = make_wall_scene();
     Bvh8 blas;
     blas.build(tris.data(), static_cast<u32>(tris.size()));

@@ -44,7 +44,7 @@ TEST_CASE("linux_keymap: evdev letter codes cover A..M and Z", "[platform_linux]
     REQUIRE(keycode_from_evdev(evdev::KEY_Z) == KeyCode::Z);
 }
 
-TEST_CASE("linux_keymap: unknown evdev code → KeyCode::Unknown", "[platform_linux][keymap]") {
+TEST_CASE("linux_keymap: unknown evdev code -> KeyCode::Unknown", "[platform_linux][keymap]") {
     REQUIRE(keycode_from_evdev(0xDEADBEEF) == KeyCode::Unknown);
     REQUIRE(keycode_from_evdev(0) == KeyCode::Unknown);
 }
@@ -69,7 +69,7 @@ TEST_CASE("linux_keymap: XKB lowercase a-z range maps to A..Z", "[platform_linux
     REQUIRE(keycode_from_xkb(0x7A) == KeyCode::Z);  // 'z'
 }
 
-TEST_CASE("linux_keymap: unknown XKB keysym → KeyCode::Unknown", "[platform_linux][keymap]") {
+TEST_CASE("linux_keymap: unknown XKB keysym -> KeyCode::Unknown", "[platform_linux][keymap]") {
     REQUIRE(keycode_from_xkb(0) == KeyCode::Unknown);
     REQUIRE(keycode_from_xkb(0x60) == KeyCode::Tilde);  // grave
     REQUIRE(keycode_from_xkb(0xCAFE000) == KeyCode::Unknown);
@@ -128,7 +128,7 @@ TEST_CASE("compute_blit_rect: integer scale picks largest multiple that fits",
     REQUIRE(r.y == (800 - 720) / 2);
 }
 
-TEST_CASE("compute_blit_rect: integer scale never goes below 1×", "[platform_linux][blit]") {
+TEST_CASE("compute_blit_rect: integer scale never goes below 1x", "[platform_linux][blit]") {
     // 100×100 window, 640×360 fb — too small for 1×, so we still output 1×
     // letterbox-cropping is the present's responsibility once the rect
     // overruns; compute_blit_rect just guarantees w>=render_w.

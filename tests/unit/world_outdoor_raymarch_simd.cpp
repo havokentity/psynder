@@ -253,7 +253,7 @@ TEST_CASE("SIMD raymarch respects per-lane done_mask (no painting on done lanes)
     REQUIRE(((batch.active_mask >> 7) & 1u) == 0u);
 }
 
-TEST_CASE("SIMD raymarch parity over a sweep of distances (8 lanes × 12 steps)",
+TEST_CASE("SIMD raymarch parity over a sweep of distances (8 lanes x 12 steps)",
           "[world_outdoor][raymarch][simd]") {
     // The real consumer iterates many steps per batch; the parity property
     // must hold for the full sweep, not just one step. We march 12 steps

@@ -119,7 +119,7 @@ TEST_CASE("world_bsp/portal-clip rejects a leaf behind an occluded portal", "[wo
     frustum.normals[3] = {0.0f, 0.0f, -1.0f};
     frustum.d[3] = math::dot(frustum.normals[3], math::Vec3{0.0f, 0.0f, 100.0f});
 
-    SECTION("portal placed inside frustum → back leaf is visible") {
+    SECTION("portal placed inside frustum -> back leaf is visible") {
         BspPortalSet portals = make_portal_at(5.0f);  // +x → inside the wedge
         Acc acc;
         walk_portal_visible_leaves(map, portals, eye, frustum, acc_emit, &acc);
@@ -128,7 +128,7 @@ TEST_CASE("world_bsp/portal-clip rejects a leaf behind an occluded portal", "[wo
         REQUIRE(acc.clusters.count(1) == 1);
     }
 
-    SECTION("portal placed outside frustum → back leaf is rejected") {
+    SECTION("portal placed outside frustum -> back leaf is rejected") {
         BspPortalSet portals = make_portal_at(-5.0f);  // -x → outside the wedge
         Acc acc;
         walk_portal_visible_leaves(map, portals, eye, frustum, acc_emit, &acc);

@@ -110,7 +110,7 @@ TEST_CASE("msgpack: primitive roundtrip", "[ipc][msgpack]") {
         REQUIRE(r2.f64_(out64));
         REQUIRE(out64 == 2.718281828459045);
     }
-    SECTION("string sizes — fixstr / str8 / str16 / str32") {
+    SECTION("string sizes - fixstr / str8 / str16 / str32") {
         const std::string sizes[] = {
             "",
             "a",

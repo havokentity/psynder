@@ -131,7 +131,7 @@ TEST_CASE("trilinear math: floor + per-channel lerp at LOD 0 / 0.5 / 1",
 // log2 mip-LOD math: a 256×256 texture stepping 1 texel per pixel in u
 // gives derivatives (du/dx*w, dv/dx*h) = (1, 0). |∂uv/∂x|² = 1 → LOD = 0.
 // Doubling the texel stride per pixel ⇒ LOD = 1.
-TEST_CASE("mip-LOD: stride 1 texel/pixel → LOD 0; stride 2 → LOD 1", "[raster][trilinear][lod]") {
+TEST_CASE("mip-LOD: stride 1 texel/pixel -> LOD 0; stride 2 -> LOD 1", "[raster][trilinear][lod]") {
     constexpr f32 W = 256.0f;
     constexpr f32 H = 256.0f;
 

@@ -31,7 +31,7 @@ TEST_CASE("net: AOI filter excludes entities outside the sphere", "[net][aoi]") 
     CHECK_FALSE(f.visible(p, math::Vec3{0.f, 0.f, 1000.f}));
 }
 
-TEST_CASE("net: AOI boundary is inclusive — entity exactly on radius", "[net][aoi][boundary]") {
+TEST_CASE("net: AOI boundary is inclusive - entity exactly on radius", "[net][aoi][boundary]") {
     AoiFilter f;
     PeerId p{1};
     f.set_peer(p, math::Vec3{0, 0, 0}, /*radius=*/10.f);
