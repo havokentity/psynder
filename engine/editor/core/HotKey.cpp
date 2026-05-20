@@ -21,7 +21,7 @@ namespace psynder::editor {
 
 void handle_input_frame(const platform::Input& input) noexcept {
     const bool tilde = input.key_pressed(platform::KeyCode::Tilde);
-    const bool f2    = input.key_pressed(platform::KeyCode::F2);
+    const bool f2 = input.key_pressed(platform::KeyCode::F2);
     if (tilde || f2) {
         toggle_mode();
     }

@@ -58,9 +58,13 @@ namespace {
 // of the lib (e.g. a libpipewire built against a different glibc).
 struct DlHandle {
     void* h = nullptr;
-    ~DlHandle() { if (h) ::dlclose(h); }
+    ~DlHandle() {
+        if (h)
+            ::dlclose(h);
+    }
     explicit operator bool() const noexcept { return h != nullptr; }
-    template <class F> F sym(const char* name) noexcept {
+    template <class F>
+    F sym(const char* name) noexcept {
         return reinterpret_cast<F>(::dlsym(h, name));
     }
 };
@@ -110,88 +114,86 @@ struct pw_buffer {
 
 struct pw_stream_events {
     uint32_t version;
-    void (*destroy)        (void* data);
-    void (*state_changed)  (void* data, int old, int neu, const char* error);
-    void (*control_info)   (void* data, uint32_t id, const void* control);
-    void (*io_changed)     (void* data, uint32_t id, void* area, uint32_t size);
-    void (*param_changed)  (void* data, uint32_t id, const void* param);
-    void (*add_buffer)     (void* data, void* buffer);
-    void (*remove_buffer)  (void* data, void* buffer);
-    void (*process)        (void* data);
-    void (*drained)        (void* data);
-    void (*command)        (void* data, const void* command);
-    void (*trigger_done)   (void* data);
+    void (*destroy)(void* data);
+    void (*state_changed)(void* data, int old, int neu, const char* error);
+    void (*control_info)(void* data, uint32_t id, const void* control);
+    void (*io_changed)(void* data, uint32_t id, void* area, uint32_t size);
+    void (*param_changed)(void* data, uint32_t id, const void* param);
+    void (*add_buffer)(void* data, void* buffer);
+    void (*remove_buffer)(void* data, void* buffer);
+    void (*process)(void* data);
+    void (*drained)(void* data);
+    void (*command)(void* data, const void* command);
+    void (*trigger_done)(void* data);
 };
 
 // libpipewire entry signatures we resolve.
-using pw_init_fn               = void  (*)(int*, char***);
-using pw_deinit_fn             = void  (*)();
-using pw_thread_loop_new_fn    = void* (*)(const char*, const void*);
-using pw_thread_loop_destroy_fn= void  (*)(void*);
-using pw_thread_loop_start_fn  = int   (*)(void*);
-using pw_thread_loop_stop_fn   = void  (*)(void*);
+using pw_init_fn = void (*)(int*, char***);
+using pw_deinit_fn = void (*)();
+using pw_thread_loop_new_fn = void* (*)(const char*, const void*);
+using pw_thread_loop_destroy_fn = void (*)(void*);
+using pw_thread_loop_start_fn = int (*)(void*);
+using pw_thread_loop_stop_fn = void (*)(void*);
 using pw_thread_loop_get_loop_fn = void* (*)(void*);
-using pw_thread_loop_lock_fn   = void  (*)(void*);
-using pw_thread_loop_unlock_fn = void  (*)(void*);
-using pw_stream_new_simple_fn  = void* (*)(void*, const char*, void*,
-                                           const pw_stream_events*, void*);
-using pw_stream_destroy_fn     = void  (*)(void*);
-using pw_stream_connect_fn     = int   (*)(void*, int, uint32_t, uint32_t,
-                                           const void* const*, uint32_t);
+using pw_thread_loop_lock_fn = void (*)(void*);
+using pw_thread_loop_unlock_fn = void (*)(void*);
+using pw_stream_new_simple_fn = void* (*)(void*, const char*, void*, const pw_stream_events*, void*);
+using pw_stream_destroy_fn = void (*)(void*);
+using pw_stream_connect_fn = int (*)(void*, int, uint32_t, uint32_t, const void* const*, uint32_t);
 using pw_stream_dequeue_buffer_fn = pw_buffer* (*)(void*);
-using pw_stream_queue_buffer_fn   = int        (*)(void*, pw_buffer*);
-using pw_properties_new_fn     = void* (*)(const char*, ...);
+using pw_stream_queue_buffer_fn = int (*)(void*, pw_buffer*);
+using pw_properties_new_fn = void* (*)(const char*, ...);
 
 class PipeWireBackend {
-public:
-    bool init(const audio::DeviceDesc& desc,
-              audio::MixerCallback cb, void* user) noexcept {
-        cb_   = cb;
+   public:
+    bool init(const audio::DeviceDesc& desc, audio::MixerCallback cb, void* user) noexcept {
+        cb_ = cb;
         user_ = user;
-        sample_rate_   = desc.sample_rate ? desc.sample_rate : 48000u;
+        sample_rate_ = desc.sample_rate ? desc.sample_rate : 48000u;
         buffer_frames_ = desc.buffer_frames ? desc.buffer_frames : 512u;
 
         lib_ = open_lib("libpipewire-0.3.so.0");
-        if (!lib_) lib_ = open_lib("libpipewire-0.3.so");
-        if (!lib_) return false;
+        if (!lib_)
+            lib_ = open_lib("libpipewire-0.3.so");
+        if (!lib_)
+            return false;
 
-        pw_init_           = lib_.sym<pw_init_fn>               ("pw_init");
-        pw_deinit_         = lib_.sym<pw_deinit_fn>             ("pw_deinit");
-        pw_loop_new_       = lib_.sym<pw_thread_loop_new_fn>    ("pw_thread_loop_new");
-        pw_loop_destroy_   = lib_.sym<pw_thread_loop_destroy_fn>("pw_thread_loop_destroy");
-        pw_loop_start_     = lib_.sym<pw_thread_loop_start_fn>  ("pw_thread_loop_start");
-        pw_loop_stop_      = lib_.sym<pw_thread_loop_stop_fn>   ("pw_thread_loop_stop");
-        pw_loop_get_       = lib_.sym<pw_thread_loop_get_loop_fn>("pw_thread_loop_get_loop");
-        pw_stream_new_     = lib_.sym<pw_stream_new_simple_fn>  ("pw_stream_new_simple");
-        pw_stream_destroy_ = lib_.sym<pw_stream_destroy_fn>     ("pw_stream_destroy");
-        pw_stream_connect_ = lib_.sym<pw_stream_connect_fn>     ("pw_stream_connect");
-        pw_dequeue_        = lib_.sym<pw_stream_dequeue_buffer_fn>("pw_stream_dequeue_buffer");
-        pw_queue_          = lib_.sym<pw_stream_queue_buffer_fn>("pw_stream_queue_buffer");
-        if (!pw_init_ || !pw_deinit_ || !pw_loop_new_ || !pw_loop_destroy_
-            || !pw_loop_start_ || !pw_loop_stop_ || !pw_loop_get_
-            || !pw_stream_new_ || !pw_stream_destroy_
-            || !pw_stream_connect_ || !pw_dequeue_ || !pw_queue_) {
+        pw_init_ = lib_.sym<pw_init_fn>("pw_init");
+        pw_deinit_ = lib_.sym<pw_deinit_fn>("pw_deinit");
+        pw_loop_new_ = lib_.sym<pw_thread_loop_new_fn>("pw_thread_loop_new");
+        pw_loop_destroy_ = lib_.sym<pw_thread_loop_destroy_fn>("pw_thread_loop_destroy");
+        pw_loop_start_ = lib_.sym<pw_thread_loop_start_fn>("pw_thread_loop_start");
+        pw_loop_stop_ = lib_.sym<pw_thread_loop_stop_fn>("pw_thread_loop_stop");
+        pw_loop_get_ = lib_.sym<pw_thread_loop_get_loop_fn>("pw_thread_loop_get_loop");
+        pw_stream_new_ = lib_.sym<pw_stream_new_simple_fn>("pw_stream_new_simple");
+        pw_stream_destroy_ = lib_.sym<pw_stream_destroy_fn>("pw_stream_destroy");
+        pw_stream_connect_ = lib_.sym<pw_stream_connect_fn>("pw_stream_connect");
+        pw_dequeue_ = lib_.sym<pw_stream_dequeue_buffer_fn>("pw_stream_dequeue_buffer");
+        pw_queue_ = lib_.sym<pw_stream_queue_buffer_fn>("pw_stream_queue_buffer");
+        if (!pw_init_ || !pw_deinit_ || !pw_loop_new_ || !pw_loop_destroy_ || !pw_loop_start_ ||
+            !pw_loop_stop_ || !pw_loop_get_ || !pw_stream_new_ || !pw_stream_destroy_ ||
+            !pw_stream_connect_ || !pw_dequeue_ || !pw_queue_) {
             return false;
         }
 
         pw_init_(nullptr, nullptr);
         loop_ = pw_loop_new_("psynder-audio", nullptr);
-        if (!loop_) return false;
+        if (!loop_)
+            return false;
 
         // The stream-events table is shared across all PipeWire backend
         // instances of this lane (there's only ever one), so it can be a
         // static. We only fill `process`; everything else is left null.
         static pw_stream_events kEvents = {};
-        kEvents.version  = 0;
-        kEvents.process  = &PipeWireBackend::on_process_thunk;
+        kEvents.version = 0;
+        kEvents.process = &PipeWireBackend::on_process_thunk;
         // version-0 layout: process sits at offset 8. PipeWire validates
         // version, not field count — we're safe.
 
         // pw_stream_new_simple wants a `pw_loop*` (the inner loop), not
         // the thread-loop wrapper.
         void* inner_loop = pw_loop_get_(loop_);
-        stream_ = pw_stream_new_(inner_loop, "psynder", /*props*/ nullptr,
-                                 &kEvents, this);
+        stream_ = pw_stream_new_(inner_loop, "psynder", /*props*/ nullptr, &kEvents, this);
         if (!stream_) {
             pw_loop_destroy_(loop_);
             loop_ = nullptr;
@@ -225,34 +227,41 @@ public:
         pump_ = std::thread(&PipeWireBackend::pump_thread, this);
 
         PSY_LOG_INFO("audio: PipeWire backend initialised (sr=%u, frames=%u)",
-                     sample_rate_, buffer_frames_);
+                     sample_rate_,
+                     buffer_frames_);
         return true;
     }
 
     void shutdown() noexcept {
         running_.store(false, std::memory_order_release);
-        if (pump_.joinable()) pump_.join();
+        if (pump_.joinable())
+            pump_.join();
         if (stream_ && pw_stream_destroy_) {
             pw_stream_destroy_(stream_);
             stream_ = nullptr;
         }
         if (loop_) {
-            if (pw_loop_stop_)    pw_loop_stop_(loop_);
-            if (pw_loop_destroy_) pw_loop_destroy_(loop_);
+            if (pw_loop_stop_)
+                pw_loop_stop_(loop_);
+            if (pw_loop_destroy_)
+                pw_loop_destroy_(loop_);
             loop_ = nullptr;
         }
-        if (pw_deinit_) pw_deinit_();
+        if (pw_deinit_)
+            pw_deinit_();
     }
 
-private:
+   private:
     // C linkage thunk — PipeWire calls this from its thread; we forward
     // to the instance, lock the thread-loop, pull samples into the
     // dequeued buffer, and re-queue it.
     static void on_process_thunk(void* data) noexcept {
         auto* self = static_cast<PipeWireBackend*>(data);
-        if (!self || !self->pw_dequeue_ || !self->pw_queue_ || !self->stream_) return;
+        if (!self || !self->pw_dequeue_ || !self->pw_queue_ || !self->stream_)
+            return;
         pw_buffer* b = self->pw_dequeue_(self->stream_);
-        if (!b) return;
+        if (!b)
+            return;
         // We *would* write samples into b->buffer->datas[0].data here,
         // but accessing the spa_buffer datas array requires libpipewire's
         // public header. Until we link against libpipewire-dev we just
@@ -278,30 +287,30 @@ private:
         }
     }
 
-    audio::MixerCallback cb_   = nullptr;
-    void*                user_ = nullptr;
-    uint32_t             sample_rate_   = 48000;
-    uint32_t             buffer_frames_ = 512;
+    audio::MixerCallback cb_ = nullptr;
+    void* user_ = nullptr;
+    uint32_t sample_rate_ = 48000;
+    uint32_t buffer_frames_ = 512;
 
     DlHandle lib_;
-    void*    loop_   = nullptr;
-    void*    stream_ = nullptr;
+    void* loop_ = nullptr;
+    void* stream_ = nullptr;
 
-    pw_init_fn                   pw_init_           = nullptr;
-    pw_deinit_fn                 pw_deinit_         = nullptr;
-    pw_thread_loop_new_fn        pw_loop_new_       = nullptr;
-    pw_thread_loop_destroy_fn    pw_loop_destroy_   = nullptr;
-    pw_thread_loop_start_fn      pw_loop_start_     = nullptr;
-    pw_thread_loop_stop_fn       pw_loop_stop_      = nullptr;
-    pw_thread_loop_get_loop_fn   pw_loop_get_       = nullptr;
-    pw_stream_new_simple_fn      pw_stream_new_     = nullptr;
-    pw_stream_destroy_fn         pw_stream_destroy_ = nullptr;
-    pw_stream_connect_fn         pw_stream_connect_ = nullptr;
-    pw_stream_dequeue_buffer_fn  pw_dequeue_        = nullptr;
-    pw_stream_queue_buffer_fn    pw_queue_          = nullptr;
+    pw_init_fn pw_init_ = nullptr;
+    pw_deinit_fn pw_deinit_ = nullptr;
+    pw_thread_loop_new_fn pw_loop_new_ = nullptr;
+    pw_thread_loop_destroy_fn pw_loop_destroy_ = nullptr;
+    pw_thread_loop_start_fn pw_loop_start_ = nullptr;
+    pw_thread_loop_stop_fn pw_loop_stop_ = nullptr;
+    pw_thread_loop_get_loop_fn pw_loop_get_ = nullptr;
+    pw_stream_new_simple_fn pw_stream_new_ = nullptr;
+    pw_stream_destroy_fn pw_stream_destroy_ = nullptr;
+    pw_stream_connect_fn pw_stream_connect_ = nullptr;
+    pw_stream_dequeue_buffer_fn pw_dequeue_ = nullptr;
+    pw_stream_queue_buffer_fn pw_queue_ = nullptr;
 
     std::atomic<bool> running_{false};
-    std::thread       pump_;
+    std::thread pump_;
 };
 
 // ─── ALSA backend ────────────────────────────────────────────────────────
@@ -314,38 +323,41 @@ private:
 //   4. on -EPIPE / -ESTRPIPE recovers via snd_pcm_recover.
 // Shutdown sets `running_` to false, joins the thread, then closes.
 
-using snd_pcm_open_fn   = int (*)(void**, const char*, int, int);
-using snd_pcm_close_fn  = int (*)(void*);
-using snd_pcm_prepare_fn= int (*)(void*);
+using snd_pcm_open_fn = int (*)(void**, const char*, int, int);
+using snd_pcm_close_fn = int (*)(void*);
+using snd_pcm_prepare_fn = int (*)(void*);
 using snd_pcm_writei_fn = long (*)(void*, const void*, unsigned long);
-using snd_pcm_recover_fn= int (*)(void*, int, int);
-using snd_pcm_set_params_fn = int (*)(void*, int /*format*/, int /*access*/,
+using snd_pcm_recover_fn = int (*)(void*, int, int);
+using snd_pcm_set_params_fn = int (*)(void*,
+                                      int /*format*/,
+                                      int /*access*/,
                                       unsigned int /*channels*/,
-                                      unsigned int /*rate*/, int /*soft_resample*/,
+                                      unsigned int /*rate*/,
+                                      int /*soft_resample*/,
                                       unsigned int /*latency_us*/);
 
 class AlsaBackend {
-public:
-    bool init(const audio::DeviceDesc& desc,
-              audio::MixerCallback cb, void* user) noexcept {
-        cb_   = cb;
+   public:
+    bool init(const audio::DeviceDesc& desc, audio::MixerCallback cb, void* user) noexcept {
+        cb_ = cb;
         user_ = user;
-        sample_rate_   = desc.sample_rate ? desc.sample_rate : 48000u;
+        sample_rate_ = desc.sample_rate ? desc.sample_rate : 48000u;
         buffer_frames_ = desc.buffer_frames ? desc.buffer_frames : 512u;
-        channels_      = desc.channels ? desc.channels : 2u;
+        channels_ = desc.channels ? desc.channels : 2u;
 
         lib_ = open_lib("libasound.so.2");
-        if (!lib_) lib_ = open_lib("libasound.so");
-        if (!lib_) return false;
+        if (!lib_)
+            lib_ = open_lib("libasound.so");
+        if (!lib_)
+            return false;
 
-        pcm_open_       = lib_.sym<snd_pcm_open_fn>      ("snd_pcm_open");
-        pcm_close_      = lib_.sym<snd_pcm_close_fn>     ("snd_pcm_close");
-        pcm_prepare_    = lib_.sym<snd_pcm_prepare_fn>   ("snd_pcm_prepare");
-        pcm_writei_     = lib_.sym<snd_pcm_writei_fn>    ("snd_pcm_writei");
-        pcm_recover_    = lib_.sym<snd_pcm_recover_fn>   ("snd_pcm_recover");
+        pcm_open_ = lib_.sym<snd_pcm_open_fn>("snd_pcm_open");
+        pcm_close_ = lib_.sym<snd_pcm_close_fn>("snd_pcm_close");
+        pcm_prepare_ = lib_.sym<snd_pcm_prepare_fn>("snd_pcm_prepare");
+        pcm_writei_ = lib_.sym<snd_pcm_writei_fn>("snd_pcm_writei");
+        pcm_recover_ = lib_.sym<snd_pcm_recover_fn>("snd_pcm_recover");
         pcm_set_params_ = lib_.sym<snd_pcm_set_params_fn>("snd_pcm_set_params");
-        if (!pcm_open_ || !pcm_close_ || !pcm_writei_ || !pcm_recover_
-            || !pcm_set_params_) {
+        if (!pcm_open_ || !pcm_close_ || !pcm_writei_ || !pcm_recover_ || !pcm_set_params_) {
             return false;
         }
 
@@ -356,35 +368,38 @@ public:
 
         // SND_PCM_FORMAT_S16_LE = 2, SND_PCM_ACCESS_RW_INTERLEAVED = 3
         // soft_resample = 1, latency_us derived from buffer_frames
-        const unsigned latency_us =
-            (static_cast<uint64_t>(buffer_frames_) * 1'000'000u) / sample_rate_;
-        if (pcm_set_params_(pcm_, /*S16_LE*/ 2, /*RW_INTERLEAVED*/ 3,
-                            channels_, sample_rate_, 1, latency_us) < 0) {
+        const unsigned latency_us = (static_cast<uint64_t>(buffer_frames_) * 1'000'000u) / sample_rate_;
+        if (pcm_set_params_(pcm_, /*S16_LE*/ 2, /*RW_INTERLEAVED*/ 3, channels_, sample_rate_, 1, latency_us) <
+            0) {
             pcm_close_(pcm_);
             pcm_ = nullptr;
             return false;
         }
 
-        if (pcm_prepare_) pcm_prepare_(pcm_);
+        if (pcm_prepare_)
+            pcm_prepare_(pcm_);
 
         running_.store(true, std::memory_order_release);
         writer_ = std::thread(&AlsaBackend::writer_thread, this);
 
         PSY_LOG_INFO("audio: ALSA backend initialised (sr=%u, ch=%u, frames=%u)",
-                     sample_rate_, channels_, buffer_frames_);
+                     sample_rate_,
+                     channels_,
+                     buffer_frames_);
         return true;
     }
 
     void shutdown() noexcept {
         running_.store(false, std::memory_order_release);
-        if (writer_.joinable()) writer_.join();
+        if (writer_.joinable())
+            writer_.join();
         if (pcm_) {
             pcm_close_(pcm_);
             pcm_ = nullptr;
         }
     }
 
-private:
+   private:
     // Float → int16 saturate. Branchless on the clamp.
     static inline int16_t f2i16(float x) noexcept {
         const float clamped = x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x);
@@ -393,12 +408,13 @@ private:
 
     void writer_thread() noexcept {
         const std::size_t stride = static_cast<std::size_t>(channels_);
-        std::vector<float>   fbuf(static_cast<std::size_t>(buffer_frames_) * stride, 0.0f);
+        std::vector<float> fbuf(static_cast<std::size_t>(buffer_frames_) * stride, 0.0f);
         std::vector<int16_t> ibuf(static_cast<std::size_t>(buffer_frames_) * stride, 0);
 
         while (running_.load(std::memory_order_acquire)) {
             std::memset(fbuf.data(), 0, fbuf.size() * sizeof(float));
-            if (cb_) cb_(fbuf.data(), buffer_frames_, user_);
+            if (cb_)
+                cb_(fbuf.data(), buffer_frames_, user_);
 
             for (std::size_t i = 0; i < fbuf.size(); ++i) {
                 ibuf[i] = f2i16(fbuf[i]);
@@ -409,53 +425,57 @@ private:
                 // -EPIPE = -32 (underrun), -ESTRPIPE = -86 (suspended).
                 // snd_pcm_recover handles both.
                 int err = static_cast<int>(r);
-                if (pcm_recover_) pcm_recover_(pcm_, err, /*silent*/ 1);
+                if (pcm_recover_)
+                    pcm_recover_(pcm_, err, /*silent*/ 1);
             }
         }
     }
 
-    audio::MixerCallback cb_   = nullptr;
-    void*                user_ = nullptr;
-    uint32_t             sample_rate_   = 48000;
-    uint32_t             buffer_frames_ = 512;
-    uint32_t             channels_      = 2;
+    audio::MixerCallback cb_ = nullptr;
+    void* user_ = nullptr;
+    uint32_t sample_rate_ = 48000;
+    uint32_t buffer_frames_ = 512;
+    uint32_t channels_ = 2;
 
     DlHandle lib_;
-    void*    pcm_   = nullptr;
+    void* pcm_ = nullptr;
 
-    snd_pcm_open_fn       pcm_open_       = nullptr;
-    snd_pcm_close_fn      pcm_close_      = nullptr;
-    snd_pcm_prepare_fn    pcm_prepare_    = nullptr;
-    snd_pcm_writei_fn     pcm_writei_     = nullptr;
-    snd_pcm_recover_fn    pcm_recover_    = nullptr;
+    snd_pcm_open_fn pcm_open_ = nullptr;
+    snd_pcm_close_fn pcm_close_ = nullptr;
+    snd_pcm_prepare_fn pcm_prepare_ = nullptr;
+    snd_pcm_writei_fn pcm_writei_ = nullptr;
+    snd_pcm_recover_fn pcm_recover_ = nullptr;
     snd_pcm_set_params_fn pcm_set_params_ = nullptr;
 
     std::atomic<bool> running_{false};
-    std::thread       writer_;
+    std::thread writer_;
 };
 
 // ─── Singletons ──────────────────────────────────────────────────────────
 // We hold one backend instance for the program's lifetime. The lane-12
 // dispatcher calls backend_init exactly once at engine start; backend_init
 // stores the instance, backend_shutdown tears it down.
-std::mutex                       g_audio_mu;
+std::mutex g_audio_mu;
 std::unique_ptr<PipeWireBackend> g_pipewire;
-std::unique_ptr<AlsaBackend>     g_alsa;
+std::unique_ptr<AlsaBackend> g_alsa;
 
 // Probe-only Wave-A AudioDevice (kept so LinuxPlatform.cpp's early
 // cold-start probe still compiles — it doesn't drive the mixer; the real
 // audio path is the strong-symbol overrides below).
 class PipeWireProbe final : public AudioDevice {
-public:
+   public:
     bool open() noexcept {
         DlHandle l = open_lib("libpipewire-0.3.so.0");
-        if (!l) l = open_lib("libpipewire-0.3.so");
-        if (!l) return false;
-        auto init = l.sym<void(*)(int*, char***)>("pw_init");
-        auto deinit = l.sym<void(*)()>("pw_deinit");
-        if (!init || !deinit) return false;
+        if (!l)
+            l = open_lib("libpipewire-0.3.so");
+        if (!l)
+            return false;
+        auto init = l.sym<void (*)(int*, char***)>("pw_init");
+        auto deinit = l.sym<void (*)()>("pw_deinit");
+        if (!init || !deinit)
+            return false;
         init(nullptr, nullptr);
-        ok_    = true;
+        ok_ = true;
         deinit_ = deinit;
         // Hold the lib for the device's lifetime.
         lib_.h = l.h;
@@ -463,36 +483,41 @@ public:
         return true;
     }
     ~PipeWireProbe() override {
-        if (deinit_) deinit_();
+        if (deinit_)
+            deinit_();
     }
     const char* backend_name() const noexcept override { return "PipeWire"; }
-    bool        ok()           const noexcept override { return ok_; }
+    bool ok() const noexcept override { return ok_; }
 
-private:
+   private:
     DlHandle lib_;
-    void   (*deinit_)() = nullptr;
-    bool     ok_ = false;
+    void (*deinit_)() = nullptr;
+    bool ok_ = false;
 };
 
 class AlsaProbe final : public AudioDevice {
-public:
+   public:
     bool open() noexcept {
         DlHandle l = open_lib("libasound.so.2");
-        if (!l) l = open_lib("libasound.so");
-        if (!l) return false;
-        auto pcm_open  = l.sym<int(*)(void**, const char*, int, int)>("snd_pcm_open");
-        auto pcm_close = l.sym<int(*)(void*)>("snd_pcm_close");
-        if (!pcm_open || !pcm_close) return false;
+        if (!l)
+            l = open_lib("libasound.so");
+        if (!l)
+            return false;
+        auto pcm_open = l.sym<int (*)(void**, const char*, int, int)>("snd_pcm_open");
+        auto pcm_close = l.sym<int (*)(void*)>("snd_pcm_close");
+        if (!pcm_open || !pcm_close)
+            return false;
         void* pcm = nullptr;
-        if (pcm_open(&pcm, "default", 0, 1) < 0 || !pcm) return false;
+        if (pcm_open(&pcm, "default", 0, 1) < 0 || !pcm)
+            return false;
         pcm_close(pcm);
         ok_ = true;
         return true;
     }
     const char* backend_name() const noexcept override { return "ALSA"; }
-    bool        ok()           const noexcept override { return ok_; }
+    bool ok() const noexcept override { return ok_; }
 
-private:
+   private:
     bool ok_ = false;
 };
 
@@ -501,14 +526,16 @@ private:
 // Probe entry points kept for LinuxPlatform.cpp cold-start latency hygiene.
 std::unique_ptr<AudioDevice> try_open_pipewire() noexcept {
     auto d = std::make_unique<PipeWireProbe>();
-    if (!d->open()) return nullptr;
+    if (!d->open())
+        return nullptr;
     PSY_LOG_INFO("audio: PipeWire available (probe)");
     return d;
 }
 
 std::unique_ptr<AudioDevice> try_open_alsa() noexcept {
     auto d = std::make_unique<AlsaProbe>();
-    if (!d->open()) return nullptr;
+    if (!d->open())
+        return nullptr;
     PSY_LOG_INFO("audio: ALSA available (probe)");
     return d;
 }
@@ -525,11 +552,11 @@ std::unique_ptr<AudioDevice> try_open_alsa() noexcept {
 
 namespace psynder::audio {
 
-bool backend_init_pipewire(const DeviceDesc& desc,
-                           MixerCallback cb, void* user) noexcept {
+bool backend_init_pipewire(const DeviceDesc& desc, MixerCallback cb, void* user) noexcept {
     using namespace psynder::platform::linux_impl;
     std::lock_guard lock(g_audio_mu);
-    if (g_pipewire) return true;     // idempotent
+    if (g_pipewire)
+        return true;  // idempotent
     auto b = std::make_unique<PipeWireBackend>();
     if (!b->init(desc, cb, user)) {
         return false;
@@ -547,11 +574,11 @@ void backend_shutdown_pipewire() noexcept {
     }
 }
 
-bool backend_init_alsa(const DeviceDesc& desc,
-                       MixerCallback cb, void* user) noexcept {
+bool backend_init_alsa(const DeviceDesc& desc, MixerCallback cb, void* user) noexcept {
     using namespace psynder::platform::linux_impl;
     std::lock_guard lock(g_audio_mu);
-    if (g_alsa) return true;
+    if (g_alsa)
+        return true;
     auto b = std::make_unique<AlsaBackend>();
     if (!b->init(desc, cb, user)) {
         return false;

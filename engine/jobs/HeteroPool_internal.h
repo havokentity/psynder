@@ -36,13 +36,11 @@
 namespace psynder::jobs::detail {
 
 struct HeteroTopology {
-    u32 p_cores = 0;   // performance / "big" cores, 0 if homogeneous
-    u32 e_cores = 0;   // efficiency / "LITTLE" cores, 0 if homogeneous
-    u32 total   = 0;   // total physical cores reported by detection
+    u32 p_cores = 0;  // performance / "big" cores, 0 if homogeneous
+    u32 e_cores = 0;  // efficiency / "LITTLE" cores, 0 if homogeneous
+    u32 total = 0;    // total physical cores reported by detection
 
-    bool is_hetero() const noexcept {
-        return p_cores > 0 && e_cores > 0;
-    }
+    bool is_hetero() const noexcept { return p_cores > 0 && e_cores > 0; }
 };
 
 // Detect once per process. Idempotent; cheap to call.
@@ -51,8 +49,8 @@ HeteroTopology detect_hetero_topology() noexcept;
 // Tag a worker thread for the latency (P-core) or throughput (E-core)
 // pool. Call from inside the worker thread. Failure to apply is non-fatal.
 enum class WorkerClass : u8 {
-    Latency,    // prefers P-cores
-    Throughput, // prefers E-cores
+    Latency,     // prefers P-cores
+    Throughput,  // prefers E-cores
 };
 
 void apply_worker_class_hint(WorkerClass cls) noexcept;

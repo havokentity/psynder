@@ -25,7 +25,7 @@
 #include "core/Types.h"
 #include "math/Math.h"
 #include "render/Framebuffer.h"
-#include "render/post/VolumetricFog.h"   // for FogLight reuse
+#include "render/post/VolumetricFog.h"  // for FogLight reuse
 
 namespace psynder::render::post {
 
@@ -34,31 +34,31 @@ namespace psynder::render::post {
 //
 // 32 B = half a cache line; the pool packs tightly.
 struct alignas(32) Streak {
-    math::Vec3 position{0,0,0};   // world space, head of the streak
-    f32        length = 0.4f;     // metres
-    math::Vec3 velocity{0,-9.81f,0};  // m/s; gravity-driven
-    f32        alpha = 0.5f;
+    math::Vec3 position{0, 0, 0};       // world space, head of the streak
+    f32 length = 0.4f;                  // metres
+    math::Vec3 velocity{0, -9.81f, 0};  // m/s; gravity-driven
+    f32 alpha = 0.5f;
 };
 static_assert(sizeof(Streak) == 32, "Streak layout must be 32 B");
 
 // Spawn / sim params for a Wave-B rain column.
 struct RainParams {
-    bool       enabled         = true;
-    math::Vec3 spawn_centre{0, 8, 0};    // top of the spawn box (above camera)
-    math::Vec3 spawn_extent{16, 0, 16};  // half-extents (xz only — y is fixed)
-    f32        kill_height_y   = -4.0f;  // y plane below which streaks recycle
+    bool enabled = true;
+    math::Vec3 spawn_centre{0, 8, 0};        // top of the spawn box (above camera)
+    math::Vec3 spawn_extent{16, 0, 16};      // half-extents (xz only — y is fixed)
+    f32 kill_height_y = -4.0f;               // y plane below which streaks recycle
     math::Vec3 base_velocity{0, -12.0f, 0};  // world units per second
     math::Vec3 jitter_velocity{1.0f, 2.0f, 1.0f};
-    f32        streak_length   = 0.4f;
-    f32        streak_alpha    = 0.6f;
-    f32        intensity       = 1.0f;   // scales lit colour
-    u32        rng_seed        = 0xA51F00DBu;
+    f32 streak_length = 0.4f;
+    f32 streak_alpha = 0.6f;
+    f32 intensity = 1.0f;  // scales lit colour
+    u32 rng_seed = 0xA51F00DBu;
 };
 
 // Streak system. Owns a fixed-capacity pool; one pool covers the on-screen
 // rain. Wave-B target capacity: 4 096 streaks at 1080p ≈ ~0.2 ms render.
 class StreakSystem {
-public:
+   public:
     static constexpr u32 kMaxStreaks = 4096;
 
     void seed(u32 count, const RainParams& params);
@@ -76,10 +76,10 @@ public:
     u32 active_count() const noexcept { return count_; }
     const Streak& at(u32 i) const noexcept { return pool_[i]; }
 
-private:
+   private:
     Streak pool_[kMaxStreaks];
-    u32    count_ = 0;
-    u32    rng_   = 0xA51F00DBu;
+    u32 count_ = 0;
+    u32 rng_ = 0xA51F00DBu;
 
     // Tiny xorshift for spawn jitter — repeatable per seed.
     inline u32 next_u32() noexcept;

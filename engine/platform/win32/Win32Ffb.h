@@ -47,30 +47,28 @@ struct FfbEffectDesc {
 // `axes` / `direction_buf` / `cf_buf` must point at storage with at least
 // one element each; the DIEFFECT references them by pointer so they must
 // outlive the call to `CreateEffect`. Returns the populated DIEFFECT.
-DIEFFECT build_constant_force_effect(
-    const FfbEffectDesc& desc,
-    DWORD*               axes,
-    LONG*                direction_buf,
-    DICONSTANTFORCE*     cf_buf) noexcept;
+DIEFFECT build_constant_force_effect(const FfbEffectDesc& desc,
+                                     DWORD* axes,
+                                     LONG* direction_buf,
+                                     DICONSTANTFORCE* cf_buf) noexcept;
 
 // Build a DIEFFECT for a spring centering descriptor (DICONDITION). Same
 // ownership contract as `build_constant_force_effect`.
-DIEFFECT build_spring_effect(
-    const FfbEffectDesc& desc,
-    DWORD*               axes,
-    LONG*                direction_buf,
-    DICONDITION*         cond_buf) noexcept;
+DIEFFECT build_spring_effect(const FfbEffectDesc& desc,
+                             DWORD* axes,
+                             LONG* direction_buf,
+                             DICONDITION* cond_buf) noexcept;
 
 // Process-wide FFB controller. Created on demand by the sample apps; the
 // platform layer itself doesn't poll for wheels (lane 09 / input owns that
 // in a later wave). Calling `acquire_first_wheel()` enumerates devices and
 // latches onto the first FF-capable device found. Returns true on success.
 class Win32Ffb {
-public:
-    Win32Ffb()  = default;
+   public:
+    Win32Ffb() = default;
     ~Win32Ffb() { shutdown(); }
 
-    Win32Ffb(const Win32Ffb&)            = delete;
+    Win32Ffb(const Win32Ffb&) = delete;
     Win32Ffb& operator=(const Win32Ffb&) = delete;
 
     // Create the DirectInput8 root + enumerate the first FF wheel. Window
@@ -95,13 +93,13 @@ public:
 
     bool has_wheel() const noexcept { return device_ != nullptr; }
 
-private:
-    ComPtr<IDirectInput8W>       dinput_;
+   private:
+    ComPtr<IDirectInput8W> dinput_;
     ComPtr<IDirectInputDevice8W> device_;
-    ComPtr<IDirectInputEffect>   constant_;
-    ComPtr<IDirectInputEffect>   spring_;
-    LONG                         current_constant_ = 0;
-    LONG                         current_spring_   = 0;
+    ComPtr<IDirectInputEffect> constant_;
+    ComPtr<IDirectInputEffect> spring_;
+    LONG current_constant_ = 0;
+    LONG current_spring_ = 0;
 };
 
 }  // namespace psynder::platform::win32

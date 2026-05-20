@@ -13,8 +13,7 @@
 
 namespace cn = psynder::console;
 
-TEST_CASE("ScoreMatch prefers prefix > substring > fuzzy",
-          "[core][console][completion]") {
+TEST_CASE("ScoreMatch prefers prefix > substring > fuzzy", "[core][console][completion]") {
     using PairVec = std::vector<std::pair<std::size_t, std::size_t>>;
     PairVec spans;
 
@@ -41,15 +40,14 @@ TEST_CASE("ScoreMatch is case-insensitive", "[core][console][completion]") {
     REQUIRE(cn::ScoreMatch("R_DENOISER", "den", nullptr) > 0);
 }
 
-TEST_CASE("Utf8SafeTruncate doesn't split codepoints",
-          "[core][console][completion]") {
+TEST_CASE("Utf8SafeTruncate doesn't split codepoints", "[core][console][completion]") {
     // Mix of ASCII and a 3-byte UTF-8 codepoint (U+2248 ≈ in UTF-8 is
     // 0xE2 0x89 0x88).
     std::string s = "approx \xE2\x89\x88 99";
     // Truncate to a byte index that lands inside the codepoint; expect
     // the truncated result to NOT include a partial codepoint at the tail.
     const std::size_t before_len = s.size();
-    cn::Utf8SafeTruncate(s, 8);            // boundary inside the 0xE2 0x89 0x88 run
+    cn::Utf8SafeTruncate(s, 8);  // boundary inside the 0xE2 0x89 0x88 run
     REQUIRE(s.size() <= 8);
     REQUIRE(s.size() < before_len);
     // The last byte should not be a UTF-8 continuation byte (10xxxxxx).

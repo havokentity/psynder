@@ -17,11 +17,11 @@ using namespace psynder;
 using namespace psynder::tools::cook;
 
 TEST_CASE("lm_cook classifies extensions", "[tools][lm_cook]") {
-    REQUIRE(classify_extension("foo.obj")  == CookKind::kMeshObj);
-    REQUIRE(classify_extension("X.OBJ")    == CookKind::kMeshObj);
-    REQUIRE(classify_extension("a.gltf")   == CookKind::kMeshGltf);
-    REQUIRE(classify_extension("img.png")  == CookKind::kTexturePng);
-    REQUIRE(classify_extension("snd.wav")  == CookKind::kAudioWav);
+    REQUIRE(classify_extension("foo.obj") == CookKind::kMeshObj);
+    REQUIRE(classify_extension("X.OBJ") == CookKind::kMeshObj);
+    REQUIRE(classify_extension("a.gltf") == CookKind::kMeshGltf);
+    REQUIRE(classify_extension("img.png") == CookKind::kTexturePng);
+    REQUIRE(classify_extension("snd.wav") == CookKind::kAudioWav);
     REQUIRE(classify_extension("nope.txt") == CookKind::kUnknown);
 }
 
@@ -47,7 +47,7 @@ TEST_CASE("lm_cook cooks an OBJ tetrahedron round-trip", "[tools][lm_cook]") {
 
     LmmMesh round;
     REQUIRE(read_lmm(lmm, round, &err));
-    REQUIRE(round.vertices.size() == 6);     // two tris × 3 corners
+    REQUIRE(round.vertices.size() == 6);  // two tris × 3 corners
     REQUIRE(round.indices.size() == 6);
     REQUIRE(round.materials.size() >= 1);
     REQUIRE(round.submeshes.size() >= 1);
@@ -68,10 +68,10 @@ TEST_CASE("lm_cook builds RGBA8 mipchain to single pixel", "[tools][lm_cook]") {
     auto tex = build_mipchain_rgba8(rgba.data(), 4, 4);
     REQUIRE(tex.width == 4);
     REQUIRE(tex.height == 4);
-    REQUIRE(tex.mips.size() == 3);    // 4 -> 2 -> 1
+    REQUIRE(tex.mips.size() == 3);  // 4 -> 2 -> 1
     REQUIRE(tex.mips.back().width == 1);
     REQUIRE(tex.mips.back().height == 1);
-    REQUIRE(tex.pixels.size() == (4*4 + 2*2 + 1) * 4u);
+    REQUIRE(tex.pixels.size() == (4 * 4 + 2 * 2 + 1) * 4u);
 
     // Round-trip the binary blob.
     std::vector<u8> bytes;
@@ -88,8 +88,22 @@ TEST_CASE("lm_cook builds RGBA8 mipchain to single pixel", "[tools][lm_cook]") {
 TEST_CASE("lm_cook PNG stored round-trips", "[tools][lm_cook]") {
     // Build a 2x2 RGBA buffer, encode as PNG, then decode + cook.
     u8 rgba[2 * 2 * 4] = {
-        255,   0,   0, 255,    0, 255,   0, 255,
-          0,   0, 255, 255,  255, 255, 255, 255,
+        255,
+        0,
+        0,
+        255,
+        0,
+        255,
+        0,
+        255,
+        0,
+        0,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
     };
     std::vector<u8> png;
     encode_png_stored(rgba, 2, 2, png);
@@ -113,10 +127,9 @@ TEST_CASE("lm_cook PNG stored round-trips", "[tools][lm_cook]") {
 }
 
 TEST_CASE("lm_cook WAV round-trip preserves PCM samples", "[tools][lm_cook]") {
-    i16 samples[8] = { 0, 32767, -32768, 1234, -567, 100, -100, 7 };
+    i16 samples[8] = {0, 32767, -32768, 1234, -567, 100, -100, 7};
     std::vector<u8> wav;
-    encode_wav_pcm16(samples, 4 /* sample_count per channel */, 2 /* stereo */,
-                     48000, wav);
+    encode_wav_pcm16(samples, 4 /* sample_count per channel */, 2 /* stereo */, 48000, wav);
     LmaAudio audio;
     std::string err;
     REQUIRE(parse_wav(wav, audio, &err));
@@ -173,7 +186,8 @@ TEST_CASE("lm_cook stb PNG round-trip preserves arbitrary pixel data", "[tools][
     REQUIRE(std::memcmp(back.data(), rgba.data(), rgba.size()) == 0);
 }
 
-TEST_CASE("lm_cook stb PNG compresses output below stored-deflate baseline", "[tools][lm_cook][wave-b]") {
+TEST_CASE("lm_cook stb PNG compresses output below stored-deflate baseline",
+          "[tools][lm_cook][wave-b]") {
     // The Wave-A codec produced uncompressed IDAT (one byte filter + raw
     // RGBA scanlines, framed in stored-DEFLATE blocks). Wave-B's stb
     // encoder uses real DEFLATE so a flat image should compress well.
@@ -206,27 +220,39 @@ TEST_CASE("lm_cook glTF minimal JSON path", "[tools][lm_cook]") {
     //   - 3 indices (UNSIGNED_INT) = 12 bytes
     std::vector<u8> buf(36 + 12);
     auto put_f32 = [&](usize off, f32 v) {
-        u32 bits; std::memcpy(&bits, &v, sizeof(bits));
-        for (usize i = 0; i < 4; ++i) buf[off + i] = static_cast<u8>(bits >> (8 * i));
+        u32 bits;
+        std::memcpy(&bits, &v, sizeof(bits));
+        for (usize i = 0; i < 4; ++i)
+            buf[off + i] = static_cast<u8>(bits >> (8 * i));
     };
     auto put_u32 = [&](usize off, u32 v) {
-        for (usize i = 0; i < 4; ++i) buf[off + i] = static_cast<u8>(v >> (8 * i));
+        for (usize i = 0; i < 4; ++i)
+            buf[off + i] = static_cast<u8>(v >> (8 * i));
     };
-    put_f32( 0, 0); put_f32( 4, 0); put_f32( 8, 0);
-    put_f32(12, 1); put_f32(16, 0); put_f32(20, 0);
-    put_f32(24, 0); put_f32(28, 1); put_f32(32, 0);
-    put_u32(36, 0); put_u32(40, 1); put_u32(44, 2);
+    put_f32(0, 0);
+    put_f32(4, 0);
+    put_f32(8, 0);
+    put_f32(12, 1);
+    put_f32(16, 0);
+    put_f32(20, 0);
+    put_f32(24, 0);
+    put_f32(28, 1);
+    put_f32(32, 0);
+    put_u32(36, 0);
+    put_u32(40, 1);
+    put_u32(44, 2);
 
     // Build a small data URI.
     auto b64encode = [](std::span<const u8> in) {
-        static const char* alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        static const char* alpha =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         std::string out;
         usize i = 0;
         while (i + 3 <= in.size()) {
-            u32 v = (u32(in[i]) << 16) | (u32(in[i+1]) << 8) | u32(in[i+2]);
+            u32 v = (u32(in[i]) << 16) | (u32(in[i + 1]) << 8) | u32(in[i + 2]);
             out.push_back(alpha[(v >> 18) & 0x3F]);
             out.push_back(alpha[(v >> 12) & 0x3F]);
-            out.push_back(alpha[(v >>  6) & 0x3F]);
+            out.push_back(alpha[(v >> 6) & 0x3F]);
             out.push_back(alpha[v & 0x3F]);
             i += 3;
         }
@@ -236,21 +262,21 @@ TEST_CASE("lm_cook glTF minimal JSON path", "[tools][lm_cook]") {
             out.push_back(alpha[(v >> 12) & 0x3F]);
             out.append("==");
         } else if (i + 2 == in.size()) {
-            u32 v = (u32(in[i]) << 16) | (u32(in[i+1]) << 8);
+            u32 v = (u32(in[i]) << 16) | (u32(in[i + 1]) << 8);
             out.push_back(alpha[(v >> 18) & 0x3F]);
             out.push_back(alpha[(v >> 12) & 0x3F]);
-            out.push_back(alpha[(v >>  6) & 0x3F]);
+            out.push_back(alpha[(v >> 6) & 0x3F]);
             out.push_back('=');
         }
         return out;
     };
     std::string b64 = b64encode(buf);
-    std::string json = R"({"buffers":[{"uri":"data:application/octet-stream;base64,)"
-                       + b64 + R"("}],"bufferViews":[{"byteOffset":0,"byteLength":36},)"
-                       + R"({"byteOffset":36,"byteLength":12}],"accessors":[)"
-                       + R"({"bufferView":0,"count":3,"componentType":5126,"type":"VEC3"},)"
-                       + R"({"bufferView":1,"count":3,"componentType":5125,"type":"SCALAR"}],)"
-                       + R"("meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}]})";
+    std::string json = R"({"buffers":[{"uri":"data:application/octet-stream;base64,)" + b64 +
+                       R"("}],"bufferViews":[{"byteOffset":0,"byteLength":36},)" +
+                       R"({"byteOffset":36,"byteLength":12}],"accessors":[)" +
+                       R"({"bufferView":0,"count":3,"componentType":5126,"type":"VEC3"},)" +
+                       R"({"bufferView":1,"count":3,"componentType":5125,"type":"SCALAR"}],)" +
+                       R"("meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}]})";
 
     std::vector<u8> lmm;
     std::string err;

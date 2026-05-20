@@ -11,8 +11,8 @@
 // luaL_Buffer. Silence the warning at the include boundary — our own code
 // stays Wold-style-cast clean.
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic push
-#  pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 extern "C" {
 #include "lua.h"
@@ -20,7 +20,7 @@ extern "C" {
 #include "lualib.h"
 }
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 #endif
 
 #include <string>
@@ -32,11 +32,11 @@ namespace psynder::script::detail {
 // thread-safe — Lua is single-thread by design (per DESIGN.md §10.5 the VM
 // runs on the dedicated game thread, not engine workers).
 class LuaState {
-public:
+   public:
     LuaState() = default;
     ~LuaState() { close(); }
 
-    LuaState(const LuaState&)            = delete;
+    LuaState(const LuaState&) = delete;
     LuaState& operator=(const LuaState&) = delete;
     LuaState(LuaState&& o) noexcept : L_(o.L_) { o.L_ = nullptr; }
     LuaState& operator=(LuaState&& o) noexcept {
@@ -55,14 +55,14 @@ public:
     void close();
 
     [[nodiscard]] lua_State* handle() const noexcept { return L_; }
-    [[nodiscard]] bool       opened() const noexcept { return L_ != nullptr; }
+    [[nodiscard]] bool opened() const noexcept { return L_ != nullptr; }
 
     // Convenience: pcall wrapper. Top of stack must be the function followed
     // by `nargs` arguments. Returns true on success; on failure writes the
     // Lua error message to `err_out` and pops the error value.
     bool pcall(int nargs, int nresults, std::string& err_out);
 
-private:
+   private:
     lua_State* L_ = nullptr;
 };
 

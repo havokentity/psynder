@@ -52,7 +52,7 @@ using FiberFn = void (*)(void* user) noexcept;
 inline constexpr std::size_t kFiberDefaultStack = 128u * 1024u;
 
 class Fiber {
-  public:
+   public:
     // Create a fiber that will execute `fn(user)` when first resumed.
     // `stack_size` is rounded up to the page size by the platform. Returns
     // nullptr on alloc failure.
@@ -84,9 +84,7 @@ class Fiber {
     static void yield() noexcept;
 
     // True once the fiber's entry function has returned.
-    bool done() const noexcept {
-        return done_.load(std::memory_order_acquire) != 0u;
-    }
+    bool done() const noexcept { return done_.load(std::memory_order_acquire) != 0u; }
 
     // The fiber currently running on this thread, or nullptr.
     static Fiber* current() noexcept;
@@ -97,7 +95,7 @@ class Fiber {
     // but treat it as private implementation detail.
     static void platform_entry() noexcept;
 
-  private:
+   private:
     Fiber() = default;
     ~Fiber() = default;
     Fiber(const Fiber&) = delete;
@@ -105,17 +103,17 @@ class Fiber {
 
     // Platform context handle. On Windows this is a LPVOID; on POSIX it's
     // a pointer to a heap-allocated ucontext_t plus its private stack.
-    void* native_  = nullptr;
-    void* stack_   = nullptr;
+    void* native_ = nullptr;
+    void* stack_ = nullptr;
     std::size_t stack_size_ = 0;
-    FiberFn fn_    = nullptr;
-    void*   user_  = nullptr;
+    FiberFn fn_ = nullptr;
+    void* user_ = nullptr;
     std::atomic<u32> done_{0};
 
     // The thread that resumed us; used so yield() knows where to go back.
     // For POSIX this points to the host ucontext_t. For Windows it's the
     // host fiber handle. Set on each resume(); read by yield().
-    void*   host_   = nullptr;
+    void* host_ = nullptr;
 };
 
 }  // namespace psynder::jobs::detail

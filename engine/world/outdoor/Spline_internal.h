@@ -13,7 +13,7 @@
 
 #pragma once
 
-#include "world/outdoor/Heightmap_internal.h"   // for detail::clamp_f32
+#include "world/outdoor/Heightmap_internal.h"  // for detail::clamp_f32
 #include "world/outdoor/Terrain.h"
 
 #include "core/Types.h"
@@ -34,7 +34,7 @@ inline constexpr u8 kDrawItemFlagDrivable = 0x01;
 
 // Evaluate a cubic Bezier at parameter t∈[0,1]. Standard de-Casteljau.
 PSY_FORCEINLINE math::Vec3 bezier_eval(const SplineRoadSegment& seg, f32 t) noexcept {
-    const f32 u  = 1.0f - t;
+    const f32 u = 1.0f - t;
     const f32 b0 = u * u * u;
     const f32 b1 = 3.0f * u * u * t;
     const f32 b2 = 3.0f * u * t * t;
@@ -48,7 +48,7 @@ PSY_FORCEINLINE math::Vec3 bezier_eval(const SplineRoadSegment& seg, f32 t) noex
 
 // Derivative wrt t (3 * Bezier' produces an unnormalized tangent).
 PSY_FORCEINLINE math::Vec3 bezier_tangent(const SplineRoadSegment& seg, f32 t) noexcept {
-    const f32 u   = 1.0f - t;
+    const f32 u = 1.0f - t;
     // dB/dt = 3 [(p1-p0)(1-t)^2 + 2(p2-p1)(1-t)t + (p3-p2)t^2]
     const f32 a = 3.0f * u * u;
     const f32 b = 6.0f * u * t;
@@ -64,13 +64,15 @@ PSY_FORCEINLINE math::Vec3 bezier_tangent(const SplineRoadSegment& seg, f32 t) n
 // a perfect length for the renderer (a few percent is fine — affects UV
 // rate only), but the physics lane will want a tighter estimate later.
 inline f32 bezier_arc_length(const SplineRoadSegment& seg, u32 samples = 16) noexcept {
-    if (samples < 4) samples = 4;
-    if ((samples & 1u) == 1u) ++samples;          // need even count for Simpson
-    f32       total = 0.0f;
-    const f32 inv   = 1.0f / static_cast<f32>(samples);
-    f32       prev_speed = math::length(bezier_tangent(seg, 0.0f));
+    if (samples < 4)
+        samples = 4;
+    if ((samples & 1u) == 1u)
+        ++samples;  // need even count for Simpson
+    f32 total = 0.0f;
+    const f32 inv = 1.0f / static_cast<f32>(samples);
+    f32 prev_speed = math::length(bezier_tangent(seg, 0.0f));
     for (u32 i = 1; i <= samples; ++i) {
-        const f32 t   = static_cast<f32>(i) * inv;
+        const f32 t = static_cast<f32>(i) * inv;
         const f32 spd = math::length(bezier_tangent(seg, t));
         // Trapezoidal — good enough for Wave A. The Simpson rule is the
         // same shape and another half-line; we can lift later.
@@ -84,21 +86,21 @@ inline f32 bezier_arc_length(const SplineRoadSegment& seg, u32 samples = 16) noe
 // the XZ plane, then rotate it about the tangent by `banking_rad` to roll
 // the road. Up is +Y (DESIGN convention).
 PSY_FORCEINLINE void frame_at(const SplineRoadSegment& seg,
-                              f32                      t,
-                              math::Vec3&              right_out,
-                              math::Vec3&              up_out) noexcept {
+                              f32 t,
+                              math::Vec3& right_out,
+                              math::Vec3& up_out) noexcept {
     math::Vec3 tan = math::normalize(bezier_tangent(seg, t));
     // Project the tangent into XZ, build a right vector by 90° rotation.
-    math::Vec3 right{ tan.z, 0.0f, -tan.x };
+    math::Vec3 right{tan.z, 0.0f, -tan.x};
     right = math::normalize(right);
-    math::Vec3 up{ 0.0f, 1.0f, 0.0f };
+    math::Vec3 up{0.0f, 1.0f, 0.0f};
     // Apply banking: rotate (right, up) about the tangent by `banking_rad`.
     const f32 c = std::cos(seg.banking_rad);
     const f32 s = std::sin(seg.banking_rad);
     math::Vec3 new_right{
-         c * right.x + s * up.x,
-         c * right.y + s * up.y,
-         c * right.z + s * up.z,
+        c * right.x + s * up.x,
+        c * right.y + s * up.y,
+        c * right.z + s * up.z,
     };
     math::Vec3 new_up{
         -s * right.x + c * up.x,
@@ -106,15 +108,15 @@ PSY_FORCEINLINE void frame_at(const SplineRoadSegment& seg,
         -s * right.z + c * up.z,
     };
     right_out = new_right;
-    up_out    = new_up;
+    up_out = new_up;
 }
 
 // One DrawItem-worth of vertices + indices for an extruded strip. The
 // caller owns the vectors; we append to them.
 struct ExtrudedStrip {
     std::vector<render::raster::Vertex> vertices;
-    std::vector<u32>                    indices;
-    u8                                  flags = kDrawItemFlagDrivable;
+    std::vector<u32> indices;
+    u8 flags = kDrawItemFlagDrivable;
 };
 
 // Extrude a single Bezier segment into a textured strip. `samples` is the
@@ -122,10 +124,11 @@ struct ExtrudedStrip {
 // + right) and 2 triangles. UVs run [0,1] across width and [0, length/uv_repeat]
 // along length so the road texture tiles naturally.
 inline ExtrudedStrip extrude_segment(const SplineRoadSegment& seg,
-                                     u32                      samples = 16,
-                                     f32                      uv_repeat_metres = 8.0f) {
+                                     u32 samples = 16,
+                                     f32 uv_repeat_metres = 8.0f) {
     ExtrudedStrip strip;
-    if (samples < 2) samples = 2;
+    if (samples < 2)
+        samples = 2;
     strip.vertices.reserve(static_cast<usize>(samples) * 2u);
     strip.indices.reserve(static_cast<usize>(samples - 1u) * 6u);
 
@@ -137,30 +140,30 @@ inline ExtrudedStrip extrude_segment(const SplineRoadSegment& seg,
         const math::Vec3 c = bezier_eval(seg, t);
         math::Vec3 r{}, u{};
         frame_at(seg, t, r, u);
-        const math::Vec3 left {
+        const math::Vec3 left{
             c.x - r.x * seg.half_width,
             c.y - r.y * seg.half_width,
             c.z - r.z * seg.half_width,
         };
-        const math::Vec3 right {
+        const math::Vec3 right{
             c.x + r.x * seg.half_width,
             c.y + r.y * seg.half_width,
             c.z + r.z * seg.half_width,
         };
 
         render::raster::Vertex vL{};
-        vL.position    = left;
-        vL.normal      = u;
-        vL.uv          = math::Vec2{ 0.0f, t * v_scale };
+        vL.position = left;
+        vL.normal = u;
+        vL.uv = math::Vec2{0.0f, t * v_scale};
         vL.lightmap_uv = vL.uv;
-        vL.color       = 0xFFFFFFFFu;
+        vL.color = 0xFFFFFFFFu;
 
         render::raster::Vertex vR{};
-        vR.position    = right;
-        vR.normal      = u;
-        vR.uv          = math::Vec2{ 1.0f, t * v_scale };
+        vR.position = right;
+        vR.normal = u;
+        vR.uv = math::Vec2{1.0f, t * v_scale};
         vR.lightmap_uv = vR.uv;
-        vR.color       = 0xFFFFFFFFu;
+        vR.color = 0xFFFFFFFFu;
 
         strip.vertices.push_back(vL);
         strip.vertices.push_back(vR);
@@ -214,7 +217,7 @@ inline ExtrudedStrip extrude_segment(const SplineRoadSegment& seg,
 //     of the seam.
 
 class SplineEditor {
-public:
+   public:
     // Initial track is empty; the caller appends segments first via
     // `append_segment`. This is the path the editor's "new track" command
     // takes; load-from-disk fills the vector directly and constructs the
@@ -226,12 +229,10 @@ public:
         : segments_(std::move(initial)) {}
 
     // ── Access ─────────────────────────────────────────────────────────
-    std::vector<SplineRoadSegment>&       segments()       noexcept { return segments_; }
+    std::vector<SplineRoadSegment>& segments() noexcept { return segments_; }
     const std::vector<SplineRoadSegment>& segments() const noexcept { return segments_; }
     u32 segment_count() const noexcept { return static_cast<u32>(segments_.size()); }
-    u32 control_point_count() const noexcept {
-        return static_cast<u32>(segments_.size()) * 4u;
-    }
+    u32 control_point_count() const noexcept { return static_cast<u32>(segments_.size()) * 4u; }
 
     // Append a new segment to the end of the track. Returns its index.
     u32 append_segment(const SplineRoadSegment& seg) {
@@ -249,8 +250,10 @@ public:
     // Returns `true` on success. `t` is clamped to (0, 1) — endpoints are
     // already control points; trying to insert at t=0 or t=1 is a no-op.
     bool insert_control_point(u32 segment_index, f32 t) {
-        if (segment_index >= segments_.size()) return false;
-        if (!(t > 0.0f && t < 1.0f)) return false;
+        if (segment_index >= segments_.size())
+            return false;
+        if (!(t > 0.0f && t < 1.0f))
+            return false;
 
         // de Casteljau: given p0..p3, produce two cubics A(t) ∪ B(t) that
         // reproduce the original curve.
@@ -267,18 +270,24 @@ public:
         const math::Vec3 q0 = lerp_v3(src.p0, src.p1, t);
         const math::Vec3 q1 = lerp_v3(src.p1, src.p2, t);
         const math::Vec3 q2 = lerp_v3(src.p2, src.p3, t);
-        const math::Vec3 r0 = lerp_v3(q0,     q1,     t);
-        const math::Vec3 r1 = lerp_v3(q1,     q2,     t);
-        const math::Vec3 s  = lerp_v3(r0,     r1,     t);
+        const math::Vec3 r0 = lerp_v3(q0, q1, t);
+        const math::Vec3 r1 = lerp_v3(q1, q2, t);
+        const math::Vec3 s = lerp_v3(r0, r1, t);
 
         SplineRoadSegment A{};
-        A.p0 = src.p0; A.p1 = q0; A.p2 = r0; A.p3 = s;
-        A.half_width  = src.half_width;
+        A.p0 = src.p0;
+        A.p1 = q0;
+        A.p2 = r0;
+        A.p3 = s;
+        A.half_width = src.half_width;
         A.banking_rad = src.banking_rad;
 
         SplineRoadSegment B{};
-        B.p0 = s; B.p1 = r1; B.p2 = q2; B.p3 = src.p3;
-        B.half_width  = src.half_width;
+        B.p0 = s;
+        B.p1 = r1;
+        B.p2 = q2;
+        B.p3 = src.p3;
+        B.half_width = src.half_width;
         B.banking_rad = src.banking_rad;
 
         segments_[segment_index] = A;
@@ -298,7 +307,8 @@ public:
     }
 
     bool move_control_point(u32 segment_index, u32 local_index, math::Vec3 new_position) {
-        if (segment_index >= segments_.size() || local_index > 3u) return false;
+        if (segment_index >= segments_.size() || local_index > 3u)
+            return false;
         math::Vec3* cps[4] = {
             &segments_[segment_index].p0,
             &segments_[segment_index].p1,
@@ -310,7 +320,8 @@ public:
     }
 
     bool translate_control_point(u32 global_index, math::Vec3 delta) {
-        if (global_index >= control_point_count()) return false;
+        if (global_index >= control_point_count())
+            return false;
         const u32 seg = global_index / 4u;
         const u32 loc = global_index % 4u;
         math::Vec3* cps[4] = {
@@ -342,12 +353,14 @@ public:
     // Returns false on out-of-range. If the track ends up empty, fine —
     // the editor's UI handles that case.
     bool delete_control_point(u32 global_index) {
-        if (global_index >= control_point_count()) return false;
+        if (global_index >= control_point_count())
+            return false;
         return delete_segment(global_index / 4u);
     }
 
     bool delete_segment(u32 segment_index) {
-        if (segment_index >= segments_.size()) return false;
+        if (segment_index >= segments_.size())
+            return false;
 
         const bool has_prev = segment_index > 0u;
         const bool has_next = (segment_index + 1u) < segments_.size();
@@ -375,28 +388,32 @@ public:
     // Returns the segment index whose banking was written, or -1 on an
     // empty track.
     i32 set_banking_at_t(f32 t, f32 banking_rad) {
-        if (segments_.empty()) return -1;
+        if (segments_.empty())
+            return -1;
         const f32 tc = clamp_f32(t, 0.0f, 1.0f);
         // Map t into [0, N) and pick the segment index, clamping the
         // upper bound so t==1.0 lands on the LAST segment (not one past).
         const u32 N = static_cast<u32>(segments_.size());
         u32 seg = static_cast<u32>(tc * static_cast<f32>(N));
-        if (seg >= N) seg = N - 1u;
+        if (seg >= N)
+            seg = N - 1u;
         segments_[seg].banking_rad = banking_rad;
         return static_cast<i32>(seg);
     }
 
     // Read the banking at a given t (same parameterization as `set_banking_at_t`).
     f32 banking_at_t(f32 t) const noexcept {
-        if (segments_.empty()) return 0.0f;
+        if (segments_.empty())
+            return 0.0f;
         const f32 tc = clamp_f32(t, 0.0f, 1.0f);
         const u32 N = static_cast<u32>(segments_.size());
         u32 seg = static_cast<u32>(tc * static_cast<f32>(N));
-        if (seg >= N) seg = N - 1u;
+        if (seg >= N)
+            seg = N - 1u;
         return segments_[seg].banking_rad;
     }
 
-private:
+   private:
     std::vector<SplineRoadSegment> segments_;
 
     PSY_FORCEINLINE static math::Vec3 lerp_v3(math::Vec3 a, math::Vec3 b, f32 t) noexcept {

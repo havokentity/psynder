@@ -26,19 +26,22 @@ TEST_CASE("Pacejka magic-formula peaks within the expected slip-ratio window",
     // peak should land at a small positive κ (Pacejka '94 passenger tire on
     // dry tarmac peaks around κ ≈ 0.10..0.15).
     kernels::PacejkaCoeffs c;
-    f32 Fz = 4000.0f;     // 4 kN per wheel (~midsize car corner load)
+    f32 Fz = 4000.0f;  // 4 kN per wheel (~midsize car corner load)
     f32 mu = 1.0f;
 
     f32 best_slip = 0.0f;
-    f32 best_fx   = 0.0f;
+    f32 best_fx = 0.0f;
     for (f32 k = 0.01f; k < 1.0f; k += 0.01f) {
         auto t = kernels::kernel_pacejka_combined(k, 0.0f, Fz, mu, c);
-        if (t.Fx > best_fx) { best_fx = t.Fx; best_slip = k; }
+        if (t.Fx > best_fx) {
+            best_fx = t.Fx;
+            best_slip = k;
+        }
     }
     REQUIRE(best_slip > 0.02f);
     REQUIRE(best_slip < 0.30f);
-    REQUIRE(best_fx <= Fz);       // never above mu·Fz
-    REQUIRE(best_fx > 0.7f * Fz); // realistic peak
+    REQUIRE(best_fx <= Fz);        // never above mu·Fz
+    REQUIRE(best_fx > 0.7f * Fz);  // realistic peak
 }
 
 TEST_CASE("Pacejka longitudinal force is monotone in slip ratio below the peak",
@@ -54,7 +57,10 @@ TEST_CASE("Pacejka longitudinal force is monotone in slip ratio below the peak",
     bool monotone = true;
     for (f32 k = 0.0f; k < 0.05f; k += 0.005f) {
         auto t = kernels::kernel_pacejka_combined(k, 0.0f, Fz, mu, c);
-        if (t.Fx + 1e-3f < prev) { monotone = false; break; }
+        if (t.Fx + 1e-3f < prev) {
+            monotone = false;
+            break;
+        }
         prev = t.Fx;
     }
     REQUIRE(monotone);
@@ -99,13 +105,13 @@ namespace {
 kernels::DrivetrainParams make_default_drivetrain(f32 peak = 350.0f) {
     kernels::DrivetrainParams d;
     d.curve_count = 4;
-    d.curve[0] = { 1000.0f, 0.5f * peak };
-    d.curve[1] = { 3000.0f, 0.9f * peak };
-    d.curve[2] = { 4500.0f, peak };
-    d.curve[3] = { 7000.0f, 0.6f * peak };
+    d.curve[0] = {1000.0f, 0.5f * peak};
+    d.curve[1] = {3000.0f, 0.9f * peak};
+    d.curve[2] = {4500.0f, peak};
+    d.curve[3] = {7000.0f, 0.6f * peak};
     d.idle_rpm = 800.0f;
     d.redline_rpm = 7000.0f;
-    d.gears = { -3.4f, 3.6f, 2.2f, 1.5f, 1.15f, 0.9f, 0.75f };
+    d.gears = {-3.4f, 3.6f, 2.2f, 1.5f, 1.15f, 0.9f, 0.75f};
     d.final_drive = 3.42f;
     return d;
 }
@@ -122,9 +128,9 @@ TEST_CASE("Engine torque curve interpolates linearly between control points",
 TEST_CASE("Engine torque curve clamps below idle and above redline",
           "[physics][vehicle][drivetrain]") {
     auto d = make_default_drivetrain(400.0f);
-    f32 t_low  = kernels::kernel_engine_torque_at(d, 500.0f);
+    f32 t_low = kernels::kernel_engine_torque_at(d, 500.0f);
     f32 t_high = kernels::kernel_engine_torque_at(d, 9000.0f);
-    REQUIRE(t_low  == Approx(200.0f).margin(1.0f));
+    REQUIRE(t_low == Approx(200.0f).margin(1.0f));
     REQUIRE(t_high == Approx(240.0f).margin(1.0f));
 }
 
@@ -135,19 +141,22 @@ TEST_CASE("Drivetrain delivers correct wheel torque for known throttle + gear",
     // each wheel should see ≈ 0.5 · 400 · 3.6 · 3.42 = 2462 N·m, less the
     // tiny RPM update. Clutch is fully engaged.
     auto d = make_default_drivetrain(400.0f);
-    auto out = kernels::kernel_drivetrain_step(
-        d, /*throttle*/1.0f, /*brake*/0.0f, /*clutch*/1.0f, /*gear*/1,
-        /*omega_l*/0.0f, /*omega_r*/0.0f, /*rpm_in*/4500.0f);
-    REQUIRE(out.wheel_torque_l == Approx(0.5f * 400.0f * 3.6f * 3.42f)
-                                     .margin(5.0f));
+    auto out = kernels::kernel_drivetrain_step(d,
+                                               /*throttle*/ 1.0f,
+                                               /*brake*/ 0.0f,
+                                               /*clutch*/ 1.0f,
+                                               /*gear*/ 1,
+                                               /*omega_l*/ 0.0f,
+                                               /*omega_r*/ 0.0f,
+                                               /*rpm_in*/ 4500.0f);
+    REQUIRE(out.wheel_torque_l == Approx(0.5f * 400.0f * 3.6f * 3.42f).margin(5.0f));
     REQUIRE(out.wheel_torque_l == Approx(out.wheel_torque_r).margin(1e-3f));
 }
 
-TEST_CASE("Drivetrain produces zero wheel torque in neutral",
-          "[physics][vehicle][drivetrain]") {
+TEST_CASE("Drivetrain produces zero wheel torque in neutral", "[physics][vehicle][drivetrain]") {
     auto d = make_default_drivetrain(400.0f);
-    auto out = kernels::kernel_drivetrain_step(
-        d, 1.0f, 0.0f, 1.0f, /*neutral*/0, 0.0f, 0.0f, 3000.0f);
+    auto out =
+        kernels::kernel_drivetrain_step(d, 1.0f, 0.0f, 1.0f, /*neutral*/ 0, 0.0f, 0.0f, 3000.0f);
     REQUIRE(out.wheel_torque_l == Approx(0.0f).margin(1e-3f));
     REQUIRE(out.wheel_torque_r == Approx(0.0f).margin(1e-3f));
     // Neutral throttle still revs the engine.
@@ -157,8 +166,8 @@ TEST_CASE("Drivetrain produces zero wheel torque in neutral",
 TEST_CASE("Reverse gear produces negative wheel torque under positive throttle",
           "[physics][vehicle][drivetrain]") {
     auto d = make_default_drivetrain(400.0f);
-    auto out = kernels::kernel_drivetrain_step(
-        d, 1.0f, 0.0f, 1.0f, /*reverse*/-1, 0.0f, 0.0f, 3000.0f);
+    auto out =
+        kernels::kernel_drivetrain_step(d, 1.0f, 0.0f, 1.0f, /*reverse*/ -1, 0.0f, 0.0f, 3000.0f);
     REQUIRE(out.wheel_torque_l < 0.0f);
     REQUIRE(out.wheel_torque_r < 0.0f);
 }
@@ -167,21 +176,20 @@ TEST_CASE("Brake torque opposes wheel rotation in both directions",
           "[physics][vehicle][drivetrain]") {
     auto d = make_default_drivetrain(400.0f);
     // Forward-rolling wheels, brakes on: brake torque must be negative.
-    auto fwd = kernels::kernel_drivetrain_step(
-        d, 0.0f, 1.0f, 1.0f, /*neutral*/0, 10.0f, 10.0f, 1000.0f);
+    auto fwd =
+        kernels::kernel_drivetrain_step(d, 0.0f, 1.0f, 1.0f, /*neutral*/ 0, 10.0f, 10.0f, 1000.0f);
     REQUIRE(fwd.wheel_torque_l < 0.0f);
     REQUIRE(fwd.wheel_torque_r < 0.0f);
     // Reverse-rolling: brake torque flips sign.
-    auto rev = kernels::kernel_drivetrain_step(
-        d, 0.0f, 1.0f, 1.0f, /*neutral*/0, -10.0f, -10.0f, 1000.0f);
+    auto rev =
+        kernels::kernel_drivetrain_step(d, 0.0f, 1.0f, 1.0f, /*neutral*/ 0, -10.0f, -10.0f, 1000.0f);
     REQUIRE(rev.wheel_torque_l > 0.0f);
     REQUIRE(rev.wheel_torque_r > 0.0f);
 }
 
 // ─── Aero ────────────────────────────────────────────────────────────────
 
-TEST_CASE("Aero drag scales with v^2 — doubling speed quadruples drag",
-          "[physics][vehicle][aero]") {
+TEST_CASE("Aero drag scales with v^2 — doubling speed quadruples drag", "[physics][vehicle][aero]") {
     // Drag force = ½ρv²·Cd·A. With the same Cd·A, doubling the speed should
     // multiply the magnitude by exactly 4 (within float noise).
     math::Vec3 down{0, -1, 0};
@@ -198,15 +206,14 @@ TEST_CASE("Aero drag opposes velocity direction", "[physics][vehicle][aero]") {
     math::Vec3 down{0, -1, 0};
     math::Vec3 v{30.0f, 0, 0};
     auto f = kernels::kernel_aero_force(v, down, 0.30f, 2.2f, 0.0f, 0.0f);
-    REQUIRE(f.x < 0.0f);     // points opposite to +x velocity
+    REQUIRE(f.x < 0.0f);  // points opposite to +x velocity
     REQUIRE(std::fabs(f.y) < 1e-3f);
     REQUIRE(std::fabs(f.z) < 1e-3f);
 }
 
-TEST_CASE("Downforce points along world-down when configured",
-          "[physics][vehicle][aero]") {
+TEST_CASE("Downforce points along world-down when configured", "[physics][vehicle][aero]") {
     math::Vec3 down{0, -1, 0};
-    math::Vec3 v{40.0f, 0, 0};      // 40 m/s ≈ 144 km/h
+    math::Vec3 v{40.0f, 0, 0};  // 40 m/s ≈ 144 km/h
     auto f = kernels::kernel_aero_force(v, down, 0.30f, 2.2f, 3.0f, 1.4f);
     // Y-component must be negative (downforce) and substantial (~kilonewton-ish
     // at this speed — order-of-magnitude check).
@@ -214,8 +221,7 @@ TEST_CASE("Downforce points along world-down when configured",
 }
 
 TEST_CASE("Aero produces zero force at standstill", "[physics][vehicle][aero]") {
-    auto f = kernels::kernel_aero_force({0, 0, 0}, {0, -1, 0},
-                                        0.30f, 2.2f, 1.0f, 1.0f);
+    auto f = kernels::kernel_aero_force({0, 0, 0}, {0, -1, 0}, 0.30f, 2.2f, 1.0f, 1.0f);
     REQUIRE(f.x == Approx(0.0f).margin(1e-6f));
     REQUIRE(f.y == Approx(0.0f).margin(1e-6f));
     REQUIRE(f.z == Approx(0.0f).margin(1e-6f));

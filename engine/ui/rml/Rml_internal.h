@@ -36,14 +36,14 @@ namespace psynder::ui::rml::detail {
 
 struct StyleBlock {
     // Sentinel-NaN means "unset, inherit".
-    f32  left              = std::numeric_limits<f32>::quiet_NaN();
-    f32  top               = std::numeric_limits<f32>::quiet_NaN();
-    f32  width             = std::numeric_limits<f32>::quiet_NaN();
-    f32  height            = std::numeric_limits<f32>::quiet_NaN();
-    u32  background_color  = 0;       // RGBA, 0 == transparent / unset
-    u32  text_color        = 0;       // RGBA, 0 == inherit
-    f32  font_size         = std::numeric_limits<f32>::quiet_NaN();
-    bool display_none      = false;
+    f32 left = std::numeric_limits<f32>::quiet_NaN();
+    f32 top = std::numeric_limits<f32>::quiet_NaN();
+    f32 width = std::numeric_limits<f32>::quiet_NaN();
+    f32 height = std::numeric_limits<f32>::quiet_NaN();
+    u32 background_color = 0;  // RGBA, 0 == transparent / unset
+    u32 text_color = 0;        // RGBA, 0 == inherit
+    f32 font_size = std::numeric_limits<f32>::quiet_NaN();
+    bool display_none = false;
 
     // Has any field been touched?  Helps the cascade decide which child
     // overrides which parent property.
@@ -55,8 +55,8 @@ struct StyleBlock {
 struct Rule {
     enum class SelectorKind : u8 { Tag, Id, Class, Universal };
     SelectorKind kind = SelectorKind::Universal;
-    std::string  name;     // e.g. "div", "hud-bar", "warning"
-    StyleBlock   style{};
+    std::string name;  // e.g. "div", "hud-bar", "warning"
+    StyleBlock style{};
 };
 
 // ─── DOM ─────────────────────────────────────────────────────────────────
@@ -65,22 +65,22 @@ struct Rule {
 // style.  Enough to validate parse and render a panel + a label.
 
 struct Element {
-    std::string              tag;        // "rml", "body", "div", "span", "img", "p" ...
-    std::string              id;
+    std::string tag;  // "rml", "body", "div", "span", "img", "p" ...
+    std::string id;
     std::vector<std::string> classes;
-    std::string              text;       // text content (for leaf text nodes)
+    std::string text;  // text content (for leaf text nodes)
     std::unordered_map<std::string, std::string> attributes;
 
-    StyleBlock               inline_style{};   // from style="..."
-    StyleBlock               computed_style{}; // after cascade
-    std::vector<Element>     children;
+    StyleBlock inline_style{};    // from style="..."
+    StyleBlock computed_style{};  // after cascade
+    std::vector<Element> children;
 
     // Inline event handlers (onclick="lua:foo()", etc.) — the Lua adapter
     // resolves these at fire time.
     std::unordered_map<std::string, std::string> handlers;
 
     // Diagnostics
-    u32  source_line = 0;
+    u32 source_line = 0;
 };
 
 // ─── Document ────────────────────────────────────────────────────────────
@@ -92,25 +92,25 @@ struct Element {
 // load_document) so designers' Lua scripts can reference them.
 
 struct Document {
-    std::string         name;
-    std::string         rml_virtual_path;
-    std::string         rcss_virtual_path;
-    Element             root;
-    std::vector<Rule>   sheet;
-    bool                visible           = false;
+    std::string name;
+    std::string rml_virtual_path;
+    std::string rcss_virtual_path;
+    Element root;
+    std::vector<Rule> sheet;
+    bool visible = false;
     // `needs_reload` is touched from the VFS watcher thread (which fires
     // the watch callback) and read on the engine main thread inside
     // update().  Using a 1-byte atomic keeps it racey-but-correct: a
     // pending reload is never lost, an in-flight reload simply repeats
     // on the next frame.  The atomic flag avoids any need for a mutex on
     // the hot render/update path.
-    std::atomic<bool>   needs_reload{ false };
-    u64                 reload_generation = 0;
+    std::atomic<bool> needs_reload{false};
+    u64 reload_generation = 0;
 
     // Default/move semantics so the unordered_map<string,Document> can
     // still re-emplace cleanly when load_document is called twice.
     Document() = default;
-    Document(const Document&)            = delete;
+    Document(const Document&) = delete;
     Document& operator=(const Document&) = delete;
     Document(Document&& o) noexcept
         : name(std::move(o.name))
@@ -123,12 +123,12 @@ struct Document {
         , reload_generation(o.reload_generation) {}
     Document& operator=(Document&& o) noexcept {
         if (this != &o) {
-            name              = std::move(o.name);
-            rml_virtual_path  = std::move(o.rml_virtual_path);
+            name = std::move(o.name);
+            rml_virtual_path = std::move(o.rml_virtual_path);
             rcss_virtual_path = std::move(o.rcss_virtual_path);
-            root              = std::move(o.root);
-            sheet             = std::move(o.sheet);
-            visible           = o.visible;
+            root = std::move(o.root);
+            sheet = std::move(o.sheet);
+            visible = o.visible;
             needs_reload.store(o.needs_reload.load(std::memory_order_relaxed),
                                std::memory_order_relaxed);
             reload_generation = o.reload_generation;
@@ -144,9 +144,9 @@ struct Document {
 // the vendored RmlUi switch is flipped on.
 
 struct ParseResult {
-    bool         ok = false;
-    std::string  error;
-    u32          error_line = 0;
+    bool ok = false;
+    std::string error;
+    u32 error_line = 0;
 };
 
 ParseResult parse_rml(std::string_view src, Element& out_root);
@@ -173,9 +173,9 @@ void apply_cascade(Element& root, const std::vector<Rule>& sheet);
 
 struct LayoutBox {
     math::Vec2 origin{0.f, 0.f};
-    math::Vec2 size  {0.f, 0.f};
-    u32        rgba   = 0;
-    bool       outline = false;
+    math::Vec2 size{0.f, 0.f};
+    u32 rgba = 0;
+    bool outline = false;
 };
 
 void layout(const Document& doc, math::Vec2 viewport, std::vector<LayoutBox>& out);
@@ -200,19 +200,18 @@ void set_lua_backend(LuaExecFn backend) noexcept;
 // Upstream RmlUi events grow this surface organically once the vendored
 // branch flips on.
 struct EventPayload {
-    std::string_view kind;        // "click", "mouseover", "mouseout", "change", ...
-    std::string_view target_id;   // element id ("" if none)
-    f32              mouse_x = 0.f;
-    f32              mouse_y = 0.f;
-    i32              button  = 0; // 0=left, 1=middle, 2=right (for click events)
+    std::string_view kind;       // "click", "mouseover", "mouseout", "change", ...
+    std::string_view target_id;  // element id ("" if none)
+    f32 mouse_x = 0.f;
+    f32 mouse_y = 0.f;
+    i32 button = 0;  // 0=left, 1=middle, 2=right (for click events)
 };
 
 // Called by Rml.cpp for every inline-attribute handler that fires.  See
 // LuaBinding.cpp for the implementation.  The two-arg overload is kept
 // for backwards-compat with existing tests; new callers supply a
 // payload.
-bool dispatch_handler(std::string_view event_name,
-                      std::string_view handler_body);
+bool dispatch_handler(std::string_view event_name, std::string_view handler_body);
 bool dispatch_handler(std::string_view event_name,
                       std::string_view handler_body,
                       const EventPayload& payload);

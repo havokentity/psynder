@@ -32,7 +32,7 @@ TEST_CASE("FxQ24_8 add and sub are exact in raw", "[math][fxq248]") {
     FxQ24_8 b = FxQ24_8::from_f32(2.5f);
     REQUIRE((a + b).raw == FxQ24_8::from_f32(3.75f).raw);
     REQUIRE((b - a).raw == FxQ24_8::from_f32(1.25f).raw);
-    REQUIRE((-a).raw    == -a.raw);
+    REQUIRE((-a).raw == -a.raw);
 }
 
 TEST_CASE("FxQ24_8 multiplication retains the 1-over-256 grid", "[math][fxq248]") {
@@ -55,9 +55,9 @@ TEST_CASE("FxQ24_8 division round-trips reasonably", "[math][fxq248]") {
 
 TEST_CASE("FxQ24_8 ordering matches integer semantics", "[math][fxq248]") {
     FxQ24_8 small = FxQ24_8::from_f32(1.5f);
-    FxQ24_8 big   = FxQ24_8::from_f32(3.0f);
-    REQUIRE(small <  big);
-    REQUIRE(big   >  small);
+    FxQ24_8 big = FxQ24_8::from_f32(3.0f);
+    REQUIRE(small < big);
+    REQUIRE(big > small);
     REQUIRE(small != big);
     REQUIRE(small == FxQ24_8::from_f32(1.5f));
 }
@@ -66,7 +66,7 @@ TEST_CASE("FxQ24_8 round versus truncate near a tick", "[math][fxq248]") {
     // 0.4999/256 truncates down to 0; round-to-nearest snaps to 1/256.
     f32 just_below = 0.4f / 256.0f;
     f32 just_above = 0.6f / 256.0f;
-    REQUIRE(FxQ24_8::from_f32(just_below).raw       == 0);
+    REQUIRE(FxQ24_8::from_f32(just_below).raw == 0);
     REQUIRE(FxQ24_8::from_f32_round(just_above).raw == 1);
 
     f32 negative = -0.6f / 256.0f;

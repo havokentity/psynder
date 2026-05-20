@@ -27,10 +27,10 @@ namespace psynder::mem {
 // `budget`; the editor heatmap (lane 16) draws `current / budget` as a
 // filled bar and `peak / budget` as an outline.
 struct TagStat {
-    Tag    tag     = Tag::Misc;
-    usize  current = 0;
-    usize  peak    = 0;
-    usize  budget  = 0;
+    Tag tag = Tag::Misc;
+    usize current = 0;
+    usize peak = 0;
+    usize budget = 0;
 };
 
 // Snapshot every tag in order [0 .. Tag::Count). The returned array is

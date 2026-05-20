@@ -42,7 +42,7 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err = nullptr);
 // + indices), which is enough for the Wave-A smoke test. Returns false with
 // a descriptive error if the file uses anything more elaborate.
 bool parse_gltf(std::string_view json,
-                std::span<const u8> external_buffer,   // empty if none
+                std::span<const u8> external_buffer,  // empty if none
                 LmmMesh& out,
                 std::string* err = nullptr);
 
@@ -61,8 +61,7 @@ bool decode_png_stored(std::span<const u8> bytes,
 // Encoder: produces a valid 8-bit RGBA PNG using only stored deflate blocks.
 // The encoded file is round-trip readable by decode_png_stored above as well
 // as by any standards-compliant PNG decoder (stb_image, libpng, browsers).
-void encode_png_stored(const u8* rgba, u32 width, u32 height,
-                       std::vector<u8>& out_bytes);
+void encode_png_stored(const u8* rgba, u32 width, u32 height, std::vector<u8>& out_bytes);
 
 // ─── WAV ─────────────────────────────────────────────────────────────────
 //
@@ -73,7 +72,7 @@ void encode_png_stored(const u8* rgba, u32 width, u32 height,
 bool parse_wav(std::span<const u8> bytes, LmaAudio& out, std::string* err = nullptr);
 
 // Encoder used by tests (writes 16-bit PCM mono/stereo WAVs we can then cook).
-void encode_wav_pcm16(const i16* samples, u32 sample_count, u32 channels, u32 sample_rate,
-                      std::vector<u8>& out_bytes);
+void encode_wav_pcm16(
+    const i16* samples, u32 sample_count, u32 channels, u32 sample_rate, std::vector<u8>& out_bytes);
 
 }  // namespace psynder::tools::cook

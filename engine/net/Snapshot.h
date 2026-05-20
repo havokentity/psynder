@@ -24,14 +24,14 @@
 namespace psynder::net {
 
 struct SnapshotEntity {
-    u32         entity_id = 0;
-    math::Vec3  position{0.f, 0.f, 0.f};
-    u32         state_bits = 0;
+    u32 entity_id = 0;
+    math::Vec3 position{0.f, 0.f, 0.f};
+    u32 state_bits = 0;
 };
 
 struct SnapshotFrame {
-    u32                          tick = 0;
-    std::vector<SnapshotEntity>  entities;
+    u32 tick = 0;
+    std::vector<SnapshotEntity> entities;
 };
 
 // Pack a SnapshotFrame into a flat byte buffer. Returns the size written.
@@ -40,19 +40,18 @@ inline constexpr usize kSnapshotHeaderBytes = 8;   // tick (4) + count (4)
 inline constexpr usize kSnapshotEntityBytes = 20;  // id (4) + xyz (12) + state (4)
 
 usize encode_snapshot(const SnapshotFrame& f, std::span<u8> out) noexcept;
-bool  decode_snapshot(std::span<const u8> in, SnapshotFrame& out) noexcept;
+bool decode_snapshot(std::span<const u8> in, SnapshotFrame& out) noexcept;
 
 // Compose a snapshot for peer `p` from `world` (all entities) by filtering
 // through `aoi`. `world` is read-only; only visible entries make it into
 // `out_frame`.
 void compose_for_peer(const SnapshotFrame& world,
-                      const AoiFilter&     aoi,
-                      PeerId               p,
-                      SnapshotFrame&       out_frame) noexcept;
+                      const AoiFilter& aoi,
+                      PeerId p,
+                      SnapshotFrame& out_frame) noexcept;
 
 // Linear-interpolate two snapshots into `out`. `t` in [0,1]. Entities not
 // present in both frames pass through from whichever frame holds them.
-void interpolate(const SnapshotFrame& a, const SnapshotFrame& b, f32 t,
-                 SnapshotFrame& out) noexcept;
+void interpolate(const SnapshotFrame& a, const SnapshotFrame& b, f32 t, SnapshotFrame& out) noexcept;
 
 }  // namespace psynder::net

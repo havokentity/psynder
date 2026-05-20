@@ -39,15 +39,11 @@ void append_le(std::vector<u8>& out, T value) {
 }
 
 u32 read_be32(const u8* p) {
-    return (static_cast<u32>(p[0]) << 24) |
-           (static_cast<u32>(p[1]) << 16) |
-           (static_cast<u32>(p[2]) <<  8) |
-            static_cast<u32>(p[3]);
+    return (static_cast<u32>(p[0]) << 24) | (static_cast<u32>(p[1]) << 16) |
+           (static_cast<u32>(p[2]) << 8) | static_cast<u32>(p[3]);
 }
 u32 read_le32(const u8* p) {
-    return  static_cast<u32>(p[0])        |
-           (static_cast<u32>(p[1]) <<  8) |
-           (static_cast<u32>(p[2]) << 16) |
+    return static_cast<u32>(p[0]) | (static_cast<u32>(p[1]) << 8) | (static_cast<u32>(p[2]) << 16) |
            (static_cast<u32>(p[3]) << 24);
 }
 u16 read_le16(const u8* p) {
@@ -57,7 +53,7 @@ u16 read_le16(const u8* p) {
 void trim_inplace(std::string_view& s) {
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r'))
         s.remove_prefix(1);
-    while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t' || s.back()  == '\r'))
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
         s.remove_suffix(1);
 }
 
@@ -73,15 +69,22 @@ bool parse_f32(std::string_view s, f32& out) {
 
 bool parse_i32(std::string_view s, i32& out) {
     trim_inplace(s);
-    if (s.empty()) return false;
+    if (s.empty())
+        return false;
     i32 sign = 1;
     usize i = 0;
-    if (s[0] == '-') { sign = -1; ++i; }
-    else if (s[0] == '+') { ++i; }
-    if (i >= s.size()) return false;
+    if (s[0] == '-') {
+        sign = -1;
+        ++i;
+    } else if (s[0] == '+') {
+        ++i;
+    }
+    if (i >= s.size())
+        return false;
     i32 v = 0;
     for (; i < s.size(); ++i) {
-        if (s[i] < '0' || s[i] > '9') return false;
+        if (s[i] < '0' || s[i] > '9')
+            return false;
         v = v * 10 + (s[i] - '0');
     }
     out = v * sign;
@@ -91,18 +94,21 @@ bool parse_i32(std::string_view s, i32& out) {
 // ─── CRC32 ───────────────────────────────────────────────────────────────
 u32 crc32_table(int n) {
     u32 c = static_cast<u32>(n);
-    for (int k = 0; k < 8; ++k) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+    for (int k = 0; k < 8; ++k)
+        c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
     return c;
 }
 u32 crc32_update(u32 crc, const u8* buf, usize len) {
     static u32 table[256];
     static bool inited = false;
     if (!inited) {
-        for (int i = 0; i < 256; ++i) table[i] = crc32_table(i);
+        for (int i = 0; i < 256; ++i)
+            table[i] = crc32_table(i);
         inited = true;
     }
     crc ^= 0xFFFFFFFFu;
-    for (usize i = 0; i < len; ++i) crc = table[(crc ^ buf[i]) & 0xFFu] ^ (crc >> 8);
+    for (usize i = 0; i < len; ++i)
+        crc = table[(crc ^ buf[i]) & 0xFFu] ^ (crc >> 8);
     return crc ^ 0xFFFFFFFFu;
 }
 
@@ -117,18 +123,20 @@ u32 adler32(const u8* buf, usize len) {
     return (b << 16) | a;
 }
 
-}  // anon namespace
+}  // namespace
 
 // ─── OBJ ─────────────────────────────────────────────────────────────────
 
 bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
     out = {};
-    std::vector<f32> positions;       // xyz triples
-    std::vector<f32> normals;         // xyz triples
-    std::vector<f32> texcoords;       // uv pairs
-    struct Face { i32 p[3], t[3], n[3]; };
+    std::vector<f32> positions;  // xyz triples
+    std::vector<f32> normals;    // xyz triples
+    std::vector<f32> texcoords;  // uv pairs
+    struct Face {
+        i32 p[3], t[3], n[3];
+    };
     std::vector<Face> faces;
-    std::vector<u32>  face_submesh;
+    std::vector<u32> face_submesh;
     std::vector<std::string> mat_names;
     i32 active_mat = -1;
 
@@ -137,41 +145,58 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
     while (i < text.size()) {
         ++line_no;
         usize line_end = text.find('\n', i);
-        if (line_end == std::string_view::npos) line_end = text.size();
+        if (line_end == std::string_view::npos)
+            line_end = text.size();
         std::string_view line = text.substr(i, line_end - i);
         i = line_end + 1;
         trim_inplace(line);
-        if (line.empty() || line.front() == '#') continue;
+        if (line.empty() || line.front() == '#')
+            continue;
 
         // tokens by whitespace
         std::vector<std::string_view> tok;
         usize p = 0;
         while (p < line.size()) {
-            while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+            while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
+                ++p;
             usize start = p;
-            while (p < line.size() && line[p] != ' ' && line[p] != '\t') ++p;
-            if (p > start) tok.push_back(line.substr(start, p - start));
+            while (p < line.size() && line[p] != ' ' && line[p] != '\t')
+                ++p;
+            if (p > start)
+                tok.push_back(line.substr(start, p - start));
         }
-        if (tok.empty()) continue;
+        if (tok.empty())
+            continue;
         auto cmd = tok[0];
         if (cmd == "v" && tok.size() >= 4) {
             f32 x, y, z;
             if (!parse_f32(tok[1], x) || !parse_f32(tok[2], y) || !parse_f32(tok[3], z)) {
-                if (err) *err = "obj: bad vertex on line " + std::to_string(line_no); return false;
+                if (err)
+                    *err = "obj: bad vertex on line " + std::to_string(line_no);
+                return false;
             }
-            positions.push_back(x); positions.push_back(y); positions.push_back(z);
+            positions.push_back(x);
+            positions.push_back(y);
+            positions.push_back(z);
         } else if (cmd == "vn" && tok.size() >= 4) {
             f32 x, y, z;
             if (!parse_f32(tok[1], x) || !parse_f32(tok[2], y) || !parse_f32(tok[3], z)) {
-                if (err) *err = "obj: bad normal on line " + std::to_string(line_no); return false;
+                if (err)
+                    *err = "obj: bad normal on line " + std::to_string(line_no);
+                return false;
             }
-            normals.push_back(x); normals.push_back(y); normals.push_back(z);
+            normals.push_back(x);
+            normals.push_back(y);
+            normals.push_back(z);
         } else if (cmd == "vt" && tok.size() >= 3) {
             f32 u, v;
             if (!parse_f32(tok[1], u) || !parse_f32(tok[2], v)) {
-                if (err) *err = "obj: bad uv on line " + std::to_string(line_no); return false;
+                if (err)
+                    *err = "obj: bad uv on line " + std::to_string(line_no);
+                return false;
             }
-            texcoords.push_back(u); texcoords.push_back(v);
+            texcoords.push_back(u);
+            texcoords.push_back(v);
         } else if (cmd == "usemtl" && tok.size() >= 2) {
             std::string name(tok[1]);
             // Reuse existing slot if seen before.
@@ -184,41 +209,62 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
             }
         } else if (cmd == "f") {
             if (tok.size() < 4) {
-                if (err) *err = "obj: face needs ≥3 verts on line " + std::to_string(line_no); return false;
+                if (err)
+                    *err = "obj: face needs ≥3 verts on line " + std::to_string(line_no);
+                return false;
             }
             // Fan-triangulate.
             auto parse_corner = [&](std::string_view t, i32& vp, i32& vt, i32& vn) {
-                vp = 0; vt = 0; vn = 0;
+                vp = 0;
+                vt = 0;
+                vn = 0;
                 usize slash1 = t.find('/');
                 std::string_view a = (slash1 == std::string_view::npos) ? t : t.substr(0, slash1);
-                if (!parse_i32(a, vp)) return false;
-                if (slash1 == std::string_view::npos) return true;
+                if (!parse_i32(a, vp))
+                    return false;
+                if (slash1 == std::string_view::npos)
+                    return true;
                 usize slash2 = t.find('/', slash1 + 1);
                 std::string_view b = (slash2 == std::string_view::npos)
-                                       ? t.substr(slash1 + 1)
-                                       : t.substr(slash1 + 1, slash2 - slash1 - 1);
-                if (!b.empty()) parse_i32(b, vt);
-                if (slash2 == std::string_view::npos) return true;
+                                         ? t.substr(slash1 + 1)
+                                         : t.substr(slash1 + 1, slash2 - slash1 - 1);
+                if (!b.empty())
+                    parse_i32(b, vt);
+                if (slash2 == std::string_view::npos)
+                    return true;
                 std::string_view c = t.substr(slash2 + 1);
-                if (!c.empty()) parse_i32(c, vn);
+                if (!c.empty())
+                    parse_i32(c, vn);
                 return true;
             };
             i32 ap, at_, an;
             if (!parse_corner(tok[1], ap, at_, an)) {
-                if (err) *err = "obj: bad face corner on line " + std::to_string(line_no); return false;
+                if (err)
+                    *err = "obj: bad face corner on line " + std::to_string(line_no);
+                return false;
             }
             for (usize k = 2; k + 1 < tok.size(); ++k) {
                 i32 bp, bt, bn, cp, ct, cn;
-                if (!parse_corner(tok[k],     bp, bt, bn)) {
-                    if (err) *err = "obj: bad face on line " + std::to_string(line_no); return false;
+                if (!parse_corner(tok[k], bp, bt, bn)) {
+                    if (err)
+                        *err = "obj: bad face on line " + std::to_string(line_no);
+                    return false;
                 }
                 if (!parse_corner(tok[k + 1], cp, ct, cn)) {
-                    if (err) *err = "obj: bad face on line " + std::to_string(line_no); return false;
+                    if (err)
+                        *err = "obj: bad face on line " + std::to_string(line_no);
+                    return false;
                 }
                 Face f{};
-                f.p[0] = ap; f.p[1] = bp; f.p[2] = cp;
-                f.t[0] = at_; f.t[1] = bt; f.t[2] = ct;
-                f.n[0] = an; f.n[1] = bn; f.n[2] = cn;
+                f.p[0] = ap;
+                f.p[1] = bp;
+                f.p[2] = cp;
+                f.t[0] = at_;
+                f.t[1] = bt;
+                f.t[2] = ct;
+                f.n[0] = an;
+                f.n[1] = bn;
+                f.n[2] = cn;
                 faces.push_back(f);
                 face_submesh.push_back(active_mat < 0 ? 0u : static_cast<u32>(active_mat));
             }
@@ -226,15 +272,19 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
     }
 
     if (faces.empty()) {
-        if (err) *err = "obj: no faces";
+        if (err)
+            *err = "obj: no faces";
         return false;
     }
-    if (mat_names.empty()) mat_names.push_back("default");
+    if (mat_names.empty())
+        mat_names.push_back("default");
 
     // Resolve negative (relative) indices.
     auto resolve = [](i32 ix, isize total) -> i32 {
-        if (ix > 0) return ix - 1;
-        if (ix < 0) return static_cast<i32>(total + ix);
+        if (ix > 0)
+            return ix - 1;
+        if (ix < 0)
+            return static_cast<i32>(total + ix);
         return -1;
     };
 
@@ -248,7 +298,10 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
             // tiny FNV-1a over the three i32s
             u64 h = 0xcbf29ce484222325ULL;
             const u8* b = reinterpret_cast<const u8*>(&k);
-            for (usize i = 0; i < sizeof(Key); ++i) { h ^= b[i]; h *= 0x100000001b3ULL; }
+            for (usize i = 0; i < sizeof(Key); ++i) {
+                h ^= b[i];
+                h *= 0x100000001b3ULL;
+            }
             return static_cast<usize>(h);
         }
     };
@@ -277,7 +330,9 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
         for (int k = 0; k < 3; ++k) {
             i32 pi = resolve(f.p[k], positions.size() / 3);
             if (pi < 0 || pi * 3 + 2 >= static_cast<i32>(positions.size())) {
-                if (err) *err = "obj: position index out of range"; return false;
+                if (err)
+                    *err = "obj: position index out of range";
+                return false;
             }
             f32* dst = (k == 0) ? a : (k == 1) ? b : c;
             dst[0] = positions[pi * 3 + 0];
@@ -290,7 +345,11 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
         f32 ny = uz * vx - ux * vz;
         f32 nz = ux * vy - uy * vx;
         f32 nl = std::sqrt(nx * nx + ny * ny + nz * nz);
-        if (nl > 1e-12f) { nx /= nl; ny /= nl; nz /= nl; }
+        if (nl > 1e-12f) {
+            nx /= nl;
+            ny /= nl;
+            nz /= nl;
+        }
 
         for (int k = 0; k < 3; ++k) {
             i32 pi = resolve(f.p[k], positions.size() / 3);
@@ -305,10 +364,14 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
                     v.ny = normals[ni * 3 + 1];
                     v.nz = normals[ni * 3 + 2];
                 } else {
-                    v.nx = nx; v.ny = ny; v.nz = nz;
+                    v.nx = nx;
+                    v.ny = ny;
+                    v.nz = nz;
                 }
             } else {
-                v.nx = nx; v.ny = ny; v.nz = nz;
+                v.nx = nx;
+                v.ny = ny;
+                v.nz = nz;
             }
             if (f.t[k] != 0) {
                 i32 ti = resolve(f.t[k], texcoords.size() / 2);
@@ -318,7 +381,10 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
                 }
             }
             // Tangent set to (1,0,0,1) — a real importer would compute MikkTSpace.
-            v.tx = 1.0f; v.ty = 0.0f; v.tz = 0.0f; v.tw = 1.0f;
+            v.tx = 1.0f;
+            v.ty = 0.0f;
+            v.tz = 0.0f;
+            v.tw = 1.0f;
             verts.push_back(v);
             indices.push_back(static_cast<u32>(verts.size() - 1));
             submesh_per_corner.push_back(face_submesh[fi]);
@@ -326,12 +392,13 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
     }
 
     out.vertices = std::move(verts);
-    out.indices  = std::move(indices);
+    out.indices = std::move(indices);
     out.materials = std::move(mat_names);
 
     // Build contiguous submeshes (the OBJ usemtl ordering is preserved).
     if (out.indices.empty()) {
-        if (err) *err = "obj: empty after triangulation";
+        if (err)
+            *err = "obj: empty after triangulation";
         return false;
     }
     LmmSubmesh current{};
@@ -363,18 +430,23 @@ bool parse_obj(std::string_view text, LmmMesh& out, std::string* err) {
 namespace {
 
 class JsonView {
-public:
+   public:
     explicit JsonView(std::string_view s) : src_(s), pos_(0) {}
     void skip_ws() {
         while (pos_ < src_.size()) {
             char c = src_[pos_];
-            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') ++pos_;
-            else break;
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+                ++pos_;
+            else
+                break;
         }
     }
     bool consume(char c) {
         skip_ws();
-        if (pos_ < src_.size() && src_[pos_] == c) { ++pos_; return true; }
+        if (pos_ < src_.size() && src_[pos_] == c) {
+            ++pos_;
+            return true;
+        }
         return false;
     }
     bool peek(char c) {
@@ -383,36 +455,46 @@ public:
     }
     bool read_string(std::string& out) {
         skip_ws();
-        if (pos_ >= src_.size() || src_[pos_] != '"') return false;
+        if (pos_ >= src_.size() || src_[pos_] != '"')
+            return false;
         ++pos_;
         out.clear();
         while (pos_ < src_.size() && src_[pos_] != '"') {
             char c = src_[pos_++];
             if (c == '\\' && pos_ < src_.size()) {
                 char e = src_[pos_++];
-                if      (e == 'n')  out.push_back('\n');
-                else if (e == 't')  out.push_back('\t');
-                else if (e == '"')  out.push_back('"');
-                else if (e == '\\') out.push_back('\\');
-                else                out.push_back(e);
+                if (e == 'n')
+                    out.push_back('\n');
+                else if (e == 't')
+                    out.push_back('\t');
+                else if (e == '"')
+                    out.push_back('"');
+                else if (e == '\\')
+                    out.push_back('\\');
+                else
+                    out.push_back(e);
             } else {
                 out.push_back(c);
             }
         }
-        if (pos_ < src_.size() && src_[pos_] == '"') { ++pos_; return true; }
+        if (pos_ < src_.size() && src_[pos_] == '"') {
+            ++pos_;
+            return true;
+        }
         return false;
     }
     bool read_number(double& out) {
         skip_ws();
         usize start = pos_;
-        if (pos_ < src_.size() && (src_[pos_] == '-' || src_[pos_] == '+')) ++pos_;
+        if (pos_ < src_.size() && (src_[pos_] == '-' || src_[pos_] == '+'))
+            ++pos_;
         while (pos_ < src_.size() &&
-               ((src_[pos_] >= '0' && src_[pos_] <= '9') ||
-                src_[pos_] == '.' || src_[pos_] == 'e' || src_[pos_] == 'E' ||
-                src_[pos_] == '+' || src_[pos_] == '-')) {
+               ((src_[pos_] >= '0' && src_[pos_] <= '9') || src_[pos_] == '.' ||
+                src_[pos_] == 'e' || src_[pos_] == 'E' || src_[pos_] == '+' || src_[pos_] == '-')) {
             ++pos_;
         }
-        if (start == pos_) return false;
+        if (start == pos_)
+            return false;
         std::string tmp(src_.substr(start, pos_ - start));
         char* end = nullptr;
         out = std::strtod(tmp.c_str(), &end);
@@ -420,51 +502,64 @@ public:
     }
     void skip_value() {
         skip_ws();
-        if (pos_ >= src_.size()) return;
+        if (pos_ >= src_.size())
+            return;
         char c = src_[pos_];
         if (c == '"') {
-            std::string tmp; read_string(tmp);
+            std::string tmp;
+            read_string(tmp);
         } else if (c == '{') {
-            ++pos_; int depth = 1;
+            ++pos_;
+            int depth = 1;
             while (pos_ < src_.size() && depth > 0) {
                 char k = src_[pos_++];
-                if (k == '{') ++depth;
-                else if (k == '}') --depth;
+                if (k == '{')
+                    ++depth;
+                else if (k == '}')
+                    --depth;
                 else if (k == '"') {
                     // skip string
                     while (pos_ < src_.size() && src_[pos_] != '"') {
-                        if (src_[pos_] == '\\' && pos_ + 1 < src_.size()) ++pos_;
+                        if (src_[pos_] == '\\' && pos_ + 1 < src_.size())
+                            ++pos_;
                         ++pos_;
                     }
-                    if (pos_ < src_.size()) ++pos_;
+                    if (pos_ < src_.size())
+                        ++pos_;
                 }
             }
         } else if (c == '[') {
-            ++pos_; int depth = 1;
+            ++pos_;
+            int depth = 1;
             while (pos_ < src_.size() && depth > 0) {
                 char k = src_[pos_++];
-                if (k == '[') ++depth;
-                else if (k == ']') --depth;
+                if (k == '[')
+                    ++depth;
+                else if (k == ']')
+                    --depth;
                 else if (k == '"') {
                     while (pos_ < src_.size() && src_[pos_] != '"') {
-                        if (src_[pos_] == '\\' && pos_ + 1 < src_.size()) ++pos_;
+                        if (src_[pos_] == '\\' && pos_ + 1 < src_.size())
+                            ++pos_;
                         ++pos_;
                     }
-                    if (pos_ < src_.size()) ++pos_;
+                    if (pos_ < src_.size())
+                        ++pos_;
                 }
             }
         } else {
             // primitive: number / true / false / null
-            while (pos_ < src_.size() &&
-                   src_[pos_] != ',' && src_[pos_] != '}' && src_[pos_] != ']') ++pos_;
+            while (pos_ < src_.size() && src_[pos_] != ',' && src_[pos_] != '}' && src_[pos_] != ']')
+                ++pos_;
         }
     }
     usize pos() const { return pos_; }
-    void  rewind(usize p) { pos_ = p; }
+    void rewind(usize p) { pos_ = p; }
     std::string_view rest() const { return src_.substr(pos_); }
-private:
+
+   private:
     std::string_view src_;
-    usize            pos_;
+    usize pos_;
 };
 
 // Base64 decode (no padding tolerance; standard alphabet).
@@ -472,9 +567,11 @@ bool base64_decode(std::string_view s, std::vector<u8>& out) {
     static i8 tab[256];
     static bool inited = false;
     if (!inited) {
-        for (int i = 0; i < 256; ++i) tab[i] = -1;
+        for (int i = 0; i < 256; ++i)
+            tab[i] = -1;
         const char* alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for (int i = 0; i < 64; ++i) tab[static_cast<u8>(alpha[i])] = static_cast<i8>(i);
+        for (int i = 0; i < 64; ++i)
+            tab[static_cast<u8>(alpha[i])] = static_cast<i8>(i);
         tab[static_cast<u8>('=')] = -2;
         inited = true;
     }
@@ -483,10 +580,13 @@ bool base64_decode(std::string_view s, std::vector<u8>& out) {
     u32 acc = 0;
     int bits = 0;
     for (char c : s) {
-        if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+        if (c == '\n' || c == '\r' || c == ' ' || c == '\t')
+            continue;
         i8 t = tab[static_cast<u8>(c)];
-        if (t == -1) return false;
-        if (t == -2) break;
+        if (t == -1)
+            return false;
+        if (t == -2)
+            break;
         acc = (acc << 6) | static_cast<u32>(t);
         bits += 6;
         if (bits >= 8) {
@@ -497,184 +597,262 @@ bool base64_decode(std::string_view s, std::vector<u8>& out) {
     return true;
 }
 
-}  // anon namespace
+}  // namespace
 
-bool parse_gltf(std::string_view json,
-                std::span<const u8> external_buffer,
-                LmmMesh& out,
-                std::string* err) {
+bool parse_gltf(std::string_view json, std::span<const u8> external_buffer, LmmMesh& out, std::string* err) {
     out = {};
     JsonView j(json);
     if (!j.consume('{')) {
-        if (err) *err = "gltf: not a JSON object";
+        if (err)
+            *err = "gltf: not a JSON object";
         return false;
     }
 
     // We need: buffers[0].uri, bufferViews[*], accessors[*], meshes[0].primitives[0].
     std::vector<u8> buffer_data;
     bool have_buffer = !external_buffer.empty();
-    if (have_buffer) buffer_data.assign(external_buffer.begin(), external_buffer.end());
+    if (have_buffer)
+        buffer_data.assign(external_buffer.begin(), external_buffer.end());
 
-    struct BV { u32 byte_offset = 0; u32 byte_length = 0; u32 byte_stride = 0; };
+    struct BV {
+        u32 byte_offset = 0;
+        u32 byte_length = 0;
+        u32 byte_stride = 0;
+    };
     std::vector<BV> bvs;
-    struct Accessor { u32 bv = 0; u32 byte_offset = 0; u32 count = 0; u32 component_type = 0; std::string type; };
+    struct Accessor {
+        u32 bv = 0;
+        u32 byte_offset = 0;
+        u32 count = 0;
+        u32 component_type = 0;
+        std::string type;
+    };
     std::vector<Accessor> accessors;
     i32 pos_accessor = -1, nor_accessor = -1, uv_accessor = -1, idx_accessor = -1;
 
     auto parse_buffers = [&]() -> bool {
-        if (!j.consume('[')) return false;
-        if (j.consume(']')) return true;
+        if (!j.consume('['))
+            return false;
+        if (j.consume(']'))
+            return true;
         while (true) {
-            if (!j.consume('{')) return false;
+            if (!j.consume('{'))
+                return false;
             std::string key;
             while (true) {
-                if (j.consume('}')) break;
-                if (!j.read_string(key)) return false;
-                if (!j.consume(':')) return false;
+                if (j.consume('}'))
+                    break;
+                if (!j.read_string(key))
+                    return false;
+                if (!j.consume(':'))
+                    return false;
                 if (key == "uri" && !have_buffer) {
                     std::string uri;
-                    if (!j.read_string(uri)) return false;
+                    if (!j.read_string(uri))
+                        return false;
                     constexpr std::string_view kPrefix = "data:";
                     if (uri.starts_with(kPrefix)) {
                         usize comma = uri.find(',');
                         if (comma == std::string::npos) {
-                            if (err) *err = "gltf: malformed data URI";
+                            if (err)
+                                *err = "gltf: malformed data URI";
                             return false;
                         }
                         std::string_view header(uri.data(), comma);
                         if (header.find(";base64") == std::string_view::npos) {
-                            if (err) *err = "gltf: data URI must be base64";
+                            if (err)
+                                *err = "gltf: data URI must be base64";
                             return false;
                         }
                         if (!base64_decode(std::string_view(uri).substr(comma + 1), buffer_data)) {
-                            if (err) *err = "gltf: bad base64";
+                            if (err)
+                                *err = "gltf: bad base64";
                             return false;
                         }
                         have_buffer = true;
                     } else {
-                        if (err) *err = "gltf: only data: URIs supported (got " + uri + ")";
+                        if (err)
+                            *err = "gltf: only data: URIs supported (got " + uri + ")";
                         return false;
                     }
                 } else {
                     j.skip_value();
                 }
                 if (!j.consume(',')) {
-                    if (!j.consume('}')) return false;
+                    if (!j.consume('}'))
+                        return false;
                     break;
                 }
             }
             if (!j.consume(',')) {
-                if (!j.consume(']')) return false;
+                if (!j.consume(']'))
+                    return false;
                 break;
             }
         }
         return true;
     };
     auto parse_buffer_views = [&]() -> bool {
-        if (!j.consume('[')) return false;
-        if (j.consume(']')) return true;
+        if (!j.consume('['))
+            return false;
+        if (j.consume(']'))
+            return true;
         while (true) {
-            if (!j.consume('{')) return false;
+            if (!j.consume('{'))
+                return false;
             BV bv{};
             std::string key;
             while (true) {
-                if (j.consume('}')) break;
-                if (!j.read_string(key)) return false;
-                if (!j.consume(':')) return false;
+                if (j.consume('}'))
+                    break;
+                if (!j.read_string(key))
+                    return false;
+                if (!j.consume(':'))
+                    return false;
                 double d = 0;
-                if (key == "byteOffset") { j.read_number(d); bv.byte_offset = static_cast<u32>(d); }
-                else if (key == "byteLength") { j.read_number(d); bv.byte_length = static_cast<u32>(d); }
-                else if (key == "byteStride") { j.read_number(d); bv.byte_stride = static_cast<u32>(d); }
-                else j.skip_value();
+                if (key == "byteOffset") {
+                    j.read_number(d);
+                    bv.byte_offset = static_cast<u32>(d);
+                } else if (key == "byteLength") {
+                    j.read_number(d);
+                    bv.byte_length = static_cast<u32>(d);
+                } else if (key == "byteStride") {
+                    j.read_number(d);
+                    bv.byte_stride = static_cast<u32>(d);
+                } else
+                    j.skip_value();
                 if (!j.consume(',')) {
-                    if (!j.consume('}')) return false;
+                    if (!j.consume('}'))
+                        return false;
                     break;
                 }
             }
             bvs.push_back(bv);
             if (!j.consume(',')) {
-                if (!j.consume(']')) return false;
+                if (!j.consume(']'))
+                    return false;
                 break;
             }
         }
         return true;
     };
     auto parse_accessors = [&]() -> bool {
-        if (!j.consume('[')) return false;
-        if (j.consume(']')) return true;
+        if (!j.consume('['))
+            return false;
+        if (j.consume(']'))
+            return true;
         while (true) {
-            if (!j.consume('{')) return false;
+            if (!j.consume('{'))
+                return false;
             Accessor a{};
             std::string key;
             while (true) {
-                if (j.consume('}')) break;
-                if (!j.read_string(key)) return false;
-                if (!j.consume(':')) return false;
+                if (j.consume('}'))
+                    break;
+                if (!j.read_string(key))
+                    return false;
+                if (!j.consume(':'))
+                    return false;
                 double d = 0;
-                if (key == "bufferView")     { j.read_number(d); a.bv = static_cast<u32>(d); }
-                else if (key == "byteOffset"){ j.read_number(d); a.byte_offset = static_cast<u32>(d); }
-                else if (key == "count")     { j.read_number(d); a.count = static_cast<u32>(d); }
-                else if (key == "componentType") { j.read_number(d); a.component_type = static_cast<u32>(d); }
-                else if (key == "type")      { j.read_string(a.type); }
-                else j.skip_value();
+                if (key == "bufferView") {
+                    j.read_number(d);
+                    a.bv = static_cast<u32>(d);
+                } else if (key == "byteOffset") {
+                    j.read_number(d);
+                    a.byte_offset = static_cast<u32>(d);
+                } else if (key == "count") {
+                    j.read_number(d);
+                    a.count = static_cast<u32>(d);
+                } else if (key == "componentType") {
+                    j.read_number(d);
+                    a.component_type = static_cast<u32>(d);
+                } else if (key == "type") {
+                    j.read_string(a.type);
+                } else
+                    j.skip_value();
                 if (!j.consume(',')) {
-                    if (!j.consume('}')) return false;
+                    if (!j.consume('}'))
+                        return false;
                     break;
                 }
             }
             accessors.push_back(a);
             if (!j.consume(',')) {
-                if (!j.consume(']')) return false;
+                if (!j.consume(']'))
+                    return false;
                 break;
             }
         }
         return true;
     };
     auto parse_meshes = [&]() -> bool {
-        if (!j.consume('[')) return false;
-        if (j.consume(']')) return true;
+        if (!j.consume('['))
+            return false;
+        if (j.consume(']'))
+            return true;
         bool took_first = false;
         while (true) {
-            if (!j.consume('{')) return false;
+            if (!j.consume('{'))
+                return false;
             std::string key;
             while (true) {
-                if (j.consume('}')) break;
-                if (!j.read_string(key)) return false;
-                if (!j.consume(':')) return false;
+                if (j.consume('}'))
+                    break;
+                if (!j.read_string(key))
+                    return false;
+                if (!j.consume(':'))
+                    return false;
                 if (key == "primitives" && !took_first) {
                     // first mesh, first primitive
-                    if (!j.consume('[')) return false;
-                    if (!j.consume('{')) return false;
+                    if (!j.consume('['))
+                        return false;
+                    if (!j.consume('{'))
+                        return false;
                     std::string pkey;
                     while (true) {
-                        if (j.consume('}')) break;
-                        if (!j.read_string(pkey)) return false;
-                        if (!j.consume(':')) return false;
+                        if (j.consume('}'))
+                            break;
+                        if (!j.read_string(pkey))
+                            return false;
+                        if (!j.consume(':'))
+                            return false;
                         if (pkey == "attributes") {
-                            if (!j.consume('{')) return false;
+                            if (!j.consume('{'))
+                                return false;
                             std::string akey;
                             while (true) {
-                                if (j.consume('}')) break;
-                                if (!j.read_string(akey)) return false;
-                                if (!j.consume(':')) return false;
+                                if (j.consume('}'))
+                                    break;
+                                if (!j.read_string(akey))
+                                    return false;
+                                if (!j.consume(':'))
+                                    return false;
                                 double d = 0;
-                                if (!j.read_number(d)) return false;
-                                if      (akey == "POSITION")   pos_accessor = static_cast<i32>(d);
-                                else if (akey == "NORMAL")     nor_accessor = static_cast<i32>(d);
-                                else if (akey == "TEXCOORD_0") uv_accessor  = static_cast<i32>(d);
+                                if (!j.read_number(d))
+                                    return false;
+                                if (akey == "POSITION")
+                                    pos_accessor = static_cast<i32>(d);
+                                else if (akey == "NORMAL")
+                                    nor_accessor = static_cast<i32>(d);
+                                else if (akey == "TEXCOORD_0")
+                                    uv_accessor = static_cast<i32>(d);
                                 if (!j.consume(',')) {
-                                    if (!j.consume('}')) return false;
+                                    if (!j.consume('}'))
+                                        return false;
                                     break;
                                 }
                             }
                         } else if (pkey == "indices") {
-                            double d = 0; if (!j.read_number(d)) return false;
+                            double d = 0;
+                            if (!j.read_number(d))
+                                return false;
                             idx_accessor = static_cast<i32>(d);
                         } else {
                             j.skip_value();
                         }
                         if (!j.consume(',')) {
-                            if (!j.consume('}')) return false;
+                            if (!j.consume('}'))
+                                return false;
                             break;
                         }
                     }
@@ -684,18 +862,21 @@ bool parse_gltf(std::string_view json,
                         // skip whole primitive object
                         j.skip_value();
                     }
-                    if (!j.consume(']')) return false;
+                    if (!j.consume(']'))
+                        return false;
                     took_first = true;
                 } else {
                     j.skip_value();
                 }
                 if (!j.consume(',')) {
-                    if (!j.consume('}')) return false;
+                    if (!j.consume('}'))
+                        return false;
                     break;
                 }
             }
             if (!j.consume(',')) {
-                if (!j.consume(']')) return false;
+                if (!j.consume(']'))
+                    return false;
                 break;
             }
         }
@@ -703,24 +884,50 @@ bool parse_gltf(std::string_view json,
     };
 
     while (true) {
-        if (j.consume('}')) break;
+        if (j.consume('}'))
+            break;
         std::string key;
         if (!j.read_string(key)) {
-            if (err) *err = "gltf: expected key";
+            if (err)
+                *err = "gltf: expected key";
             return false;
         }
         if (!j.consume(':')) {
-            if (err) *err = "gltf: expected ':'";
+            if (err)
+                *err = "gltf: expected ':'";
             return false;
         }
-        if      (key == "buffers")     { if (!parse_buffers())      { if (err) *err = "gltf: parse buffers failed"; return false; } }
-        else if (key == "bufferViews") { if (!parse_buffer_views()) { if (err) *err = "gltf: parse bufferViews failed"; return false; } }
-        else if (key == "accessors")   { if (!parse_accessors())    { if (err) *err = "gltf: parse accessors failed"; return false; } }
-        else if (key == "meshes")      { if (!parse_meshes())       { if (err) *err = "gltf: parse meshes failed"; return false; } }
-        else                           { j.skip_value(); }
+        if (key == "buffers") {
+            if (!parse_buffers()) {
+                if (err)
+                    *err = "gltf: parse buffers failed";
+                return false;
+            }
+        } else if (key == "bufferViews") {
+            if (!parse_buffer_views()) {
+                if (err)
+                    *err = "gltf: parse bufferViews failed";
+                return false;
+            }
+        } else if (key == "accessors") {
+            if (!parse_accessors()) {
+                if (err)
+                    *err = "gltf: parse accessors failed";
+                return false;
+            }
+        } else if (key == "meshes") {
+            if (!parse_meshes()) {
+                if (err)
+                    *err = "gltf: parse meshes failed";
+                return false;
+            }
+        } else {
+            j.skip_value();
+        }
         if (!j.consume(',')) {
             if (!j.consume('}')) {
-                if (err) *err = "gltf: expected ',' or '}'";
+                if (err)
+                    *err = "gltf: expected ',' or '}'";
                 return false;
             }
             break;
@@ -728,20 +935,24 @@ bool parse_gltf(std::string_view json,
     }
 
     if (pos_accessor < 0 || idx_accessor < 0) {
-        if (err) *err = "gltf: missing POSITION or indices";
+        if (err)
+            *err = "gltf: missing POSITION or indices";
         return false;
     }
     if (!have_buffer || buffer_data.empty()) {
-        if (err) *err = "gltf: missing buffer payload";
+        if (err)
+            *err = "gltf: missing buffer payload";
         return false;
     }
 
     auto read_accessor = [&](const Accessor& a) -> std::span<const u8> {
         const BV& bv = bvs[a.bv];
         usize start = bv.byte_offset + a.byte_offset;
-        if (start > buffer_data.size()) return {};
+        if (start > buffer_data.size())
+            return {};
         usize len = bv.byte_length - a.byte_offset;
-        if (start + len > buffer_data.size()) len = buffer_data.size() - start;
+        if (start + len > buffer_data.size())
+            len = buffer_data.size() - start;
         return std::span<const u8>(buffer_data.data() + start, len);
     };
 
@@ -749,12 +960,14 @@ bool parse_gltf(std::string_view json,
     const Accessor& ap = accessors[pos_accessor];
     auto pos_data = read_accessor(ap);
     if (ap.type != "VEC3" || ap.component_type != 5126 /* FLOAT */) {
-        if (err) *err = "gltf: POSITION must be VEC3 float";
+        if (err)
+            *err = "gltf: POSITION must be VEC3 float";
         return false;
     }
     std::vector<f32> positions(ap.count * 3);
     if (pos_data.size() < positions.size() * sizeof(f32)) {
-        if (err) *err = "gltf: position buffer too small";
+        if (err)
+            *err = "gltf: position buffer too small";
         return false;
     }
     std::memcpy(positions.data(), pos_data.data(), positions.size() * sizeof(f32));
@@ -789,7 +1002,8 @@ bool parse_gltf(std::string_view json,
     std::vector<u32> indices(ai.count);
     if (ai.component_type == 5123) {
         if (idx_data.size() < ai.count * 2u) {
-            if (err) *err = "gltf: indices buffer too small";
+            if (err)
+                *err = "gltf: indices buffer too small";
             return false;
         }
         for (u32 i = 0; i < ai.count; ++i) {
@@ -797,14 +1011,16 @@ bool parse_gltf(std::string_view json,
         }
     } else if (ai.component_type == 5125) {
         if (idx_data.size() < ai.count * 4u) {
-            if (err) *err = "gltf: indices buffer too small";
+            if (err)
+                *err = "gltf: indices buffer too small";
             return false;
         }
         for (u32 i = 0; i < ai.count; ++i) {
             indices[i] = read_le32(idx_data.data() + i * 4u);
         }
     } else {
-        if (err) *err = "gltf: unsupported index component type";
+        if (err)
+            *err = "gltf: unsupported index component type";
         return false;
     }
 
@@ -825,7 +1041,8 @@ bool parse_gltf(std::string_view json,
             v.u = uvs[i * 2 + 0];
             v.v = uvs[i * 2 + 1];
         }
-        v.tx = 1.0f; v.tw = 1.0f;
+        v.tx = 1.0f;
+        v.tw = 1.0f;
     }
     out.indices = std::move(indices);
     out.materials.push_back("default");
@@ -848,8 +1065,7 @@ namespace {
 // Encode `data` as a zlib stream that contains exactly one or more BTYPE=0
 // (stored) blocks. This is uncompressed but framed correctly for a stream
 // decoder; both libpng and a standards-compliant decoder will accept it.
-[[maybe_unused]]
-void zlib_store(std::span<const u8> data, std::vector<u8>& out) {
+[[maybe_unused]] void zlib_store(std::span<const u8> data, std::vector<u8>& out) {
     // zlib header: CMF=0x78 (deflate, 32K window), FLG chosen so the
     // header checksum (CMF*256 + FLG) % 31 == 0. FLG=0x01 satisfies that.
     out.push_back(0x78);
@@ -860,7 +1076,7 @@ void zlib_store(std::span<const u8> data, std::vector<u8>& out) {
         usize remaining = data.size() - i;
         u16 block = static_cast<u16>(std::min<usize>(remaining, 65535));
         bool last = (i + block == data.size());
-        out.push_back(static_cast<u8>(last ? 1u : 0u));   // BFINAL bit; BTYPE=00
+        out.push_back(static_cast<u8>(last ? 1u : 0u));  // BFINAL bit; BTYPE=00
         out.push_back(static_cast<u8>(block & 0xFFu));
         out.push_back(static_cast<u8>((block >> 8) & 0xFFu));
         u16 nlen = static_cast<u16>(~block);
@@ -870,48 +1086,80 @@ void zlib_store(std::span<const u8> data, std::vector<u8>& out) {
             out.insert(out.end(), data.data() + i, data.data() + i + block);
         }
         i += block;
-        if (last) break;
+        if (last)
+            break;
     }
     u32 adler = adler32(data.data(), data.size());
     append_be<u32>(out, adler);
 }
 
-[[maybe_unused]]
-bool zlib_decode_stored(std::span<const u8> stream, std::vector<u8>& out, std::string& err) {
-    if (stream.size() < 2 + 4) { err = "zlib stream too short"; return false; }
+[[maybe_unused]] bool zlib_decode_stored(std::span<const u8> stream,
+                                         std::vector<u8>& out,
+                                         std::string& err) {
+    if (stream.size() < 2 + 4) {
+        err = "zlib stream too short";
+        return false;
+    }
     u8 cmf = stream[0];
     u8 flg = stream[1];
-    if ((cmf & 0x0F) != 8) { err = "zlib: only deflate (CM=8) supported"; return false; }
-    if (((u32(cmf) * 256u) + flg) % 31u != 0u) {
-        err = "zlib: bad header checksum"; return false;
+    if ((cmf & 0x0F) != 8) {
+        err = "zlib: only deflate (CM=8) supported";
+        return false;
     }
-    if (flg & 0x20) { err = "zlib: dictionary preset not supported"; return false; }
+    if (((u32(cmf) * 256u) + flg) % 31u != 0u) {
+        err = "zlib: bad header checksum";
+        return false;
+    }
+    if (flg & 0x20) {
+        err = "zlib: dictionary preset not supported";
+        return false;
+    }
 
     usize p = 2;
     while (true) {
-        if (p + 5 > stream.size()) { err = "zlib: truncated stored block"; return false; }
+        if (p + 5 > stream.size()) {
+            err = "zlib: truncated stored block";
+            return false;
+        }
         u8 hdr = stream[p++];
         u8 btype = (hdr >> 1) & 0x03;
         bool last = (hdr & 1u) != 0;
-        if (btype != 0) { err = "zlib: only stored (BTYPE=0) blocks supported"; return false; }
-        u16 len  = read_le16(stream.data() + p); p += 2;
-        u16 nlen = read_le16(stream.data() + p); p += 2;
-        if (static_cast<u16>(~len) != nlen) { err = "zlib: stored block len/nlen mismatch"; return false; }
-        if (p + len > stream.size()) { err = "zlib: stored block runs past stream"; return false; }
+        if (btype != 0) {
+            err = "zlib: only stored (BTYPE=0) blocks supported";
+            return false;
+        }
+        u16 len = read_le16(stream.data() + p);
+        p += 2;
+        u16 nlen = read_le16(stream.data() + p);
+        p += 2;
+        if (static_cast<u16>(~len) != nlen) {
+            err = "zlib: stored block len/nlen mismatch";
+            return false;
+        }
+        if (p + len > stream.size()) {
+            err = "zlib: stored block runs past stream";
+            return false;
+        }
         out.insert(out.end(), stream.data() + p, stream.data() + p + len);
         p += len;
-        if (last) break;
+        if (last)
+            break;
     }
     // Adler-32 trailer (4 bytes BE).
-    if (p + 4 > stream.size()) { err = "zlib: missing adler32"; return false; }
+    if (p + 4 > stream.size()) {
+        err = "zlib: missing adler32";
+        return false;
+    }
     u32 want = read_be32(stream.data() + p);
     u32 have = adler32(out.data(), out.size());
-    if (want != have) { err = "zlib: adler32 mismatch"; return false; }
+    if (want != have) {
+        err = "zlib: adler32 mismatch";
+        return false;
+    }
     return true;
 }
 
-[[maybe_unused]]
-void png_emit_chunk(std::vector<u8>& out, const char tag[4], std::span<const u8> data) {
+[[maybe_unused]] void png_emit_chunk(std::vector<u8>& out, const char tag[4], std::span<const u8> data) {
     append_be<u32>(out, static_cast<u32>(data.size()));
     out.insert(out.end(), tag, tag + 4);
     out.insert(out.end(), data.begin(), data.end());
@@ -931,22 +1179,20 @@ void png_emit_chunk(std::vector<u8>& out, const char tag[4], std::span<const u8>
     append_be<u32>(out, crc);
 }
 
-}  // anon namespace
+}  // namespace
 
 // stb declarations (we vendor stb_image* under third_party/, the
 // implementation lives in stb_impl.c which is added to the lm_cook_lib
 // TU list in tools/lm_cook/CMakeLists.txt).
 extern "C" {
-    unsigned char* stbi_load_from_memory(const unsigned char* buffer, int len,
-                                         int* x, int* y, int* channels_in_file,
-                                         int desired_channels);
-    void           stbi_image_free(void* retval_from_stbi_load);
-    const char*    stbi_failure_reason(void);
+unsigned char* stbi_load_from_memory(
+    const unsigned char* buffer, int len, int* x, int* y, int* channels_in_file, int desired_channels);
+void stbi_image_free(void* retval_from_stbi_load);
+const char* stbi_failure_reason(void);
 
-    typedef void stbi_write_func(void* context, void* data, int size);
-    int stbi_write_png_to_func(stbi_write_func* func, void* context,
-                               int w, int h, int comp,
-                               const void* data, int stride_in_bytes);
+typedef void stbi_write_func(void* context, void* data, int size);
+int stbi_write_png_to_func(
+    stbi_write_func* func, void* context, int w, int h, int comp, const void* data, int stride_in_bytes);
 }
 
 void encode_png_stored(const u8* rgba, u32 width, u32 height, std::vector<u8>& out) {
@@ -961,33 +1207,33 @@ void encode_png_stored(const u8* rgba, u32 width, u32 height, std::vector<u8>& o
         v->insert(v->end(), p, p + size);
     };
     int stride = static_cast<int>(width) * 4;
-    int ok = stbi_write_png_to_func(cb, &out,
-                                    static_cast<int>(width),
-                                    static_cast<int>(height),
-                                    4, rgba, stride);
+    int ok =
+        stbi_write_png_to_func(cb, &out, static_cast<int>(width), static_cast<int>(height), 4, rgba, stride);
     if (!ok) {
         // Defensive: leave out empty so callers see a zero-byte result.
         out.clear();
     }
 }
 
-bool decode_png_stored(std::span<const u8> bytes,
-                       std::vector<u8>& out_rgba,
-                       u32& width,
-                       u32& height,
-                       std::string* err) {
-    auto fail = [&](const char* msg) { if (err) *err = msg; return false; };
-    if (bytes.empty()) return fail("png: empty input");
+bool decode_png_stored(
+    std::span<const u8> bytes, std::vector<u8>& out_rgba, u32& width, u32& height, std::string* err) {
+    auto fail = [&](const char* msg) {
+        if (err)
+            *err = msg;
+        return false;
+    };
+    if (bytes.empty())
+        return fail("png: empty input");
     int w = 0, h = 0, n = 0;
-    unsigned char* px = stbi_load_from_memory(bytes.data(),
-                                              static_cast<int>(bytes.size()),
-                                              &w, &h, &n, 4 /* RGBA */);
+    unsigned char* px =
+        stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n, 4 /* RGBA */);
     if (!px) {
         const char* why = stbi_failure_reason();
-        if (err) *err = std::string("png: ") + (why ? why : "decode failed");
+        if (err)
+            *err = std::string("png: ") + (why ? why : "decode failed");
         return false;
     }
-    width  = static_cast<u32>(w);
+    width = static_cast<u32>(w);
     height = static_cast<u32>(h);
     usize total = static_cast<usize>(w) * static_cast<usize>(h) * 4u;
     out_rgba.assign(px, px + total);
@@ -998,37 +1244,49 @@ bool decode_png_stored(std::span<const u8> bytes,
 // ─── WAV ─────────────────────────────────────────────────────────────────
 
 bool parse_wav(std::span<const u8> bytes, LmaAudio& out, std::string* err) {
-    auto fail = [&](const char* msg) { if (err) *err = msg; return false; };
-    if (bytes.size() < 44) return fail("wav too short");
-    if (std::memcmp(bytes.data() + 0, "RIFF", 4) != 0) return fail("wav: missing RIFF");
-    if (std::memcmp(bytes.data() + 8, "WAVE", 4) != 0) return fail("wav: missing WAVE");
+    auto fail = [&](const char* msg) {
+        if (err)
+            *err = msg;
+        return false;
+    };
+    if (bytes.size() < 44)
+        return fail("wav too short");
+    if (std::memcmp(bytes.data() + 0, "RIFF", 4) != 0)
+        return fail("wav: missing RIFF");
+    if (std::memcmp(bytes.data() + 8, "WAVE", 4) != 0)
+        return fail("wav: missing WAVE");
 
     usize p = 12;
     bool have_fmt = false;
     u16 audio_format = 0;
     while (p + 8 <= bytes.size()) {
-        char tag[5] = { static_cast<char>(bytes[p]),
-                        static_cast<char>(bytes[p + 1]),
-                        static_cast<char>(bytes[p + 2]),
-                        static_cast<char>(bytes[p + 3]), 0 };
+        char tag[5] = {static_cast<char>(bytes[p]),
+                       static_cast<char>(bytes[p + 1]),
+                       static_cast<char>(bytes[p + 2]),
+                       static_cast<char>(bytes[p + 3]),
+                       0};
         u32 size = read_le32(bytes.data() + p + 4);
         p += 8;
-        if (p + size > bytes.size()) return fail("wav: chunk overruns file");
+        if (p + size > bytes.size())
+            return fail("wav: chunk overruns file");
         if (std::memcmp(tag, "fmt ", 4) == 0) {
-            if (size < 16) return fail("wav: fmt chunk too short");
-            audio_format       = read_le16(bytes.data() + p + 0);
-            out.channels       = read_le16(bytes.data() + p + 2);
-            out.sample_rate    = read_le32(bytes.data() + p + 4);
+            if (size < 16)
+                return fail("wav: fmt chunk too short");
+            audio_format = read_le16(bytes.data() + p + 0);
+            out.channels = read_le16(bytes.data() + p + 2);
+            out.sample_rate = read_le32(bytes.data() + p + 4);
             // byte_rate / block_align skipped
             out.bits_per_sample = read_le16(bytes.data() + p + 14);
             out.is_float = (audio_format == 3 /* IEEE float */);
             have_fmt = true;
         } else if (std::memcmp(tag, "data", 4) == 0) {
-            if (!have_fmt) return fail("wav: data before fmt");
+            if (!have_fmt)
+                return fail("wav: data before fmt");
             const u8* base = bytes.data() + p;
             out.samples.assign(base, base + size);
             usize frame_bytes = static_cast<usize>(out.channels) * (out.bits_per_sample / 8u);
-            if (frame_bytes == 0) return fail("wav: zero frame size");
+            if (frame_bytes == 0)
+                return fail("wav: zero frame size");
             out.sample_count = static_cast<u32>(size / frame_bytes);
             // Stop here; ignore any trailing chunks.
             return true;
@@ -1038,29 +1296,29 @@ bool parse_wav(std::span<const u8> bytes, LmaAudio& out, std::string* err) {
     return fail("wav: missing data chunk");
 }
 
-void encode_wav_pcm16(const i16* samples, u32 sample_count, u32 channels, u32 sample_rate,
-                      std::vector<u8>& out) {
-    u32 byte_rate   = sample_rate * channels * 2;
+void encode_wav_pcm16(
+    const i16* samples, u32 sample_count, u32 channels, u32 sample_rate, std::vector<u8>& out) {
+    u32 byte_rate = sample_rate * channels * 2;
     u32 block_align = channels * 2;
-    u32 data_bytes  = sample_count * block_align;
+    u32 data_bytes = sample_count * block_align;
 
     out.clear();
     out.reserve(44 + data_bytes);
     // RIFF header
-    out.insert(out.end(), {'R','I','F','F'});
+    out.insert(out.end(), {'R', 'I', 'F', 'F'});
     append_le<u32>(out, 36 + data_bytes);
-    out.insert(out.end(), {'W','A','V','E'});
+    out.insert(out.end(), {'W', 'A', 'V', 'E'});
     // fmt chunk
-    out.insert(out.end(), {'f','m','t',' '});
+    out.insert(out.end(), {'f', 'm', 't', ' '});
     append_le<u32>(out, 16);
-    append_le<u16>(out, 1);          // PCM
+    append_le<u16>(out, 1);  // PCM
     append_le<u16>(out, static_cast<u16>(channels));
     append_le<u32>(out, sample_rate);
     append_le<u32>(out, byte_rate);
     append_le<u16>(out, static_cast<u16>(block_align));
     append_le<u16>(out, 16);
     // data chunk
-    out.insert(out.end(), {'d','a','t','a'});
+    out.insert(out.end(), {'d', 'a', 't', 'a'});
     append_le<u32>(out, data_bytes);
     for (u32 i = 0; i < sample_count * channels; ++i) {
         i16 s = samples[i];

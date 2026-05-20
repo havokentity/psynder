@@ -33,15 +33,15 @@ constexpr u32 kH = 12;
 
 struct TestFb {
     std::array<u32, kW * kH> pixels{};
-    Framebuffer              fb{};
+    Framebuffer fb{};
 
     TestFb() {
-        fb.width  = kW;
+        fb.width = kW;
         fb.height = kH;
         fb.format = PixelFormat::RGBA8;
-        fb.pitch  = kW * 4U;
+        fb.pitch = kW * 4U;
         fb.pixels = reinterpret_cast<u8*>(pixels.data());
-        fb.depth  = nullptr;
+        fb.depth = nullptr;
         pixels.fill(0U);
     }
 
@@ -55,7 +55,9 @@ constexpr u32 kInk = 0xAABBCCDDu;
 // invariants on the outline.
 usize count_eq(const TestFb& t, u32 colour) {
     usize n = 0;
-    for (u32 v : t.pixels) if (v == colour) ++n;
+    for (u32 v : t.pixels)
+        if (v == colour)
+            ++n;
     return n;
 }
 
@@ -64,7 +66,7 @@ usize count_eq(const TestFb& t, u32 colour) {
 TEST_CASE("ui_imm: rect_outline draws only the perimeter, corners included",
           "[ui_imm][rect_outline]") {
     TestFb t;
-    imm::rect_outline(t.fb, Vec2{ 2.0f, 3.0f }, Vec2{ 6.0f, 4.0f }, kInk);
+    imm::rect_outline(t.fb, Vec2{2.0f, 3.0f}, Vec2{6.0f, 4.0f}, kInk);
 
     // Rect occupies x ∈ [2,7] inclusive (width 6, so 2..7), y ∈ [3,6].
     // Perimeter count = 2*W + 2*(H-2) = 12 + 4 = 16.
@@ -99,18 +101,16 @@ TEST_CASE("ui_imm: rect_outline draws only the perimeter, corners included",
     REQUIRE(t.at(2, 7) == 0U);
 }
 
-TEST_CASE("ui_imm: rect_outline 1x1 rect plots exactly one pixel",
-          "[ui_imm][rect_outline]") {
+TEST_CASE("ui_imm: rect_outline 1x1 rect plots exactly one pixel", "[ui_imm][rect_outline]") {
     TestFb t;
-    imm::rect_outline(t.fb, Vec2{ 5.0f, 5.0f }, Vec2{ 1.0f, 1.0f }, kInk);
+    imm::rect_outline(t.fb, Vec2{5.0f, 5.0f}, Vec2{1.0f, 1.0f}, kInk);
     REQUIRE(count_eq(t, kInk) == 1);
     REQUIRE(t.at(5, 5) == kInk);
 }
 
-TEST_CASE("ui_imm: rect_outline 2x1 rect plots two horizontal pixels",
-          "[ui_imm][rect_outline]") {
+TEST_CASE("ui_imm: rect_outline 2x1 rect plots two horizontal pixels", "[ui_imm][rect_outline]") {
     TestFb t;
-    imm::rect_outline(t.fb, Vec2{ 3.0f, 7.0f }, Vec2{ 2.0f, 1.0f }, kInk);
+    imm::rect_outline(t.fb, Vec2{3.0f, 7.0f}, Vec2{2.0f, 1.0f}, kInk);
     REQUIRE(count_eq(t, kInk) == 2);
     REQUIRE(t.at(3, 7) == kInk);
     REQUIRE(t.at(4, 7) == kInk);
@@ -122,7 +122,7 @@ TEST_CASE("ui_imm: rect_outline clips to the framebuffer", "[ui_imm][rect_outlin
     // x ∈ [0,2], y ∈ [0,2] should land. Specifically the right edge of
     // the rect (x=2) and bottom edge (y=2) are visible; the left + top
     // are clipped away.
-    imm::rect_outline(t.fb, Vec2{ -2.0f, -1.0f }, Vec2{ 5.0f, 4.0f }, kInk);
+    imm::rect_outline(t.fb, Vec2{-2.0f, -1.0f}, Vec2{5.0f, 4.0f}, kInk);
 
     REQUIRE(t.at(2, 0) == kInk);  // Right edge visible.
     REQUIRE(t.at(2, 1) == kInk);
@@ -134,10 +134,9 @@ TEST_CASE("ui_imm: rect_outline clips to the framebuffer", "[ui_imm][rect_outlin
     REQUIRE(t.at(1, 1) == 0U);
 }
 
-TEST_CASE("ui_imm: filled_rect paints the half-open interior",
-          "[ui_imm][filled_rect]") {
+TEST_CASE("ui_imm: filled_rect paints the half-open interior", "[ui_imm][filled_rect]") {
     TestFb t;
-    imm::filled_rect(t.fb, Vec2{ 4.0f, 2.0f }, Vec2{ 3.0f, 2.0f }, kInk);
+    imm::filled_rect(t.fb, Vec2{4.0f, 2.0f}, Vec2{3.0f, 2.0f}, kInk);
 
     // Interior = x ∈ [4,6], y ∈ [2,3]. Total 6 pixels.
     REQUIRE(count_eq(t, kInk) == 6);
@@ -153,7 +152,7 @@ TEST_CASE("ui_imm: filled_rect paints the half-open interior",
 
 TEST_CASE("ui_imm: line plots both endpoints", "[ui_imm][line]") {
     TestFb t;
-    imm::line(t.fb, Vec2{ 1.0f, 1.0f }, Vec2{ 6.0f, 4.0f }, kInk);
+    imm::line(t.fb, Vec2{1.0f, 1.0f}, Vec2{6.0f, 4.0f}, kInk);
     REQUIRE(t.at(1, 1) == kInk);
     REQUIRE(t.at(6, 4) == kInk);
     // Diagonal must hit at least one intermediate pixel.
@@ -166,16 +165,15 @@ TEST_CASE("ui_imm: plot_blend preserves opaque source", "[ui_imm][blend]") {
     REQUIRE(t.at(5, 5) == imm::rgba(0xFF, 0x00, 0x00, 0xFF));
 }
 
-TEST_CASE("ui_imm: plot_blend half-alpha blends towards the destination",
-          "[ui_imm][blend]") {
+TEST_CASE("ui_imm: plot_blend half-alpha blends towards the destination", "[ui_imm][blend]") {
     TestFb t;
-    t.pixels[5 * kW + 5] = imm::rgba(0x00, 0x00, 0xFF, 0xFF);  // blue
+    t.pixels[5 * kW + 5] = imm::rgba(0x00, 0x00, 0xFF, 0xFF);        // blue
     imm::plot_blend(t.fb, 5, 5, imm::rgba(0xFF, 0x00, 0x00, 0x80));  // red 50%
     // 0x80 ≈ 50%: red channel ≈ 128, blue channel ≈ 127, green 0.
     const u32 out = t.at(5, 5);
     const u32 out_r = (out >> 24) & 0xFFu;
     const u32 out_g = (out >> 16) & 0xFFu;
-    const u32 out_b = (out >> 8 ) & 0xFFu;
+    const u32 out_b = (out >> 8) & 0xFFu;
     REQUIRE(out_r > 120U);
     REQUIRE(out_r < 136U);
     REQUIRE(out_g == 0U);

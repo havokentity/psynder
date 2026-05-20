@@ -25,7 +25,7 @@ std::string fs_executable_path() {
     // until the buffer is large enough; cap at 2 attempts (the OS path limit
     // is well under PATH_MAX = 1024 on Darwin).
     std::uint32_t size = 0;
-    _NSGetExecutablePath(nullptr, &size);   // queries required size
+    _NSGetExecutablePath(nullptr, &size);  // queries required size
     std::vector<char> buf(size + 1);
     if (_NSGetExecutablePath(buf.data(), &size) != 0) {
         return {};
@@ -55,14 +55,16 @@ std::string fs_user_config_dir() {
 std::string fs_current_working_directory() {
     std::error_code ec;
     auto p = std::filesystem::current_path(ec);
-    if (ec) return {};
+    if (ec)
+        return {};
     return p.string();
 }
 
 bool fs_file_exists(std::string_view path) {
-    if (path.empty()) return false;
+    if (path.empty())
+        return false;
     std::string p{path};
-    struct stat st{};
+    struct stat st {};
     return ::stat(p.c_str(), &st) == 0;
 }
 
@@ -73,9 +75,17 @@ namespace psynder::platform {
 // The public surface delegates to the internal helpers. Keeping these tiny
 // wrappers here (rather than in the .mm) means filesystem queries do not
 // pull AppKit into builds / tests.
-std::string executable_path()             { return macos::fs_executable_path(); }
-std::string user_config_dir()             { return macos::fs_user_config_dir(); }
-std::string current_working_directory()   { return macos::fs_current_working_directory(); }
-bool        file_exists(std::string_view p) { return macos::fs_file_exists(p); }
+std::string executable_path() {
+    return macos::fs_executable_path();
+}
+std::string user_config_dir() {
+    return macos::fs_user_config_dir();
+}
+std::string current_working_directory() {
+    return macos::fs_current_working_directory();
+}
+bool file_exists(std::string_view p) {
+    return macos::fs_file_exists(p);
+}
 
 }  // namespace psynder::platform

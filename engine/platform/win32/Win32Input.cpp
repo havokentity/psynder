@@ -19,7 +19,9 @@ Win32Input& instance() {
 }
 }  // namespace
 
-Win32Input& input_singleton() { return instance(); }
+Win32Input& input_singleton() {
+    return instance();
+}
 
 void Win32Input::begin_frame() {
     reset_edge_state_for_test();
@@ -30,13 +32,13 @@ void Win32Input::begin_frame() {
         const DWORD rc = ::XInputGetState(i, &state);
         if (rc == ERROR_SUCCESS) {
             pads_[i].connected = true;
-            pads_[i].buttons   = state.Gamepad.wButtons;
-            pads_[i].lx        = state.Gamepad.sThumbLX;
-            pads_[i].ly        = state.Gamepad.sThumbLY;
-            pads_[i].rx        = state.Gamepad.sThumbRX;
-            pads_[i].ry        = state.Gamepad.sThumbRY;
-            pads_[i].lt        = state.Gamepad.bLeftTrigger;
-            pads_[i].rt        = state.Gamepad.bRightTrigger;
+            pads_[i].buttons = state.Gamepad.wButtons;
+            pads_[i].lx = state.Gamepad.sThumbLX;
+            pads_[i].ly = state.Gamepad.sThumbLY;
+            pads_[i].rx = state.Gamepad.sThumbRX;
+            pads_[i].ry = state.Gamepad.sThumbRY;
+            pads_[i].lt = state.Gamepad.bLeftTrigger;
+            pads_[i].rt = state.Gamepad.bRightTrigger;
         } else {
             pads_[i] = {};
         }
@@ -48,7 +50,9 @@ void Win32Input::begin_frame() {
 // Bridge from Platform.h's free function `input()` to the Win32 singleton.
 // Declared in Platform.h, defined here so the Win32 lane owns it.
 namespace psynder::platform {
-Input* input() { return &win32::input_singleton(); }
+Input* input() {
+    return &win32::input_singleton();
+}
 }  // namespace psynder::platform
 
 #endif  // PSYNDER_PLATFORM_WIN32

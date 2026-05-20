@@ -45,14 +45,15 @@ namespace {
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────
 struct Args {
-    u32         smoke_frames = 0;
+    u32 smoke_frames = 0;
     std::string capture_out;
 };
 
 u32 parse_uint(std::string_view v) noexcept {
     u32 out = 0;
     for (char c : v) {
-        if (c < '0' || c > '9') return 0;
+        if (c < '0' || c > '9')
+            return 0;
         out = out * 10u + static_cast<u32>(c - '0');
     }
     return out;
@@ -60,10 +61,10 @@ u32 parse_uint(std::string_view v) noexcept {
 
 Args parse_args(int argc, char** argv) {
     Args a{};
-    constexpr std::string_view kFlag   = "--smoke-frames=";
+    constexpr std::string_view kFlag = "--smoke-frames=";
     constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq  = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp  = "--smoke-capture-out";
+    constexpr std::string_view kCapEq = "--smoke-capture-out=";
+    constexpr std::string_view kCapSp = "--smoke-capture-out";
     for (int i = 1; i < argc; ++i) {
         std::string_view s{argv[i]};
         if (s.starts_with(kFlag)) {
@@ -81,9 +82,9 @@ Args parse_args(int argc, char** argv) {
 
 // ─── Tiny PPM (P6) loader — RGB8, no comments ────────────────────────────
 struct Texture {
-    u32              width  = 0;
-    u32              height = 0;
-    std::vector<u32> pixels;   // RGBA8, alpha = 0xFF
+    u32 width = 0;
+    u32 height = 0;
+    std::vector<u32> pixels;  // RGBA8, alpha = 0xFF
 };
 
 // Search for the asset file in a few well-known relative paths so the
@@ -99,26 +100,30 @@ std::string find_asset(std::string_view rel) {
         fs::path{"../../.."},
     };
     for (const auto& root : roots) {
-        fs::path candidate = root.empty() ? fs::path{rel}
-                                          : root / "samples" / "01_triangle" / fs::path{rel};
-        if (fs::exists(candidate)) return candidate.string();
+        fs::path candidate =
+            root.empty() ? fs::path{rel} : root / "samples" / "01_triangle" / fs::path{rel};
+        if (fs::exists(candidate))
+            return candidate.string();
         candidate = root / fs::path{rel};
-        if (fs::exists(candidate)) return candidate.string();
+        if (fs::exists(candidate))
+            return candidate.string();
     }
     return std::string{rel};
 }
 
 bool load_ppm(const std::string& path, Texture& out) {
     std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    char magic[3] = {0,0,0};
+    if (!f)
+        return false;
+    char magic[3] = {0, 0, 0};
     if (std::fread(magic, 1, 2, f) != 2 || magic[0] != 'P' || magic[1] != '6') {
-        std::fclose(f); return false;
+        std::fclose(f);
+        return false;
     }
     int w = 0, h = 0, maxv = 0;
-    if (std::fscanf(f, "%d %d %d", &w, &h, &maxv) != 3 || maxv != 255 ||
-        w <= 0 || h <= 0) {
-        std::fclose(f); return false;
+    if (std::fscanf(f, "%d %d %d", &w, &h, &maxv) != 3 || maxv != 255 || w <= 0 || h <= 0) {
+        std::fclose(f);
+        return false;
     }
     // Skip exactly one whitespace byte before binary payload.
     std::fgetc(f);
@@ -126,14 +131,15 @@ bool load_ppm(const std::string& path, Texture& out) {
     const usize uh = static_cast<usize>(h);
     std::vector<u8> rgb(uw * uh * 3);
     if (std::fread(rgb.data(), 1, rgb.size(), f) != rgb.size()) {
-        std::fclose(f); return false;
+        std::fclose(f);
+        return false;
     }
     std::fclose(f);
-    out.width  = static_cast<u32>(w);
+    out.width = static_cast<u32>(w);
     out.height = static_cast<u32>(h);
     out.pixels.resize(uw * uh);
     for (usize i = 0, n = uw * uh; i < n; ++i) {
-        u32 r = rgb[i*3 + 0], g = rgb[i*3 + 1], b = rgb[i*3 + 2];
+        u32 r = rgb[i * 3 + 0], g = rgb[i * 3 + 1], b = rgb[i * 3 + 2];
         out.pixels[i] = r | (g << 8) | (b << 16) | (0xFFu << 24);
     }
     return true;
@@ -145,11 +151,11 @@ Texture make_fallback_texture() {
     Texture t;
     t.width = t.height = 16;
     t.pixels.resize(16 * 16);
-    for (u32 y = 0; y < 16; ++y) for (u32 x = 0; x < 16; ++x) {
-        const bool magenta = ((x ^ y) & 1u) != 0u;
-        t.pixels[static_cast<usize>(y) * 16u + x] =
-            magenta ? 0xFFFF00FFu : 0xFF000000u;
-    }
+    for (u32 y = 0; y < 16; ++y)
+        for (u32 x = 0; x < 16; ++x) {
+            const bool magenta = ((x ^ y) & 1u) != 0u;
+            t.pixels[static_cast<usize>(y) * 16u + x] = magenta ? 0xFFFF00FFu : 0xFF000000u;
+        }
     return t;
 }
 
@@ -159,22 +165,25 @@ PSY_FORCEINLINE f32 edge(f32 ax, f32 ay, f32 bx, f32 by, f32 px, f32 py) {
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
-struct V2 { f32 x, y, u, v; };
+struct V2 {
+    f32 x, y, u, v;
+};
 
-void raster_triangle_nearest(render::Framebuffer& fb,
-                             const V2& a, const V2& b, const V2& c,
-                             const Texture& tex) {
+void raster_triangle_nearest(
+    render::Framebuffer& fb, const V2& a, const V2& b, const V2& c, const Texture& tex) {
     const f32 area = edge(a.x, a.y, b.x, b.y, c.x, c.y);
-    if (std::abs(area) < 1e-4f) return;
+    if (std::abs(area) < 1e-4f)
+        return;
     const f32 inv_area = 1.0f / area;
 
     const i32 min_x = std::max(0, static_cast<i32>(std::floor(std::min({a.x, b.x, c.x}))));
-    const i32 max_x = std::min(static_cast<i32>(fb.width)  - 1,
-                                static_cast<i32>(std::ceil (std::max({a.x, b.x, c.x}))));
+    const i32 max_x = std::min(static_cast<i32>(fb.width) - 1,
+                               static_cast<i32>(std::ceil(std::max({a.x, b.x, c.x}))));
     const i32 min_y = std::max(0, static_cast<i32>(std::floor(std::min({a.y, b.y, c.y}))));
     const i32 max_y = std::min(static_cast<i32>(fb.height) - 1,
-                                static_cast<i32>(std::ceil (std::max({a.y, b.y, c.y}))));
-    if (max_x < min_x || max_y < min_y) return;
+                               static_cast<i32>(std::ceil(std::max({a.y, b.y, c.y}))));
+    if (max_x < min_x || max_y < min_y)
+        return;
 
     auto* pixels = reinterpret_cast<u32*>(fb.pixels);
     const u32 tw = tex.width, th = tex.height;
@@ -187,8 +196,9 @@ void raster_triangle_nearest(render::Framebuffer& fb,
             const f32 w2 = 1.0f - w0 - w1;
             // Allow both winding orders.
             const bool inside_ccw = w0 >= 0 && w1 >= 0 && w2 >= 0;
-            const bool inside_cw  = w0 <= 0 && w1 <= 0 && w2 <= 0;
-            if (!inside_ccw && !inside_cw) continue;
+            const bool inside_cw = w0 <= 0 && w1 <= 0 && w2 <= 0;
+            if (!inside_ccw && !inside_cw)
+                continue;
 
             const f32 u = w0 * a.u + w1 * b.u + w2 * c.u;
             const f32 v = w0 * a.v + w1 * b.v + w2 * c.v;
@@ -206,16 +216,16 @@ void raster_triangle_nearest(render::Framebuffer& fb,
 }  // namespace
 
 int main(int argc, char** argv) {
-    const Args args         = parse_args(argc, argv);
-    const u32  smoke_frames = args.smoke_frames;
+    const Args args = parse_args(argc, argv);
+    const u32 smoke_frames = args.smoke_frames;
 
     platform::WindowDesc desc{};
-    desc.title         = "Psynder — sample 01 (textured triangle)";
-    desc.window_width  = 1280;
+    desc.title = "Psynder — sample 01 (textured triangle)";
+    desc.window_width = 1280;
     desc.window_height = 720;
-    desc.render_width  = 640;
+    desc.render_width = 640;
     desc.render_height = 360;
-    desc.scale_mode    = platform::ScaleMode::Integer;
+    desc.scale_mode = platform::ScaleMode::Integer;
 
     auto* window = platform::create_window(desc);
     if (!window) {
@@ -231,24 +241,23 @@ int main(int argc, char** argv) {
         PSY_LOG_WARN("sample_01: failed to load {} — using fallback checker", tex_path);
         crate = make_fallback_texture();
     } else {
-        PSY_LOG_INFO("sample_01: loaded crate texture {} ({}x{})",
-                     tex_path, crate.width, crate.height);
+        PSY_LOG_INFO("sample_01: loaded crate texture {} ({}x{})", tex_path, crate.width, crate.height);
     }
 
     // CPU-side framebuffer at the internal render resolution.
     std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
     render::Framebuffer fb{};
-    fb.width  = desc.render_width;
+    fb.width = desc.render_width;
     fb.height = desc.render_height;
-    fb.pitch  = desc.render_width * 4;
+    fb.pitch = desc.render_width * 4;
     fb.format = render::PixelFormat::RGBA8;
     fb.pixels = reinterpret_cast<u8*>(pixels.data());
 
     // Triangle vertices in mesh-local space (XY plane, Z forward, UV in [0,1]).
     const std::array<render::raster::Vertex, 3> verts{{
-        { {-0.6f, -0.4f, 0.0f}, {0,0,1}, {0.0f, 1.0f}, {0,0}, 0xFFFFFFFFu },
-        { { 0.6f, -0.4f, 0.0f}, {0,0,1}, {1.0f, 1.0f}, {0,0}, 0xFFFFFFFFu },
-        { { 0.0f,  0.6f, 0.0f}, {0,0,1}, {0.5f, 0.0f}, {0,0}, 0xFFFFFFFFu },
+        {{-0.6f, -0.4f, 0.0f}, {0, 0, 1}, {0.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
+        {{0.6f, -0.4f, 0.0f}, {0, 0, 1}, {1.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
+        {{0.0f, 0.6f, 0.0f}, {0, 0, 1}, {0.5f, 0.0f}, {0, 0}, 0xFFFFFFFFu},
     }};
     const std::array<u32, 3> indices{0, 1, 2};
 
@@ -262,36 +271,34 @@ int main(int argc, char** argv) {
                                   : std::string{});
 
     const u64 t0 = platform::Clock::ticks_now();
-    u32 frame    = 0;
+    u32 frame = 0;
 
     while (!window->should_close()) {
         window->poll_events();
 
         // Smoke runs pin time to frame index so the captured PNG is bit-
         // identical across runs / hosts (golden-image determinism).
-        const f64 t = smoke_frames > 0
-                          ? static_cast<f64>(frame) * (1.0 / 60.0)
-                          : platform::Clock::seconds(
-                                platform::Clock::ticks_now() - t0);
+        const f64 t = smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
+                                       : platform::Clock::seconds(platform::Clock::ticks_now() - t0);
 
-        render::raster::clear_framebuffer(fb, 0xFF202028u);   // dark slate
+        render::raster::clear_framebuffer(fb, 0xFF202028u);  // dark slate
 
         // ── Build a ViewState + DrawItem and submit through the public API ──
         render::raster::ViewState view{};
-        view.target     = fb;
-        view.view       = math::identity4();
+        view.target = fb;
+        view.view = math::identity4();
         view.projection = math::identity4();
-        view.tile_w     = 64;
-        view.tile_h     = 64;
+        view.tile_w = 64;
+        view.tile_h = 64;
         rasterizer.begin_frame(view);
 
         render::raster::DrawItem item{};
-        item.vertices     = verts.data();
+        item.vertices = verts.data();
         item.vertex_count = static_cast<u32>(verts.size());
-        item.indices      = indices.data();
-        item.index_count  = static_cast<u32>(indices.size());
-        item.model        = math::rotate_quat(math::quat_from_axis_angle(
-                                math::Vec3{0, 0, 1}, static_cast<f32>(t) * 0.8f));
+        item.indices = indices.data();
+        item.index_count = static_cast<u32>(indices.size());
+        item.model = math::rotate_quat(
+            math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(t) * 0.8f));
         rasterizer.submit(item);
         rasterizer.end_frame();
 
@@ -327,12 +334,12 @@ int main(int argc, char** argv) {
     }
 
     if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(
-            args.capture_out.c_str(), pixels.data(),
-            fb.width, fb.height);
+        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
+                                                             pixels.data(),
+                                                             fb.width,
+                                                             fb.height);
         if (!ok) {
-            PSY_LOG_ERROR("sample_01: failed to write capture to {}",
-                          args.capture_out);
+            PSY_LOG_ERROR("sample_01: failed to write capture to {}", args.capture_out);
             platform::destroy_window(window);
             return EXIT_FAILURE;
         }

@@ -10,8 +10,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-using psynder::audio::detail::VoicePool;
 using psynder::audio::detail::kMaxVoices;
+using psynder::audio::detail::VoicePool;
 using psynder::math::Vec3;
 
 TEST_CASE("audio: voice pool acquires up to kMaxVoices then refuses more", "[audio][voices]") {

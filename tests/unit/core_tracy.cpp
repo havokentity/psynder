@@ -36,8 +36,7 @@ PSY_NOINLINE void existing_zone_runs() {
 
 }  // namespace
 
-TEST_CASE("Tracy macros compile and do not break control flow",
-          "[core][tracy]") {
+TEST_CASE("Tracy macros compile and do not break control flow", "[core][tracy]") {
     side_effect_counter = 0;
     traced_zone_runs();
     traced_zone_color_runs();
@@ -45,8 +44,7 @@ TEST_CASE("Tracy macros compile and do not break control flow",
     REQUIRE(side_effect_counter == 3);
 }
 
-TEST_CASE("Tracy macros are usable inside loops and branches",
-          "[core][tracy]") {
+TEST_CASE("Tracy macros are usable inside loops and branches", "[core][tracy]") {
     int sum = 0;
     for (int i = 0; i < 4; ++i) {
         PSY_TRACE_ZONE("psynder.test.loop");
@@ -89,8 +87,7 @@ PSY_NOINLINE void message_macro_runs() {
 
 }  // namespace
 
-TEST_CASE("Wave D Tracy macros compile and are statement-shaped",
-          "[core][tracy][wave-d]") {
+TEST_CASE("Wave D Tracy macros compile and are statement-shaped", "[core][tracy][wave-d]") {
     side_effect_counter = 0;
     frame_macro_runs();
     plot_macro_runs();
@@ -98,8 +95,7 @@ TEST_CASE("Wave D Tracy macros compile and are statement-shaped",
     REQUIRE(side_effect_counter == 3);
 }
 
-TEST_CASE("Wave D Tracy macros are usable in if-without-braces",
-          "[core][tracy][wave-d]") {
+TEST_CASE("Wave D Tracy macros are usable in if-without-braces", "[core][tracy][wave-d]") {
     // If the macro expanded to two statements without a do {} while wrapper,
     // this single-statement if/else would silently associate the second
     // statement with the else clause -- breaking control flow. The

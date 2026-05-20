@@ -8,10 +8,10 @@
 #include "core/Types.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
-#   include <immintrin.h>
+#include <immintrin.h>
 #endif
 #if defined(__aarch64__) || defined(_M_ARM64)
-#   include <arm_neon.h>
+#include <arm_neon.h>
 #endif
 
 namespace psynder::simd {
@@ -64,7 +64,7 @@ f32x4 mul(f32x4 a, f32x4 b) noexcept;
 f32x4 div(f32x4 a, f32x4 b) noexcept;
 f32x4 fma(f32x4 a, f32x4 b, f32x4 c) noexcept;
 f32x4 load(const f32* p) noexcept;
-void  store(f32* p, f32x4 v) noexcept;
+void store(f32* p, f32x4 v) noexcept;
 f32x4 broadcast(f32 s) noexcept;
 
 }  // namespace psynder::simd

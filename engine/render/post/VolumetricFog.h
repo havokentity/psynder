@@ -34,8 +34,7 @@ inline constexpr u32 kFroxelW = 160;
 inline constexpr u32 kFroxelH = 90;
 inline constexpr u32 kFroxelD = 64;
 
-inline constexpr usize kFroxelCount =
-    static_cast<usize>(kFroxelW) * kFroxelH * kFroxelD;
+inline constexpr usize kFroxelCount = static_cast<usize>(kFroxelW) * kFroxelH * kFroxelD;
 
 // One cell of the froxel grid. 32 bytes = half a cache line; two cells fit
 // in a line which keeps the ray-march loop's memory pressure low.
@@ -48,7 +47,7 @@ struct alignas(32) Froxel {
     f32 extinction = 0.0f;
     // Padding; reserved for ambient + phase-function knobs in Wave C.
     f32 _pad[3] = {0.0f, 0.0f, 0.0f};
-    f32 _pad2   = 0.0f;
+    f32 _pad2 = 0.0f;
 };
 static_assert(sizeof(Froxel) == 32, "Froxel layout must be 32 B");
 
@@ -65,8 +64,8 @@ struct FroxelGrid {
 // spot land in Wave C alongside lane 08's headlight cookie work.
 struct FogLight {
     math::Vec3 position;
-    math::Vec3 colour;       // pre-exposed (intensity baked in)
-    f32        radius = 0.0f;  // metres; 0 means infinite
+    math::Vec3 colour;  // pre-exposed (intensity baked in)
+    f32 radius = 0.0f;  // metres; 0 means infinite
 };
 
 // Lightweight callable that returns true if the segment from `a` to `b` is
@@ -74,7 +73,7 @@ struct FogLight {
 // lane 08; a binding for `Tlas::occluded` is a one-liner at the call site.
 struct OccluderFn {
     using Fn = bool (*)(void* user, math::Vec3 a, math::Vec3 b);
-    Fn    fn   = nullptr;
+    Fn fn = nullptr;
     void* user = nullptr;
     bool operator()(math::Vec3 a, math::Vec3 b) const noexcept {
         return fn ? fn(user, a, b) : false;
@@ -87,21 +86,21 @@ struct OccluderFn {
 // near-camera resolution is high (where the player notices) and far slices
 // cover more world per cell.
 struct FogScene {
-    math::Vec3 camera_position{0,0,0};
-    math::Vec3 camera_forward{0,0,1};
-    math::Vec3 camera_right{1,0,0};
-    math::Vec3 camera_up{0,1,0};
-    f32        fov_y_rad   = 1.04f;     // ~60°
-    f32        aspect      = 16.0f / 9.0f;
-    f32        near_z      = 0.1f;      // start of slice range
-    f32        far_z       = 64.0f;     // end of slice range
-    f32        density     = 0.05f;     // base sigma_t per metre
+    math::Vec3 camera_position{0, 0, 0};
+    math::Vec3 camera_forward{0, 0, 1};
+    math::Vec3 camera_right{1, 0, 0};
+    math::Vec3 camera_up{0, 1, 0};
+    f32 fov_y_rad = 1.04f;  // ~60°
+    f32 aspect = 16.0f / 9.0f;
+    f32 near_z = 0.1f;                        // start of slice range
+    f32 far_z = 64.0f;                        // end of slice range
+    f32 density = 0.05f;                      // base sigma_t per metre
     math::Vec3 ambient{0.04f, 0.05f, 0.06f};  // sky-ambient in-scatter
 
-    const FogLight* lights      = nullptr;
-    u32             light_count = 0;
+    const FogLight* lights = nullptr;
+    u32 light_count = 0;
 
-    OccluderFn occluder{};                // optional; nullptr → unshadowed
+    OccluderFn occluder{};  // optional; nullptr → unshadowed
 };
 
 // Populate the grid from the scene. Pure CPU — does not touch the framebuffer.
@@ -119,7 +118,7 @@ void populate_fog_grid(FroxelGrid& grid, const FogScene& scene);
 // only scenes and the unit test.
 struct VolumetricFogParams {
     bool enabled = true;
-    f32  intensity = 1.0f;  // scales the per-pixel scatter contribution
+    f32 intensity = 1.0f;  // scales the per-pixel scatter contribution
 };
 
 void apply_volumetric_fog(Framebuffer& hdr,

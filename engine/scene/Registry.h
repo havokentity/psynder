@@ -28,14 +28,14 @@ namespace psynder::scene::detail {
 // clash. The `ComponentRegistry` translates between the two at the API
 // boundary.
 struct ComponentRecord {
-    ComponentId  id    = 0;
-    u32          size  = 0;
-    u32          align = 0;
-    const char*  name  = "";
+    ComponentId id = 0;
+    u32 size = 0;
+    u32 align = 0;
+    const char* name = "";
 };
 
 class ComponentRegistry {
-public:
+   public:
     static ComponentRegistry& Get();
 
     // Returns the (possibly newly-assigned) ComponentId.
@@ -48,10 +48,10 @@ public:
 
     u32 count() const;
 
-private:
+   private:
     ComponentRegistry() = default;
-    mutable std::mutex            mutex_;
-    std::vector<ComponentRecord>  records_;   // indexed by (id - 1)
+    mutable std::mutex mutex_;
+    std::vector<ComponentRecord> records_;  // indexed by (id - 1)
 };
 
 }  // namespace psynder::scene::detail

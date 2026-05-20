@@ -63,76 +63,87 @@ BspMap make_four_leaf_map() {
     // in a narrow band. That's fine for the test — we only call locate()
     // with points that *don't* land in the solid leaf.
 
-    BspNode n0{};                  // splits on plane z = 0; front = +z half.
+    BspNode n0{};  // splits on plane z = 0; front = +z half.
     n0.plane_normal = {0, 0, 1};
-    n0.plane_d      = 0.0f;
-    n0.front_child  = 1;                       // node 1 (upper half)
-    n0.back_child   = bsp_encode_leaf(0);      // leaf 0 (lower half)
+    n0.plane_d = 0.0f;
+    n0.front_child = 1;                  // node 1 (upper half)
+    n0.back_child = bsp_encode_leaf(0);  // leaf 0 (lower half)
 
-    BspNode n1{};                  // upper-half split on plane x = 0.
+    BspNode n1{};  // upper-half split on plane x = 0.
     n1.plane_normal = {1, 0, 0};
-    n1.plane_d      = 0.0f;
-    n1.front_child  = 2;                       // node 2 (right side, x > 0)
-    n1.back_child   = bsp_encode_leaf(1);      // leaf 1 (left side, x < 0)
+    n1.plane_d = 0.0f;
+    n1.front_child = 2;                  // node 2 (right side, x > 0)
+    n1.back_child = bsp_encode_leaf(1);  // leaf 1 (left side, x < 0)
 
-    BspNode n2{};                  // right-side split, plane x = 0.9 (narrow solid wall).
+    BspNode n2{};  // right-side split, plane x = 0.9 (narrow solid wall).
     n2.plane_normal = {1, 0, 0};
-    n2.plane_d      = 0.9f;
-    n2.front_child  = bsp_encode_leaf(3);      // leaf 3 (solid pocket x > 0.9)
-    n2.back_child   = bsp_encode_leaf(2);      // leaf 2 (open right room 0 < x < 0.9)
+    n2.plane_d = 0.9f;
+    n2.front_child = bsp_encode_leaf(3);  // leaf 3 (solid pocket x > 0.9)
+    n2.back_child = bsp_encode_leaf(2);   // leaf 2 (open right room 0 < x < 0.9)
 
-    map.nodes = { n0, n1, n2 };
+    map.nodes = {n0, n1, n2};
 
     // Leaves with sensible bboxes for sanity.
     BspLeaf l0{};
-    l0.cluster = 0; l0.first_face = 0; l0.face_count = 1;
-    l0.bounds.min = {-1, -1, -1}; l0.bounds.max = { 1, 1, 0};
+    l0.cluster = 0;
+    l0.first_face = 0;
+    l0.face_count = 1;
+    l0.bounds.min = {-1, -1, -1};
+    l0.bounds.max = {1, 1, 0};
 
     BspLeaf l1{};
-    l1.cluster = 1; l1.first_face = 1; l1.face_count = 1;
-    l1.bounds.min = {-1, -1, 0}; l1.bounds.max = { 0, 1, 1};
+    l1.cluster = 1;
+    l1.first_face = 1;
+    l1.face_count = 1;
+    l1.bounds.min = {-1, -1, 0};
+    l1.bounds.max = {0, 1, 1};
 
     BspLeaf l2{};
-    l2.cluster = 2; l2.first_face = 2; l2.face_count = 1;
-    l2.bounds.min = { 0, -1, 0}; l2.bounds.max = { 0.9f, 1, 1};
+    l2.cluster = 2;
+    l2.first_face = 2;
+    l2.face_count = 1;
+    l2.bounds.min = {0, -1, 0};
+    l2.bounds.max = {0.9f, 1, 1};
 
     BspLeaf l3{};
-    l3.cluster = kBspSolidCluster; l3.first_face = 0; l3.face_count = 0;
-    l3.bounds.min = { 0.9f, -1, 0}; l3.bounds.max = { 1, 1, 1};
+    l3.cluster = kBspSolidCluster;
+    l3.first_face = 0;
+    l3.face_count = 0;
+    l3.bounds.min = {0.9f, -1, 0};
+    l3.bounds.max = {1, 1, 1};
 
-    map.leaves = { l0, l1, l2, l3 };
+    map.leaves = {l0, l1, l2, l3};
 
     // Faces — one per non-solid leaf. Materials are 100/101/102 so the test
     // can check the BSP→DrawItem converter wires `material` through.
     map.faces = {
-        BspFace{ /*first_vertex*/ 0, /*vertex_count*/ 3, /*material*/ 100, /*lightmap*/ 0 },
-        BspFace{ /*first_vertex*/ 3, /*vertex_count*/ 3, /*material*/ 101, /*lightmap*/ 0 },
-        BspFace{ /*first_vertex*/ 6, /*vertex_count*/ 3, /*material*/ 102, /*lightmap*/ 0 },
+        BspFace{/*first_vertex*/ 0, /*vertex_count*/ 3, /*material*/ 100, /*lightmap*/ 0},
+        BspFace{/*first_vertex*/ 3, /*vertex_count*/ 3, /*material*/ 101, /*lightmap*/ 0},
+        BspFace{/*first_vertex*/ 6, /*vertex_count*/ 3, /*material*/ 102, /*lightmap*/ 0},
     };
 
     // PVS — 3 clusters, 1 byte per row.
     //   row 0: bits 0,1 set → 0b00000011 = 0x03
     //   row 1: bits 1,2 set → 0b00000110 = 0x06
     //   row 2: bit  2  set  → 0b00000100 = 0x04
-    map.pvs = { 0x03, 0x06, 0x04 };
+    map.pvs = {0x03, 0x06, 0x04};
 
     return map;
 }
 
 }  // namespace
 
-TEST_CASE("world_bsp/locate finds the right leaf for representative points",
-          "[world_bsp]") {
+TEST_CASE("world_bsp/locate finds the right leaf for representative points", "[world_bsp]") {
     const BspMap map = make_four_leaf_map();
 
     // (0, 0, -0.5) — lower half, leaf 0.
-    REQUIRE(locate(map, { 0.0f, 0.0f, -0.5f}).cluster == 0);
+    REQUIRE(locate(map, {0.0f, 0.0f, -0.5f}).cluster == 0);
     // (-0.5, 0, 0.5) — upper half, x < 0, leaf 1.
-    REQUIRE(locate(map, {-0.5f, 0.0f,  0.5f}).cluster == 1);
+    REQUIRE(locate(map, {-0.5f, 0.0f, 0.5f}).cluster == 1);
     // (0.5, 0, 0.5) — upper half, 0 < x < 0.9, leaf 2.
-    REQUIRE(locate(map, { 0.5f, 0.0f,  0.5f}).cluster == 2);
+    REQUIRE(locate(map, {0.5f, 0.0f, 0.5f}).cluster == 2);
     // (0.95, 0, 0.5) — solid pocket, cluster < 0.
-    REQUIRE(locate(map, { 0.95f, 0.0f, 0.5f}).cluster == kBspSolidCluster);
+    REQUIRE(locate(map, {0.95f, 0.0f, 0.5f}).cluster == kBspSolidCluster);
 }
 
 namespace {
@@ -147,8 +158,7 @@ static void collect_emit(const BspLeaf& leaf, void* user) {
 
 }  // namespace
 
-TEST_CASE("world_bsp/walk_visible_leaves honours the PVS bit vector",
-          "[world_bsp]") {
+TEST_CASE("world_bsp/walk_visible_leaves honours the PVS bit vector", "[world_bsp]") {
     const BspMap map = make_four_leaf_map();
 
     SECTION("eye in cluster 0 sees clusters {0,1}") {
@@ -185,8 +195,7 @@ TEST_CASE("world_bsp/load rejects malformed blobs", "[world_bsp]") {
     REQUIRE(out.leaves.empty());
 }
 
-TEST_CASE("world_bsp/build_leaf_draws produces one DrawItem per face",
-          "[world_bsp]") {
+TEST_CASE("world_bsp/build_leaf_draws produces one DrawItem per face", "[world_bsp]") {
     const BspMap map = make_four_leaf_map();
     BspGeometry geom;
     // Lay down 9 vertices (3 per leaf face). The DrawItem's `vertices`
@@ -207,8 +216,7 @@ TEST_CASE("world_bsp/build_leaf_draws produces one DrawItem per face",
     REQUIRE(draws[0].vertices != nullptr);
 }
 
-TEST_CASE("world_bsp/portal walk degrades to PVS in Wave A",
-          "[world_bsp]") {
+TEST_CASE("world_bsp/portal walk degrades to PVS in Wave A", "[world_bsp]") {
     const BspMap map = make_four_leaf_map();
     const BspPortalSet portals = build_portal_set(map);
     REQUIRE(portals.portals.empty());  // Wave A stub returns empty
@@ -216,13 +224,14 @@ TEST_CASE("world_bsp/portal walk degrades to PVS in Wave A",
     PortalFrustum frustum{};
     frustum.plane_count = 0;
 
-    struct Acc { std::set<i32> clusters; };
+    struct Acc {
+        std::set<i32> clusters;
+    };
     Acc acc;
     auto cb = +[](const BspLeaf& l, const PortalFrustum&, void* u) {
         static_cast<Acc*>(u)->clusters.insert(l.cluster);
     };
-    walk_portal_visible_leaves(map, portals, {0.0f, 0.0f, -0.5f},
-                               frustum, cb, &acc);
+    walk_portal_visible_leaves(map, portals, {0.0f, 0.0f, -0.5f}, frustum, cb, &acc);
     // PVS-only fallback must match the cluster-0 result above.
     REQUIRE(acc.clusters == std::set<i32>{0, 1});
 }

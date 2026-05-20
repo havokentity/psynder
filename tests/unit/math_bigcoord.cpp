@@ -69,12 +69,12 @@ TEST_CASE("Pacejka combined force is monotone in slip_ratio over the linear rang
     //
     // Use pure longitudinal slip (slip_y = 0) so the combined-force
     // resultant collapses to the per-axis magic formula on slip_x.
-    const f32 load_N = 4000.0f;   // ~400 kgf per wheel
-    const f32 mu     = 1.0f;
+    const f32 load_N = 4000.0f;  // ~400 kgf per wheel
+    const f32 mu = 1.0f;
 
     f32 prev_mag = -1.0f;
     for (int i = 0; i <= 5; ++i) {
-        f32 s = 0.02f * static_cast<f32>(i);   // 0.00 .. 0.10
+        f32 s = 0.02f * static_cast<f32>(i);  // 0.00 .. 0.10
         Vec2 f = pacejka_combined_force(s, 0.0f, load_N, mu);
         f32 mag = std::sqrt(f.x * f.x + f.y * f.y);
 

@@ -20,13 +20,29 @@
 
 namespace psynder::simd {
 
-f32x4 add(f32x4 a, f32x4 b) noexcept       { return add4(a, b); }
-f32x4 sub(f32x4 a, f32x4 b) noexcept       { return sub4(a, b); }
-f32x4 mul(f32x4 a, f32x4 b) noexcept       { return mul4(a, b); }
-f32x4 div(f32x4 a, f32x4 b) noexcept       { return div4(a, b); }
-f32x4 fma(f32x4 a, f32x4 b, f32x4 c) noexcept { return fma4(a, b, c); }
-f32x4 load(const f32* p) noexcept          { return load_unaligned4(p); }
-void  store(f32* p, f32x4 v) noexcept      { store_unaligned4(p, v); }
-f32x4 broadcast(f32 s) noexcept            { return broadcast4(s); }
+f32x4 add(f32x4 a, f32x4 b) noexcept {
+    return add4(a, b);
+}
+f32x4 sub(f32x4 a, f32x4 b) noexcept {
+    return sub4(a, b);
+}
+f32x4 mul(f32x4 a, f32x4 b) noexcept {
+    return mul4(a, b);
+}
+f32x4 div(f32x4 a, f32x4 b) noexcept {
+    return div4(a, b);
+}
+f32x4 fma(f32x4 a, f32x4 b, f32x4 c) noexcept {
+    return fma4(a, b, c);
+}
+f32x4 load(const f32* p) noexcept {
+    return load_unaligned4(p);
+}
+void store(f32* p, f32x4 v) noexcept {
+    store_unaligned4(p, v);
+}
+f32x4 broadcast(f32 s) noexcept {
+    return broadcast4(s);
+}
 
 }  // namespace psynder::simd

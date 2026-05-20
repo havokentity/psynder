@@ -32,17 +32,17 @@ namespace {
 FogScene make_scene(const std::vector<FogLight>* lights = nullptr) {
     FogScene s;
     s.camera_position = math::Vec3{0, 0, 0};
-    s.camera_forward  = math::Vec3{0, 0, 1};
-    s.camera_right    = math::Vec3{1, 0, 0};
-    s.camera_up       = math::Vec3{0, 1, 0};
-    s.fov_y_rad       = 1.04f;
-    s.aspect          = 16.0f / 9.0f;
-    s.near_z          = 0.1f;
-    s.far_z           = 32.0f;
-    s.density         = 0.05f;
-    s.ambient         = math::Vec3{0.01f, 0.01f, 0.01f};
+    s.camera_forward = math::Vec3{0, 0, 1};
+    s.camera_right = math::Vec3{1, 0, 0};
+    s.camera_up = math::Vec3{0, 1, 0};
+    s.fov_y_rad = 1.04f;
+    s.aspect = 16.0f / 9.0f;
+    s.near_z = 0.1f;
+    s.far_z = 32.0f;
+    s.density = 0.05f;
+    s.ambient = math::Vec3{0.01f, 0.01f, 0.01f};
     if (lights) {
-        s.lights      = lights->data();
+        s.lights = lights->data();
         s.light_count = static_cast<u32>(lights->size());
     }
     return s;
@@ -50,25 +50,19 @@ FogScene make_scene(const std::vector<FogLight>* lights = nullptr) {
 
 }  // namespace
 
-TEST_CASE("render_post: froxel grid dimensions match DESIGN §8.4",
-          "[render_post][fog]")
-{
+TEST_CASE("render_post: froxel grid dimensions match DESIGN §8.4", "[render_post][fog]") {
     REQUIRE(kFroxelW == 160u);
     REQUIRE(kFroxelH == 90u);
     REQUIRE(kFroxelD == 64u);
     REQUIRE(kFroxelCount == 160u * 90u * 64u);
 }
 
-TEST_CASE("render_post: populate writes nonzero scatter near a bright light",
-          "[render_post][fog]")
-{
-    std::vector<FogLight> lights = {
-        FogLight{
-            math::Vec3{0, 0, 4},   // directly in front of camera
-            math::Vec3{8, 6, 4},   // bright HDR
-            0.0f                   // infinite radius
-        }
-    };
+TEST_CASE("render_post: populate writes nonzero scatter near a bright light", "[render_post][fog]") {
+    std::vector<FogLight> lights = {FogLight{
+        math::Vec3{0, 0, 4},  // directly in front of camera
+        math::Vec3{8, 6, 4},  // bright HDR
+        0.0f                  // infinite radius
+    }};
     FogScene scene = make_scene(&lights);
 
     auto grid = std::make_unique<FroxelGrid>();
@@ -85,7 +79,8 @@ TEST_CASE("render_post: populate writes nonzero scatter near a bright light",
         const f32 inv_ln = 1.0f / std::log(scene.far_z / scene.near_z);
         const f32 ratio = std::log(4.0f / scene.near_z) * inv_ln;
         cz = static_cast<u32>(ratio * static_cast<f32>(kFroxelD));
-        if (cz >= kFroxelD) cz = kFroxelD - 1;
+        if (cz >= kFroxelD)
+            cz = kFroxelD - 1;
     }
     const auto& cell = grid->cells[FroxelGrid::index_of(cx, cy, cz)];
     REQUIRE(cell.scatter_r > 0.0f);
@@ -94,19 +89,16 @@ TEST_CASE("render_post: populate writes nonzero scatter near a bright light",
     REQUIRE(cell.extinction > 0.0f);
 }
 
-TEST_CASE("render_post: apply_volumetric_fog is identity on zero grid",
-          "[render_post][fog]")
-{
+TEST_CASE("render_post: apply_volumetric_fog is identity on zero grid", "[render_post][fog]") {
     // Empty grid (default zero-init) → no scatter, no extinction → resolve
     // leaves the framebuffer untouched.
     const u32 W = 8, H = 8;
-    std::vector<HdrPixel> fb(static_cast<usize>(W) * H,
-                             HdrPixel{0.4f, 0.5f, 0.6f, 1.0f});
+    std::vector<HdrPixel> fb(static_cast<usize>(W) * H, HdrPixel{0.4f, 0.5f, 0.6f, 1.0f});
     auto reference = fb;
     Framebuffer hdr_fb;
-    hdr_fb.width  = W;
+    hdr_fb.width = W;
     hdr_fb.height = H;
-    hdr_fb.pitch  = W * static_cast<u32>(sizeof(HdrPixel));
+    hdr_fb.pitch = W * static_cast<u32>(sizeof(HdrPixel));
     hdr_fb.pixels = reinterpret_cast<u8*>(fb.data());
 
     auto grid = std::make_unique<FroxelGrid>();
@@ -124,22 +116,22 @@ TEST_CASE("render_post: apply_volumetric_fog is identity on zero grid",
 }
 
 TEST_CASE("render_post: apply_volumetric_fog dims framebuffer with extinction",
-          "[render_post][fog]")
-{
+          "[render_post][fog]") {
     // Constant extinction, zero scatter → the framebuffer should be scaled
     // down by exp(-extinction * (far - near)) for every pixel.
     const u32 W = 4, H = 4;
-    std::vector<HdrPixel> fb(static_cast<usize>(W) * H,
-                             HdrPixel{1.0f, 1.0f, 1.0f, 1.0f});
+    std::vector<HdrPixel> fb(static_cast<usize>(W) * H, HdrPixel{1.0f, 1.0f, 1.0f, 1.0f});
     Framebuffer hdr_fb;
-    hdr_fb.width  = W;
+    hdr_fb.width = W;
     hdr_fb.height = H;
-    hdr_fb.pitch  = W * static_cast<u32>(sizeof(HdrPixel));
+    hdr_fb.pitch = W * static_cast<u32>(sizeof(HdrPixel));
     hdr_fb.pixels = reinterpret_cast<u8*>(fb.data());
 
     auto grid = std::make_unique<FroxelGrid>();
     for (auto& c : grid->cells) {
-        c.scatter_r = 0.0f; c.scatter_g = 0.0f; c.scatter_b = 0.0f;
+        c.scatter_r = 0.0f;
+        c.scatter_g = 0.0f;
+        c.scatter_b = 0.0f;
         c.extinction = 0.02f;  // small uniform density
     }
     FogScene scene = make_scene();
@@ -161,8 +153,7 @@ TEST_CASE("render_post: apply_volumetric_fog dims framebuffer with extinction",
 }
 
 TEST_CASE("render_post: apply_volumetric_fog adds scatter with positive grid",
-          "[render_post][fog]")
-{
+          "[render_post][fog]") {
     // Globally positive scatter + extinction → every pixel brightens, because
     // the resolve adds `scatter * absorbed * trans` along the march.
     //
@@ -170,19 +161,18 @@ TEST_CASE("render_post: apply_volumetric_fog adds scatter with positive grid",
     // same series; on a black framebuffer every pixel ends up at the same
     // positive value.
     const u32 W = 8, H = 8;
-    std::vector<HdrPixel> fb(static_cast<usize>(W) * H,
-                             HdrPixel{0.0f, 0.0f, 0.0f, 1.0f});
+    std::vector<HdrPixel> fb(static_cast<usize>(W) * H, HdrPixel{0.0f, 0.0f, 0.0f, 1.0f});
     Framebuffer hdr_fb;
-    hdr_fb.width  = W;
+    hdr_fb.width = W;
     hdr_fb.height = H;
-    hdr_fb.pitch  = W * static_cast<u32>(sizeof(HdrPixel));
+    hdr_fb.pitch = W * static_cast<u32>(sizeof(HdrPixel));
     hdr_fb.pixels = reinterpret_cast<u8*>(fb.data());
 
     auto grid = std::make_unique<FroxelGrid>();
     for (auto& c : grid->cells) {
-        c.scatter_r  = 0.1f;
-        c.scatter_g  = 0.05f;
-        c.scatter_b  = 0.0f;
+        c.scatter_r = 0.1f;
+        c.scatter_g = 0.05f;
+        c.scatter_b = 0.0f;
         c.extinction = 0.05f;
     }
 
@@ -200,7 +190,7 @@ TEST_CASE("render_post: apply_volumetric_fog adds scatter with positive grid",
         REQUIRE(std::isfinite(px.b));
         REQUIRE(px.r > 0.0f);
         REQUIRE(px.g > 0.0f);
-        REQUIRE(px.b == Catch::Approx(0.0f).margin(1e-6f));   // zero channel stays zero
+        REQUIRE(px.b == Catch::Approx(0.0f).margin(1e-6f));  // zero channel stays zero
     }
 }
 
@@ -212,29 +202,23 @@ bool always_blocked(void* /*user*/, math::Vec3 /*a*/, math::Vec3 /*b*/) {
 
 }  // namespace
 
-TEST_CASE("render_post: populate honours the occluder callback",
-          "[render_post][fog]")
-{
+TEST_CASE("render_post: populate honours the occluder callback", "[render_post][fog]") {
     // The lit + unlit grids should differ on the cells with a non-zero
     // light contribution. An always-blocked occluder must zero out the
     // light contribution (ambient remains).
-    std::vector<FogLight> lights = {
-        FogLight{math::Vec3{0,0,4}, math::Vec3{10,10,10}, 0.0f}
-    };
+    std::vector<FogLight> lights = {FogLight{math::Vec3{0, 0, 4}, math::Vec3{10, 10, 10}, 0.0f}};
     FogScene unlit = make_scene(&lights);
-    FogScene lit   = make_scene(&lights);
+    FogScene lit = make_scene(&lights);
     unlit.occluder.fn = always_blocked;
     unlit.occluder.user = nullptr;
 
-    auto g_lit   = std::make_unique<FroxelGrid>();
+    auto g_lit = std::make_unique<FroxelGrid>();
     auto g_unlit = std::make_unique<FroxelGrid>();
-    populate_fog_grid(*g_lit,   lit);
+    populate_fog_grid(*g_lit, lit);
     populate_fog_grid(*g_unlit, unlit);
 
     // Compare a centre cell — lit should be much brighter than blocked.
-    const auto& cl = g_lit->cells[
-        FroxelGrid::index_of(kFroxelW/2, kFroxelH/2, 8)];
-    const auto& cu = g_unlit->cells[
-        FroxelGrid::index_of(kFroxelW/2, kFroxelH/2, 8)];
+    const auto& cl = g_lit->cells[FroxelGrid::index_of(kFroxelW / 2, kFroxelH / 2, 8)];
+    const auto& cu = g_unlit->cells[FroxelGrid::index_of(kFroxelW / 2, kFroxelH / 2, 8)];
     REQUIRE(cl.scatter_r > cu.scatter_r);
 }

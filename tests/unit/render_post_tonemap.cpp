@@ -22,14 +22,12 @@
 using namespace psynder;  // for u8/u32/usize/f32
 using namespace psynder::render::post::detail;
 
-TEST_CASE("render_post: reinhard is strictly monotone in 0..32",
-          "[render_post][tonemap]")
-{
+TEST_CASE("render_post: reinhard is strictly monotone in 0..32", "[render_post][tonemap]") {
     // 0..32 covers the typical HDR range (a 32x overshoot of white is
     // already deep into bloom territory).
-    constexpr int   kSamples  = 1024;
+    constexpr int kSamples = 1024;
     constexpr float kMaxInput = 32.0f;
-    const     float exposure  = 1.0f;
+    const float exposure = 1.0f;
 
     float prev = reinhard(0.0f, exposure);
     for (int i = 1; i < kSamples; ++i) {
@@ -40,34 +38,31 @@ TEST_CASE("render_post: reinhard is strictly monotone in 0..32",
     }
 }
 
-TEST_CASE("render_post: reinhard exposure scales midpoint correctly",
-          "[render_post][tonemap]")
-{
+TEST_CASE("render_post: reinhard exposure scales midpoint correctly", "[render_post][tonemap]") {
     // y = ex / (1 + ex). y = 0.5 when ex = 1, i.e. x = 1/exposure.
     for (float e : {0.5f, 1.0f, 2.0f, 4.0f}) {
-        const float x  = 1.0f / e;
-        const float y  = reinhard(x, e);
+        const float x = 1.0f / e;
+        const float y = reinhard(x, e);
         REQUIRE(y == Catch::Approx(0.5f).margin(1e-6f));
     }
 }
 
 TEST_CASE("render_post: u8 quantization is non-decreasing after monotone tonemap",
-          "[render_post][tonemap]")
-{
+          "[render_post][tonemap]") {
     // Round-trip: x in [0,32] -> reinhard -> sRGB encode -> quantize.
     // The composition is monotone in x; the byte output therefore must be
     // non-decreasing. This is what resolve() relies on at the pixel level.
-    constexpr int   kSamples = 4096;
-    constexpr float kMaxIn   = 32.0f;
-    constexpr float kGamma   = 2.2f;
-    constexpr float kExposure= 1.0f;
+    constexpr int kSamples = 4096;
+    constexpr float kMaxIn = 32.0f;
+    constexpr float kGamma = 2.2f;
+    constexpr float kExposure = 1.0f;
 
     u8 prev = 0;
     for (int i = 0; i < kSamples; ++i) {
-        const float x   = static_cast<float>(i) / (kSamples - 1) * kMaxIn;
-        const float t   = reinhard(x, kExposure);
-        const float s   = linear_to_srgb(t, kGamma);
-        const u8    q   = quantize_u8(s, 0.5f);  // dither off → mid threshold
+        const float x = static_cast<float>(i) / (kSamples - 1) * kMaxIn;
+        const float t = reinhard(x, kExposure);
+        const float s = linear_to_srgb(t, kGamma);
+        const u8 q = quantize_u8(s, 0.5f);  // dither off → mid threshold
         REQUIRE(q >= prev);
         prev = q;
     }
@@ -77,7 +72,7 @@ TEST_CASE("render_post: u8 quantization is non-decreasing after monotone tonemap
     {
         const float t = reinhard(kMaxIn, kExposure);
         const float s = linear_to_srgb(t, kGamma);
-        const u8    q = quantize_u8(s, 0.5f);
+        const u8 q = quantize_u8(s, 0.5f);
         REQUIRE(q >= 248);
         REQUIRE(q <= 255);
     }
@@ -85,21 +80,19 @@ TEST_CASE("render_post: u8 quantization is non-decreasing after monotone tonemap
     {
         const float t = reinhard(1.0e9f, kExposure);
         const float s = linear_to_srgb(t, kGamma);
-        const u8    q = quantize_u8(s, 0.5f);
+        const u8 q = quantize_u8(s, 0.5f);
         REQUIRE(q == 255);
     }
     // The black input must land at 0.
     {
         const float t = reinhard(0.0f, kExposure);
         const float s = linear_to_srgb(t, kGamma);
-        const u8    q = quantize_u8(s, 0.5f);
+        const u8 q = quantize_u8(s, 0.5f);
         REQUIRE(q == 0);
     }
 }
 
-TEST_CASE("render_post: dither modes produce thresholds in 0..1",
-          "[render_post][dither]")
-{
+TEST_CASE("render_post: dither modes produce thresholds in 0..1", "[render_post][dither]") {
     for (u32 y = 0; y < 16; ++y) {
         for (u32 x = 0; x < 16; ++x) {
             const float b = bayer4x4(x, y);
@@ -112,9 +105,7 @@ TEST_CASE("render_post: dither modes produce thresholds in 0..1",
     }
 }
 
-TEST_CASE("render_post: bayer 4x4 is a permutation of 0..16 / 16",
-          "[render_post][dither]")
-{
+TEST_CASE("render_post: bayer 4x4 is a permutation of 0..16 / 16", "[render_post][dither]") {
     std::vector<bool> seen(16, false);
     for (u32 y = 0; y < 4; ++y) {
         for (u32 x = 0; x < 4; ++x) {

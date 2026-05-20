@@ -27,31 +27,31 @@
 #include <cstring>
 
 #if defined(_MSC_VER)
-#   include <intrin.h>
+#include <intrin.h>
 #endif
 
 #if defined(_WIN32)
-#   ifndef WIN32_LEAN_AND_MEAN
-#       define WIN32_LEAN_AND_MEAN
-#   endif
-#   ifndef NOMINMAX
-#       define NOMINMAX
-#   endif
-#   include <windows.h>
-#   include <vector>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <vector>
 #elif defined(__APPLE__)
-#   include <sys/sysctl.h>
-#   include <sys/types.h>
-#   include <unistd.h>
+#include <sys/sysctl.h>
+#include <sys/types.h>
+#include <unistd.h>
 #else
-#   include <unistd.h>
-#   include <cstdio>
-#   if defined(__aarch64__) || defined(__arm64__)
-#       include <sys/auxv.h>
-#       if __has_include(<asm/hwcap.h>)
-#           include <asm/hwcap.h>
-#       endif
-#   endif
+#include <unistd.h>
+#include <cstdio>
+#if defined(__aarch64__) || defined(__arm64__)
+#include <sys/auxv.h>
+#if __has_include(<asm/hwcap.h>)
+#include <asm/hwcap.h>
+#endif
+#endif
 #endif
 
 namespace psynder::hardware {
@@ -63,8 +63,7 @@ namespace {
 // Wrap cpuid for both compilers. eax / ebx / ecx / edx are output regs;
 // leaf and subleaf are inputs. The MSVC intrinsic packs the four results
 // into an int[4]; gcc/clang have a builtin.
-inline void cpuid_full(u32 leaf, u32 subleaf,
-                       u32& eax, u32& ebx, u32& ecx, u32& edx) {
+inline void cpuid_full(u32 leaf, u32 subleaf, u32& eax, u32& ebx, u32& ecx, u32& edx) {
 #if defined(_MSC_VER)
     int regs[4] = {0};
     __cpuidex(regs, static_cast<int>(leaf), static_cast<int>(subleaf));
@@ -73,9 +72,9 @@ inline void cpuid_full(u32 leaf, u32 subleaf,
     ecx = static_cast<u32>(regs[2]);
     edx = static_cast<u32>(regs[3]);
 #else
-    __asm__ volatile ("cpuid"
-                      : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                      : "a"(leaf), "c"(subleaf));
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(leaf), "c"(subleaf));
 #endif
 }
 
@@ -84,9 +83,7 @@ inline u64 xgetbv(u32 xcr) {
     return _xgetbv(xcr);
 #else
     u32 eax_v = 0, edx_v = 0;
-    __asm__ volatile ("xgetbv"
-                      : "=a"(eax_v), "=d"(edx_v)
-                      : "c"(xcr));
+    __asm__ volatile("xgetbv" : "=a"(eax_v), "=d"(edx_v) : "c"(xcr));
     return (static_cast<u64>(edx_v) << 32) | eax_v;
 #endif
 }
@@ -108,9 +105,9 @@ void probe_x86(CpuFeatures& f) {
         //   bit 26 SSE2
         f.sse42 = (ecx & (1u << 20)) != 0;
 
-        const bool os_xsave    = (ecx & (1u << 27)) != 0;
-        const bool avx_cpuid   = (ecx & (1u << 28)) != 0;
-        const bool fma_cpuid   = (ecx & (1u << 12)) != 0;
+        const bool os_xsave = (ecx & (1u << 27)) != 0;
+        const bool avx_cpuid = (ecx & (1u << 28)) != 0;
+        const bool fma_cpuid = (ecx & (1u << 12)) != 0;
 
         // OS-enable check via XCR0: bits 1 (XMM) and 2 (YMM) must be set
         // for the OS to preserve AVX state across context switches. If
@@ -132,13 +129,13 @@ void probe_x86(CpuFeatures& f) {
         // Leaf 7, EBX:
         //   bit 5  AVX2
         //   bit 16 AVX-512 Foundation
-        f.avx2    = f.avx && ((ebx & (1u << 5))  != 0);
+        f.avx2 = f.avx && ((ebx & (1u << 5)) != 0);
         // AVX-512 also needs OS support for ZMM state (XCR0 bits 5/6/7);
         // we re-check XCR0 to be safe even though AVX2's xgetbv check
         // already cleared bits 1/2.
         if ((ebx & (1u << 16)) != 0) {
             const u64 xcr0 = xgetbv(0);
-            const bool zmm_ok = (xcr0 & 0xE0) == 0xE0;     // opmask + zmm-hi + zmm-hi16
+            const bool zmm_ok = (xcr0 & 0xE0) == 0xE0;  // opmask + zmm-hi + zmm-hi16
             f.avx512f = zmm_ok;
         }
     }
@@ -173,12 +170,12 @@ void probe_macos(CpuFeatures& f) {
         f.cache_l3 = static_cast<u32>(cache);
     }
 
-#   if defined(__aarch64__) || defined(__arm64__)
+#if defined(__aarch64__) || defined(__arm64__)
     // Apple Silicon supports NEON unconditionally; no SVE2 in the M1/M2/M3
     // lineup (as of late 2026).
     f.neon = true;
-    f.sve  = false;
-#   endif
+    f.sve = false;
+#endif
 }
 #endif
 
@@ -203,15 +200,18 @@ void probe_windows(CpuFeatures& f) {
             u32 cores = 0;
             DWORD offset = 0;
             while (offset < bytes) {
-                auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(
-                    buffer.data() + offset);
-                if (info->Relationship == RelationProcessorCore) ++cores;
+                auto* info =
+                    reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + offset);
+                if (info->Relationship == RelationProcessorCore)
+                    ++cores;
                 offset += info->Size;
             }
-            if (cores > 0) f.cores_physical = cores;
+            if (cores > 0)
+                f.cores_physical = cores;
         }
     }
-    if (f.cores_physical == 0) f.cores_physical = f.cores_logical;
+    if (f.cores_physical == 0)
+        f.cores_physical = f.cores_logical;
 
     // Cache sizes: walk RelationCache. Take the max per level so SMT-
     // shared caches don't double-count.
@@ -225,17 +225,20 @@ void probe_windows(CpuFeatures& f) {
                 &bytes)) {
             DWORD offset = 0;
             while (offset < bytes) {
-                auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(
-                    buffer.data() + offset);
+                auto* info =
+                    reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + offset);
                 if (info->Relationship == RelationCache) {
                     const auto& c = info->Cache;
                     const u32 sz = static_cast<u32>(c.CacheSize);
                     if (c.Level == 1 && c.Type == CacheData) {
-                        if (sz > f.cache_l1d) f.cache_l1d = sz;
+                        if (sz > f.cache_l1d)
+                            f.cache_l1d = sz;
                     } else if (c.Level == 2) {
-                        if (sz > f.cache_l2)  f.cache_l2  = sz;
+                        if (sz > f.cache_l2)
+                            f.cache_l2 = sz;
                     } else if (c.Level == 3) {
-                        if (sz > f.cache_l3)  f.cache_l3  = sz;
+                        if (sz > f.cache_l3)
+                            f.cache_l3 = sz;
                     }
                 }
                 offset += info->Size;
@@ -243,14 +246,14 @@ void probe_windows(CpuFeatures& f) {
         }
     }
 
-#   if defined(_M_ARM64) || defined(__aarch64__)
+#if defined(_M_ARM64) || defined(__aarch64__)
     f.neon = true;
     // Windows on ARM doesn't expose a clean SVE2 probe yet
     // (IsProcessorFeaturePresent has no SVE2 ID as of late 2026), so we
     // leave it false. Future builds can light this up via Win11+ feature
     // detection once the API ships.
-    f.sve  = false;
-#   endif
+    f.sve = false;
+#endif
 }
 #endif
 
@@ -258,7 +261,8 @@ void probe_windows(CpuFeatures& f) {
 void probe_linux(CpuFeatures& f) {
     // Core count via sysconf -- POSIX path, works on Linux + BSD.
     long phys = sysconf(_SC_NPROCESSORS_ONLN);
-    if (phys > 0) f.cores_logical = static_cast<u32>(phys);
+    if (phys > 0)
+        f.cores_logical = static_cast<u32>(phys);
     // sysconf doesn't distinguish SMT-siblings from physical cores on
     // Linux; we'd need /proc/cpuinfo to get the true physical count.
     // Parse the unique-core ids out of cpuinfo as best-effort.
@@ -268,14 +272,16 @@ void probe_linux(CpuFeatures& f) {
         // distinct physical cores across sockets.
         u32 max_phys_id = 0;
         u32 max_core_id = 0;
-        bool saw_any    = false;
+        bool saw_any = false;
         while (std::fgets(line, sizeof(line), fp)) {
             int v = 0;
             if (std::sscanf(line, "physical id : %d", &v) == 1) {
-                if (static_cast<u32>(v) > max_phys_id) max_phys_id = static_cast<u32>(v);
+                if (static_cast<u32>(v) > max_phys_id)
+                    max_phys_id = static_cast<u32>(v);
                 saw_any = true;
             } else if (std::sscanf(line, "core id : %d", &v) == 1) {
-                if (static_cast<u32>(v) > max_core_id) max_core_id = static_cast<u32>(v);
+                if (static_cast<u32>(v) > max_core_id)
+                    max_core_id = static_cast<u32>(v);
                 saw_any = true;
             }
         }
@@ -285,7 +291,8 @@ void probe_linux(CpuFeatures& f) {
             f.cores_physical = (max_phys_id + 1) * (max_core_id + 1);
         }
     }
-    if (f.cores_physical == 0) f.cores_physical = f.cores_logical;
+    if (f.cores_physical == 0)
+        f.cores_physical = f.cores_logical;
 
     // Cache sizes from /sys/devices/system/cpu/cpu0/cache/index<N>/size.
     // The size file holds the cache size as "32K" / "1024K" / "32M". We
@@ -293,57 +300,70 @@ void probe_linux(CpuFeatures& f) {
     // level via the type+level files at that index.
     for (int idx = 0; idx < 8; ++idx) {
         char path[128];
-        std::snprintf(path, sizeof(path),
-                      "/sys/devices/system/cpu/cpu0/cache/index%d/type", idx);
+        std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu0/cache/index%d/type", idx);
         FILE* fp = std::fopen(path, "r");
-        if (!fp) break;
+        if (!fp)
+            break;
         char type[32] = {0};
-        if (!std::fgets(type, sizeof(type), fp)) { std::fclose(fp); break; }
+        if (!std::fgets(type, sizeof(type), fp)) {
+            std::fclose(fp);
+            break;
+        }
         std::fclose(fp);
 
-        std::snprintf(path, sizeof(path),
-                      "/sys/devices/system/cpu/cpu0/cache/index%d/level", idx);
+        std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu0/cache/index%d/level", idx);
         fp = std::fopen(path, "r");
-        if (!fp) break;
+        if (!fp)
+            break;
         int level = 0;
-        if (std::fscanf(fp, "%d", &level) != 1) { std::fclose(fp); break; }
+        if (std::fscanf(fp, "%d", &level) != 1) {
+            std::fclose(fp);
+            break;
+        }
         std::fclose(fp);
 
-        std::snprintf(path, sizeof(path),
-                      "/sys/devices/system/cpu/cpu0/cache/index%d/size", idx);
+        std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu0/cache/index%d/size", idx);
         fp = std::fopen(path, "r");
-        if (!fp) break;
+        if (!fp)
+            break;
         char sz[32] = {0};
-        if (!std::fgets(sz, sizeof(sz), fp)) { std::fclose(fp); break; }
+        if (!std::fgets(sz, sizeof(sz), fp)) {
+            std::fclose(fp);
+            break;
+        }
         std::fclose(fp);
         u32 bytes = 0;
         u32 n = 0;
         if (std::sscanf(sz, "%u%c", &n, reinterpret_cast<char*>(&sz[0])) == 2) {
-            bytes = n * 1024u;     // K
-            if (sz[0] == 'M' || sz[0] == 'm') bytes = n * 1024u * 1024u;
+            bytes = n * 1024u;  // K
+            if (sz[0] == 'M' || sz[0] == 'm')
+                bytes = n * 1024u * 1024u;
         } else if (std::sscanf(sz, "%u", &n) == 1) {
             bytes = n;
         }
 
-        const bool is_data = std::strncmp(type, "Data", 4) == 0 ||
-                             std::strncmp(type, "Unified", 7) == 0;
-        if (level == 1 && is_data) f.cache_l1d = bytes;
-        else if (level == 2)       f.cache_l2  = bytes;
-        else if (level == 3)       f.cache_l3  = bytes;
+        const bool is_data =
+            std::strncmp(type, "Data", 4) == 0 || std::strncmp(type, "Unified", 7) == 0;
+        if (level == 1 && is_data)
+            f.cache_l1d = bytes;
+        else if (level == 2)
+            f.cache_l2 = bytes;
+        else if (level == 3)
+            f.cache_l3 = bytes;
     }
 
-#   if defined(__aarch64__)
+#if defined(__aarch64__)
     f.neon = true;
     // Linux exposes SVE via HWCAP / HWCAP2. HWCAP_SVE is defined in
     // <asm/hwcap.h> when the kernel headers support it.
     unsigned long hwcap = getauxval(AT_HWCAP);
-#       if defined(HWCAP_SVE)
+#if defined(HWCAP_SVE)
     f.sve = (hwcap & HWCAP_SVE) != 0;
-#       else
+#else
     (void)hwcap;
     f.sve = false;
-#       endif
-#   endif
+#endif
+#endif
 }
 #endif
 
@@ -369,8 +389,10 @@ CpuFeatures probe() {
 
     // Final sanity defaults so the rest of the engine never sees zeroes
     // that would confuse `cores_physical / cores_logical` math.
-    if (f.cores_physical == 0) f.cores_physical = 4;
-    if (f.cores_logical  == 0) f.cores_logical  = f.cores_physical * 2;
+    if (f.cores_physical == 0)
+        f.cores_physical = 4;
+    if (f.cores_logical == 0)
+        f.cores_logical = f.cores_physical * 2;
     return f;
 }
 

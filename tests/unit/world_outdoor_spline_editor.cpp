@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace pwo  = psynder::world::outdoor;
+namespace pwo = psynder::world::outdoor;
 namespace pwod = psynder::world::outdoor::detail;
 
 namespace {
@@ -27,25 +27,23 @@ pwo::SplineRoadSegment make_arc_segment(float radius, float angle_deg) {
     // Build a Bezier approximation of a horizontal circular arc — control
     // points are spread along an arc in the XZ plane, so the curve is
     // non-trivial (insertion/morph tests would miss things on a straight line).
-    const float t  = angle_deg * (3.14159265358979f / 180.0f);
-    const float c0 = std::cos(0.0f),         s0 = std::sin(0.0f);
-    const float c1 = std::cos(t / 3.0f),     s1 = std::sin(t / 3.0f);
+    const float t = angle_deg * (3.14159265358979f / 180.0f);
+    const float c0 = std::cos(0.0f), s0 = std::sin(0.0f);
+    const float c1 = std::cos(t / 3.0f), s1 = std::sin(t / 3.0f);
     const float c2 = std::cos(2.0f * t / 3.0f), s2 = std::sin(2.0f * t / 3.0f);
-    const float c3 = std::cos(t),            s3 = std::sin(t);
+    const float c3 = std::cos(t), s3 = std::sin(t);
     pwo::SplineRoadSegment seg{};
-    seg.p0 = { radius * c0, 0.0f, radius * s0 };
-    seg.p1 = { radius * c1, 0.0f, radius * s1 };
-    seg.p2 = { radius * c2, 0.0f, radius * s2 };
-    seg.p3 = { radius * c3, 0.0f, radius * s3 };
-    seg.half_width  = 5.0f;
+    seg.p0 = {radius * c0, 0.0f, radius * s0};
+    seg.p1 = {radius * c1, 0.0f, radius * s1};
+    seg.p2 = {radius * c2, 0.0f, radius * s2};
+    seg.p3 = {radius * c3, 0.0f, radius * s3};
+    seg.half_width = 5.0f;
     seg.banking_rad = 0.0f;
     return seg;
 }
 
 bool vec3_close(psynder::math::Vec3 a, psynder::math::Vec3 b, float eps = 1e-4f) {
-    return std::fabs(a.x - b.x) < eps &&
-           std::fabs(a.y - b.y) < eps &&
-           std::fabs(a.z - b.z) < eps;
+    return std::fabs(a.x - b.x) < eps && std::fabs(a.y - b.y) < eps && std::fabs(a.z - b.z) < eps;
 }
 
 }  // namespace
@@ -55,12 +53,11 @@ TEST_CASE("SplineEditor empty track has zero segments + zero CPs",
     pwod::SplineEditor ed;
     REQUIRE(ed.segment_count() == 0u);
     REQUIRE(ed.control_point_count() == 0u);
-    REQUIRE_FALSE(ed.insert_control_point(0, 0.5f));   // OOB
+    REQUIRE_FALSE(ed.insert_control_point(0, 0.5f));  // OOB
     REQUIRE(ed.set_banking_at_t(0.5f, 0.1f) == -1);
 }
 
-TEST_CASE("SplineEditor append_segment grows the track",
-          "[world_outdoor][spline][editor]") {
+TEST_CASE("SplineEditor append_segment grows the track", "[world_outdoor][spline][editor]") {
     pwod::SplineEditor ed;
     auto seg = make_arc_segment(20.0f, 60.0f);
     const std::uint32_t idx = ed.append_segment(seg);
@@ -113,13 +110,13 @@ TEST_CASE("SplineEditor::insert_control_point inherits half_width / banking",
           "[world_outdoor][spline][editor]") {
     pwod::SplineEditor ed;
     auto seg = make_arc_segment(20.0f, 45.0f);
-    seg.half_width  = 6.5f;
+    seg.half_width = 6.5f;
     seg.banking_rad = 0.12f;
     ed.append_segment(seg);
 
     REQUIRE(ed.insert_control_point(0, 0.25f));
-    REQUIRE(ed.segments()[0].half_width  == 6.5f);
-    REQUIRE(ed.segments()[1].half_width  == 6.5f);
+    REQUIRE(ed.segments()[0].half_width == 6.5f);
+    REQUIRE(ed.segments()[1].half_width == 6.5f);
     REQUIRE(ed.segments()[0].banking_rad == 0.12f);
     REQUIRE(ed.segments()[1].banking_rad == 0.12f);
 }
@@ -149,7 +146,7 @@ TEST_CASE("SplineEditor::move_control_point updates only the named CP",
     const auto seg1_p0 = ed.segments()[1].p0;
 
     // Move CP index 1 (segment 0, local 1) by absolute set.
-    const psynder::math::Vec3 new_pos{ 1.0f, 2.0f, 3.0f };
+    const psynder::math::Vec3 new_pos{1.0f, 2.0f, 3.0f};
     REQUIRE(ed.move_control_point(/*global=*/1, new_pos));
 
     REQUIRE(vec3_close(ed.segments()[0].p0, seg0_p0));
@@ -161,14 +158,12 @@ TEST_CASE("SplineEditor::move_control_point updates only the named CP",
     REQUIRE(vec3_close(ed.segments()[1].p0, seg1_p0));
 }
 
-TEST_CASE("SplineEditor::translate_control_point adds a delta",
-          "[world_outdoor][spline][editor]") {
+TEST_CASE("SplineEditor::translate_control_point adds a delta", "[world_outdoor][spline][editor]") {
     pwod::SplineEditor ed;
     ed.append_segment(make_arc_segment(15.0f, 25.0f));
 
     const auto p2_before = ed.segments()[0].p2;
-    REQUIRE(ed.translate_control_point(/*global=*/2,
-                                       psynder::math::Vec3{ 5.0f, 1.0f, -2.0f }));
+    REQUIRE(ed.translate_control_point(/*global=*/2, psynder::math::Vec3{5.0f, 1.0f, -2.0f}));
     const auto p2_after = ed.segments()[0].p2;
 
     REQUIRE(std::fabs(p2_after.x - (p2_before.x + 5.0f)) < 1e-5f);
@@ -230,15 +225,15 @@ TEST_CASE("SplineEditor::set_banking_at_t writes the correct segment",
     // 4 segments; uniform parameterization → seg 0 covers [0, 0.25),
     // seg 1 covers [0.25, 0.50), seg 2 covers [0.50, 0.75), seg 3 covers
     // [0.75, 1.0].
-    REQUIRE(ed.set_banking_at_t(0.10f, 0.5f)  == 0);
-    REQUIRE(ed.set_banking_at_t(0.40f, 0.7f)  == 1);
+    REQUIRE(ed.set_banking_at_t(0.10f, 0.5f) == 0);
+    REQUIRE(ed.set_banking_at_t(0.40f, 0.7f) == 1);
     REQUIRE(ed.set_banking_at_t(0.60f, -0.3f) == 2);
-    REQUIRE(ed.set_banking_at_t(0.95f, 1.0f)  == 3);
+    REQUIRE(ed.set_banking_at_t(0.95f, 1.0f) == 3);
 
-    REQUIRE(ed.segments()[0].banking_rad ==  0.5f);
-    REQUIRE(ed.segments()[1].banking_rad ==  0.7f);
+    REQUIRE(ed.segments()[0].banking_rad == 0.5f);
+    REQUIRE(ed.segments()[1].banking_rad == 0.7f);
     REQUIRE(ed.segments()[2].banking_rad == -0.3f);
-    REQUIRE(ed.segments()[3].banking_rad ==  1.0f);
+    REQUIRE(ed.segments()[3].banking_rad == 1.0f);
 }
 
 TEST_CASE("SplineEditor::set_banking_at_t clamps t and lands on the last segment at 1.0",
@@ -247,7 +242,7 @@ TEST_CASE("SplineEditor::set_banking_at_t clamps t and lands on the last segment
     ed.append_segment(make_arc_segment(20.0f, 30.0f));
     ed.append_segment(make_arc_segment(20.0f, 60.0f));
 
-    REQUIRE(ed.set_banking_at_t(2.0f, 0.42f)  == 1);
+    REQUIRE(ed.set_banking_at_t(2.0f, 0.42f) == 1);
     REQUIRE(ed.set_banking_at_t(-1.0f, 0.21f) == 0);
     REQUIRE(ed.segments()[0].banking_rad == 0.21f);
     REQUIRE(ed.segments()[1].banking_rad == 0.42f);

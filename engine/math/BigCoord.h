@@ -42,7 +42,7 @@ namespace psynder::math {
 //                     one cell of the new origin.
 struct BigCoordWorld {
     Vec3 origin{0, 0, 0};
-    f32  trigger_radius = 1024.0f;
+    f32 trigger_radius = 1024.0f;
 
     // Snap the origin onto the nearest cell containing `camera_world` when
     // the camera is more than `trigger_radius` metres from the current
@@ -58,7 +58,7 @@ struct BigCoordWorld {
         f32 dx = camera_world.x - origin.x;
         f32 dy = camera_world.y - origin.y;
         f32 dz = camera_world.z - origin.z;
-        f32 d2 = dx*dx + dy*dy + dz*dz;
+        f32 d2 = dx * dx + dy * dy + dz * dz;
         if (d2 <= trigger_radius * trigger_radius) {
             return Vec3{0, 0, 0};
         }

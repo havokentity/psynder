@@ -38,7 +38,8 @@ void append_le(std::vector<u8>& out, T value) {
 
 template <class T>
 bool read_le(std::span<const u8> bytes, usize offset, T& out) {
-    if (offset + sizeof(T) > bytes.size()) return false;
+    if (offset + sizeof(T) > bytes.size())
+        return false;
     using U = std::make_unsigned_t<T>;
     U u = 0;
     for (usize i = 0; i < sizeof(T); ++i) {
@@ -95,7 +96,8 @@ std::string lowercase_ascii(std::string_view s) {
     std::string out;
     out.reserve(s.size());
     for (char c : s) {
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
         out.push_back(c);
     }
     return out;
@@ -151,9 +153,7 @@ bool write_file(const fs::path& p, std::span<const u8> data, std::string& err) {
 // Wave A we keep it self-contained — the bit flag is wired in the format
 // but pack_options.compress is treated as a hint, and decoders that can't
 // inflate gracefully degrade.
-bool maybe_compress(std::span<const u8> raw,
-                    std::vector<u8>& out,
-                    const PackOptions& opt) {
+bool maybe_compress(std::span<const u8> raw, std::vector<u8>& out, const PackOptions& opt) {
     (void)raw;
     (void)out;
     (void)opt;
@@ -208,11 +208,8 @@ void write_index(std::vector<u8>& archive,
     index_bytes = archive.size() - start;
 }
 
-void write_header(std::vector<u8>& archive,
-                  u32 archive_flags,
-                  u32 entry_count,
-                  u64 index_offset,
-                  u64 index_bytes) {
+void write_header(
+    std::vector<u8>& archive, u32 archive_flags, u32 entry_count, u64 index_offset, u64 index_bytes) {
     // Patch the leading kHeaderBytes that we reserved at the start.
     auto write_at = [&](usize off, std::span<const u8> bytes) {
         std::memcpy(archive.data() + off, bytes.data(), bytes.size());
@@ -220,10 +217,10 @@ void write_header(std::vector<u8>& archive,
 
     u8 hdr[kHeaderBytes];
     std::memset(hdr, 0, sizeof(hdr));
-    std::memcpy(hdr + 0,  &kMagic, 4);
+    std::memcpy(hdr + 0, &kMagic, 4);
     u32 v = kVersion;
-    std::memcpy(hdr + 4,  &v, 4);
-    std::memcpy(hdr + 8,  &archive_flags, 4);
+    std::memcpy(hdr + 4, &v, 4);
+    std::memcpy(hdr + 8, &archive_flags, 4);
     std::memcpy(hdr + 12, &entry_count, 4);
     std::memcpy(hdr + 16, &index_offset, 8);
     std::memcpy(hdr + 24, &index_bytes, 8);
@@ -240,11 +237,12 @@ u64 fnv1a64(std::string_view s) noexcept {
     // through unmodified; mixed-case unicode paths would still collide
     // identically across platforms.)
     constexpr u64 kOffset = 0xcbf29ce484222325ULL;
-    constexpr u64 kPrime  = 0x100000001b3ULL;
+    constexpr u64 kPrime = 0x100000001b3ULL;
     u64 h = kOffset;
     for (char raw : s) {
         u8 c = static_cast<u8>(raw);
-        if (c >= 'A' && c <= 'Z') c = static_cast<u8>(c - 'A' + 'a');
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<u8>(c - 'A' + 'a');
         h ^= c;
         h *= kPrime;
     }
@@ -298,15 +296,14 @@ PackResult pack_blobs(std::span<const MemEntry> entries,
     }
 
     // Sort by hash so lookups can binary-search on read.
-    std::sort(records.begin(), records.end(),
-              [](const EntryRecord& a, const EntryRecord& b) { return a.hash < b.hash; });
+    std::sort(records.begin(), records.end(), [](const EntryRecord& a, const EntryRecord& b) {
+        return a.hash < b.hash;
+    });
 
     u64 index_offset = 0;
-    u64 index_bytes  = 0;
+    u64 index_bytes = 0;
     write_index(out_bytes, records, index_offset, index_bytes);
-    write_header(out_bytes, archive_flags,
-                 static_cast<u32>(records.size()),
-                 index_offset, index_bytes);
+    write_header(out_bytes, archive_flags, static_cast<u32>(records.size()), index_offset, index_bytes);
 
     result.ok = true;
     result.entries = static_cast<u32>(records.size());
@@ -314,7 +311,7 @@ PackResult pack_blobs(std::span<const MemEntry> entries,
     result.total_raw = 0;
     for (const auto& r : records) {
         result.total_stored += r.stored;
-        result.total_raw    += r.raw;
+        result.total_raw += r.raw;
     }
     return result;
 }
@@ -332,11 +329,15 @@ PackResult pack_directory(std::string_view source_dir,
 
     std::vector<MemEntry> entries;
     for (auto it = fs::recursive_directory_iterator(root, ec);
-         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
-        if (ec) break;
-        if (!it->is_regular_file(ec)) continue;
+         !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        if (ec)
+            break;
+        if (!it->is_regular_file(ec))
+            continue;
         fs::path rel = fs::relative(it->path(), root, ec);
-        if (ec) continue;
+        if (ec)
+            continue;
         MemEntry me;
         me.path = rel.generic_string();
         std::string err;
@@ -364,30 +365,40 @@ PackResult pack_directory(std::string_view source_dir,
 
 bool read_index(std::span<const u8> bytes, ArchiveInfo& out, std::string* err) {
     auto fail = [&](const char* msg) {
-        if (err) *err = msg;
+        if (err)
+            *err = msg;
         return false;
     };
-    if (bytes.size() < kHeaderBytes) return fail("archive too small for header");
+    if (bytes.size() < kHeaderBytes)
+        return fail("archive too small for header");
     u32 magic = 0;
     if (!read_le<u32>(bytes, 0, magic) || magic != kMagic)
         return fail("bad magic");
     u32 version = 0;
-    if (!read_le<u32>(bytes, 4, version)) return fail("truncated header");
+    if (!read_le<u32>(bytes, 4, version))
+        return fail("truncated header");
     out.version = version;
-    if (version != kVersion) return fail("unsupported version");
+    if (version != kVersion)
+        return fail("unsupported version");
     u32 archive_flags = 0;
-    if (!read_le<u32>(bytes, 8, archive_flags)) return fail("truncated header");
+    if (!read_le<u32>(bytes, 8, archive_flags))
+        return fail("truncated header");
     out.flags = archive_flags;
     u32 entry_count = 0;
-    if (!read_le<u32>(bytes, 12, entry_count)) return fail("truncated header");
+    if (!read_le<u32>(bytes, 12, entry_count))
+        return fail("truncated header");
     u64 index_offset = 0;
     u64 index_bytes = 0;
-    if (!read_le<u64>(bytes, 16, index_offset)) return fail("truncated header");
-    if (!read_le<u64>(bytes, 24, index_bytes)) return fail("truncated header");
-    if (index_offset + index_bytes > bytes.size()) return fail("index out of range");
+    if (!read_le<u64>(bytes, 16, index_offset))
+        return fail("truncated header");
+    if (!read_le<u64>(bytes, 24, index_bytes))
+        return fail("truncated header");
+    if (index_offset + index_bytes > bytes.size())
+        return fail("index out of range");
 
     constexpr usize kRecordBytes = 48;
-    if (entry_count * kRecordBytes > index_bytes) return fail("index too short for entry table");
+    if (entry_count * kRecordBytes > index_bytes)
+        return fail("index too short for entry table");
     out.entry_count = entry_count;
     out.entries.clear();
     out.entries.reserve(entry_count);
@@ -397,25 +408,35 @@ bool read_index(std::span<const u8> bytes, ArchiveInfo& out, std::string* err) {
     path_slots.reserve(entry_count);
     for (u32 i = 0; i < entry_count; ++i) {
         EntryRecord r;
-        if (!read_le<u64>(bytes, cursor +  0, r.hash))   return fail("truncated record");
-        if (!read_le<u64>(bytes, cursor +  8, r.offset)) return fail("truncated record");
-        if (!read_le<u64>(bytes, cursor + 16, r.stored)) return fail("truncated record");
-        if (!read_le<u64>(bytes, cursor + 24, r.raw))    return fail("truncated record");
+        if (!read_le<u64>(bytes, cursor + 0, r.hash))
+            return fail("truncated record");
+        if (!read_le<u64>(bytes, cursor + 8, r.offset))
+            return fail("truncated record");
+        if (!read_le<u64>(bytes, cursor + 16, r.stored))
+            return fail("truncated record");
+        if (!read_le<u64>(bytes, cursor + 24, r.raw))
+            return fail("truncated record");
         u32 path_off = 0, path_len = 0;
-        if (!read_le<u32>(bytes, cursor + 32, path_off)) return fail("truncated record");
-        if (!read_le<u32>(bytes, cursor + 36, path_len)) return fail("truncated record");
-        if (!read_le<u32>(bytes, cursor + 40, r.flags))  return fail("truncated record flags");
-        if (!read_le<u32>(bytes, cursor + 44, r.crc32))  return fail("truncated record crc");
+        if (!read_le<u32>(bytes, cursor + 32, path_off))
+            return fail("truncated record");
+        if (!read_le<u32>(bytes, cursor + 36, path_len))
+            return fail("truncated record");
+        if (!read_le<u32>(bytes, cursor + 40, r.flags))
+            return fail("truncated record flags");
+        if (!read_le<u32>(bytes, cursor + 44, r.crc32))
+            return fail("truncated record crc");
         cursor += kRecordBytes;
         path_slots.emplace_back(path_off, path_len);
         out.entries.push_back(std::move(r));
     }
     usize string_blob = static_cast<usize>(index_offset) + entry_count * kRecordBytes;
-    if (string_blob > index_offset + index_bytes) return fail("string blob runs past index");
+    if (string_blob > index_offset + index_bytes)
+        return fail("string blob runs past index");
     for (u32 i = 0; i < entry_count; ++i) {
         auto [off, len] = path_slots[i];
         usize start = string_blob + off;
-        if (start + len > index_offset + index_bytes) return fail("path slice out of range");
+        if (start + len > index_offset + index_bytes)
+            return fail("path slice out of range");
         out.entries[i].path.assign(reinterpret_cast<const char*>(bytes.data() + start), len);
     }
     return true;
@@ -425,7 +446,8 @@ bool read_index_file(std::string_view archive_path, ArchiveInfo& out, std::strin
     std::string e;
     std::vector<u8> bytes;
     if (!read_file(fs::path(archive_path), bytes, e)) {
-        if (err) *err = e;
+        if (err)
+            *err = e;
         return false;
     }
     return read_index(bytes, out, err);
@@ -436,16 +458,17 @@ bool extract_entry(std::span<const u8> bytes,
                    std::vector<u8>& out,
                    std::string* err) {
     if (rec.offset + rec.stored > bytes.size()) {
-        if (err) *err = "entry payload out of range";
+        if (err)
+            *err = "entry payload out of range";
         return false;
     }
-    auto payload = bytes.subspan(static_cast<usize>(rec.offset),
-                                 static_cast<usize>(rec.stored));
+    auto payload = bytes.subspan(static_cast<usize>(rec.offset), static_cast<usize>(rec.stored));
     if (rec.flags & kEntryFlagZstd) {
         std::string e;
         bool ok = maybe_decompress(payload, rec.raw, out, e);
         if (!ok) {
-            if (err) *err = e;
+            if (err)
+                *err = e;
             return false;
         }
         return true;
@@ -454,8 +477,7 @@ bool extract_entry(std::span<const u8> bytes,
     return true;
 }
 
-UnpackResult unpack_archive(std::string_view archive_path,
-                            std::string_view dest_dir) {
+UnpackResult unpack_archive(std::string_view archive_path, std::string_view dest_dir) {
     UnpackResult res;
     std::vector<u8> bytes;
     std::string e;
@@ -487,24 +509,27 @@ UnpackResult unpack_archive(std::string_view archive_path,
 
 void print_help() {
     std::fprintf(stdout,
-        "lm_pak — Psynder .lmpak archive packer / unpacker\n"
-        "\n"
-        "Usage:\n"
-        "  lm_pak pack   <source_dir>   <archive.lmpak> [--zstd] [--level N]\n"
-        "  lm_pak unpack <archive.lmpak> <dest_dir>\n"
-        "  lm_pak list   <archive.lmpak>\n"
-        "  lm_pak --help\n"
-        "\n"
-        "Notes:\n"
-        "  - FNV-1a 64-bit hash indexes the file table (case-insensitive paths).\n"
-        "  - --zstd compresses each entry independently when supported by the build.\n"
-        "  - Reads can be performed via lane 05's Vfs::mount_pak once that lands.\n");
+                 "lm_pak — Psynder .lmpak archive packer / unpacker\n"
+                 "\n"
+                 "Usage:\n"
+                 "  lm_pak pack   <source_dir>   <archive.lmpak> [--zstd] [--level N]\n"
+                 "  lm_pak unpack <archive.lmpak> <dest_dir>\n"
+                 "  lm_pak list   <archive.lmpak>\n"
+                 "  lm_pak --help\n"
+                 "\n"
+                 "Notes:\n"
+                 "  - FNV-1a 64-bit hash indexes the file table (case-insensitive paths).\n"
+                 "  - --zstd compresses each entry independently when supported by the build.\n"
+                 "  - Reads can be performed via lane 05's Vfs::mount_pak once that lands.\n");
 }
 
 namespace {
 
 int cmd_pack(int argc, char** argv) {
-    if (argc < 4) { print_help(); return 1; }
+    if (argc < 4) {
+        print_help();
+        return 1;
+    }
     PackOptions opt;
     for (int i = 4; i < argc; ++i) {
         std::string_view a = argv[i];
@@ -519,7 +544,8 @@ int cmd_pack(int argc, char** argv) {
         std::fprintf(stderr, "lm_pak: pack failed: %s\n", r.error.c_str());
         return 1;
     }
-    std::fprintf(stdout, "lm_pak: packed %u entries (%llu raw, %llu stored) -> %s\n",
+    std::fprintf(stdout,
+                 "lm_pak: packed %u entries (%llu raw, %llu stored) -> %s\n",
                  r.entries,
                  static_cast<unsigned long long>(r.total_raw),
                  static_cast<unsigned long long>(r.total_stored),
@@ -528,7 +554,10 @@ int cmd_pack(int argc, char** argv) {
 }
 
 int cmd_unpack(int argc, char** argv) {
-    if (argc < 4) { print_help(); return 1; }
+    if (argc < 4) {
+        print_help();
+        return 1;
+    }
     auto r = unpack_archive(argv[2], argv[3]);
     if (!r.ok) {
         std::fprintf(stderr, "lm_pak: unpack failed: %s\n", r.error.c_str());
@@ -539,17 +568,24 @@ int cmd_unpack(int argc, char** argv) {
 }
 
 int cmd_list(int argc, char** argv) {
-    if (argc < 3) { print_help(); return 1; }
+    if (argc < 3) {
+        print_help();
+        return 1;
+    }
     ArchiveInfo info;
     std::string err;
     if (!read_index_file(argv[2], info, &err)) {
         std::fprintf(stderr, "lm_pak: list failed: %s\n", err.c_str());
         return 1;
     }
-    std::fprintf(stdout, "lm_pak: %u entries (version=%u flags=0x%08x)\n",
-                 info.entry_count, info.version, info.flags);
+    std::fprintf(stdout,
+                 "lm_pak: %u entries (version=%u flags=0x%08x)\n",
+                 info.entry_count,
+                 info.version,
+                 info.flags);
     for (const auto& e : info.entries) {
-        std::fprintf(stdout, "  %016llx  raw=%-10llu stored=%-10llu %s\n",
+        std::fprintf(stdout,
+                     "  %016llx  raw=%-10llu stored=%-10llu %s\n",
                      static_cast<unsigned long long>(e.hash),
                      static_cast<unsigned long long>(e.raw),
                      static_cast<unsigned long long>(e.stored),
@@ -561,14 +597,22 @@ int cmd_list(int argc, char** argv) {
 }  // namespace
 
 int cli_main(int argc, char** argv) {
-    if (argc < 2) { print_help(); return 1; }
+    if (argc < 2) {
+        print_help();
+        return 1;
+    }
     std::string_view cmd = argv[1];
-    if (cmd == "--help" || cmd == "-h" || cmd == "help") { print_help(); return 0; }
-    if (cmd == "pack")   return cmd_pack(argc, argv);
-    if (cmd == "unpack") return cmd_unpack(argc, argv);
-    if (cmd == "list")   return cmd_list(argc, argv);
-    std::fprintf(stderr, "lm_pak: unknown command '%.*s'\n",
-                 static_cast<int>(cmd.size()), cmd.data());
+    if (cmd == "--help" || cmd == "-h" || cmd == "help") {
+        print_help();
+        return 0;
+    }
+    if (cmd == "pack")
+        return cmd_pack(argc, argv);
+    if (cmd == "unpack")
+        return cmd_unpack(argc, argv);
+    if (cmd == "list")
+        return cmd_list(argc, argv);
+    std::fprintf(stderr, "lm_pak: unknown command '%.*s'\n", static_cast<int>(cmd.size()), cmd.data());
     print_help();
     return 1;
 }

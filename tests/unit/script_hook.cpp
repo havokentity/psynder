@@ -20,8 +20,8 @@
 namespace {
 
 class VmFixture {
-public:
-    VmFixture()  { REQUIRE(psynder::script::Vm::Get().start()); }
+   public:
+    VmFixture() { REQUIRE(psynder::script::Vm::Get().start()); }
     ~VmFixture() {
         // Restore the default backend so cross-test state does not leak.
         psynder::script::set_repl_backend(nullptr);
@@ -30,8 +30,8 @@ public:
 };
 
 // Module-scope state poked by the test backend below.
-std::atomic<int>   g_fake_hits{0};
-std::string        g_fake_last_line;
+std::atomic<int> g_fake_hits{0};
+std::string g_fake_last_line;
 
 bool fake_backend(std::string_view line, std::string& out) noexcept {
     g_fake_hits.fetch_add(1, std::memory_order_relaxed);
@@ -42,8 +42,7 @@ bool fake_backend(std::string_view line, std::string& out) noexcept {
 
 }  // namespace
 
-TEST_CASE("script: set_repl_backend redirects dispatch_repl",
-          "[script][hook][wave-b]") {
+TEST_CASE("script: set_repl_backend redirects dispatch_repl", "[script][hook][wave-b]") {
     VmFixture fix;
 
     // The default backend forwards to Vm::execute_repl. Sanity-check that
@@ -82,17 +81,15 @@ TEST_CASE("script: set_repl_backend redirects dispatch_repl",
     REQUIRE(g_fake_hits.load() == 2);
 }
 
-TEST_CASE("script: world:spawn returns a valid engine entity handle",
-          "[script][spawn][wave-b]") {
+TEST_CASE("script: world:spawn returns a valid engine entity handle", "[script][spawn][wave-b]") {
     VmFixture fix;
 
     auto& vm = psynder::script::Vm::Get();
 
     // Run a tiny Lua chunk that spawns one entity and stashes the handle
     // in a global so the REPL can read it back out.
-    REQUIRE(vm.execute_string(
-        "spawned = world:spawn('Prop', { Position = { x=1, y=2, z=3 } })",
-        "spawn-call"));
+    REQUIRE(vm.execute_string("spawned = world:spawn('Prop', { Position = { x=1, y=2, z=3 } })",
+                              "spawn-call"));
 
     std::string out;
     REQUIRE(vm.execute_repl("type(spawned)", out));
@@ -111,9 +108,8 @@ TEST_CASE("script: world:spawn returns a valid engine entity handle",
 
     // Spawning a second entity returns a different raw handle — the shared
     // `scene::World` must hand out unique ids.
-    REQUIRE(vm.execute_string(
-        "spawned2 = world:spawn('Prop', { Position = { x=4, y=5, z=6 } })",
-        "spawn-call-2"));
+    REQUIRE(vm.execute_string("spawned2 = world:spawn('Prop', { Position = { x=4, y=5, z=6 } })",
+                              "spawn-call-2"));
     REQUIRE(vm.execute_repl("spawned2", out));
     const unsigned long raw_ul2 = std::stoul(out);
     REQUIRE(raw_ul2 != raw_ul);
@@ -121,9 +117,9 @@ TEST_CASE("script: world:spawn returns a valid engine entity handle",
     // The DOTS storage table should now have a Position array with two
     // entries (one per spawn). Verifies the component bag plumbing works
     // end-to-end with `world:spawn`, not just `create_entity`.
-    REQUIRE(vm.execute_repl(
-        "#debug.getregistry()['psynder.script.components']"
-        "  [world:component('Position')]",
-        out));
+    REQUIRE(
+        vm.execute_repl("#debug.getregistry()['psynder.script.components']"
+                        "  [world:component('Position')]",
+                        out));
     REQUIRE(out == "2");
 }

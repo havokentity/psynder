@@ -25,7 +25,7 @@ namespace psynder::world::bsp {
 // table means "pass the raw u32 through" (handy for tests).
 struct BspMaterialResolve {
     const render::raster::MaterialId* table = nullptr;
-    u32                               count = 0;
+    u32 count = 0;
 };
 
 // Per-BSP geometry tables. These live next to the BspMap and are filled at
@@ -33,24 +33,24 @@ struct BspMaterialResolve {
 // public ABI in Bsp.h is preserved while we add geometry tables incrementally.
 struct BspGeometry {
     std::vector<render::raster::Vertex> vertices;
-    std::vector<u32>                    indices;
+    std::vector<u32> indices;
 };
 
 // Build a DrawItem stream for every face in `faces`. `out` is appended to
 // (so callers can accumulate across PVS callbacks). The DrawItem's
 // `vertices` / `indices` pointers are aliases into `geom.vertices` /
 // `geom.indices` — `geom` MUST outlive the resulting DrawItems.
-void build_face_draws(const BspGeometry&             geom,
-                      std::span<const BspFace>       faces,
-                      const BspMaterialResolve&      resolve,
+void build_face_draws(const BspGeometry& geom,
+                      std::span<const BspFace> faces,
+                      const BspMaterialResolve& resolve,
                       std::vector<render::raster::DrawItem>& out);
 
 // Convenience: emit DrawItems for one leaf's face range. Used by the per-leaf
 // callback in `walk_visible_leaves` (see Bsp.cpp).
-void build_leaf_draws(const BspMap&                  map,
-                      const BspGeometry&             geom,
-                      const BspLeaf&                 leaf,
-                      const BspMaterialResolve&      resolve,
+void build_leaf_draws(const BspMap& map,
+                      const BspGeometry& geom,
+                      const BspLeaf& leaf,
+                      const BspMaterialResolve& resolve,
                       std::vector<render::raster::DrawItem>& out);
 
 }  // namespace psynder::world::bsp

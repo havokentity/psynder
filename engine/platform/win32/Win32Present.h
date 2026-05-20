@@ -20,8 +20,8 @@
 namespace psynder::platform::win32 {
 
 class Win32Present {
-public:
-    Win32Present()  = default;
+   public:
+    Win32Present() = default;
     ~Win32Present() { shutdown(); }
 
     Win32Present(const Win32Present&) = delete;
@@ -44,14 +44,12 @@ public:
     // Per-frame entry. Uploads `fb` to the framebuffer texture and draws
     // one quad sized to the current window with the chosen ScaleMode +
     // AspectMode.
-    bool present(const render::Framebuffer& fb,
-                 ScaleMode  scale_mode,
-                 AspectMode aspect_mode);
+    bool present(const render::Framebuffer& fb, ScaleMode scale_mode, AspectMode aspect_mode);
 
-    u32 window_width()  const noexcept { return window_w_; }
+    u32 window_width() const noexcept { return window_w_; }
     u32 window_height() const noexcept { return window_h_; }
 
-private:
+   private:
     // ── Internal helpers ────────────────────────────────────────────────
     bool create_device_and_swap_chain(HWND hwnd);
     bool create_render_target();
@@ -60,31 +58,30 @@ private:
     void upload_framebuffer(const render::Framebuffer& fb);
 
     // Compute destination viewport for the quad given a scale + aspect mode.
-    D3D11_VIEWPORT compute_viewport(ScaleMode  scale_mode,
-                                    AspectMode aspect_mode) const noexcept;
+    D3D11_VIEWPORT compute_viewport(ScaleMode scale_mode, AspectMode aspect_mode) const noexcept;
 
     // ── State ───────────────────────────────────────────────────────────
-    HWND hwnd_     = nullptr;
-    u32  render_w_ = 0;
-    u32  render_h_ = 0;
-    u32  window_w_ = 0;
-    u32  window_h_ = 0;
-    bool vsync_    = true;
+    HWND hwnd_ = nullptr;
+    u32 render_w_ = 0;
+    u32 render_h_ = 0;
+    u32 window_w_ = 0;
+    u32 window_h_ = 0;
+    bool vsync_ = true;
 
-    ComPtr<ID3D11Device>           device_;
-    ComPtr<ID3D11DeviceContext>    context_;
-    ComPtr<IDXGISwapChain1>        swap_chain_;
+    ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
+    ComPtr<IDXGISwapChain1> swap_chain_;
     ComPtr<ID3D11RenderTargetView> rtv_;
 
-    ComPtr<ID3D11Texture2D>          fb_tex_;
+    ComPtr<ID3D11Texture2D> fb_tex_;
     ComPtr<ID3D11ShaderResourceView> fb_srv_;
-    ComPtr<ID3D11SamplerState>       sampler_linear_;
-    ComPtr<ID3D11SamplerState>       sampler_point_;
+    ComPtr<ID3D11SamplerState> sampler_linear_;
+    ComPtr<ID3D11SamplerState> sampler_point_;
 
     ComPtr<ID3D11VertexShader> vs_;
-    ComPtr<ID3D11PixelShader>  ps_;
-    ComPtr<ID3D11InputLayout>  input_layout_;
-    ComPtr<ID3D11Buffer>       vbo_;
+    ComPtr<ID3D11PixelShader> ps_;
+    ComPtr<ID3D11InputLayout> input_layout_;
+    ComPtr<ID3D11Buffer> vbo_;
     ComPtr<ID3D11RasterizerState> rast_;
 };
 

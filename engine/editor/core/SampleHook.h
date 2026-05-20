@@ -41,42 +41,37 @@ namespace psynder::editor {
 // Returns the resolved mode AFTER `handle_input_frame` has had a chance
 // to flip it on this frame's input edge, so the caller's branch sees
 // the same mode that was just rendered to the badge.
-inline Mode sample_step(const platform::Input& input,
-                        render::Framebuffer& fb) noexcept {
+inline Mode sample_step(const platform::Input& input, render::Framebuffer& fb) noexcept {
     handle_input_frame(input);
     const Mode mode = current_mode();
 
     // Badge layout: 6×8 font, 4 chars, 2-px inner padding, 4-px margin.
     // Origin is the badge's top-left in framebuffer pixels.
     constexpr u32 kBadgeW = 6 * 4 + 2 * 2;  // 28 px
-    constexpr u32 kBadgeH = 8     + 2 * 2;  // 12 px
+    constexpr u32 kBadgeH = 8 + 2 * 2;      // 12 px
     constexpr u32 kMargin = 4;
 
-    if (fb.width  < kBadgeW + kMargin * 2 ||
-        fb.height < kBadgeH + kMargin * 2) {
+    if (fb.width < kBadgeW + kMargin * 2 || fb.height < kBadgeH + kMargin * 2) {
         // Framebuffer too small to host the badge — skip the overlay
         // but still return the live mode so the caller's logic works.
         return mode;
     }
 
-    const f32 x = static_cast<f32>(fb.width  - kBadgeW - kMargin);
+    const f32 x = static_cast<f32>(fb.width - kBadgeW - kMargin);
     const f32 y = static_cast<f32>(fb.height - kBadgeH - kMargin);
 
     // RGBA packed 0xAABBGGRR-ish per lane 16's convention. We pick the
     // standard 0xRRGGBBAA byte order used by `imm::label`'s rgba param.
-    const u32 panel_rgba = (mode == Mode::Edit)
-        ? 0xC07A30B0u   // amber, ~70% alpha
-        : 0x2EA04AB0u;  // green, ~70% alpha
-    const u32 text_rgba  = 0xFFFFFFFFu;
+    const u32 panel_rgba = (mode == Mode::Edit) ? 0xC07A30B0u   // amber, ~70% alpha
+                                                : 0x2EA04AB0u;  // green, ~70% alpha
+    const u32 text_rgba = 0xFFFFFFFFu;
 
-    psynder::ui::imm::filled_rect(
-        math::Vec2{x, y},
-        math::Vec2{static_cast<f32>(kBadgeW), static_cast<f32>(kBadgeH)},
-        panel_rgba);
-    psynder::ui::imm::label(
-        math::Vec2{x + 2.0f, y + 2.0f},
-        (mode == Mode::Edit) ? "EDIT" : "PLAY",
-        text_rgba);
+    psynder::ui::imm::filled_rect(math::Vec2{x, y},
+                                  math::Vec2{static_cast<f32>(kBadgeW), static_cast<f32>(kBadgeH)},
+                                  panel_rgba);
+    psynder::ui::imm::label(math::Vec2{x + 2.0f, y + 2.0f},
+                            (mode == Mode::Edit) ? "EDIT" : "PLAY",
+                            text_rgba);
 
     return mode;
 }

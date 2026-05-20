@@ -16,14 +16,14 @@
 namespace lg = psynder::log;
 
 namespace {
-std::atomic<int>   g_test_log_count{0};
-std::string        g_test_last_line;
-lg::Level          g_test_last_level = lg::Level::Info;
+std::atomic<int> g_test_log_count{0};
+std::string g_test_last_line;
+lg::Level g_test_last_level = lg::Level::Info;
 
 void test_sink(lg::Level lv, const std::string& line) {
     g_test_log_count.fetch_add(1, std::memory_order_relaxed);
     g_test_last_level = lv;
-    g_test_last_line  = line;
+    g_test_last_line = line;
 }
 }  // namespace
 
@@ -60,5 +60,5 @@ TEST_CASE("remove_all_sinks unwires every callback", "[core][log]") {
 
     lg::remove_all_sinks();
     PSY_LOG_INFO("after");
-    REQUIRE(g_test_log_count.load() == 1);   // no further calls
+    REQUIRE(g_test_log_count.load() == 1);  // no further calls
 }

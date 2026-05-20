@@ -24,8 +24,11 @@ namespace {
 std::atomic<unsigned> g_render_calls{0};
 std::atomic<unsigned> g_total_frames{0};
 
-void test_render_cb(void* /*user*/, psynder::f32* out, psynder::u32 frame_count,
-                    psynder::u32 channel_count, psynder::u32 /*sample_rate*/) {
+void test_render_cb(void* /*user*/,
+                    psynder::f32* out,
+                    psynder::u32 frame_count,
+                    psynder::u32 channel_count,
+                    psynder::u32 /*sample_rate*/) {
     g_render_calls.fetch_add(1, std::memory_order_relaxed);
     g_total_frames.fetch_add(frame_count, std::memory_order_relaxed);
     // Emit silence — we only want to confirm the callback is wired
@@ -39,8 +42,8 @@ TEST_CASE("platform_macos: audio_start / audio_stop is safe", "[platform_macos][
     g_render_calls.store(0);
     g_total_frames.store(0);
     pm::AudioDeviceDesc desc{};
-    desc.sample_rate   = 48000;
-    desc.channels      = 2;
+    desc.sample_rate = 48000;
+    desc.channels = 2;
     desc.buffer_frames = 512;
     const bool ok = pm::audio_start(desc, &test_render_cb, nullptr);
     // We do not REQUIRE ok — CI macs may not have an audio device available.
@@ -55,7 +58,7 @@ TEST_CASE("platform_macos: audio_start / audio_stop is safe", "[platform_macos][
         REQUIRE(g_render_calls.load() > 0);
         REQUIRE(g_total_frames.load() > 0);
         REQUIRE(pm::audio_actual_sample_rate() == 48000);
-        REQUIRE(pm::audio_actual_channels()    == 2);
+        REQUIRE(pm::audio_actual_channels() == 2);
     }
     pm::audio_stop();
     REQUIRE_FALSE(pm::audio_running());
@@ -67,12 +70,12 @@ TEST_CASE("platform_macos: audio_start / audio_stop is safe", "[platform_macos][
 TEST_CASE("platform_macos: gamepad_arm is idempotent + count is queryable",
           "[platform_macos][gamepad]") {
     pm::gamepad_arm();
-    pm::gamepad_arm();   // second call must not crash / re-register
+    pm::gamepad_arm();  // second call must not crash / re-register
     // No controller is required for the test to pass; we just confirm the
     // count is reachable and stable across calls.
     auto a = pm::gamepad_count();
     auto b = pm::gamepad_count();
-    REQUIRE(b >= a);   // count never goes backwards within a frame
+    REQUIRE(b >= a);  // count never goes backwards within a frame
 }
 
 #endif  // PSYNDER_PLATFORM_MACOS

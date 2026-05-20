@@ -14,8 +14,7 @@
 using namespace psynder;
 using namespace psynder::jobs::detail;
 
-TEST_CASE("ChaseLevDeque: single-owner pushes are conserved by thieves",
-          "[jobs][deque][internal]") {
+TEST_CASE("ChaseLevDeque: single-owner pushes are conserved by thieves", "[jobs][deque][internal]") {
     ChaseLevDeque d;
     d.init(1 << 16);
 
@@ -31,18 +30,17 @@ TEST_CASE("ChaseLevDeque: single-owner pushes are conserved by thieves",
             while (!stop.load(std::memory_order_acquire)) {
                 auto r = d.try_steal();
                 if (r.status == ChaseLevDeque::Status::Ok) {
-                    seen_counts[r.index - 1].fetch_add(1,
-                        std::memory_order_relaxed);
+                    seen_counts[r.index - 1].fetch_add(1, std::memory_order_relaxed);
                     got_total.fetch_add(1, std::memory_order_relaxed);
                 }
             }
             // Drain remaining after stop flag.
             for (;;) {
                 auto r = d.try_steal();
-                if (r.status == ChaseLevDeque::Status::Empty) break;
+                if (r.status == ChaseLevDeque::Status::Empty)
+                    break;
                 if (r.status == ChaseLevDeque::Status::Ok) {
-                    seen_counts[r.index - 1].fetch_add(1,
-                        std::memory_order_relaxed);
+                    seen_counts[r.index - 1].fetch_add(1, std::memory_order_relaxed);
                     got_total.fetch_add(1, std::memory_order_relaxed);
                 }
             }
@@ -56,12 +54,14 @@ TEST_CASE("ChaseLevDeque: single-owner pushes are conserved by thieves",
         }
     }
     stop.store(true, std::memory_order_release);
-    for (auto& t : thieves) t.join();
+    for (auto& t : thieves)
+        t.join();
 
     // Owner may have left tail of work — drain it.
     for (;;) {
         auto r = d.try_pop();
-        if (r.status == ChaseLevDeque::Status::Empty) break;
+        if (r.status == ChaseLevDeque::Status::Empty)
+            break;
         if (r.status == ChaseLevDeque::Status::Ok) {
             seen_counts[r.index - 1].fetch_add(1, std::memory_order_relaxed);
             got_total.fetch_add(1, std::memory_order_relaxed);

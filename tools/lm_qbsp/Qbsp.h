@@ -34,19 +34,19 @@
 namespace psynder::tools::qbsp {
 
 struct MapPlane {
-    math::Vec3 normal{0,0,0};
-    f32        d = 0.0f;            // plane: dot(normal, p) = d
+    math::Vec3 normal{0, 0, 0};
+    f32 d = 0.0f;  // plane: dot(normal, p) = d
     std::string material;
 };
 
 struct MapBrush {
-    std::vector<MapPlane> planes;   // half-spaces; brush = intersection
-    math::Aabb            bounds{};
+    std::vector<MapPlane> planes;  // half-spaces; brush = intersection
+    math::Aabb bounds{};
 };
 
 struct MapEntity {
     std::vector<std::pair<std::string, std::string>> kv;
-    std::vector<MapBrush>                            brushes;
+    std::vector<MapBrush> brushes;
 };
 
 struct MapFile {
@@ -79,37 +79,52 @@ bool parse_map(std::string_view text, MapFile& out, std::string* err = nullptr);
 // Negative `front` or `back` in a node points at a leaf; positive points at
 // another node. Leaf index `~child`.
 
-inline constexpr u32 kPsyBspMagic   = 0x50425350u;  // 'PSBP'
+inline constexpr u32 kPsyBspMagic = 0x50425350u;  // 'PSBP'
 inline constexpr u32 kPsyBspVersion = 2u;
 
 inline constexpr u32 kLeafFlagSolid = 1u << 0;
 inline constexpr u32 kLeafFlagEmpty = 1u << 1;
 
-struct BspPlane  { math::Vec3 normal; f32 d; };
-struct BspNode   { i32 plane; i32 front; i32 back; };
-struct BspLeaf   { i32 cluster; u32 flags; math::Aabb bounds; };
-struct BspBrush  { u32 first_plane; u32 plane_count; math::Aabb bounds; };
+struct BspPlane {
+    math::Vec3 normal;
+    f32 d;
+};
+struct BspNode {
+    i32 plane;
+    i32 front;
+    i32 back;
+};
+struct BspLeaf {
+    i32 cluster;
+    u32 flags;
+    math::Aabb bounds;
+};
+struct BspBrush {
+    u32 first_plane;
+    u32 plane_count;
+    math::Aabb bounds;
+};
 
 // Wave-B portal record. Mirrors lane 10's `BspPortal` (engine/world/bsp/Portal.h)
 // so the loader can copy bytes 1:1. The winding lives in `portal_vertices`
 // shared across all portals (CCW when viewed from `front_leaf` toward
 // `back_leaf`).
 struct BspPortal {
-    i32        front_leaf;
-    i32        back_leaf;
-    u32        first_vertex;
-    u32        vertex_count;
+    i32 front_leaf;
+    i32 back_leaf;
+    u32 first_vertex;
+    u32 vertex_count;
     math::Vec3 plane_normal;
-    f32        plane_d;
+    f32 plane_d;
 };
 
 struct CompiledBsp {
-    std::vector<BspPlane>   planes;
-    std::vector<BspNode>    nodes;
-    std::vector<BspLeaf>    leaves;
-    std::vector<BspBrush>   brushes;
-    std::vector<u32>        brush_planes;     // flattened plane indices per brush
-    std::vector<BspPortal>  portals;          // Wave-B
+    std::vector<BspPlane> planes;
+    std::vector<BspNode> nodes;
+    std::vector<BspLeaf> leaves;
+    std::vector<BspBrush> brushes;
+    std::vector<u32> brush_planes;            // flattened plane indices per brush
+    std::vector<BspPortal> portals;           // Wave-B
     std::vector<math::Vec3> portal_vertices;  // Wave-B (windings)
 };
 
@@ -121,7 +136,7 @@ bool compile_bsp(const MapFile& map, CompiledBsp& out, std::string* err = nullpt
 void write_psybsp(const CompiledBsp& bsp, std::vector<u8>& out);
 bool read_psybsp(std::span<const u8> bytes, CompiledBsp& out, std::string* err = nullptr);
 
-int  cli_main(int argc, char** argv);
+int cli_main(int argc, char** argv);
 void print_help();
 
 }  // namespace psynder::tools::qbsp

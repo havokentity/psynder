@@ -43,10 +43,10 @@
 namespace psynder::audio::detail {
 
 // ─── Geometry of the vendored HRIR set ───────────────────────────────────
-inline constexpr u32 kHrirTaps         = 256;   // taps per ear
-inline constexpr u32 kHrirAzBins       = 12;    // 30° resolution, full circle
-inline constexpr u32 kHrirElBins       = 2;     // ear-level (0°) + above (+30°)
-inline constexpr f32 kHrirElevations[kHrirElBins] = { 0.0f, 0.5235987756f /*30°*/ };
+inline constexpr u32 kHrirTaps = 256;   // taps per ear
+inline constexpr u32 kHrirAzBins = 12;  // 30° resolution, full circle
+inline constexpr u32 kHrirElBins = 2;   // ear-level (0°) + above (+30°)
+inline constexpr f32 kHrirElevations[kHrirElBins] = {0.0f, 0.5235987756f /*30°*/};
 
 // Per-ear FIR for one (az, el) cell of the HRIR database.
 struct HrirCell {
@@ -68,9 +68,8 @@ struct HrirCell {
 inline HrirCell make_hrir_blob_at(f32 azimuth_rad, f32 elevation_rad, u32 sample_rate) noexcept {
     HrirCell cell{};
 
-    const f32 itd_s     = itd_seconds(azimuth_rad);
-    const u32 itd_samps = static_cast<u32>(std::fabs(itd_s) *
-                          static_cast<f32>(sample_rate) + 0.5f);
+    const f32 itd_s = itd_seconds(azimuth_rad);
+    const u32 itd_samps = static_cast<u32>(std::fabs(itd_s) * static_cast<f32>(sample_rate) + 0.5f);
     // On-axis (|az| < 1°) is symmetric; otherwise the source biases to one side.
     constexpr f32 kSymmetryThreshold = 0.0175f;  // ~1°
     const bool symmetric = std::fabs(azimuth_rad) < kSymmetryThreshold;
@@ -82,7 +81,7 @@ inline HrirCell make_hrir_blob_at(f32 azimuth_rad, f32 elevation_rad, u32 sample
     // notch climb that listeners actually localise on).
     const f32 pinna_main_tap = 8.0f;
     const f32 pinna_echo_tap = 22.0f - 6.0f * std::sin(elevation_rad);
-    const f32 echo_gain      = 0.32f * std::cos(elevation_rad);
+    const f32 echo_gain = 0.32f * std::cos(elevation_rad);
 
     // Gauss sigma — narrower for the ipsilateral pinna burst.
     constexpr f32 sigma_main = 1.6f;
@@ -92,7 +91,7 @@ inline HrirCell make_hrir_blob_at(f32 azimuth_rad, f32 elevation_rad, u32 sample
         const i32 c0 = static_cast<i32>(centre) - 6;
         const i32 c1 = static_cast<i32>(centre) + 6;
         for (i32 t = std::max(0, c0); t < std::min(static_cast<i32>(kHrirTaps), c1); ++t) {
-            const f32 d  = (static_cast<f32>(t) - centre) / sigma;
+            const f32 d = (static_cast<f32>(t) - centre) / sigma;
             dst[static_cast<u32>(t)] += amp * std::exp(-0.5f * d * d);
         }
     };
@@ -106,8 +105,8 @@ inline HrirCell make_hrir_blob_at(f32 azimuth_rad, f32 elevation_rad, u32 sample
 
     if (symmetric) {
         // On-axis: both ears get the same ipsilateral-style burst.
-        add_burst(cell.left,  pinna_main_tap, sigma_main, ips_gain);
-        add_burst(cell.left,  pinna_echo_tap, sigma_echo, ips_gain * echo_gain);
+        add_burst(cell.left, pinna_main_tap, sigma_main, ips_gain);
+        add_burst(cell.left, pinna_echo_tap, sigma_echo, ips_gain * echo_gain);
         add_burst(cell.right, pinna_main_tap, sigma_main, ips_gain);
         add_burst(cell.right, pinna_echo_tap, sigma_echo, ips_gain * echo_gain);
         return cell;
@@ -128,7 +127,7 @@ inline HrirCell make_hrir_blob_at(f32 azimuth_rad, f32 elevation_rad, u32 sample
         add_burst(tmp, pinna_echo_tap + 4.0f, sigma_echo, con_gain * echo_gain * 0.6f);
 
         // 1-pole head-shadow low-pass — coefficient scales with |sin(az)|.
-        const f32 alpha = 0.35f + 0.5f * std::fabs(sin_a);   // 0.35 .. 0.85
+        const f32 alpha = 0.35f + 0.5f * std::fabs(sin_a);  // 0.35 .. 0.85
         f32 lp = 0.0f;
         for (u32 i = 0; i < kHrirTaps; ++i) {
             lp = alpha * tmp[i] + (1.0f - alpha) * lp;
@@ -151,14 +150,14 @@ inline HrirCell make_hrir_blob_at(f32 azimuth_rad, f32 elevation_rad, u32 sample
 // (az, el) with a frequency-domain crossfade between the two flanking
 // azimuth bins so that high-rate panning doesn't switch hard between cells.
 class HrirDatabase {
-public:
+   public:
     void build(u32 sample_rate) noexcept {
         sr_ = sample_rate;
         (void)sr_;
         for (u32 ai = 0; ai < kHrirAzBins; ++ai) {
             for (u32 ei = 0; ei < kHrirElBins; ++ei) {
-                const f32 az = static_cast<f32>(ai) *
-                               (math::kTwoPi / static_cast<f32>(kHrirAzBins)) - math::kPi;
+                const f32 az =
+                    static_cast<f32>(ai) * (math::kTwoPi / static_cast<f32>(kHrirAzBins)) - math::kPi;
                 const f32 el = kHrirElevations[ei];
                 cells_[ai][ei] = make_hrir_blob_at(az, el, sample_rate);
             }
@@ -175,34 +174,35 @@ public:
     // time, we form a per-frequency interpolation that preserves phase. This
     // costs one round-trip FFT, but the kHrirTaps=256 case is small enough
     // that the cost is negligible against per-block convolution.
-    void lookup(f32 azimuth_rad, f32 elevation_rad,
-                f32* out_left, f32* out_right) const noexcept {
+    void lookup(f32 azimuth_rad, f32 elevation_rad, f32* out_left, f32* out_right) const noexcept {
         // Wrap azimuth to [-π, π].
         f32 az = azimuth_rad;
-        while (az >  math::kPi) az -= math::kTwoPi;
-        while (az < -math::kPi) az += math::kTwoPi;
+        while (az > math::kPi)
+            az -= math::kTwoPi;
+        while (az < -math::kPi)
+            az += math::kTwoPi;
         // Map to bin space: bin 0 is at -π, bin (N) is at +π (wraps).
-        const f32 az_bin_f = (az + math::kPi) *
-                             (static_cast<f32>(kHrirAzBins) / math::kTwoPi);
+        const f32 az_bin_f = (az + math::kPi) * (static_cast<f32>(kHrirAzBins) / math::kTwoPi);
         u32 ai0 = static_cast<u32>(std::floor(az_bin_f)) % kHrirAzBins;
         u32 ai1 = (ai0 + 1u) % kHrirAzBins;
         const f32 az_t = az_bin_f - std::floor(az_bin_f);
 
         // Elevation: clamp & bilinear-interp between the two flanking samples.
-        f32 el = std::clamp(elevation_rad,
-                            kHrirElevations[0],
-                            kHrirElevations[kHrirElBins - 1]);
+        f32 el = std::clamp(elevation_rad, kHrirElevations[0], kHrirElevations[kHrirElBins - 1]);
         u32 ei0 = 0, ei1 = 0;
         f32 el_t = 0.0f;
         for (u32 i = 0; i < kHrirElBins - 1u; ++i) {
             if (el <= kHrirElevations[i + 1]) {
-                ei0 = i; ei1 = i + 1u;
-                el_t = (el - kHrirElevations[i]) /
-                       (kHrirElevations[i + 1] - kHrirElevations[i]);
+                ei0 = i;
+                ei1 = i + 1u;
+                el_t = (el - kHrirElevations[i]) / (kHrirElevations[i + 1] - kHrirElevations[i]);
                 break;
             }
         }
-        if (kHrirElBins == 1u) { ei0 = ei1 = 0; el_t = 0.0f; }
+        if (kHrirElBins == 1u) {
+            ei0 = ei1 = 0;
+            el_t = 0.0f;
+        }
 
         // 1. elevation-blend each azimuth bin first (time-domain linear lerp).
         std::array<f32, kHrirTaps> ai0_left{}, ai0_right{};
@@ -212,40 +212,40 @@ public:
         const HrirCell& c10 = cells_[ai1][ei0];
         const HrirCell& c11 = cells_[ai1][ei1];
         for (u32 i = 0; i < kHrirTaps; ++i) {
-            ai0_left [i] = c00.left [i] * (1.0f - el_t) + c01.left [i] * el_t;
+            ai0_left[i] = c00.left[i] * (1.0f - el_t) + c01.left[i] * el_t;
             ai0_right[i] = c00.right[i] * (1.0f - el_t) + c01.right[i] * el_t;
-            ai1_left [i] = c10.left [i] * (1.0f - el_t) + c11.left [i] * el_t;
+            ai1_left[i] = c10.left[i] * (1.0f - el_t) + c11.left[i] * el_t;
             ai1_right[i] = c10.right[i] * (1.0f - el_t) + c11.right[i] * el_t;
         }
 
         // 2. azimuth-blend: frequency-domain crossfade between bins. Cheap
         //    because kHrirTaps is a power of two (256 → log2n = 8). We
         //    do this per ear separately.
-        freq_xfade(ai0_left.data(),  ai1_left.data(),  az_t, out_left);
+        freq_xfade(ai0_left.data(), ai1_left.data(), az_t, out_left);
         freq_xfade(ai0_right.data(), ai1_right.data(), az_t, out_right);
     }
 
     // Test hook — direct accessor for a single cell.
-    const HrirCell& cell(u32 az_bin, u32 el_bin) const noexcept {
-        return cells_[az_bin][el_bin];
-    }
+    const HrirCell& cell(u32 az_bin, u32 el_bin) const noexcept { return cells_[az_bin][el_bin]; }
 
-    static constexpr u32 azimuth_bins()   noexcept { return kHrirAzBins;   }
-    static constexpr u32 elevation_bins() noexcept { return kHrirElBins;   }
-    static constexpr u32 taps()           noexcept { return kHrirTaps;     }
+    static constexpr u32 azimuth_bins() noexcept { return kHrirAzBins; }
+    static constexpr u32 elevation_bins() noexcept { return kHrirElBins; }
+    static constexpr u32 taps() noexcept { return kHrirTaps; }
 
-private:
+   private:
     // Per-ear frequency-domain crossfade between two kHrirTaps-length signals.
     // log2(256) = 8. Operates in-place on scratch buffers reused per call —
     // not thread-local statics (per-call stack avoids cross-thread state).
     static void freq_xfade(const f32* a, const f32* b, f32 t, f32* out) noexcept {
-        constexpr u32 N      = kHrirTaps;
-        constexpr u32 log2N  = 8;
+        constexpr u32 N = kHrirTaps;
+        constexpr u32 log2N = 8;
         f32 buf_a[2 * N]{};
         f32 buf_b[2 * N]{};
         for (u32 i = 0; i < N; ++i) {
-            buf_a[2*i + 0] = a[i]; buf_a[2*i + 1] = 0.0f;
-            buf_b[2*i + 0] = b[i]; buf_b[2*i + 1] = 0.0f;
+            buf_a[2 * i + 0] = a[i];
+            buf_a[2 * i + 1] = 0.0f;
+            buf_b[2 * i + 0] = b[i];
+            buf_b[2 * i + 1] = 0.0f;
         }
         fft(buf_a, log2N);
         fft(buf_b, log2N);
@@ -253,27 +253,34 @@ private:
         // whichever flanking bin contributes more (so the result rotates
         // smoothly with t instead of cancelling at t = 0.5).
         for (u32 i = 0; i < N; ++i) {
-            const f32 ar = buf_a[2*i + 0], ai = buf_a[2*i + 1];
-            const f32 br = buf_b[2*i + 0], bi = buf_b[2*i + 1];
+            const f32 ar = buf_a[2 * i + 0], ai = buf_a[2 * i + 1];
+            const f32 br = buf_b[2 * i + 0], bi = buf_b[2 * i + 1];
             const f32 mag_a = std::sqrt(ar * ar + ai * ai);
             const f32 mag_b = std::sqrt(br * br + bi * bi);
-            const f32 mag   = mag_a * (1.0f - t) + mag_b * t;
+            const f32 mag = mag_a * (1.0f - t) + mag_b * t;
             // pick dominant-side phase
             f32 phr = 0.0f, phi = 0.0f;
             if (mag_a >= mag_b) {
-                if (mag_a > 1e-12f) { phr = ar / mag_a; phi = ai / mag_a; }
+                if (mag_a > 1e-12f) {
+                    phr = ar / mag_a;
+                    phi = ai / mag_a;
+                }
             } else {
-                if (mag_b > 1e-12f) { phr = br / mag_b; phi = bi / mag_b; }
+                if (mag_b > 1e-12f) {
+                    phr = br / mag_b;
+                    phi = bi / mag_b;
+                }
             }
-            buf_a[2*i + 0] = mag * phr;
-            buf_a[2*i + 1] = mag * phi;
+            buf_a[2 * i + 0] = mag * phr;
+            buf_a[2 * i + 1] = mag * phi;
         }
         ifft(buf_a, log2N);
-        for (u32 i = 0; i < N; ++i) out[i] = buf_a[2*i + 0];
+        for (u32 i = 0; i < N; ++i)
+            out[i] = buf_a[2 * i + 0];
     }
 
     bool built_ = false;
-    u32  sr_    = 48000;
+    u32 sr_ = 48000;
     // [az][el] → cell. Linear (cache-friendly) for the AZ-major scan we do
     // in lookup().
     std::array<std::array<HrirCell, kHrirElBins>, kHrirAzBins> cells_{};

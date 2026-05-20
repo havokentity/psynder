@@ -30,24 +30,24 @@ namespace psynder::ui::imm {
 
 // cvar `r_debug_hud` decoded form.
 enum class DebugHudMode : u8 {
-    Off     = 0,
+    Off = 0,
     Compact = 1,
-    Full    = 2,
+    Full = 2,
 };
 
 // Per-frame stats the caller fills in once, before `draw_debug_hud()`.
 struct DebugHudStats {
-    f32   frame_ms       = 0.0f;
-    f32   avg_frame_ms   = 0.0f;
-    usize draw_calls     = 0;
-    usize triangles      = 0;
-    usize active_voices  = 0;
+    f32 frame_ms = 0.0f;
+    f32 avg_frame_ms = 0.0f;
+    usize draw_calls = 0;
+    usize triangles = 0;
+    usize active_voices = 0;
 };
 
 // Stored cvar mirror. `r_debug_hud` host-side wires this up; tests poke
 // the value directly.
 DebugHudMode debug_hud_mode() noexcept;
-void         set_debug_hud_mode(DebugHudMode mode) noexcept;
+void set_debug_hud_mode(DebugHudMode mode) noexcept;
 
 // Push a one-line diagnostic message into the HUD's ring. Latest 6 lines
 // are visible in `Full` mode. Lines are clipped to ~48 chars on render;
@@ -65,7 +65,6 @@ void reset_debug_hud() noexcept;
 //
 // Returns the number of pixels written (post-clip), which the unit
 // tests use to compare Compact vs Full bandwidth.
-usize draw_debug_hud(render::Framebuffer&  fb,
-                     const DebugHudStats&  stats) noexcept;
+usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexcept;
 
 }  // namespace psynder::ui::imm

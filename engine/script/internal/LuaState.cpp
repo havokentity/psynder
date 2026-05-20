@@ -16,17 +16,17 @@ namespace {
 void open_safe_stdlib(lua_State* L) {
     // luaL_openlibs would pull io + everything; instead pick what we want.
     static const luaL_Reg libs[] = {
-        { LUA_GNAME,      luaopen_base      },
-        { LUA_LOADLIBNAME, luaopen_package  },
-        { LUA_COLIBNAME,  luaopen_coroutine },
-        { LUA_TABLIBNAME, luaopen_table     },
-        { LUA_STRLIBNAME, luaopen_string    },
-        { LUA_MATHLIBNAME, luaopen_math     },
-        { LUA_UTF8LIBNAME, luaopen_utf8     },
+        {LUA_GNAME, luaopen_base},
+        {LUA_LOADLIBNAME, luaopen_package},
+        {LUA_COLIBNAME, luaopen_coroutine},
+        {LUA_TABLIBNAME, luaopen_table},
+        {LUA_STRLIBNAME, luaopen_string},
+        {LUA_MATHLIBNAME, luaopen_math},
+        {LUA_UTF8LIBNAME, luaopen_utf8},
         // os (subset — see scrub_os below)
-        { LUA_OSLIBNAME,  luaopen_os        },
+        {LUA_OSLIBNAME, luaopen_os},
         // debug — kept for REPL stack traces. Hot paths never see debug.*.
-        { LUA_DBLIBNAME,  luaopen_debug     },
+        {LUA_DBLIBNAME, luaopen_debug},
     };
     for (const luaL_Reg& lib : libs) {
         luaL_requiref(L, lib.name, lib.func, 1);
@@ -36,8 +36,7 @@ void open_safe_stdlib(lua_State* L) {
     // Scrub the dangerous bits of `os`.
     lua_getglobal(L, "os");
     if (lua_istable(L, -1)) {
-        for (const char* name : { "execute", "exit", "remove",
-                                  "rename", "tmpname", "getenv" }) {
+        for (const char* name : {"execute", "exit", "remove", "rename", "tmpname", "getenv"}) {
             lua_pushnil(L);
             lua_setfield(L, -2, name);
         }
@@ -52,10 +51,10 @@ void open_safe_stdlib(lua_State* L) {
     // with stubs that raise an error directing users to the asset VFS.
     static const auto blocked = [](lua_State* L) -> int {
         return luaL_error(L,
-            "%s is disabled; load scripts via the asset VFS",
-            lua_tostring(L, lua_upvalueindex(1)));
+                          "%s is disabled; load scripts via the asset VFS",
+                          lua_tostring(L, lua_upvalueindex(1)));
     };
-    for (const char* name : { "dofile", "loadfile" }) {
+    for (const char* name : {"dofile", "loadfile"}) {
         lua_pushstring(L, name);
         lua_pushcclosure(L, blocked, 1);
         lua_setglobal(L, name);

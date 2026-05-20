@@ -28,14 +28,17 @@ using psynder::audio::detail::PartitionedConvolver;
 TEST_CASE("audio: partitioned convolver builds with sane geometry", "[audio][conv]") {
     PartitionedConvolver c;
     REQUIRE_FALSE(c.ready());
-    c.reset(/*sr*/ 48000u, /*ir s*/ 0.20f, /*decay s*/ 1.0f,
-            /*block*/ 256u, /*overlap*/ 4u);
+    c.reset(/*sr*/ 48000u,
+            /*ir s*/ 0.20f,
+            /*decay s*/ 1.0f,
+            /*block*/ 256u,
+            /*overlap*/ 4u);
     REQUIRE(c.ready());
-    REQUIRE(c.block_size()    == 256u);
+    REQUIRE(c.block_size() == 256u);
     REQUIRE(c.overlap_factor() == 4u);
-    REQUIRE(c.fft_length()    == 512u);
-    REQUIRE(c.partitions()    >= 1u);
-    REQUIRE(c.partitions()    <= 32u);
+    REQUIRE(c.fft_length() == 512u);
+    REQUIRE(c.partitions() >= 1u);
+    REQUIRE(c.partitions() <= 32u);
     // 0.20 s @ 48k = 9600 samples / 256 = 38 partitions, capped to 32.
     REQUIRE(c.partitions() == 32u);
 }
@@ -69,8 +72,11 @@ TEST_CASE("audio: partitioned conv impulse recovers IR (overlap=1)", "[audio][co
     // produce an output block whose samples match ir_[0 .. block-1] exactly
     // (up to FFT roundoff). Subsequent blocks pull from later IR partitions.
     PartitionedConvolver c;
-    c.reset(/*sr*/ 48000u, /*ir s*/ 0.10f, /*decay s*/ 1.0f,
-            /*block*/ 64u, /*overlap*/ 1u);
+    c.reset(/*sr*/ 48000u,
+            /*ir s*/ 0.10f,
+            /*decay s*/ 1.0f,
+            /*block*/ 64u,
+            /*overlap*/ 1u);
     const auto& ir = c.impulse_response();
     REQUIRE(ir.size() >= 64u);
     std::array<psynder::f32, 64> in{}, out{};
@@ -84,8 +90,11 @@ TEST_CASE("audio: partitioned conv impulse recovers IR (overlap=1)", "[audio][co
 
 TEST_CASE("audio: partitioned conv has tail across blocks (overlap=1)", "[audio][conv]") {
     PartitionedConvolver c;
-    c.reset(/*sr*/ 48000u, /*ir s*/ 0.10f, /*decay s*/ 1.0f,
-            /*block*/ 64u, /*overlap*/ 1u);
+    c.reset(/*sr*/ 48000u,
+            /*ir s*/ 0.10f,
+            /*decay s*/ 1.0f,
+            /*block*/ 64u,
+            /*overlap*/ 1u);
     const auto& ir = c.impulse_response();
     REQUIRE(ir.size() >= 128u);
     std::array<psynder::f32, 64> in{}, out1{}, out2{}, zeros{};
@@ -109,8 +118,10 @@ TEST_CASE("audio: partitioned conv four-channel scratch is reused (no allocs)", 
     const auto ir_before = c.impulse_response();
     std::array<psynder::f32, 64> in{}, out{};
     for (psynder::u32 k = 0; k < 100u; ++k) {
-        for (auto& x : in)  x = static_cast<psynder::f32>(k & 1) * 0.05f;
-        for (auto& x : out) x = 0.0f;
+        for (auto& x : in)
+            x = static_cast<psynder::f32>(k & 1) * 0.05f;
+        for (auto& x : out)
+            x = 0.0f;
         c.process_block_into(in.data(), out.data());
     }
     const auto& ir_after = c.impulse_response();

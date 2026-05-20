@@ -16,8 +16,8 @@
 namespace {
 
 class VmFixture {
-public:
-    VmFixture()  { REQUIRE(psynder::script::Vm::Get().start()); }
+   public:
+    VmFixture() { REQUIRE(psynder::script::Vm::Get().start()); }
     ~VmFixture() { psynder::script::Vm::Get().shutdown(); }
 
     psynder::script::Vm& vm() { return psynder::script::Vm::Get(); }
@@ -36,8 +36,7 @@ TEST_CASE("script: Vm starts and shuts down cleanly", "[script][vm]") {
     vm.shutdown();
 }
 
-TEST_CASE("script: REPL evaluates expressions and statements",
-          "[script][repl]") {
+TEST_CASE("script: REPL evaluates expressions and statements", "[script][repl]") {
     VmFixture fix;
 
     std::string out;
@@ -72,16 +71,14 @@ TEST_CASE("script: REPL evaluates expressions and statements",
 TEST_CASE("script: execute_string runs a chunk", "[script][exec]") {
     VmFixture fix;
 
-    REQUIRE(fix.vm().execute_string(
-        "result = 7 * 6", "test-chunk"));
+    REQUIRE(fix.vm().execute_string("result = 7 * 6", "test-chunk"));
 
     std::string out;
     REQUIRE(fix.vm().execute_repl("result", out));
     REQUIRE(out == "42");
 }
 
-TEST_CASE("script: DOTS — register_system over component arrays",
-          "[script][dots]") {
+TEST_CASE("script: DOTS — register_system over component arrays", "[script][dots]") {
     VmFixture fix;
 
     // The system callback receives whole component arrays as positional
@@ -167,8 +164,7 @@ TEST_CASE("script: DOTS — register_system over component arrays",
     REQUIRE(out == "7.0000");
 }
 
-TEST_CASE("script: DOTS — no per-entity OOP escape hatch exists",
-          "[script][dots]") {
+TEST_CASE("script: DOTS — no per-entity OOP escape hatch exists", "[script][dots]") {
     VmFixture fix;
 
     std::string out;
@@ -186,38 +182,36 @@ TEST_CASE("script: DOTS — no per-entity OOP escape hatch exists",
 
     // `world:create_entity` returns a plain integer handle, not userdata
     // with methods. Users cannot reach into it to register a behaviour.
-    REQUIRE(fix.vm().execute_string(
-        "world:component('A')\n"
-        "local e = world:create_entity({A = {v=1}})\n"
-        "stored_handle_type = type(e)\n", "no-oop"));
+    REQUIRE(
+        fix.vm().execute_string("world:component('A')\n"
+                                "local e = world:create_entity({A = {v=1}})\n"
+                                "stored_handle_type = type(e)\n",
+                                "no-oop"));
     REQUIRE(fix.vm().execute_repl("stored_handle_type", out));
     REQUIRE(out == "number");
 
     // The DOTS contract makes it physically impossible to invoke a method
     // on an entity — the handle is not a userdata, so `:methodcall` syntax
     // raises immediately.
-    REQUIRE_FALSE(fix.vm().execute_repl(
-        "local e = world:create_entity({A={v=2}}) e:tick()", out));
+    REQUIRE_FALSE(fix.vm().execute_repl("local e = world:create_entity({A={v=2}}) e:tick()", out));
     REQUIRE_FALSE(out.empty());
 }
 
-TEST_CASE("script: register_system validates input shapes",
-          "[script][dots][validation]") {
+TEST_CASE("script: register_system validates input shapes", "[script][dots][validation]") {
     VmFixture fix;
 
     std::string out;
 
     // Missing function arg: must error.
-    REQUIRE_FALSE(fix.vm().execute_repl(
-        "world:register_system({reads={'P'}}, nil)", out));
+    REQUIRE_FALSE(fix.vm().execute_repl("world:register_system({reads={'P'}}, nil)", out));
 
     // Reads must be a table of strings.
-    REQUIRE_FALSE(fix.vm().execute_repl(
-        "world:register_system({reads='nope'}, function() end)", out));
+    REQUIRE_FALSE(fix.vm().execute_repl("world:register_system({reads='nope'}, function() end)", out));
 
     // After failures, the registry must still be sane: a valid call
     // succeeds.
-    REQUIRE(fix.vm().execute_repl(
-        "world:register_system({reads={'P'},writes={'V'}}, "
-        "  function() end)", out));
+    REQUIRE(
+        fix.vm().execute_repl("world:register_system({reads={'P'},writes={'V'}}, "
+                              "  function() end)",
+                              out));
 }

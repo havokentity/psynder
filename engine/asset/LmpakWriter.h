@@ -33,34 +33,34 @@ bool zstd_available() noexcept;
 bool zstd_compress(const u8* src, usize src_len, int level, std::vector<u8>& out);
 
 struct WriterEntry {
-    std::string path;          // virtual path (normalized inside)
-    std::vector<u8> payload;   // raw bytes; if compressed, already zstd-framed
-    bool        compressed = false;
-    u64         uncompressed_size = 0;  // valid when compressed
+    std::string path;         // virtual path (normalized inside)
+    std::vector<u8> payload;  // raw bytes; if compressed, already zstd-framed
+    bool compressed = false;
+    u64 uncompressed_size = 0;  // valid when compressed
 };
 
 class Writer {
-public:
+   public:
     // Stage an uncompressed entry.
     void add_raw(std::string path, std::vector<u8> bytes) {
         WriterEntry e;
-        e.path              = std::move(path);
-        e.payload           = std::move(bytes);
-        e.compressed        = false;
+        e.path = std::move(path);
+        e.payload = std::move(bytes);
+        e.compressed = false;
         e.uncompressed_size = e.payload.size();
         entries_.push_back(std::move(e));
     }
 
     // Convenience: stage an entry, optionally compressing it with zstd.
     // Returns true unless `compress` was requested and zstd is unavailable.
-    bool add_file(std::string path, const u8* bytes, usize size, bool compress,
-                  int level = 9) {
+    bool add_file(std::string path, const u8* bytes, usize size, bool compress, int level = 9) {
         if (!compress) {
             add_raw(std::move(path), std::vector<u8>(bytes, bytes + size));
             return true;
         }
         std::vector<u8> framed;
-        if (!zstd_compress(bytes, size, level, framed)) return false;
+        if (!zstd_compress(bytes, size, level, framed))
+            return false;
         add_zstd(std::move(path), std::move(framed), size);
         return true;
     }
@@ -80,25 +80,22 @@ public:
     // level 9's ratio at ~3× the throughput. Cooker time dominates pak
     // builds for asset-heavy projects; the modest size delta is worth the
     // win for iteration time. The default can still be overridden.
-    bool write_entry(std::string path, const u8* bytes, usize size,
-                     bool compress, int level = 6) {
+    bool write_entry(std::string path, const u8* bytes, usize size, bool compress, int level = 6) {
         return add_file(std::move(path), bytes, size, compress, level);
     }
 
     // Overload that takes a span<const u8> for ergonomic call sites.
-    bool write_entry(std::string path, std::span<const u8> bytes,
-                     bool compress, int level = 6) {
-        return write_entry(std::move(path), bytes.data(), bytes.size(),
-                           compress, level);
+    bool write_entry(std::string path, std::span<const u8> bytes, bool compress, int level = 6) {
+        return write_entry(std::move(path), bytes.data(), bytes.size(), compress, level);
     }
 
     // Stage a pre-compressed entry. The caller is responsible for the
     // zstd framing; we just record `uncompressed_size` for the reader.
     void add_zstd(std::string path, std::vector<u8> framed_bytes, u64 uncompressed_size) {
         WriterEntry e;
-        e.path              = std::move(path);
-        e.payload           = std::move(framed_bytes);
-        e.compressed        = true;
+        e.path = std::move(path);
+        e.payload = std::move(framed_bytes);
+        e.compressed = true;
         e.uncompressed_size = uncompressed_size;
         entries_.push_back(std::move(e));
     }
@@ -108,7 +105,8 @@ public:
     bool write(const char* out_path) const {
         std::vector<u8> file = build_bytes();
         std::FILE* fp = std::fopen(out_path, "wb");
-        if (!fp) return false;
+        if (!fp)
+            return false;
         usize w = std::fwrite(file.data(), 1, file.size(), fp);
         std::fclose(fp);
         return w == file.size();
@@ -123,31 +121,34 @@ public:
             u16 name_len;
             const WriterEntry* src;
         };
-        std::string  name_pool;
+        std::string name_pool;
         std::vector<Built> built;
         built.reserve(entries_.size());
         for (const auto& e : entries_) {
             std::string n;
             n.reserve(e.path.size());
             for (char c : e.path) {
-                if (c == '\\') c = '/';
-                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+                if (c == '\\')
+                    c = '/';
+                if (c >= 'A' && c <= 'Z')
+                    c = static_cast<char>(c + ('a' - 'A'));
                 n.push_back(c);
             }
             u32 off = static_cast<u32>(name_pool.size());
             name_pool.append(n);
             name_pool.push_back('\0');  // optional NUL
             Built b{};
-            b.hash     = fnv1a_path(n.data(), n.size());
+            b.hash = fnv1a_path(n.data(), n.size());
             b.name_off = off;
             b.name_len = static_cast<u16>(n.size());
-            b.src      = &e;
+            b.src = &e;
             built.push_back(b);
         }
 
         // Step 2: sort by hash so the reader can binary search.
-        std::sort(built.begin(), built.end(),
-                  [](const Built& a, const Built& c) { return a.hash < c.hash; });
+        std::sort(built.begin(), built.end(), [](const Built& a, const Built& c) {
+            return a.hash < c.hash;
+        });
 
         // Step 3: layout — header, blob section, entry table, name table.
         const u64 header_size = sizeof(LmpakHeader);
@@ -176,21 +177,25 @@ public:
 
         // Step 4: write header.
         LmpakHeader hdr{};
-        hdr.magic               = kMagic;
-        hdr.version             = kVersion;
-        hdr.flags               = kFlagSorted;
-        hdr.entry_count         = static_cast<u32>(built.size());
-        hdr.entry_table_offset  = entry_off;
-        hdr.name_table_offset   = name_off;
-        hdr.name_table_size     = name_pool.size();
+        hdr.magic = kMagic;
+        hdr.version = kVersion;
+        hdr.flags = kFlagSorted;
+        hdr.entry_count = static_cast<u32>(built.size());
+        hdr.entry_table_offset = entry_off;
+        hdr.name_table_offset = name_off;
+        hdr.name_table_size = name_pool.size();
         hdr.blob_section_offset = blob_off;
-        hdr.blob_section_size   = blob_end - blob_off;
-        hdr.build_unix_time     = 0;
+        hdr.blob_section_size = blob_end - blob_off;
+        hdr.build_unix_time = 0;
         bool any_compressed = false;
         for (const auto& e : entries_) {
-            if (e.compressed) { any_compressed = true; break; }
+            if (e.compressed) {
+                any_compressed = true;
+                break;
+            }
         }
-        if (any_compressed) hdr.flags |= kFlagHasCompr;
+        if (any_compressed)
+            hdr.flags |= kFlagHasCompr;
         std::memcpy(file.data(), &hdr, sizeof(hdr));
 
         // Step 5: write payloads.
@@ -203,13 +208,13 @@ public:
         u8* entry_ptr = file.data() + entry_off;
         for (usize i = 0; i < built.size(); ++i) {
             LmpakEntry e{};
-            e.name_hash    = built[i].hash;
-            e.offset       = blob_offsets[i];
-            e.size         = built[i].src->payload.size();
+            e.name_hash = built[i].hash;
+            e.offset = blob_offsets[i];
+            e.size = built[i].src->payload.size();
             e.uncompressed = built[i].src->uncompressed_size;
-            e.name_offset  = built[i].name_off;
-            e.name_len     = built[i].name_len;
-            e.flags        = built[i].src->compressed ? kEntryZstd : u16{0};
+            e.name_offset = built[i].name_off;
+            e.name_len = built[i].name_len;
+            e.flags = built[i].src->compressed ? kEntryZstd : u16{0};
             std::memcpy(entry_ptr + i * sizeof(LmpakEntry), &e, sizeof(e));
         }
 
@@ -220,7 +225,7 @@ public:
         return file;
     }
 
-private:
+   private:
     std::vector<WriterEntry> entries_;
 };
 

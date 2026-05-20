@@ -77,34 +77,43 @@ f64 bench_one_step() {
 int main(int argc, char** argv) {
     bool smoke = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--smoke") == 0) smoke = true;
+        if (std::strcmp(argv[i], "--smoke") == 0)
+            smoke = true;
     }
 
     // Smaller body count + step count for smoke so CI completes in <1s.
-    const u32 kBodies     = smoke ? 16u  : 64u;
-    const u32 kWarmSteps  = smoke ? 5u   : 60u;
-    const u32 kBenchSteps = smoke ? 10u  : 240u;
+    const u32 kBodies = smoke ? 16u : 64u;
+    const u32 kWarmSteps = smoke ? 5u : 60u;
+    const u32 kBenchSteps = smoke ? 10u : 240u;
 
     reset_world();
     build_pile(kBodies);
 
-    for (u32 i = 0; i < kWarmSteps; ++i) physics::World::Get().step(1.0f / 120.0f);
+    for (u32 i = 0; i < kWarmSteps; ++i)
+        physics::World::Get().step(1.0f / 120.0f);
 
     std::vector<f64> samples;
     samples.reserve(kBenchSteps);
-    for (u32 i = 0; i < kBenchSteps; ++i) samples.push_back(bench_one_step());
+    for (u32 i = 0; i < kBenchSteps; ++i)
+        samples.push_back(bench_one_step());
 
     f64 sum = 0;
-    for (f64 s : samples) sum += s;
+    for (f64 s : samples)
+        sum += s;
     f64 mean = sum / static_cast<f64>(samples.size());
     f64 var = 0;
-    for (f64 s : samples) var += (s - mean) * (s - mean);
+    for (f64 s : samples)
+        var += (s - mean) * (s - mean);
     var /= static_cast<f64>(samples.size());
     f64 stdev = std::sqrt(var);
 
     std::printf("[physics-bench] pile=%u steps=%u mean=%.2fus stdev=%.2fus\n",
-                kBodies, kBenchSteps, mean, stdev);
+                kBodies,
+                kBenchSteps,
+                mean,
+                stdev);
 
-    if (!std::isfinite(mean) || mean <= 0.0) return 1;
+    if (!std::isfinite(mean) || mean <= 0.0)
+        return 1;
     return 0;
 }

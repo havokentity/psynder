@@ -50,20 +50,20 @@
 #include <vector>
 
 #if defined(_WIN32)
-#   define WIN32_LEAN_AND_MEAN
-#   include <windows.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #else
-#   include <fcntl.h>
-#   include <sys/mman.h>
-#   include <sys/stat.h>
-#   include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #if __has_include(<zstd.h>)
-#   include <zstd.h>
-#   define PSYNDER_ASSET_HAS_ZSTD 1
+#include <zstd.h>
+#define PSYNDER_ASSET_HAS_ZSTD 1
 #else
-#   define PSYNDER_ASSET_HAS_ZSTD 0
+#define PSYNDER_ASSET_HAS_ZSTD 0
 #endif
 
 namespace psynder::asset {
@@ -82,8 +82,10 @@ std::string normalize_path(std::string_view in) {
     std::string s;
     s.reserve(in.size());
     for (char c : in) {
-        if (c == '\\') c = '/';
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        if (c == '\\')
+            c = '/';
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c + ('a' - 'A'));
         s.push_back(c);
     }
     return s;
@@ -95,17 +97,17 @@ u64 hash_normalized(std::string_view norm) {
 
 // A platform-portable read-only memory mapping. The destructor unmaps.
 struct Mmap {
-    const u8* base  = nullptr;
-    usize     bytes = 0;
+    const u8* base = nullptr;
+    usize bytes = 0;
 #if defined(_WIN32)
     HANDLE file_handle = INVALID_HANDLE_VALUE;
-    HANDLE map_handle  = nullptr;
+    HANDLE map_handle = nullptr;
 #else
     int fd = -1;
 #endif
 
     Mmap() = default;
-    Mmap(const Mmap&)            = delete;
+    Mmap(const Mmap&) = delete;
     Mmap& operator=(const Mmap&) = delete;
     Mmap(Mmap&& o) noexcept { swap(o); }
     Mmap& operator=(Mmap&& o) noexcept {
@@ -130,46 +132,67 @@ struct Mmap {
 
     void reset() noexcept {
 #if defined(_WIN32)
-        if (base) { ::UnmapViewOfFile(base); base = nullptr; }
-        if (map_handle) { ::CloseHandle(map_handle); map_handle = nullptr; }
+        if (base) {
+            ::UnmapViewOfFile(base);
+            base = nullptr;
+        }
+        if (map_handle) {
+            ::CloseHandle(map_handle);
+            map_handle = nullptr;
+        }
         if (file_handle != INVALID_HANDLE_VALUE) {
             ::CloseHandle(file_handle);
             file_handle = INVALID_HANDLE_VALUE;
         }
 #else
-        if (base && bytes) { ::munmap(const_cast<u8*>(base), bytes); }
+        if (base && bytes) {
+            ::munmap(const_cast<u8*>(base), bytes);
+        }
         base = nullptr;
-        if (fd >= 0) { ::close(fd); fd = -1; }
+        if (fd >= 0) {
+            ::close(fd);
+            fd = -1;
+        }
 #endif
         bytes = 0;
     }
 
     static bool open(const fs::path& p, Mmap& out) {
 #if defined(_WIN32)
-        HANDLE fh = ::CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (fh == INVALID_HANDLE_VALUE) return false;
+        HANDLE fh = ::CreateFileW(p.c_str(),
+                                  GENERIC_READ,
+                                  FILE_SHARE_READ,
+                                  nullptr,
+                                  OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL,
+                                  nullptr);
+        if (fh == INVALID_HANDLE_VALUE)
+            return false;
         LARGE_INTEGER size{};
         if (!::GetFileSizeEx(fh, &size) || size.QuadPart <= 0) {
             ::CloseHandle(fh);
             return false;
         }
         HANDLE mh = ::CreateFileMappingW(fh, nullptr, PAGE_READONLY, 0, 0, nullptr);
-        if (!mh) { ::CloseHandle(fh); return false; }
+        if (!mh) {
+            ::CloseHandle(fh);
+            return false;
+        }
         void* view = ::MapViewOfFile(mh, FILE_MAP_READ, 0, 0, 0);
         if (!view) {
             ::CloseHandle(mh);
             ::CloseHandle(fh);
             return false;
         }
-        out.base        = static_cast<const u8*>(view);
-        out.bytes       = static_cast<usize>(size.QuadPart);
+        out.base = static_cast<const u8*>(view);
+        out.bytes = static_cast<usize>(size.QuadPart);
         out.file_handle = fh;
-        out.map_handle  = mh;
+        out.map_handle = mh;
         return true;
 #else
         int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd < 0) return false;
+        if (fd < 0)
+            return false;
         struct stat st {};
         if (::fstat(fd, &st) != 0 || st.st_size <= 0) {
             ::close(fd);
@@ -180,9 +203,9 @@ struct Mmap {
             ::close(fd);
             return false;
         }
-        out.base  = static_cast<const u8*>(m);
+        out.base = static_cast<const u8*>(m);
         out.bytes = static_cast<usize>(st.st_size);
-        out.fd    = fd;
+        out.fd = fd;
         return true;
 #endif
     }
@@ -195,18 +218,18 @@ struct Mmap {
 // owned `entries_owned` / `names_owned` buffers and point at those — same
 // in-memory shape, different on-disk dialect.
 struct PakMount {
-    fs::path             archive_path;
-    Mmap                 map;
-    const LmpakEntry*    entries     = nullptr;
-    u32                  entry_count = 0;
-    const char*          names       = nullptr;     // base of name pool
-    usize                names_size  = 0;
-    bool                 sorted      = false;
+    fs::path archive_path;
+    Mmap map;
+    const LmpakEntry* entries = nullptr;
+    u32 entry_count = 0;
+    const char* names = nullptr;  // base of name pool
+    usize names_size = 0;
+    bool sorted = false;
 
     // Owned storage for the tools/lm_pak dialect. Populated only when
     // `parse_lmpak_tools` succeeds; left empty for the canonical layout.
     std::vector<LmpakEntry> entries_owned;
-    std::vector<char>       names_owned;
+    std::vector<char> names_owned;
 };
 
 struct DirMount {
@@ -215,9 +238,9 @@ struct DirMount {
 
 struct Mount {
     enum class Kind { Directory, Pak };
-    Kind                       kind = Kind::Directory;
-    std::unique_ptr<DirMount>  dir;
-    std::unique_ptr<PakMount>  pak;
+    Kind kind = Kind::Directory;
+    std::unique_ptr<DirMount> dir;
+    std::unique_ptr<PakMount> pak;
 };
 
 // A watcher target. We store the resolved on-disk path and re-stat
@@ -230,37 +253,37 @@ struct Mount {
 // tracks the most recently observed presence so we only fire delete /
 // recreate edges, not every poll while the file is missing.
 struct WatchTarget {
-    std::string                                  vpath;
-    fs::path                                     resolved;
-    fs::file_time_type                           last_write{};
+    std::string vpath;
+    fs::path resolved;
+    fs::file_time_type last_write{};
     void (*cb)(std::string_view, void*) noexcept = nullptr;
-    void*                                        user = nullptr;
-    bool                                         valid  = false;
-    bool                                         exists = false;
+    void* user = nullptr;
+    bool valid = false;
+    bool exists = false;
 };
 
 // ─── File-scope state ────────────────────────────────────────────────────
 // Defined as a function-local static so its destructor runs at exit and
 // can stop the watcher thread without changing the public header.
 struct VfsState {
-    std::mutex                                   mtx;
-    std::vector<Mount>                           mounts;
+    std::mutex mtx;
+    std::vector<Mount> mounts;
 
     // Backing storage for Blobs that don't live in the mmap (loose
     // files + zstd-decompressed pak entries). The vector retains every
     // buffer for the program lifetime; OK because asset reads happen
     // a bounded number of times per level and the level-scope allocator
     // resets between levels in higher-level lanes.
-    std::vector<std::unique_ptr<u8[]>>           backing;
-    std::vector<usize>                           backing_sizes;
+    std::vector<std::unique_ptr<u8[]>> backing;
+    std::vector<usize> backing_sizes;
 
     // Hot-reload watcher state.
-    std::vector<WatchTarget>                     watchers;
-    std::thread                                  watch_thread;
-    std::atomic<bool>                            watch_stop{false};
-    std::atomic<bool>                            watch_started{false};
-    std::condition_variable                      watch_cv;
-    std::mutex                                   watch_mtx;
+    std::vector<WatchTarget> watchers;
+    std::thread watch_thread;
+    std::atomic<bool> watch_stop{false};
+    std::atomic<bool> watch_started{false};
+    std::condition_variable watch_cv;
+    std::mutex watch_mtx;
 };
 
 // Stop + join helper; safe to call from any thread.
@@ -268,7 +291,8 @@ void stop_watcher_locked(VfsState& s) {
     if (s.watch_started.load(std::memory_order_acquire)) {
         s.watch_stop.store(true, std::memory_order_release);
         s.watch_cv.notify_all();
-        if (s.watch_thread.joinable()) s.watch_thread.join();
+        if (s.watch_thread.joinable())
+            s.watch_thread.join();
         s.watch_started.store(false, std::memory_order_release);
         s.watch_stop.store(false, std::memory_order_release);
     }
@@ -318,13 +342,14 @@ VfsState& State() {
 
 // Tools-dialect constants — kept local to this TU so we don't reach across
 // into the lane-24 namespace (which would force a header dependency).
-constexpr usize kToolsHeaderSize  = 56;
+constexpr usize kToolsHeaderSize = 56;
 constexpr usize kToolsRecordBytes = 48;
-constexpr u32   kToolsEntryZstd   = 1u << 0;
+constexpr u32 kToolsEntryZstd = 1u << 0;
 
 template <class T>
 bool read_le_local(const u8* base, usize bytes, usize offset, T& out) {
-    if (offset + sizeof(T) > bytes) return false;
+    if (offset + sizeof(T) > bytes)
+        return false;
     using U = std::make_unsigned_t<T>;
     U u = 0;
     for (usize i = 0; i < sizeof(T); ++i) {
@@ -335,33 +360,41 @@ bool read_le_local(const u8* base, usize bytes, usize offset, T& out) {
 }
 
 bool parse_lmpak_canonical(PakMount& m) {
-    if (m.map.bytes < sizeof(LmpakHeader)) return false;
+    if (m.map.bytes < sizeof(LmpakHeader))
+        return false;
 
     LmpakHeader hdr{};
     std::memcpy(&hdr, m.map.base, sizeof(LmpakHeader));
-    if (hdr.magic != lmpak::kMagic) return false;
-    if (hdr.version != lmpak::kVersion) return false;
+    if (hdr.magic != lmpak::kMagic)
+        return false;
+    if (hdr.version != lmpak::kVersion)
+        return false;
 
     const u64 et_off = hdr.entry_table_offset;
     const u64 et_end = et_off + u64(hdr.entry_count) * sizeof(LmpakEntry);
-    if (et_off < sizeof(LmpakHeader) || et_end > m.map.bytes) return false;
+    if (et_off < sizeof(LmpakHeader) || et_end > m.map.bytes)
+        return false;
 
     const u64 nt_off = hdr.name_table_offset;
     const u64 nt_end = nt_off + hdr.name_table_size;
-    if (nt_off < sizeof(LmpakHeader) || nt_end > m.map.bytes) return false;
-    if (hdr.entry_count > 0 && hdr.name_table_size == 0) return false;
+    if (nt_off < sizeof(LmpakHeader) || nt_end > m.map.bytes)
+        return false;
+    if (hdr.entry_count > 0 && hdr.name_table_size == 0)
+        return false;
 
-    m.entries     = reinterpret_cast<const LmpakEntry*>(m.map.base + et_off);
+    m.entries = reinterpret_cast<const LmpakEntry*>(m.map.base + et_off);
     m.entry_count = hdr.entry_count;
-    m.names       = reinterpret_cast<const char*>(m.map.base + nt_off);
-    m.names_size  = static_cast<usize>(hdr.name_table_size);
-    m.sorted      = (hdr.flags & lmpak::kFlagSorted) != 0;
+    m.names = reinterpret_cast<const char*>(m.map.base + nt_off);
+    m.names_size = static_cast<usize>(hdr.name_table_size);
+    m.sorted = (hdr.flags & lmpak::kFlagSorted) != 0;
 
     // Range-check every entry payload.
     for (u32 i = 0; i < m.entry_count; ++i) {
         const LmpakEntry& e = m.entries[i];
-        if (e.offset + e.size > m.map.bytes) return false;
-        if (u64(e.name_offset) + u64(e.name_len) > hdr.name_table_size) return false;
+        if (e.offset + e.size > m.map.bytes)
+            return false;
+        if (u64(e.name_offset) + u64(e.name_len) > hdr.name_table_size)
+            return false;
     }
     return true;
 }
@@ -372,31 +405,42 @@ bool parse_lmpak_canonical(PakMount& m) {
 bool parse_lmpak_tools(PakMount& m) {
     const u8* const base = m.map.base;
     const usize bytes = m.map.bytes;
-    if (bytes < kToolsHeaderSize) return false;
+    if (bytes < kToolsHeaderSize)
+        return false;
 
     u32 magic = 0;
-    if (!read_le_local<u32>(base, bytes, 0, magic) || magic != lmpak::kMagic) return false;
+    if (!read_le_local<u32>(base, bytes, 0, magic) || magic != lmpak::kMagic)
+        return false;
     u32 version = 0;
-    if (!read_le_local<u32>(base, bytes, 4, version) || version != lmpak::kVersion) return false;
+    if (!read_le_local<u32>(base, bytes, 4, version) || version != lmpak::kVersion)
+        return false;
 
     u32 archive_flags = 0;
     u32 entry_count = 0;
     u64 index_offset = 0;
     u64 index_bytes_field = 0;
-    if (!read_le_local<u32>(base, bytes,  8, archive_flags))    return false;
-    if (!read_le_local<u32>(base, bytes, 12, entry_count))      return false;
-    if (!read_le_local<u64>(base, bytes, 16, index_offset))     return false;
-    if (!read_le_local<u64>(base, bytes, 24, index_bytes_field))return false;
+    if (!read_le_local<u32>(base, bytes, 8, archive_flags))
+        return false;
+    if (!read_le_local<u32>(base, bytes, 12, entry_count))
+        return false;
+    if (!read_le_local<u64>(base, bytes, 16, index_offset))
+        return false;
+    if (!read_le_local<u64>(base, bytes, 24, index_bytes_field))
+        return false;
 
-    if (index_offset < kToolsHeaderSize) return false;
-    if (index_offset + index_bytes_field > bytes) return false;
+    if (index_offset < kToolsHeaderSize)
+        return false;
+    if (index_offset + index_bytes_field > bytes)
+        return false;
     const u64 records_bytes = u64(entry_count) * kToolsRecordBytes;
-    if (records_bytes > index_bytes_field) return false;
+    if (records_bytes > index_bytes_field)
+        return false;
 
     const usize cursor_base = static_cast<usize>(index_offset);
     const usize string_blob_off = cursor_base + static_cast<usize>(records_bytes);
-    const u64   string_blob_bytes = index_bytes_field - records_bytes;
-    if (string_blob_off + string_blob_bytes > bytes) return false;
+    const u64 string_blob_bytes = index_bytes_field - records_bytes;
+    if (string_blob_off + string_blob_bytes > bytes)
+        return false;
 
     // Walk the records, build canonical entries + name pool.
     m.entries_owned.clear();
@@ -411,82 +455,100 @@ bool parse_lmpak_tools(PakMount& m) {
         const usize rec = cursor_base + static_cast<usize>(i) * kToolsRecordBytes;
         u64 hash = 0, offset = 0, stored = 0, raw = 0;
         u32 path_off = 0, path_len = 0, eflags = 0, crc32 = 0;
-        if (!read_le_local<u64>(base, bytes, rec +  0, hash))   return false;
-        if (!read_le_local<u64>(base, bytes, rec +  8, offset)) return false;
-        if (!read_le_local<u64>(base, bytes, rec + 16, stored)) return false;
-        if (!read_le_local<u64>(base, bytes, rec + 24, raw))    return false;
-        if (!read_le_local<u32>(base, bytes, rec + 32, path_off)) return false;
-        if (!read_le_local<u32>(base, bytes, rec + 36, path_len)) return false;
-        if (!read_le_local<u32>(base, bytes, rec + 40, eflags))   return false;
-        if (!read_le_local<u32>(base, bytes, rec + 44, crc32))    return false;
+        if (!read_le_local<u64>(base, bytes, rec + 0, hash))
+            return false;
+        if (!read_le_local<u64>(base, bytes, rec + 8, offset))
+            return false;
+        if (!read_le_local<u64>(base, bytes, rec + 16, stored))
+            return false;
+        if (!read_le_local<u64>(base, bytes, rec + 24, raw))
+            return false;
+        if (!read_le_local<u32>(base, bytes, rec + 32, path_off))
+            return false;
+        if (!read_le_local<u32>(base, bytes, rec + 36, path_len))
+            return false;
+        if (!read_le_local<u32>(base, bytes, rec + 40, eflags))
+            return false;
+        if (!read_le_local<u32>(base, bytes, rec + 44, crc32))
+            return false;
         (void)crc32;
 
-        if (offset + stored > bytes) return false;
-        if (u64(path_off) + u64(path_len) > string_blob_bytes) return false;
-        if (path_len > 0xFFFFu) return false;  // doesn't fit in LmpakEntry::name_len
+        if (offset + stored > bytes)
+            return false;
+        if (u64(path_off) + u64(path_len) > string_blob_bytes)
+            return false;
+        if (path_len > 0xFFFFu)
+            return false;  // doesn't fit in LmpakEntry::name_len
 
         // Reserve a slot in the owned name pool: copy path bytes + NUL.
         const u32 dst_off = static_cast<u32>(m.names_owned.size());
-        m.names_owned.insert(
-            m.names_owned.end(),
-            reinterpret_cast<const char*>(base + string_blob_off + path_off),
-            reinterpret_cast<const char*>(base + string_blob_off + path_off + path_len));
+        m.names_owned.insert(m.names_owned.end(),
+                             reinterpret_cast<const char*>(base + string_blob_off + path_off),
+                             reinterpret_cast<const char*>(base + string_blob_off + path_off +
+                                                           path_len));
         m.names_owned.push_back('\0');
 
         LmpakEntry ent{};
-        ent.name_hash    = hash;
-        ent.offset       = offset;
-        ent.size         = stored;
+        ent.name_hash = hash;
+        ent.offset = offset;
+        ent.size = stored;
         // tools writer records `raw` = uncompressed size; if the entry is
         // uncompressed the writer sets stored == raw, so this is correct
         // either way and matches LmpakEntry::uncompressed semantics.
         ent.uncompressed = raw;
-        ent.name_offset  = dst_off;
-        ent.name_len     = static_cast<u16>(path_len);
-        ent.flags        = (eflags & kToolsEntryZstd) ? lmpak::kEntryZstd : u16{0};
+        ent.name_offset = dst_off;
+        ent.name_len = static_cast<u16>(path_len);
+        ent.flags = (eflags & kToolsEntryZstd) ? lmpak::kEntryZstd : u16{0};
         m.entries_owned.push_back(ent);
 
-        if (i > 0 && hash < prev_hash) sorted_check = false;
+        if (i > 0 && hash < prev_hash)
+            sorted_check = false;
         prev_hash = hash;
     }
 
-    m.entries     = m.entries_owned.data();
+    m.entries = m.entries_owned.data();
     m.entry_count = entry_count;
-    m.names       = m.names_owned.data();
-    m.names_size  = m.names_owned.size();
+    m.names = m.names_owned.data();
+    m.names_size = m.names_owned.size();
     // The tools writer always sorts records by hash before emitting, but
     // verify locally so a hand-tweaked archive doesn't break find_in_pak.
-    m.sorted      = sorted_check;
+    m.sorted = sorted_check;
     return true;
 }
 
 bool parse_lmpak(PakMount& m) {
-    if (parse_lmpak_canonical(m)) return true;
+    if (parse_lmpak_canonical(m))
+        return true;
     // Canonical parse failed — wipe any partial state and retry as tools dialect.
-    m.entries     = nullptr;
+    m.entries = nullptr;
     m.entry_count = 0;
-    m.names       = nullptr;
-    m.names_size  = 0;
-    m.sorted      = false;
+    m.names = nullptr;
+    m.names_size = 0;
+    m.sorted = false;
     return parse_lmpak_tools(m);
 }
 
 const LmpakEntry* find_in_pak(const PakMount& m, u64 path_hash) {
-    if (!m.entries || m.entry_count == 0) return nullptr;
+    if (!m.entries || m.entry_count == 0)
+        return nullptr;
     if (m.sorted) {
         u32 lo = 0;
         u32 hi = m.entry_count;
         while (lo < hi) {
             u32 mid = lo + (hi - lo) / 2;
             u64 h = m.entries[mid].name_hash;
-            if (h < path_hash) lo = mid + 1;
-            else if (h > path_hash) hi = mid;
-            else return &m.entries[mid];
+            if (h < path_hash)
+                lo = mid + 1;
+            else if (h > path_hash)
+                hi = mid;
+            else
+                return &m.entries[mid];
         }
         return nullptr;
     }
     for (u32 i = 0; i < m.entry_count; ++i) {
-        if (m.entries[i].name_hash == path_hash) return &m.entries[i];
+        if (m.entries[i].name_hash == path_hash)
+            return &m.entries[i];
     }
     return nullptr;
 }
@@ -502,15 +564,19 @@ Blob park_blob(VfsState& s, std::unique_ptr<u8[]> buf, usize bytes) {
 Blob load_from_dir(VfsState& s, const DirMount& d, std::string_view norm_path) {
     fs::path full = d.root / fs::path(std::string(norm_path));
     std::error_code ec;
-    if (!fs::is_regular_file(full, ec)) return {};
+    if (!fs::is_regular_file(full, ec))
+        return {};
     auto sz = fs::file_size(full, ec);
-    if (ec) return {};
+    if (ec)
+        return {};
     auto buf = std::unique_ptr<u8[]>(new u8[sz ? sz : 1]);
     FILE* fp = std::fopen(full.string().c_str(), "rb");
-    if (!fp) return {};
+    if (!fp)
+        return {};
     usize read = std::fread(buf.get(), 1, sz, fp);
     std::fclose(fp);
-    if (read != sz) return {};
+    if (read != sz)
+        return {};
     return park_blob(s, std::move(buf), sz);
 }
 
@@ -524,8 +590,7 @@ Blob load_from_pak(VfsState& s, const PakMount& m, const LmpakEntry& e) {
     auto buf = std::unique_ptr<u8[]>(new u8[e.uncompressed ? e.uncompressed : 1]);
     usize dec = ZSTD_decompress(buf.get(), e.uncompressed, payload, e.size);
     if (ZSTD_isError(dec) || dec != e.uncompressed) {
-        ::psynder::log::warn("[asset] zstd decompress failed for entry hash={:#x}",
-                             e.name_hash);
+        ::psynder::log::warn("[asset] zstd decompress failed for entry hash={:#x}", e.name_hash);
         return {};
     }
     return park_blob(s, std::move(buf), e.uncompressed);
@@ -552,8 +617,10 @@ Blob lookup(VfsState& s, std::string_view vpath, fs::path* out_resolved) {
                 std::error_code ec;
                 if (fs::is_regular_file(full, ec)) {
                     Blob b = load_from_dir(s, d, norm);
-                    if (b.data && out_resolved) *out_resolved = full;
-                    if (b.data) return b;
+                    if (b.data && out_resolved)
+                        *out_resolved = full;
+                    if (b.data)
+                        return b;
                 }
                 break;
             }
@@ -562,8 +629,10 @@ Blob lookup(VfsState& s, std::string_view vpath, fs::path* out_resolved) {
                 const LmpakEntry* e = find_in_pak(p, h);
                 if (e) {
                     Blob b = load_from_pak(s, p, *e);
-                    if (b.data && out_resolved) *out_resolved = p.archive_path;
-                    if (b.data) return b;
+                    if (b.data && out_resolved)
+                        *out_resolved = p.archive_path;
+                    if (b.data)
+                        return b;
                 }
                 break;
             }
@@ -575,15 +644,16 @@ Blob lookup(VfsState& s, std::string_view vpath, fs::path* out_resolved) {
 // ─── Async loader job thunk ──────────────────────────────────────────────
 
 struct AsyncReq {
-    std::string                            vpath;
-    void (*cb)(Blob, void*) noexcept       = nullptr;
-    void*                                  user = nullptr;
+    std::string vpath;
+    void (*cb)(Blob, void*) noexcept = nullptr;
+    void* user = nullptr;
 };
 
 void async_job_fn(void* user) noexcept {
     auto* req = static_cast<AsyncReq*>(user);
     Blob b = Vfs::Get().read(req->vpath);
-    if (req->cb) req->cb(b, req->user);
+    if (req->cb)
+        req->cb(b, req->user);
     delete req;
 }
 
@@ -649,11 +719,11 @@ void poll_watchers_once(VfsState& s) {
             std::lock_guard<std::mutex> g(s.mtx);
             for (auto& real : s.watchers) {
                 if (real.vpath == w.vpath && real.user == w.user) {
-                    real.valid    = true;
-                    real.exists   = live_exists;
+                    real.valid = true;
+                    real.exists = live_exists;
                     if (live_exists) {
                         real.last_write = t;
-                        real.resolved   = live_path;
+                        real.resolved = live_path;
                     }
                     break;
                 }
@@ -663,31 +733,31 @@ void poll_watchers_once(VfsState& s) {
 
         // Three edges:
         bool should_fire = false;
-        bool new_exists  = w.exists;
+        bool new_exists = w.exists;
         fs::file_time_type new_mtime = w.last_write;
-        fs::path           new_path  = w.resolved;
+        fs::path new_path = w.resolved;
 
         if (w.exists && !live_exists) {
             // Disappeared: rename-away or delete.
             should_fire = true;
-            new_exists  = false;
+            new_exists = false;
         } else if (!w.exists && live_exists) {
             // Re-created at the watched vpath.
             should_fire = true;
-            new_exists  = true;
-            new_mtime   = t;
-            new_path    = live_path;
+            new_exists = true;
+            new_mtime = t;
+            new_path = live_path;
         } else if (live_exists && t != w.last_write) {
             // Plain mtime change on an existing file.
             should_fire = true;
-            new_mtime   = t;
-            new_path    = live_path;
+            new_mtime = t;
+            new_path = live_path;
         } else if (live_exists && live_path != w.resolved) {
             // The vpath now resolves through a different mount — treat as
             // a change so consumers can re-load.
             should_fire = true;
-            new_mtime   = t;
-            new_path    = live_path;
+            new_mtime = t;
+            new_path = live_path;
         }
 
         if (should_fire) {
@@ -695,14 +765,15 @@ void poll_watchers_once(VfsState& s) {
                 std::lock_guard<std::mutex> g(s.mtx);
                 for (auto& real : s.watchers) {
                     if (real.vpath == w.vpath && real.user == w.user) {
-                        real.exists     = new_exists;
+                        real.exists = new_exists;
                         real.last_write = new_mtime;
-                        real.resolved   = new_path;
+                        real.resolved = new_path;
                         break;
                     }
                 }
             }
-            if (w.cb) w.cb(w.vpath, w.user);
+            if (w.cb)
+                w.cb(w.vpath, w.user);
         }
     }
 }
@@ -716,7 +787,8 @@ void watcher_loop(VfsState* sp) {
             s.watch_cv.wait_for(lk, 250ms, [&] {
                 return s.watch_stop.load(std::memory_order_acquire);
             });
-            if (s.watch_stop.load(std::memory_order_acquire)) break;
+            if (s.watch_stop.load(std::memory_order_acquire))
+                break;
         }
         poll_watchers_once(s);
     }
@@ -724,8 +796,7 @@ void watcher_loop(VfsState* sp) {
 
 void ensure_watcher_started(VfsState& s) {
     bool expected = false;
-    if (s.watch_started.compare_exchange_strong(expected, true,
-                                                std::memory_order_acq_rel)) {
+    if (s.watch_started.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         s.watch_stop.store(false, std::memory_order_release);
         s.watch_thread = std::thread(watcher_loop, &s);
     }
@@ -741,11 +812,13 @@ fs::path resolve_for_watch(VfsState& s, std::string_view vpath) {
             case Mount::Kind::Directory: {
                 fs::path full = it->dir->root / fs::path(norm);
                 std::error_code ec;
-                if (fs::is_regular_file(full, ec)) return full;
+                if (fs::is_regular_file(full, ec))
+                    return full;
                 break;
             }
             case Mount::Kind::Pak: {
-                if (find_in_pak(*it->pak, h)) return it->pak->archive_path;
+                if (find_in_pak(*it->pak, h))
+                    return it->pak->archive_path;
                 break;
             }
         }
@@ -777,7 +850,7 @@ bool Vfs::mount_pak(std::string_view path) {
     }
     Mount m;
     m.kind = Mount::Kind::Pak;
-    m.pak  = std::move(pak);
+    m.pak = std::move(pak);
     std::lock_guard<std::mutex> g(s.mtx);
     s.mounts.push_back(std::move(m));
     PSY_DIAG_TIER1("asset", "mounted pak with {} entries", s.mounts.back().pak->entry_count);
@@ -794,7 +867,7 @@ bool Vfs::mount_directory(std::string_view path) {
     }
     Mount m;
     m.kind = Mount::Kind::Directory;
-    m.dir  = std::make_unique<DirMount>();
+    m.dir = std::make_unique<DirMount>();
     m.dir->root = std::move(p);
     std::lock_guard<std::mutex> g(s.mtx);
     s.mounts.push_back(std::move(m));
@@ -808,12 +881,10 @@ Blob Vfs::read(std::string_view virtual_path) {
     return lookup(s, virtual_path, nullptr);
 }
 
-void Vfs::read_async(std::string_view virtual_path,
-                     void (*on_loaded)(Blob, void*) noexcept,
-                     void* user) {
+void Vfs::read_async(std::string_view virtual_path, void (*on_loaded)(Blob, void*) noexcept, void* user) {
     auto* req = new AsyncReq{std::string(virtual_path), on_loaded, user};
     ::psynder::jobs::JobDesc desc{};
-    desc.fn   = &async_job_fn;
+    desc.fn = &async_job_fn;
     desc.user = req;
     desc.name = "asset.read_async";
     ::psynder::jobs::JobSystem::Get().submit(desc);
@@ -833,12 +904,12 @@ void Vfs::watch(std::string_view virtual_path,
             return;
         }
         WatchTarget w{};
-        w.vpath    = std::string(virtual_path);
+        w.vpath = std::string(virtual_path);
         w.resolved = std::move(resolved);
-        w.cb       = on_changed;
-        w.user     = user;
-        w.valid    = false;
-        w.exists   = false;  // set by the first poll
+        w.cb = on_changed;
+        w.user = user;
+        w.valid = false;
+        w.exists = false;  // set by the first poll
         s.watchers.push_back(std::move(w));
     }
     ensure_watcher_started(s);

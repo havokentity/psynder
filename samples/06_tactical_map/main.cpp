@@ -60,14 +60,15 @@ namespace {
 
 // ─── CLI ─────────────────────────────────────────────────────────────────
 struct Args {
-    u32         smoke_frames = 0;
+    u32 smoke_frames = 0;
     std::string capture_out;
 };
 
 u32 parse_uint(std::string_view v) noexcept {
     u32 out = 0;
     for (char c : v) {
-        if (c < '0' || c > '9') return 0;
+        if (c < '0' || c > '9')
+            return 0;
         out = out * 10u + static_cast<u32>(c - '0');
     }
     return out;
@@ -75,10 +76,10 @@ u32 parse_uint(std::string_view v) noexcept {
 
 Args parse_args(int argc, char** argv) {
     Args a{};
-    constexpr std::string_view kFlag   = "--smoke-frames=";
+    constexpr std::string_view kFlag = "--smoke-frames=";
     constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq  = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp  = "--smoke-capture-out";
+    constexpr std::string_view kCapEq = "--smoke-capture-out=";
+    constexpr std::string_view kCapSp = "--smoke-capture-out";
     for (int i = 1; i < argc; ++i) {
         std::string_view s{argv[i]};
         if (s.starts_with(kFlag)) {
@@ -99,17 +100,19 @@ constexpr u32 kFbW = 512;
 constexpr u32 kFbH = 288;
 
 // World layout: 256×256 texels at 1m spacing → 256m × 256m playable area.
-constexpr u32 kHmSize       = 256;
-constexpr f32 kHmSpacing    = 1.0f;     // metres per texel
-constexpr f32 kHmHeightScl  = 30.0f / 65535.0f;  // peaks ≈ 30m
+constexpr u32 kHmSize = 256;
+constexpr f32 kHmSpacing = 1.0f;                // metres per texel
+constexpr f32 kHmHeightScl = 30.0f / 65535.0f;  // peaks ≈ 30m
 
 // ─── Packed-pixel helpers ────────────────────────────────────────────────
 constexpr u32 pack_rgba8(u32 r, u32 g, u32 b, u32 a = 0xFFu) noexcept {
     return (r & 0xFFu) | ((g & 0xFFu) << 8) | ((b & 0xFFu) << 16) | ((a & 0xFFu) << 24);
 }
 PSY_FORCEINLINE u32 clamp_u8(f32 v) noexcept {
-    if (v < 0.0f) return 0u;
-    if (v > 255.0f) return 255u;
+    if (v < 0.0f)
+        return 0u;
+    if (v > 255.0f)
+        return 255u;
     return static_cast<u32>(v);
 }
 
@@ -118,8 +121,10 @@ PSY_FORCEINLINE u32 clamp_u8(f32 v) noexcept {
 // stays self-contained; the bit shuffling is trivial and verified by the
 // rasterizer's unit tests on the receiving end.
 PSY_FORCEINLINE u32 pack_depth_u24(f32 z) noexcept {
-    if (z < 0.0f) z = 0.0f;
-    if (z > 1.0f) z = 1.0f;
+    if (z < 0.0f)
+        z = 0.0f;
+    if (z > 1.0f)
+        z = 1.0f;
     u32 raw;
     std::memcpy(&raw, &z, sizeof(raw));
     return raw & 0xFFFFFF00u;
@@ -156,9 +161,9 @@ PSY_FORCEINLINE f32 value_noise(f32 wx, f32 wz, f32 cell, u32 seed) noexcept {
     const i32 iz = static_cast<i32>(std::floor(fz));
     const f32 tx = fade5(fx - static_cast<f32>(ix));
     const f32 tz = fade5(fz - static_cast<f32>(iz));
-    const f32 h00 = hash01(static_cast<u32>(ix),     static_cast<u32>(iz),     seed);
-    const f32 h10 = hash01(static_cast<u32>(ix + 1), static_cast<u32>(iz),     seed);
-    const f32 h01 = hash01(static_cast<u32>(ix),     static_cast<u32>(iz + 1), seed);
+    const f32 h00 = hash01(static_cast<u32>(ix), static_cast<u32>(iz), seed);
+    const f32 h10 = hash01(static_cast<u32>(ix + 1), static_cast<u32>(iz), seed);
+    const f32 h01 = hash01(static_cast<u32>(ix), static_cast<u32>(iz + 1), seed);
     const f32 h11 = hash01(static_cast<u32>(ix + 1), static_cast<u32>(iz + 1), seed);
     const f32 a = h00 + (h10 - h00) * tx;
     const f32 b = h01 + (h11 - h01) * tx;
@@ -170,8 +175,8 @@ std::vector<u16> build_heightmap() {
 
     // World extent of the map.
     const f32 map_m = static_cast<f32>(kHmSize) * kHmSpacing;
-    const f32 cx    = map_m * 0.5f;
-    const f32 cz    = map_m * 0.5f;
+    const f32 cx = map_m * 0.5f;
+    const f32 cz = map_m * 0.5f;
 
     for (u32 z = 0; z < kHmSize; ++z) {
         for (u32 x = 0; x < kHmSize; ++x) {
@@ -182,36 +187,35 @@ std::vector<u16> build_heightmap() {
             f32 n = 0.0f;
             n += 0.55f * value_noise(wx, wz, 64.0f, 1u);
             n += 0.25f * value_noise(wx, wz, 24.0f, 2u);
-            n += 0.10f * value_noise(wx, wz,  8.0f, 3u);
+            n += 0.10f * value_noise(wx, wz, 8.0f, 3u);
             // n is in [0, ~0.90]; normalize to [0, 1] approx.
             n = n / 0.90f;
-            if (n < 0.0f) n = 0.0f;
-            if (n > 1.0f) n = 1.0f;
+            if (n < 0.0f)
+                n = 0.0f;
+            if (n > 1.0f)
+                n = 1.0f;
 
             // Big ridge along Z axis through the middle: a Gaussian bump in
             // the Z direction (narrow band, ~30m wide) with a soft falloff
             // along X so the ridge has slight undulation along its length.
-            const f32 dz  = wz - cz;
+            const f32 dz = wz - cz;
             const f32 ridge = std::exp(-(dz * dz) / (2.0f * 22.0f * 22.0f));
             // Slight X variation so the ridge crest isn't perfectly straight.
-            const f32 ridge_mod =
-                0.55f + 0.45f * value_noise(wx, 0.0f, 32.0f, 7u);
+            const f32 ridge_mod = 0.55f + 0.45f * value_noise(wx, 0.0f, 32.0f, 7u);
 
             // A second, smaller bump near the SE corner so the half-circle
             // camera flyover has interesting silhouettes both sides of the
             // ridge.
             const f32 bdx = wx - (cx + 60.0f);
             const f32 bdz = wz - (cz + 80.0f);
-            const f32 bump =
-                std::exp(-(bdx * bdx + bdz * bdz) / (2.0f * 28.0f * 28.0f));
+            const f32 bump = std::exp(-(bdx * bdx + bdz * bdz) / (2.0f * 28.0f * 28.0f));
 
             // Combine: base rolling hills + big ridge + small hill.
-            const f32 base = 0.18f + 0.42f * n;             // [0.18, 0.60]
-            const f32 sum  = base + 0.85f * ridge * ridge_mod + 0.35f * bump;
-            const f32 hf   = sum > 1.0f ? 1.0f : sum;       // [0, 1]
+            const f32 base = 0.18f + 0.42f * n;  // [0.18, 0.60]
+            const f32 sum = base + 0.85f * ridge * ridge_mod + 0.35f * bump;
+            const f32 hf = sum > 1.0f ? 1.0f : sum;  // [0, 1]
 
-            heights[static_cast<usize>(z) * kHmSize + x] =
-                static_cast<u16>(hf * 65535.0f);
+            heights[static_cast<usize>(z) * kHmSize + x] = static_cast<u16>(hf * 65535.0f);
         }
     }
     return heights;
@@ -223,8 +227,8 @@ std::vector<u16> build_heightmap() {
 PSY_FORCEINLINE u32 sample_sky_row(u32 fb_y) noexcept {
     const f32 t = static_cast<f32>(fb_y) / static_cast<f32>(kFbH - 1u);
     // t=0 zenith, t=1 horizon.
-    constexpr f32 zenith [3] = {  64.0f,  92.0f, 150.0f };
-    constexpr f32 horizon[3] = { 235.0f, 160.0f,  90.0f };
+    constexpr f32 zenith[3] = {64.0f, 92.0f, 150.0f};
+    constexpr f32 horizon[3] = {235.0f, 160.0f, 90.0f};
     const f32 r = zenith[0] * (1.0f - t) + horizon[0] * t;
     const f32 g = zenith[1] * (1.0f - t) + horizon[1] * t;
     const f32 b = zenith[2] * (1.0f - t) + horizon[2] * t;
@@ -234,47 +238,46 @@ PSY_FORCEINLINE u32 sample_sky_row(u32 fb_y) noexcept {
 // ─── View setup ──────────────────────────────────────────────────────────
 struct CameraView {
     math::Vec3 eye;
-    math::Vec3 fwd;       // unit
-    math::Vec3 right;     // unit
-    math::Vec3 up;        // unit
+    math::Vec3 fwd;    // unit
+    math::Vec3 right;  // unit
+    math::Vec3 up;     // unit
     math::Mat4 view;
     math::Mat4 proj;
-    f32        fov_tan;   // tan(half-fov-vertical)
-    f32        aspect;
-    f32        near_z;
-    f32        far_z;
+    f32 fov_tan;  // tan(half-fov-vertical)
+    f32 aspect;
+    f32 near_z;
+    f32 far_z;
 };
 
 CameraView make_flyover_camera(f32 t_seconds) {
     // Centre of the map (the central ridge crest).
     const f32 map_m = static_cast<f32>(kHmSize) * kHmSpacing;
-    const math::Vec3 centre{ map_m * 0.5f, 14.0f, map_m * 0.5f };
+    const math::Vec3 centre{map_m * 0.5f, 14.0f, map_m * 0.5f};
     // Half-circle: angle ∈ [-π/2, +π/2] across the run, slow.
-    const f32 ang   = -math::kHalfPi + t_seconds * 0.10f;
+    const f32 ang = -math::kHalfPi + t_seconds * 0.10f;
     const f32 radius = 130.0f;
-    const f32 alt   = 30.0f;
+    const f32 alt = 30.0f;
     const math::Vec3 eye{
         centre.x + std::cos(ang) * radius,
         alt,
         centre.z + std::sin(ang) * radius,
     };
     const math::Vec3 up_world{0, 1, 0};
-    const math::Vec3 fwd   = math::normalize(math::sub(centre, eye));
+    const math::Vec3 fwd = math::normalize(math::sub(centre, eye));
     const math::Vec3 right = math::normalize(math::cross(fwd, up_world));
-    const math::Vec3 up    = math::cross(right, fwd);
+    const math::Vec3 up = math::cross(right, fwd);
 
     CameraView c{};
-    c.eye    = eye;
-    c.fwd    = fwd;
-    c.right  = right;
-    c.up     = up;
+    c.eye = eye;
+    c.fwd = fwd;
+    c.right = right;
+    c.up = up;
     c.fov_tan = std::tan(60.0f * math::kDegToRad * 0.5f);
-    c.aspect  = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
-    c.near_z  = 1.0f;
-    c.far_z   = 600.0f;
-    c.view    = math::look_at_rh(eye, centre, up_world);
-    c.proj    = math::perspective_rh(60.0f * math::kDegToRad,
-                                     c.aspect, c.near_z, c.far_z);
+    c.aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
+    c.near_z = 1.0f;
+    c.far_z = 600.0f;
+    c.view = math::look_at_rh(eye, centre, up_world);
+    c.proj = math::perspective_rh(60.0f * math::kDegToRad, c.aspect, c.near_z, c.far_z);
     return c;
 }
 
@@ -308,51 +311,80 @@ void fill_sky(render::Framebuffer& fb) noexcept {
 
 constexpr u32 kColTowerBody = pack_rgba8(82, 70, 52);
 constexpr u32 kColTowerRoof = pack_rgba8(48, 38, 32);
-constexpr u32 kColHeliBody  = pack_rgba8(60, 70, 56);
-constexpr u32 kColHeliTrim  = pack_rgba8(36, 44, 36);
-constexpr u32 kColRotor     = pack_rgba8(32, 32, 32);
+constexpr u32 kColHeliBody = pack_rgba8(60, 70, 56);
+constexpr u32 kColHeliTrim = pack_rgba8(36, 44, 36);
+constexpr u32 kColRotor = pack_rgba8(32, 32, 32);
 
 // Build a cube with a single per-face colour; populates `verts`/`indices`
 // appended to whatever the caller already has, returning the index offsets.
 void emit_cube(std::vector<render::raster::Vertex>& verts,
-               std::vector<u32>&                    indices,
-               u32 col_side, u32 col_top) {
+               std::vector<u32>& indices,
+               u32 col_side,
+               u32 col_top) {
     const u32 base = static_cast<u32>(verts.size());
     // 6 faces × 4 verts. Per-face colour so the silhouette doesn't smear.
-    auto push_face = [&](math::Vec3 a, math::Vec3 b, math::Vec3 c, math::Vec3 d,
-                         math::Vec3 normal, u32 col) {
-        const u32 v0 = static_cast<u32>(verts.size());
-        verts.push_back({a, normal, {0,0}, {0,0}, col});
-        verts.push_back({b, normal, {1,0}, {0,0}, col});
-        verts.push_back({c, normal, {1,1}, {0,0}, col});
-        verts.push_back({d, normal, {0,1}, {0,0}, col});
-        indices.push_back(v0+0); indices.push_back(v0+1); indices.push_back(v0+2);
-        indices.push_back(v0+0); indices.push_back(v0+2); indices.push_back(v0+3);
-    };
+    auto push_face =
+        [&](math::Vec3 a, math::Vec3 b, math::Vec3 c, math::Vec3 d, math::Vec3 normal, u32 col) {
+            const u32 v0 = static_cast<u32>(verts.size());
+            verts.push_back({a, normal, {0, 0}, {0, 0}, col});
+            verts.push_back({b, normal, {1, 0}, {0, 0}, col});
+            verts.push_back({c, normal, {1, 1}, {0, 0}, col});
+            verts.push_back({d, normal, {0, 1}, {0, 0}, col});
+            indices.push_back(v0 + 0);
+            indices.push_back(v0 + 1);
+            indices.push_back(v0 + 2);
+            indices.push_back(v0 + 0);
+            indices.push_back(v0 + 2);
+            indices.push_back(v0 + 3);
+        };
     // +X face
-    push_face({ 0.5f,-0.5f,-0.5f},{ 0.5f, 0.5f,-0.5f},{ 0.5f, 0.5f, 0.5f},{ 0.5f,-0.5f, 0.5f},
-              { 1, 0, 0}, col_side);
+    push_face({0.5f, -0.5f, -0.5f},
+              {0.5f, 0.5f, -0.5f},
+              {0.5f, 0.5f, 0.5f},
+              {0.5f, -0.5f, 0.5f},
+              {1, 0, 0},
+              col_side);
     // -X face
-    push_face({-0.5f,-0.5f, 0.5f},{-0.5f, 0.5f, 0.5f},{-0.5f, 0.5f,-0.5f},{-0.5f,-0.5f,-0.5f},
-              {-1, 0, 0}, col_side);
+    push_face({-0.5f, -0.5f, 0.5f},
+              {-0.5f, 0.5f, 0.5f},
+              {-0.5f, 0.5f, -0.5f},
+              {-0.5f, -0.5f, -0.5f},
+              {-1, 0, 0},
+              col_side);
     // +Y top
-    push_face({-0.5f, 0.5f,-0.5f},{-0.5f, 0.5f, 0.5f},{ 0.5f, 0.5f, 0.5f},{ 0.5f, 0.5f,-0.5f},
-              { 0, 1, 0}, col_top);
+    push_face({-0.5f, 0.5f, -0.5f},
+              {-0.5f, 0.5f, 0.5f},
+              {0.5f, 0.5f, 0.5f},
+              {0.5f, 0.5f, -0.5f},
+              {0, 1, 0},
+              col_top);
     // -Y bottom
-    push_face({-0.5f,-0.5f, 0.5f},{-0.5f,-0.5f,-0.5f},{ 0.5f,-0.5f,-0.5f},{ 0.5f,-0.5f, 0.5f},
-              { 0,-1, 0}, col_side);
+    push_face({-0.5f, -0.5f, 0.5f},
+              {-0.5f, -0.5f, -0.5f},
+              {0.5f, -0.5f, -0.5f},
+              {0.5f, -0.5f, 0.5f},
+              {0, -1, 0},
+              col_side);
     // +Z face
-    push_face({-0.5f,-0.5f, 0.5f},{ 0.5f,-0.5f, 0.5f},{ 0.5f, 0.5f, 0.5f},{-0.5f, 0.5f, 0.5f},
-              { 0, 0, 1}, col_side);
+    push_face({-0.5f, -0.5f, 0.5f},
+              {0.5f, -0.5f, 0.5f},
+              {0.5f, 0.5f, 0.5f},
+              {-0.5f, 0.5f, 0.5f},
+              {0, 0, 1},
+              col_side);
     // -Z face
-    push_face({ 0.5f,-0.5f,-0.5f},{-0.5f,-0.5f,-0.5f},{-0.5f, 0.5f,-0.5f},{ 0.5f, 0.5f,-0.5f},
-              { 0, 0,-1}, col_side);
+    push_face({0.5f, -0.5f, -0.5f},
+              {-0.5f, -0.5f, -0.5f},
+              {-0.5f, 0.5f, -0.5f},
+              {0.5f, 0.5f, -0.5f},
+              {0, 0, -1},
+              col_side);
     (void)base;
 }
 
 struct Mesh {
     std::vector<render::raster::Vertex> verts;
-    std::vector<u32>                    indices;
+    std::vector<u32> indices;
 };
 
 Mesh build_cube_mesh(u32 col_side, u32 col_top) {
@@ -363,23 +395,23 @@ Mesh build_cube_mesh(u32 col_side, u32 col_top) {
 
 // ─── Watchtower placement ────────────────────────────────────────────────
 struct Tower {
-    math::Vec3 ground_pos;   // world XZ + Y on the terrain
-    f32        height;       // metres
-    f32        half_extent;  // metres
+    math::Vec3 ground_pos;  // world XZ + Y on the terrain
+    f32 height;             // metres
+    f32 half_extent;        // metres
 };
 
 std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
     const f32 map_m = static_cast<f32>(kHmSize) * kHmSpacing;
-    const f32 cx    = map_m * 0.5f;
-    const f32 cz    = map_m * 0.5f;
+    const f32 cx = map_m * 0.5f;
+    const f32 cz = map_m * 0.5f;
     // Six positions: roughly on a hexagonal ring around the map centre.
     const std::array<math::Vec2, 6> xz = {{
-        { cx + 100.0f, cz +  10.0f },
-        { cx +  50.0f, cz +  85.0f },
-        { cx -  50.0f, cz +  90.0f },
-        { cx - 100.0f, cz +  20.0f },
-        { cx -  40.0f, cz -  80.0f },
-        { cx +  60.0f, cz -  90.0f },
+        {cx + 100.0f, cz + 10.0f},
+        {cx + 50.0f, cz + 85.0f},
+        {cx - 50.0f, cz + 90.0f},
+        {cx - 100.0f, cz + 20.0f},
+        {cx - 40.0f, cz - 80.0f},
+        {cx + 60.0f, cz - 90.0f},
     }};
     // Bilinear sample of the u16 heightmap at world-space (x, z). Inlined
     // so the sample doesn't depend on the `detail::*` raymarch internals
@@ -395,8 +427,7 @@ std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
     // would silently get extrapolated edge heights instead of falling
     // back to 0 the way the rest of the engine does.
     auto sample_height_at = [&hm](f32 wx, f32 wz) noexcept -> f32 {
-        if (!hm.heights || hm.size_x == 0 || hm.size_z == 0 ||
-            hm.spacing <= 0.0f) {
+        if (!hm.heights || hm.size_x == 0 || hm.size_z == 0 || hm.spacing <= 0.0f) {
             return 0.0f;
         }
         const f32 fx = wx / hm.spacing;
@@ -413,13 +444,12 @@ std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
         auto fetch = [&hm](i32 cx, i32 cz) noexcept -> f32 {
             cx = std::clamp(cx, 0, static_cast<i32>(hm.size_x) - 1);
             cz = std::clamp(cz, 0, static_cast<i32>(hm.size_z) - 1);
-            const usize idx =
-                static_cast<usize>(cz) * hm.size_x + static_cast<usize>(cx);
+            const usize idx = static_cast<usize>(cz) * hm.size_x + static_cast<usize>(cx);
             return static_cast<f32>(hm.heights[idx]) * hm.height_scale;
         };
-        const f32 h00 = fetch(ix,     iz    );
-        const f32 h10 = fetch(ix + 1, iz    );
-        const f32 h01 = fetch(ix,     iz + 1);
+        const f32 h00 = fetch(ix, iz);
+        const f32 h10 = fetch(ix + 1, iz);
+        const f32 h01 = fetch(ix, iz + 1);
         const f32 h11 = fetch(ix + 1, iz + 1);
         const f32 a = h00 * (1.0f - tx) + h10 * tx;
         const f32 b = h01 * (1.0f - tx) + h11 * tx;
@@ -431,8 +461,8 @@ std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
         const f32 wx = xz[i].x;
         const f32 wz = xz[i].y;
         const f32 hy = sample_height_at(wx, wz);
-        towers[i].ground_pos  = { wx, hy, wz };
-        towers[i].height      = 7.0f;
+        towers[i].ground_pos = {wx, hy, wz};
+        towers[i].height = 7.0f;
         towers[i].half_extent = 1.6f;
     }
     return towers;
@@ -440,46 +470,45 @@ std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
 
 // ─── Helicopter ──────────────────────────────────────────────────────────
 struct HeliPose {
-    math::Vec3 position;        // world
-    f32        yaw_rad;         // heading
-    f32        rotor_phase;     // [0, 2π)
+    math::Vec3 position;  // world
+    f32 yaw_rad;          // heading
+    f32 rotor_phase;      // [0, 2π)
 };
 
 HeliPose make_helicopter_pose(f32 t_seconds) {
     HeliPose hp{};
     const f32 map_m = static_cast<f32>(kHmSize) * kHmSpacing;
-    const f32 cx    = map_m * 0.5f;
-    const f32 cz    = map_m * 0.5f;
+    const f32 cx = map_m * 0.5f;
+    const f32 cz = map_m * 0.5f;
     // Circular patrol path at 50m altitude.
-    const f32 ang   = t_seconds * 0.45f;
-    const f32 r     = 70.0f;
-    hp.position = { cx + std::cos(ang) * r, 50.0f, cz + std::sin(ang) * r };
+    const f32 ang = t_seconds * 0.45f;
+    const f32 r = 70.0f;
+    hp.position = {cx + std::cos(ang) * r, 50.0f, cz + std::sin(ang) * r};
     // Heading: tangent to the path (turn into the circle).
-    hp.yaw_rad     = ang + math::kHalfPi;
+    hp.yaw_rad = ang + math::kHalfPi;
     hp.rotor_phase = std::fmod(t_seconds * 18.0f, math::kTwoPi);
     return hp;
 }
 
 // Yaw-only Y-axis rotation as a Mat4.
 math::Mat4 yaw_mat4(f32 yaw_rad) {
-    return math::rotate_quat(
-        math::quat_from_axis_angle(math::Vec3{0, 1, 0}, yaw_rad));
+    return math::rotate_quat(math::quat_from_axis_angle(math::Vec3{0, 1, 0}, yaw_rad));
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    const Args args         = parse_args(argc, argv);
-    const u32  smoke_frames = args.smoke_frames;
+    const Args args = parse_args(argc, argv);
+    const u32 smoke_frames = args.smoke_frames;
 
     // ─── Platform / framebuffer ──────────────────────────────────────────
     platform::WindowDesc desc{};
-    desc.title         = "Psynder — sample 06 (tactical map flyover, M6)";
-    desc.window_width  = 1280;
+    desc.title = "Psynder — sample 06 (tactical map flyover, M6)";
+    desc.window_width = 1280;
     desc.window_height = 720;
-    desc.render_width  = kFbW;
+    desc.render_width = kFbW;
     desc.render_height = kFbH;
-    desc.scale_mode    = platform::ScaleMode::Linear;
+    desc.scale_mode = platform::ScaleMode::Linear;
 
     auto* window = platform::create_window(desc);
     if (!window) {
@@ -488,24 +517,24 @@ int main(int argc, char** argv) {
     }
 
     std::vector<u32> pixels(static_cast<usize>(kFbW) * kFbH, 0u);
-    std::vector<u32> depth (static_cast<usize>(kFbW) * kFbH, 0u);
+    std::vector<u32> depth(static_cast<usize>(kFbW) * kFbH, 0u);
 
     render::Framebuffer fb{};
-    fb.width  = kFbW;
+    fb.width = kFbW;
     fb.height = kFbH;
-    fb.pitch  = kFbW * 4;
+    fb.pitch = kFbW * 4;
     fb.format = render::PixelFormat::RGBA8;
     fb.pixels = reinterpret_cast<u8*>(pixels.data());
-    fb.depth  = depth.data();
+    fb.depth = depth.data();
 
     // ─── Heightmap + raymarcher state ────────────────────────────────────
     const std::vector<u16> heights = build_heightmap();
     world::outdoor::HeightmapDesc hm_desc{};
-    hm_desc.size_x       = kHmSize;
-    hm_desc.size_z       = kHmSize;
-    hm_desc.spacing      = kHmSpacing;
+    hm_desc.size_x = kHmSize;
+    hm_desc.size_z = kHmSize;
+    hm_desc.spacing = kHmSpacing;
     hm_desc.height_scale = kHmHeightScl;
-    hm_desc.heights      = heights.data();
+    hm_desc.heights = heights.data();
 
     // Wave E #112 made `TerrainRaymarch::render(view, proj)` paint into a
     // bound framebuffer via the sibling `set_target` hook. The lighting +
@@ -518,7 +547,7 @@ int main(int argc, char** argv) {
 
     // ─── Scene props ─────────────────────────────────────────────────────
     const Mesh tower_mesh = build_cube_mesh(kColTowerBody, kColTowerRoof);
-    const Mesh heli_body  = build_cube_mesh(kColHeliBody, kColHeliTrim);
+    const Mesh heli_body = build_cube_mesh(kColHeliBody, kColHeliTrim);
     const Mesh heli_blade = build_cube_mesh(kColRotor, kColRotor);
 
     const auto towers = make_watchtowers(hm_desc);
@@ -526,26 +555,22 @@ int main(int argc, char** argv) {
     auto& rasterizer = render::raster::Rasterizer::Get();
 
     PSY_LOG_INFO("Psynder sample 06 running{}",
-                 smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames",
-                                                smoke_frames)
+                 smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
                                   : std::string{});
 
     const u64 t0 = platform::Clock::ticks_now();
-    u32 frame    = 0;
+    u32 frame = 0;
 
     while (!window->should_close()) {
         window->poll_events();
 
-        if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape)) {
+        if (auto* in = platform::input(); in && in->key_down(platform::KeyCode::Escape)) {
             break;
         }
 
         // Smoke mode pins time to frame so the captured PNG is deterministic.
-        const f64 t = smoke_frames > 0
-                          ? static_cast<f64>(frame) * (1.0 / 60.0)
-                          : platform::Clock::seconds(
-                                platform::Clock::ticks_now() - t0);
+        const f64 t = smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
+                                       : platform::Clock::seconds(platform::Clock::ticks_now() - t0);
 
         const CameraView cam = make_flyover_camera(static_cast<f32>(t));
 
@@ -555,7 +580,8 @@ int main(int argc, char** argv) {
         {
             const u32 far_packed = pack_depth_u24(1.0f);
             const usize n = static_cast<usize>(kFbW) * kFbH;
-            for (usize i = 0; i < n; ++i) depth[i] = far_packed;
+            for (usize i = 0; i < n; ++i)
+                depth[i] = far_packed;
         }
         // Pre-fill sky — the public render leaves unhit pixels alone.
         fill_sky(fb);
@@ -564,30 +590,27 @@ int main(int argc, char** argv) {
 
         // ── Step 2: rasterizer for helicopter + watchtowers ────────────
         render::raster::ViewState view_state{};
-        view_state.target     = fb;
-        view_state.view       = cam.view;
+        view_state.target = fb;
+        view_state.view = cam.view;
         view_state.projection = cam.proj;
-        view_state.tile_w     = 64;
-        view_state.tile_h     = 64;
+        view_state.tile_w = 64;
+        view_state.tile_h = 64;
         rasterizer.begin_frame(view_state);
 
         // Watchtowers — scale the unit cube to tower dimensions, translate
         // to the terrain surface + half-height.
         for (const auto& tw : towers) {
-            const math::Mat4 scl = math::scale(
-                math::Vec3{ tw.half_extent * 2.0f, tw.height,
-                             tw.half_extent * 2.0f });
+            const math::Mat4 scl =
+                math::scale(math::Vec3{tw.half_extent * 2.0f, tw.height, tw.half_extent * 2.0f});
             const math::Mat4 trs = math::translate(
-                math::Vec3{ tw.ground_pos.x,
-                             tw.ground_pos.y + tw.height * 0.5f,
-                             tw.ground_pos.z });
+                math::Vec3{tw.ground_pos.x, tw.ground_pos.y + tw.height * 0.5f, tw.ground_pos.z});
 
             render::raster::DrawItem item{};
-            item.vertices     = tower_mesh.verts.data();
+            item.vertices = tower_mesh.verts.data();
             item.vertex_count = static_cast<u32>(tower_mesh.verts.size());
-            item.indices      = tower_mesh.indices.data();
-            item.index_count  = static_cast<u32>(tower_mesh.indices.size());
-            item.model        = math::mul(trs, scl);
+            item.indices = tower_mesh.indices.data();
+            item.index_count = static_cast<u32>(tower_mesh.indices.size());
+            item.model = math::mul(trs, scl);
             rasterizer.submit(item);
         }
 
@@ -599,43 +622,40 @@ int main(int argc, char** argv) {
             const math::Mat4 scl = math::scale(math::Vec3{3.6f, 1.5f, 1.5f});
             const math::Mat4 trs = math::translate(hp.position);
             render::raster::DrawItem item{};
-            item.vertices     = heli_body.verts.data();
+            item.vertices = heli_body.verts.data();
             item.vertex_count = static_cast<u32>(heli_body.verts.size());
-            item.indices      = heli_body.indices.data();
-            item.index_count  = static_cast<u32>(heli_body.indices.size());
-            item.model        = math::mul(trs, math::mul(heli_yaw, scl));
+            item.indices = heli_body.indices.data();
+            item.index_count = static_cast<u32>(heli_body.indices.size());
+            item.model = math::mul(trs, math::mul(heli_yaw, scl));
             rasterizer.submit(item);
         }
         // Rotor: 4 thin blades sitting 0.9m above the body, spinning around
         // the helicopter's local Y axis.
-        const math::Mat4 rotor_spin = math::rotate_quat(
-            math::quat_from_axis_angle(math::Vec3{0, 1, 0}, hp.rotor_phase));
-        const math::Mat4 rotor_lift = math::translate(
-            math::Vec3{hp.position.x, hp.position.y + 0.9f, hp.position.z});
+        const math::Mat4 rotor_spin =
+            math::rotate_quat(math::quat_from_axis_angle(math::Vec3{0, 1, 0}, hp.rotor_phase));
+        const math::Mat4 rotor_lift =
+            math::translate(math::Vec3{hp.position.x, hp.position.y + 0.9f, hp.position.z});
         for (u32 b = 0; b < 4; ++b) {
             // Each blade offset 90° around the rotor hub.
             const f32 ang = static_cast<f32>(b) * math::kHalfPi;
-            const math::Mat4 blade_rot = math::rotate_quat(
-                math::quat_from_axis_angle(math::Vec3{0, 1, 0}, ang));
+            const math::Mat4 blade_rot =
+                math::rotate_quat(math::quat_from_axis_angle(math::Vec3{0, 1, 0}, ang));
             // Blade: 4m long × 0.06m thick × 0.25m wide; offset 1.5m
             // outward along local +X so it pivots about the hub.
             const math::Mat4 scl = math::scale(math::Vec3{4.0f, 0.08f, 0.28f});
-            const math::Mat4 blade_off = math::translate(
-                math::Vec3{1.5f, 0.0f, 0.0f});
+            const math::Mat4 blade_off = math::translate(math::Vec3{1.5f, 0.0f, 0.0f});
 
             render::raster::DrawItem item{};
-            item.vertices     = heli_blade.verts.data();
+            item.vertices = heli_blade.verts.data();
             item.vertex_count = static_cast<u32>(heli_blade.verts.size());
-            item.indices      = heli_blade.indices.data();
-            item.index_count  = static_cast<u32>(heli_blade.indices.size());
+            item.indices = heli_blade.indices.data();
+            item.index_count = static_cast<u32>(heli_blade.indices.size());
             // Final transform: world ← rotor_lift × heli_yaw × rotor_spin ×
             //                  blade_rot × blade_off × scl
-            const math::Mat4 m =
-                math::mul(rotor_lift,
-                  math::mul(heli_yaw,
-                    math::mul(rotor_spin,
-                      math::mul(blade_rot,
-                        math::mul(blade_off, scl)))));
+            const math::Mat4 m = math::mul(
+                rotor_lift,
+                math::mul(heli_yaw,
+                          math::mul(rotor_spin, math::mul(blade_rot, math::mul(blade_off, scl)))));
             item.model = m;
             rasterizer.submit(item);
         }
@@ -645,19 +665,18 @@ int main(int argc, char** argv) {
         window->present(fb);
 
         if (smoke_frames > 0 && ++frame >= smoke_frames) {
-            PSY_LOG_INFO("sample_06: smoke target reached ({}); exiting",
-                         smoke_frames);
+            PSY_LOG_INFO("sample_06: smoke target reached ({}); exiting", smoke_frames);
             break;
         }
     }
 
     if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(
-            args.capture_out.c_str(), pixels.data(),
-            fb.width, fb.height);
+        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
+                                                             pixels.data(),
+                                                             fb.width,
+                                                             fb.height);
         if (!ok) {
-            PSY_LOG_ERROR("sample_06: failed to write capture to {}",
-                          args.capture_out);
+            PSY_LOG_ERROR("sample_06: failed to write capture to {}", args.capture_out);
             platform::destroy_window(window);
             return EXIT_FAILURE;
         }

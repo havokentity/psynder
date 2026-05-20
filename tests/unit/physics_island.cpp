@@ -17,8 +17,8 @@ Body make_dynamic_body(math::Vec3 pos) {
     Body b{};
     b.position = pos;
     b.inv_mass = 1.0f;
-    b.mass     = 1.0f;
-    b.shape    = 0;
+    b.mass = 1.0f;
+    b.shape = 0;
     b.half_extent = {0.5f, 0, 0};
     b.inertia.local = {1, 1, 1};
     b.inertia.inv_local = {1, 1, 1};
@@ -38,10 +38,9 @@ Contact make_contact(u32 a, u32 b) {
     c.depth = 0.0f;
     return c;
 }
-}
+}  // namespace
 
-TEST_CASE("detect_islands isolates disconnected contact subgraphs",
-          "[physics][solver][islands]") {
+TEST_CASE("detect_islands isolates disconnected contact subgraphs", "[physics][solver][islands]") {
     std::vector<Body> bodies{
         make_dynamic_body({0, 0, 0}),
         make_dynamic_body({1, 0, 0}),
@@ -56,8 +55,7 @@ TEST_CASE("detect_islands isolates disconnected contact subgraphs",
     };
     std::vector<u32> body_idx;
     std::vector<Island> islands;
-    kernels::kernel_detect_islands(contacts,
-        {bodies.data(), bodies.size()}, body_idx, islands);
+    kernels::kernel_detect_islands(contacts, {bodies.data(), bodies.size()}, body_idx, islands);
 
     REQUIRE(islands.size() == 2);
     REQUIRE(islands[0].contact_count + islands[1].contact_count == 3);
@@ -68,7 +66,8 @@ TEST_CASE("detect_islands isolates disconnected contact subgraphs",
         set0.insert(body_idx[islands[0].first_body + i]);
     for (u32 i = 0; i < islands[1].body_count; ++i)
         set1.insert(body_idx[islands[1].first_body + i]);
-    for (u32 b : set0) REQUIRE(set1.find(b) == set1.end());
+    for (u32 b : set0)
+        REQUIRE(set1.find(b) == set1.end());
 }
 
 TEST_CASE("static bodies do not bridge islands", "[physics][solver][islands]") {
@@ -83,22 +82,21 @@ TEST_CASE("static bodies do not bridge islands", "[physics][solver][islands]") {
     };
     std::vector<u32> body_idx;
     std::vector<Island> islands;
-    kernels::kernel_detect_islands(contacts,
-        {bodies.data(), bodies.size()}, body_idx, islands);
+    kernels::kernel_detect_islands(contacts, {bodies.data(), bodies.size()}, body_idx, islands);
     REQUIRE(islands.size() == 2);
 }
 
-TEST_CASE("dense contact chain becomes a single island",
-          "[physics][solver][islands]") {
+TEST_CASE("dense contact chain becomes a single island", "[physics][solver][islands]") {
     std::vector<Body> bodies;
     bodies.reserve(8);
-    for (u32 i = 0; i < 8; ++i) bodies.push_back(make_dynamic_body({static_cast<f32>(i), 0, 0}));
+    for (u32 i = 0; i < 8; ++i)
+        bodies.push_back(make_dynamic_body({static_cast<f32>(i), 0, 0}));
     std::vector<Contact> contacts;
-    for (u32 i = 0; i < 7; ++i) contacts.push_back(make_contact(i, i + 1));
+    for (u32 i = 0; i < 7; ++i)
+        contacts.push_back(make_contact(i, i + 1));
     std::vector<u32> body_idx;
     std::vector<Island> islands;
-    kernels::kernel_detect_islands(contacts,
-        {bodies.data(), bodies.size()}, body_idx, islands);
+    kernels::kernel_detect_islands(contacts, {bodies.data(), bodies.size()}, body_idx, islands);
     REQUIRE(islands.size() == 1);
     REQUIRE(islands[0].body_count == 8);
     REQUIRE(islands[0].contact_count == 7);

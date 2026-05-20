@@ -33,23 +33,23 @@ namespace heatmap_detail {
 
 // Pack RGBA bytes the same way Pixel.h's `rgba()` does.
 inline constexpr u32 rgba(u8 r, u8 g, u8 b, u8 a = 0xFFu) noexcept {
-    return (static_cast<u32>(r) << 24)
-         | (static_cast<u32>(g) << 16)
-         | (static_cast<u32>(b) << 8)
-         | static_cast<u32>(a);
+    return (static_cast<u32>(r) << 24) | (static_cast<u32>(g) << 16) | (static_cast<u32>(b) << 8) |
+           static_cast<u32>(a);
 }
 
-inline constexpr u32 kColourGreen  = rgba(0x40, 0xC0, 0x40);
+inline constexpr u32 kColourGreen = rgba(0x40, 0xC0, 0x40);
 inline constexpr u32 kColourYellow = rgba(0xE0, 0xC0, 0x40);
-inline constexpr u32 kColourRed    = rgba(0xE0, 0x40, 0x40);
-inline constexpr u32 kColourPeak   = rgba(0xFF, 0xFF, 0xFF);
-inline constexpr u32 kColourBg     = rgba(0x20, 0x20, 0x20, 0xC0);
-inline constexpr u32 kColourFrame  = rgba(0x80, 0x80, 0x80);
-inline constexpr u32 kColourEmpty  = rgba(0x40, 0x40, 0x40, 0xC0);
+inline constexpr u32 kColourRed = rgba(0xE0, 0x40, 0x40);
+inline constexpr u32 kColourPeak = rgba(0xFF, 0xFF, 0xFF);
+inline constexpr u32 kColourBg = rgba(0x20, 0x20, 0x20, 0xC0);
+inline constexpr u32 kColourFrame = rgba(0x80, 0x80, 0x80);
+inline constexpr u32 kColourEmpty = rgba(0x40, 0x40, 0x40, 0xC0);
 
 inline u32 ratio_colour(f32 ratio) noexcept {
-    if (ratio > 0.85f) return kColourRed;
-    if (ratio > 0.50f) return kColourYellow;
+    if (ratio > 0.85f)
+        return kColourRed;
+    if (ratio > 0.50f)
+        return kColourYellow;
     return kColourGreen;
 }
 
@@ -65,7 +65,8 @@ inline u32 ratio_colour(f32 ratio) noexcept {
 inline u32 alloc_heatmap(math::Vec2 origin, math::Vec2 size) noexcept {
     namespace hd = heatmap_detail;
 
-    if (size.x <= 4.0f || size.y <= 4.0f) return 0;
+    if (size.x <= 4.0f || size.y <= 4.0f)
+        return 0;
 
     // Background frame.
     imm::filled_rect(origin, size, hd::kColourBg);
@@ -73,11 +74,13 @@ inline u32 alloc_heatmap(math::Vec2 origin, math::Vec2 size) noexcept {
 
     const auto stats = mem::tag_stats();
     const u32 row_count = static_cast<u32>(stats.size());
-    if (row_count == 0) return 0;
+    if (row_count == 0)
+        return 0;
 
     // Layout: each row is a horizontal bar with 2px top/bottom padding.
     const f32 row_h = (size.y - 2.0f) / static_cast<f32>(row_count);
-    if (row_h <= 0.5f) return 0;
+    if (row_h <= 0.5f)
+        return 0;
 
     for (u32 i = 0; i < row_count; ++i) {
         const mem::TagStat& s = stats[i];
@@ -89,7 +92,8 @@ inline u32 alloc_heatmap(math::Vec2 origin, math::Vec2 size) noexcept {
             size.x - 2.0f,
             row_h - 1.0f,
         };
-        if (row_size.y <= 0.5f) continue;
+        if (row_size.y <= 0.5f)
+            continue;
 
         // Empty-budget rows: draw a slim "no budget" marker bar.
         if (s.budget == 0) {
@@ -97,14 +101,10 @@ inline u32 alloc_heatmap(math::Vec2 origin, math::Vec2 size) noexcept {
             continue;
         }
 
-        const f32 cur_ratio = static_cast<f32>(s.current)
-                            / static_cast<f32>(s.budget);
-        const f32 cur_clamped = cur_ratio > 1.0f ? 1.0f
-                                : cur_ratio < 0.0f ? 0.0f : cur_ratio;
-        const f32 peak_ratio = static_cast<f32>(s.peak)
-                             / static_cast<f32>(s.budget);
-        const f32 peak_clamped = peak_ratio > 1.0f ? 1.0f
-                                 : peak_ratio < 0.0f ? 0.0f : peak_ratio;
+        const f32 cur_ratio = static_cast<f32>(s.current) / static_cast<f32>(s.budget);
+        const f32 cur_clamped = cur_ratio > 1.0f ? 1.0f : cur_ratio < 0.0f ? 0.0f : cur_ratio;
+        const f32 peak_ratio = static_cast<f32>(s.peak) / static_cast<f32>(s.budget);
+        const f32 peak_clamped = peak_ratio > 1.0f ? 1.0f : peak_ratio < 0.0f ? 0.0f : peak_ratio;
 
         // Fill bar.
         const math::Vec2 fill_size{
@@ -115,8 +115,8 @@ inline u32 alloc_heatmap(math::Vec2 origin, math::Vec2 size) noexcept {
 
         // Peak outline — single vertical line at peak ratio.
         const f32 peak_x = row_origin.x + row_size.x * peak_clamped;
-        imm::line(math::Vec2{ peak_x, row_origin.y },
-                  math::Vec2{ peak_x, row_origin.y + row_size.y },
+        imm::line(math::Vec2{peak_x, row_origin.y},
+                  math::Vec2{peak_x, row_origin.y + row_size.y},
                   hd::kColourPeak);
 
         // Subtle row frame so adjacent bars are distinguishable.

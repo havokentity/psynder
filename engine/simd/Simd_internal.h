@@ -59,7 +59,8 @@ PSY_FORCEINLINE f32x4 add4(f32x4 a, f32x4 b) noexcept {
     return f32x4{vaddq_f32(a.v, b.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] + b.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] + b.v[i];
     return r;
 #endif
 }
@@ -71,7 +72,8 @@ PSY_FORCEINLINE f32x4 sub4(f32x4 a, f32x4 b) noexcept {
     return f32x4{vsubq_f32(a.v, b.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] - b.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] - b.v[i];
     return r;
 #endif
 }
@@ -83,7 +85,8 @@ PSY_FORCEINLINE f32x4 mul4(f32x4 a, f32x4 b) noexcept {
     return f32x4{vmulq_f32(a.v, b.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] * b.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] * b.v[i];
     return r;
 #endif
 }
@@ -95,7 +98,8 @@ PSY_FORCEINLINE f32x4 div4(f32x4 a, f32x4 b) noexcept {
     return f32x4{vdivq_f32(a.v, b.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] / b.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] / b.v[i];
     return r;
 #endif
 }
@@ -114,7 +118,8 @@ PSY_FORCEINLINE f32x4 fma4(f32x4 a, f32x4 b, f32x4 c) noexcept {
     return f32x4{vfmaq_f32(c.v, a.v, b.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] * b.v[i] + c.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] * b.v[i] + c.v[i];
     return r;
 #endif
 }
@@ -128,7 +133,8 @@ PSY_FORCEINLINE mask4 cmp_eq4(f32x4 a, f32x4 b) noexcept {
     return mask4{vceqq_f32(a.v, b.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = (a.v[i] == b.v[i]) ? 0xFFFFFFFFu : 0u;
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = (a.v[i] == b.v[i]) ? 0xFFFFFFFFu : 0u;
     return r;
 #endif
 }
@@ -140,7 +146,8 @@ PSY_FORCEINLINE mask4 cmp_lt4(f32x4 a, f32x4 b) noexcept {
     return mask4{vcltq_f32(a.v, b.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = (a.v[i] < b.v[i]) ? 0xFFFFFFFFu : 0u;
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = (a.v[i] < b.v[i]) ? 0xFFFFFFFFu : 0u;
     return r;
 #endif
 }
@@ -152,7 +159,8 @@ PSY_FORCEINLINE mask4 cmp_le4(f32x4 a, f32x4 b) noexcept {
     return mask4{vcleq_f32(a.v, b.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = (a.v[i] <= b.v[i]) ? 0xFFFFFFFFu : 0u;
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = (a.v[i] <= b.v[i]) ? 0xFFFFFFFFu : 0u;
     return r;
 #endif
 }
@@ -164,7 +172,8 @@ PSY_FORCEINLINE mask4 cmp_gt4(f32x4 a, f32x4 b) noexcept {
     return mask4{vcgtq_f32(a.v, b.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = (a.v[i] > b.v[i]) ? 0xFFFFFFFFu : 0u;
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = (a.v[i] > b.v[i]) ? 0xFFFFFFFFu : 0u;
     return r;
 #endif
 }
@@ -176,7 +185,8 @@ PSY_FORCEINLINE mask4 cmp_ge4(f32x4 a, f32x4 b) noexcept {
     return mask4{vcgeq_f32(a.v, b.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = (a.v[i] >= b.v[i]) ? 0xFFFFFFFFu : 0u;
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = (a.v[i] >= b.v[i]) ? 0xFFFFFFFFu : 0u;
     return r;
 #endif
 }
@@ -191,7 +201,8 @@ PSY_FORCEINLINE f32x4 blend4(f32x4 a, f32x4 b, mask4 m) noexcept {
     return f32x4{vbslq_f32(m.v, b.v, a.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = m.v[i] ? b.v[i] : a.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = m.v[i] ? b.v[i] : a.v[i];
     return r;
 #endif
 }
@@ -203,7 +214,8 @@ PSY_FORCEINLINE f32x4 min4(f32x4 a, f32x4 b) noexcept {
     return f32x4{vminq_f32(a.v, b.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = std::min(a.v[i], b.v[i]);
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = std::min(a.v[i], b.v[i]);
     return r;
 #endif
 }
@@ -215,7 +227,8 @@ PSY_FORCEINLINE f32x4 max4(f32x4 a, f32x4 b) noexcept {
     return f32x4{vmaxq_f32(a.v, b.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = std::max(a.v[i], b.v[i]);
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = std::max(a.v[i], b.v[i]);
     return r;
 #endif
 }
@@ -229,7 +242,8 @@ PSY_FORCEINLINE f32x4 abs4(f32x4 a) noexcept {
     return f32x4{vabsq_f32(a.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = std::fabs(a.v[i]);
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = std::fabs(a.v[i]);
     return r;
 #endif
 }
@@ -241,7 +255,8 @@ PSY_FORCEINLINE f32x4 sqrt4(f32x4 a) noexcept {
     return f32x4{vsqrtq_f32(a.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = std::sqrt(a.v[i]);
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = std::sqrt(a.v[i]);
     return r;
 #endif
 }
@@ -256,7 +271,8 @@ PSY_FORCEINLINE f32x4 rsqrt4(f32x4 a) noexcept {
     return f32x4{vrsqrteq_f32(a.v)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = 1.0f / std::sqrt(a.v[i]);
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = 1.0f / std::sqrt(a.v[i]);
     return r;
 #endif
 }
@@ -269,7 +285,8 @@ PSY_FORCEINLINE f32x4 load_aligned4(const f32* p) noexcept {
     return f32x4{vld1q_f32(p)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = p[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = p[i];
     return r;
 #endif
 }
@@ -282,7 +299,8 @@ PSY_FORCEINLINE f32x4 load_unaligned4(const f32* p) noexcept {
     return f32x4{vld1q_f32(p)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = p[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = p[i];
     return r;
 #endif
 }
@@ -293,7 +311,8 @@ PSY_FORCEINLINE void store_aligned4(f32* p, f32x4 v) noexcept {
 #elif defined(__aarch64__) || defined(_M_ARM64)
     vst1q_f32(p, v.v);
 #else
-    for (int i = 0; i < 4; ++i) p[i] = v.v[i];
+    for (int i = 0; i < 4; ++i)
+        p[i] = v.v[i];
 #endif
 }
 
@@ -303,7 +322,8 @@ PSY_FORCEINLINE void store_unaligned4(f32* p, f32x4 v) noexcept {
 #elif defined(__aarch64__) || defined(_M_ARM64)
     vst1q_f32(p, v.v);
 #else
-    for (int i = 0; i < 4; ++i) p[i] = v.v[i];
+    for (int i = 0; i < 4; ++i)
+        p[i] = v.v[i];
 #endif
 }
 
@@ -314,7 +334,8 @@ PSY_FORCEINLINE f32x4 broadcast4(f32 s) noexcept {
     return f32x4{vdupq_n_f32(s)};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = s;
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = s;
     return r;
 #endif
 }
@@ -339,7 +360,8 @@ PSY_FORCEINLINE f32x4 gather4(const f32* base, i32x4 idx) noexcept {
     return f32x4{r};
 #else
     f32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = base[idx.v[i]];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = base[idx.v[i]];
     return r;
 #endif
 }
@@ -348,10 +370,10 @@ PSY_FORCEINLINE f32x4 gather4(const f32* base, i32x4 idx) noexcept {
 PSY_FORCEINLINE f32 reduce_add4(f32x4 a) noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
     // hadd_ps twice would also work but blocked-2 shuffle is one fewer uop.
-    __m128 shuf = _mm_movehdup_ps(a.v);          // {1,1,3,3}
+    __m128 shuf = _mm_movehdup_ps(a.v);  // {1,1,3,3}
     __m128 sums = _mm_add_ps(a.v, shuf);
-    shuf        = _mm_movehl_ps(shuf, sums);     // {2+3, 3+3, …}
-    sums        = _mm_add_ss(sums, shuf);
+    shuf = _mm_movehl_ps(shuf, sums);  // {2+3, 3+3, …}
+    sums = _mm_add_ss(sums, shuf);
     return _mm_cvtss_f32(sums);
 #elif defined(__aarch64__) || defined(_M_ARM64)
     return vaddvq_f32(a.v);
@@ -363,9 +385,9 @@ PSY_FORCEINLINE f32 reduce_add4(f32x4 a) noexcept {
 PSY_FORCEINLINE f32 reduce_min4(f32x4 a) noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
     __m128 shuf = _mm_movehdup_ps(a.v);
-    __m128 m    = _mm_min_ps(a.v, shuf);
-    shuf        = _mm_movehl_ps(shuf, m);
-    m           = _mm_min_ss(m, shuf);
+    __m128 m = _mm_min_ps(a.v, shuf);
+    shuf = _mm_movehl_ps(shuf, m);
+    m = _mm_min_ss(m, shuf);
     return _mm_cvtss_f32(m);
 #elif defined(__aarch64__) || defined(_M_ARM64)
     return vminvq_f32(a.v);
@@ -377,9 +399,9 @@ PSY_FORCEINLINE f32 reduce_min4(f32x4 a) noexcept {
 PSY_FORCEINLINE f32 reduce_max4(f32x4 a) noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
     __m128 shuf = _mm_movehdup_ps(a.v);
-    __m128 m    = _mm_max_ps(a.v, shuf);
-    shuf        = _mm_movehl_ps(shuf, m);
-    m           = _mm_max_ss(m, shuf);
+    __m128 m = _mm_max_ps(a.v, shuf);
+    shuf = _mm_movehl_ps(shuf, m);
+    m = _mm_max_ss(m, shuf);
     return _mm_cvtss_f32(m);
 #elif defined(__aarch64__) || defined(_M_ARM64)
     return vmaxvq_f32(a.v);
@@ -396,7 +418,8 @@ PSY_FORCEINLINE mask4 mask_and(mask4 a, mask4 b) noexcept {
     return mask4{vandq_u32(a.v, b.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] & b.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] & b.v[i];
     return r;
 #endif
 }
@@ -408,7 +431,8 @@ PSY_FORCEINLINE mask4 mask_or(mask4 a, mask4 b) noexcept {
     return mask4{vorrq_u32(a.v, b.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] | b.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] | b.v[i];
     return r;
 #endif
 }
@@ -420,7 +444,8 @@ PSY_FORCEINLINE mask4 mask_xor(mask4 a, mask4 b) noexcept {
     return mask4{veorq_u32(a.v, b.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] ^ b.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] ^ b.v[i];
     return r;
 #endif
 }
@@ -433,7 +458,8 @@ PSY_FORCEINLINE mask4 mask_not(mask4 a) noexcept {
     return mask4{vmvnq_u32(a.v)};
 #else
     mask4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = ~a.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = ~a.v[i];
     return r;
 #endif
 }
@@ -446,19 +472,26 @@ PSY_FORCEINLINE int mask_to_int4(mask4 m) noexcept {
 #elif defined(__aarch64__) || defined(_M_ARM64)
     // Take the sign bit (MSB) of each lane and pack into bits 0..3.
     static const uint32x4_t shifts = {0, 1, 2, 3};
-    uint32x4_t              high   = vshrq_n_u32(m.v, 31);
-    uint32x4_t              bits   = vshlq_u32(high, vreinterpretq_s32_u32(shifts));
+    uint32x4_t high = vshrq_n_u32(m.v, 31);
+    uint32x4_t bits = vshlq_u32(high, vreinterpretq_s32_u32(shifts));
     return static_cast<int>(vaddvq_u32(bits));
 #else
     int r = 0;
-    for (int i = 0; i < 4; ++i) r |= (m.v[i] >> 31) << i;
+    for (int i = 0; i < 4; ++i)
+        r |= (m.v[i] >> 31) << i;
     return r;
 #endif
 }
 
-PSY_FORCEINLINE bool any_of(mask4 m) noexcept { return mask_to_int4(m) != 0; }
-PSY_FORCEINLINE bool all_of(mask4 m) noexcept { return mask_to_int4(m) == 0xF; }
-PSY_FORCEINLINE bool none_of(mask4 m) noexcept { return mask_to_int4(m) == 0; }
+PSY_FORCEINLINE bool any_of(mask4 m) noexcept {
+    return mask_to_int4(m) != 0;
+}
+PSY_FORCEINLINE bool all_of(mask4 m) noexcept {
+    return mask_to_int4(m) == 0xF;
+}
+PSY_FORCEINLINE bool none_of(mask4 m) noexcept {
+    return mask_to_int4(m) == 0;
+}
 
 // ─── f32x8 — AVX2-native or composed-of-two-halves ───────────────────────
 // On AVX hosts the underlying vector is `__m256`. Elsewhere (NEON, scalar)
@@ -706,9 +739,15 @@ PSY_FORCEINLINE int mask_to_int8(mask8 m) noexcept {
     return mask_to_int4(m.lo) | (mask_to_int4(m.hi) << 4);
 #endif
 }
-PSY_FORCEINLINE bool any_of(mask8 m) noexcept { return mask_to_int8(m) != 0; }
-PSY_FORCEINLINE bool all_of(mask8 m) noexcept { return mask_to_int8(m) == 0xFF; }
-PSY_FORCEINLINE bool none_of(mask8 m) noexcept { return mask_to_int8(m) == 0; }
+PSY_FORCEINLINE bool any_of(mask8 m) noexcept {
+    return mask_to_int8(m) != 0;
+}
+PSY_FORCEINLINE bool all_of(mask8 m) noexcept {
+    return mask_to_int8(m) == 0xFF;
+}
+PSY_FORCEINLINE bool none_of(mask8 m) noexcept {
+    return mask_to_int8(m) == 0;
+}
 
 // ─── i32x4 / i32x8 — integer ops needed for gather + bench ───────────────
 PSY_FORCEINLINE i32x4 load_i32x4(const psynder::i32* p) noexcept {
@@ -718,7 +757,8 @@ PSY_FORCEINLINE i32x4 load_i32x4(const psynder::i32* p) noexcept {
     return i32x4{vld1q_s32(p)};
 #else
     i32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = p[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = p[i];
     return r;
 #endif
 }
@@ -728,7 +768,8 @@ PSY_FORCEINLINE void store_i32x4(psynder::i32* p, i32x4 v) noexcept {
 #elif defined(__aarch64__) || defined(_M_ARM64)
     vst1q_s32(p, v.v);
 #else
-    for (int i = 0; i < 4; ++i) p[i] = v.v[i];
+    for (int i = 0; i < 4; ++i)
+        p[i] = v.v[i];
 #endif
 }
 PSY_FORCEINLINE i32x4 broadcast_i32x4(psynder::i32 s) noexcept {
@@ -738,7 +779,8 @@ PSY_FORCEINLINE i32x4 broadcast_i32x4(psynder::i32 s) noexcept {
     return i32x4{vdupq_n_s32(s)};
 #else
     i32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = s;
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = s;
     return r;
 #endif
 }
@@ -749,7 +791,8 @@ PSY_FORCEINLINE i32x4 add_i32x4(i32x4 a, i32x4 b) noexcept {
     return i32x4{vaddq_s32(a.v, b.v)};
 #else
     i32x4 r{};
-    for (int i = 0; i < 4; ++i) r.v[i] = a.v[i] + b.v[i];
+    for (int i = 0; i < 4; ++i)
+        r.v[i] = a.v[i] + b.v[i];
     return r;
 #endif
 }
@@ -787,18 +830,36 @@ PSY_FORCEINLINE i32x8 broadcast_i32x8(psynder::i32 s) noexcept {
 struct f32x16 {
     __m512 v;
 };
-PSY_FORCEINLINE f32x16 add16(f32x16 a, f32x16 b) noexcept   { return f32x16{_mm512_add_ps(a.v, b.v)}; }
-PSY_FORCEINLINE f32x16 sub16(f32x16 a, f32x16 b) noexcept   { return f32x16{_mm512_sub_ps(a.v, b.v)}; }
-PSY_FORCEINLINE f32x16 mul16(f32x16 a, f32x16 b) noexcept   { return f32x16{_mm512_mul_ps(a.v, b.v)}; }
-PSY_FORCEINLINE f32x16 fma16(f32x16 a, f32x16 b, f32x16 c)  noexcept {
+PSY_FORCEINLINE f32x16 add16(f32x16 a, f32x16 b) noexcept {
+    return f32x16{_mm512_add_ps(a.v, b.v)};
+}
+PSY_FORCEINLINE f32x16 sub16(f32x16 a, f32x16 b) noexcept {
+    return f32x16{_mm512_sub_ps(a.v, b.v)};
+}
+PSY_FORCEINLINE f32x16 mul16(f32x16 a, f32x16 b) noexcept {
+    return f32x16{_mm512_mul_ps(a.v, b.v)};
+}
+PSY_FORCEINLINE f32x16 fma16(f32x16 a, f32x16 b, f32x16 c) noexcept {
     return f32x16{_mm512_fmadd_ps(a.v, b.v, c.v)};
 }
-PSY_FORCEINLINE f32x16 load_aligned16(const psynder::f32* p)   noexcept { return f32x16{_mm512_load_ps(p)}; }
-PSY_FORCEINLINE f32x16 load_unaligned16(const psynder::f32* p) noexcept { return f32x16{_mm512_loadu_ps(p)}; }
-PSY_FORCEINLINE void   store_aligned16(psynder::f32* p, f32x16 v)   noexcept { _mm512_store_ps(p, v.v); }
-PSY_FORCEINLINE void   store_unaligned16(psynder::f32* p, f32x16 v) noexcept { _mm512_storeu_ps(p, v.v); }
-PSY_FORCEINLINE f32x16 broadcast16(psynder::f32 s) noexcept { return f32x16{_mm512_set1_ps(s)}; }
-PSY_FORCEINLINE psynder::f32 reduce_add16(f32x16 a) noexcept { return _mm512_reduce_add_ps(a.v); }
+PSY_FORCEINLINE f32x16 load_aligned16(const psynder::f32* p) noexcept {
+    return f32x16{_mm512_load_ps(p)};
+}
+PSY_FORCEINLINE f32x16 load_unaligned16(const psynder::f32* p) noexcept {
+    return f32x16{_mm512_loadu_ps(p)};
+}
+PSY_FORCEINLINE void store_aligned16(psynder::f32* p, f32x16 v) noexcept {
+    _mm512_store_ps(p, v.v);
+}
+PSY_FORCEINLINE void store_unaligned16(psynder::f32* p, f32x16 v) noexcept {
+    _mm512_storeu_ps(p, v.v);
+}
+PSY_FORCEINLINE f32x16 broadcast16(psynder::f32 s) noexcept {
+    return f32x16{_mm512_set1_ps(s)};
+}
+PSY_FORCEINLINE psynder::f32 reduce_add16(f32x16 a) noexcept {
+    return _mm512_reduce_add_ps(a.v);
+}
 #else
 // Composed fallback so code referring to f32x16 still compiles. The widest-
 // path consumers should still gate this with the dispatch tier, but a

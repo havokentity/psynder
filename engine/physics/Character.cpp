@@ -40,13 +40,11 @@ CharacterWorld& character_world() {
 // Build the capsule body we use as the character's collider for narrowphase.
 static Body make_capsule(const Character& c, math::Vec3 pos) noexcept {
     Body cap{};
-    cap.position    = pos;
-    cap.rotation    = {0, 0, 0, 1};
-    cap.shape       = 1;                       // capsule
-    cap.half_extent = { c.radius,
-                        std::max(0.0f, (c.height * 0.5f) - c.radius),
-                        0.0f };
-    cap.inv_mass    = 1.0f;                    // treat as dynamic for normal direction
+    cap.position = pos;
+    cap.rotation = {0, 0, 0, 1};
+    cap.shape = 1;  // capsule
+    cap.half_extent = {c.radius, std::max(0.0f, (c.height * 0.5f) - c.radius), 0.0f};
+    cap.inv_mass = 1.0f;  // treat as dynamic for normal direction
     return cap;
 }
 
@@ -56,9 +54,11 @@ static bool capsule_overlaps_world(const Character& c, math::Vec3 pos) noexcept 
     Body cap = make_capsule(c, pos);
     for (u32 i = 0; i < w.bodies.size(); ++i) {
         const Body& b = w.bodies[i];
-        if (b.gen == 0) continue;
+        if (b.gen == 0)
+            continue;
         Contact ct;
-        if (collide_pair(cap, b, ct)) return true;
+        if (collide_pair(cap, b, ct))
+            return true;
     }
     return false;
 }
@@ -67,8 +67,7 @@ static bool capsule_overlaps_world(const Character& c, math::Vec3 pos) noexcept 
 // push the capsule out along the contact normal. Returns true if a wall-like
 // (steep-normal) collision blocked horizontal progress — the caller uses this
 // signal to try a stair-step climb-up.
-static bool sweep_and_resolve(Character& c, math::Vec3& position,
-                              math::Vec3 delta) {
+static bool sweep_and_resolve(Character& c, math::Vec3& position, math::Vec3 delta) {
     auto& w = world_state();
 
     math::Vec3 target = math::add(position, delta);
@@ -78,7 +77,8 @@ static bool sweep_and_resolve(Character& c, math::Vec3& position,
 
     for (u32 i = 0; i < w.bodies.size(); ++i) {
         Body& b = w.bodies[i];
-        if (b.gen == 0) continue;
+        if (b.gen == 0)
+            continue;
         Body cap = make_capsule(c, position);
         Contact ct;
         if (collide_pair(cap, b, ct)) {
@@ -131,11 +131,8 @@ void character_move(Character& c, math::Vec3 delta, f32 dt) {
         if (blocked) {
             math::Vec3 horiz = step;
             horiz.y = 0.0f;
-            auto overlap = [&](math::Vec3 p) -> bool {
-                return capsule_overlaps_world(c, p);
-            };
-            math::Vec3 stepped = kernels::kernel_stair_step_climb(
-                pre, horiz, c.step_height, overlap);
+            auto overlap = [&](math::Vec3 p) -> bool { return capsule_overlaps_world(c, p); };
+            math::Vec3 stepped = kernels::kernel_stair_step_climb(pre, horiz, c.step_height, overlap);
             // Commit the climb only if it actually moved us further along
             // the requested horizontal motion (avoids infinitesimal jitter).
             math::Vec3 delta_climb = math::sub(stepped, pre);
@@ -163,23 +160,25 @@ CharacterId create(const CharacterDesc& d) {
         w.chars.emplace_back();
     }
     detail::Character& c = w.chars[idx];
-    c.position     = d.position;
+    c.position = d.position;
     c.stand_height = d.height;
-    c.height       = d.height;
-    c.radius       = d.radius;
-    c.velocity     = {0, 0, 0};
-    c.on_floor     = false;
-    c.stance       = detail::CharStance::Stand;
+    c.height = d.height;
+    c.radius = d.radius;
+    c.velocity = {0, 0, 0};
+    c.on_floor = false;
+    c.stance = detail::CharStance::Stand;
     c.intent_crouch = c.intent_prone = c.env_ladder = c.env_water = false;
-    if (c.gen == 0) c.gen = 1;
-    return CharacterId{ (c.gen << 24) | (idx & 0x00FFFFFFu) };
+    if (c.gen == 0)
+        c.gen = 1;
+    return CharacterId{(c.gen << 24) | (idx & 0x00FFFFFFu)};
 }
 
 void destroy(CharacterId id) {
     auto& w = detail::character_world();
     std::lock_guard<std::mutex> lock(g_mutate);
     u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.chars.size()) return;
+    if (idx >= w.chars.size())
+        return;
     w.chars[idx].gen = 0;
     w.free_slots.push_back(idx);
 }
@@ -187,7 +186,8 @@ void destroy(CharacterId id) {
 void move(CharacterId id, math::Vec3 delta, f32 dt) {
     auto& w = detail::character_world();
     u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.chars.size() || w.chars[idx].gen == 0) return;
+    if (idx >= w.chars.size() || w.chars[idx].gen == 0)
+        return;
     detail::character_move(w.chars[idx], delta, dt);
 }
 

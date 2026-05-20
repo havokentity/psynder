@@ -31,23 +31,23 @@
 
 namespace psynder::net {
 
-inline constexpr u32 kFrameMagic   = 0x50534E44u;  // 'PSND'
-inline constexpr u8  kFrameVersion = 0x01;
+inline constexpr u32 kFrameMagic = 0x50534E44u;  // 'PSND'
+inline constexpr u8 kFrameVersion = 0x01;
 
 // Channels:
 //   0 — default (mixed reliable / unreliable, app-defined).
 //   1 — lockstep command stream (always reliable, ordered).
 //   2 — snapshot stream (unreliable, latest-wins).
 //   3 — reserved.
-inline constexpr u8 kChannelDefault  = 0;
+inline constexpr u8 kChannelDefault = 0;
 inline constexpr u8 kChannelLockstep = 1;
 inline constexpr u8 kChannelSnapshot = 2;
 
 enum FrameFlag : u8 {
     kFlagReliable = 1u << 0,
-    kFlagSyn      = 1u << 1,
-    kFlagFin      = 1u << 2,
-    kFlagAckOnly  = 1u << 3,  // header carries no payload, just an ack.
+    kFlagSyn = 1u << 1,
+    kFlagFin = 1u << 2,
+    kFlagAckOnly = 1u << 3,   // header carries no payload, just an ack.
     kFlagFragment = 1u << 4,  // payload is a fragment of a larger message.
 };
 
@@ -69,16 +69,16 @@ enum FrameFlag : u8 {
 //   ──────  ────
 //                 24 bytes.
 struct FrameHeader {
-    u32 magic       = kFrameMagic;
-    u8  version     = kFrameVersion;
-    u8  cipher_suite = 0;  // Reserved Wave-A; encryption lands later.
-    u8  channel     = kChannelDefault;
-    u8  flags       = 0;
-    u32 seq         = 0;
-    u32 ack_base    = 0;
-    u32 ack_bits    = 0;
+    u32 magic = kFrameMagic;
+    u8 version = kFrameVersion;
+    u8 cipher_suite = 0;  // Reserved Wave-A; encryption lands later.
+    u8 channel = kChannelDefault;
+    u8 flags = 0;
+    u32 seq = 0;
+    u32 ack_base = 0;
+    u32 ack_bits = 0;
     u16 payload_len = 0;
-    u16 crc16       = 0;  // Reserved Wave-A; integrity slot.
+    u16 crc16 = 0;  // Reserved Wave-A; integrity slot.
 };
 
 inline constexpr usize kFrameHeaderBytes = 24;

@@ -25,27 +25,23 @@ using namespace psynder;
 using namespace psynder::platform;
 using namespace psynder::platform::win32;
 
-TEST_CASE("vk_to_keycode covers the contracted KeyCode surface",
-          "[platform-win32][keymap]")
-{
-    REQUIRE(vk_to_keycode('A', 0)               == KeyCode::A);
-    REQUIRE(vk_to_keycode('Z', 0)               == KeyCode::Z);
-    REQUIRE(vk_to_keycode(VK_ESCAPE, 0)         == KeyCode::Escape);
-    REQUIRE(vk_to_keycode(VK_F1, 0)             == KeyCode::F1);
-    REQUIRE(vk_to_keycode(VK_F12, 0)            == KeyCode::F12);
-    REQUIRE(vk_to_keycode(VK_LSHIFT, 0)         == KeyCode::LeftShift);
-    REQUIRE(vk_to_keycode(VK_RSHIFT, 0)         == KeyCode::RightShift);
-    REQUIRE(vk_to_keycode(VK_OEM_3, 0)          == KeyCode::Tilde);
-    REQUIRE(vk_to_keycode(VK_SPACE, 0)          == KeyCode::Space);
+TEST_CASE("vk_to_keycode covers the contracted KeyCode surface", "[platform-win32][keymap]") {
+    REQUIRE(vk_to_keycode('A', 0) == KeyCode::A);
+    REQUIRE(vk_to_keycode('Z', 0) == KeyCode::Z);
+    REQUIRE(vk_to_keycode(VK_ESCAPE, 0) == KeyCode::Escape);
+    REQUIRE(vk_to_keycode(VK_F1, 0) == KeyCode::F1);
+    REQUIRE(vk_to_keycode(VK_F12, 0) == KeyCode::F12);
+    REQUIRE(vk_to_keycode(VK_LSHIFT, 0) == KeyCode::LeftShift);
+    REQUIRE(vk_to_keycode(VK_RSHIFT, 0) == KeyCode::RightShift);
+    REQUIRE(vk_to_keycode(VK_OEM_3, 0) == KeyCode::Tilde);
+    REQUIRE(vk_to_keycode(VK_SPACE, 0) == KeyCode::Space);
     // Extended-bit disambiguates the generic VK_CONTROL into L vs R.
-    REQUIRE(vk_to_keycode(VK_CONTROL, 0)        == KeyCode::LeftCtrl);
+    REQUIRE(vk_to_keycode(VK_CONTROL, 0) == KeyCode::LeftCtrl);
     REQUIRE(vk_to_keycode(VK_CONTROL, 1u << 24) == KeyCode::RightCtrl);
-    REQUIRE(vk_to_keycode(0xFFu, 0)             == KeyCode::Unknown);
+    REQUIRE(vk_to_keycode(0xFFu, 0) == KeyCode::Unknown);
 }
 
-TEST_CASE("Win32Input edge-triggered pressed clears each frame",
-          "[platform-win32][input]")
-{
+TEST_CASE("Win32Input edge-triggered pressed clears each frame", "[platform-win32][input]") {
     Win32Input in;
 
     // Synthesize a keydown — first observation should be both down + pressed.
@@ -66,8 +62,7 @@ TEST_CASE("Win32Input edge-triggered pressed clears each frame",
 }
 
 TEST_CASE("Win32Input mouse wheel publishes accumulated ticks then resets",
-          "[platform-win32][input]")
-{
+          "[platform-win32][input]") {
     Win32Input in;
 
     in.on_mouse_wheel(1.0f);
@@ -83,12 +78,11 @@ TEST_CASE("Win32Input mouse wheel publishes accumulated ticks then resets",
 }
 
 TEST_CASE("Win32Input raw mouse delta accumulates between frames then clears",
-          "[platform-win32][input]")
-{
+          "[platform-win32][input]") {
     Win32Input in;
 
     in.on_mouse_raw_delta(3.0f, -2.0f);
-    in.on_mouse_raw_delta(1.0f,  1.0f);
+    in.on_mouse_raw_delta(1.0f, 1.0f);
     // Mid-frame, the deltas are already visible.
     REQUIRE(in.mouse().dx == 4.0f);
     REQUIRE(in.mouse().dy == -1.0f);
@@ -99,9 +93,7 @@ TEST_CASE("Win32Input raw mouse delta accumulates between frames then clears",
     REQUIRE(in.mouse().dy == 0.0f);
 }
 
-TEST_CASE("Win32Input mouse buttons toggle correctly",
-          "[platform-win32][input]")
-{
+TEST_CASE("Win32Input mouse buttons toggle correctly", "[platform-win32][input]") {
     Win32Input in;
     REQUIRE_FALSE(in.mouse().left);
     in.on_mouse_button(0, true);
@@ -112,7 +104,7 @@ TEST_CASE("Win32Input mouse buttons toggle correctly",
     REQUIRE(in.mouse().middle);
     in.on_mouse_button(0, false);
     REQUIRE_FALSE(in.mouse().left);
-    REQUIRE(in.mouse().right);    // unaffected
+    REQUIRE(in.mouse().right);  // unaffected
 }
 
 #else  // !PSYNDER_PLATFORM_WIN32

@@ -42,7 +42,7 @@ namespace psynder::platform {
 // Forward declarations — defined in the backend TUs.
 namespace linux_impl {
 Window* try_create_wayland_window(const WindowDesc& desc) noexcept;
-Window* try_create_x11_window    (const WindowDesc& desc) noexcept;
+Window* try_create_x11_window(const WindowDesc& desc) noexcept;
 
 // Process-lifetime audio device handle. Initialized when the first window
 // is created; torn down when the last window is destroyed. The dispatcher
@@ -66,7 +66,8 @@ Window* create_window_impl(const WindowDesc& desc) {
         w = linux_impl::try_create_wayland_window(desc);
     } else {
         w = linux_impl::try_create_wayland_window(desc);
-        if (!w) w = linux_impl::try_create_x11_window(desc);
+        if (!w)
+            w = linux_impl::try_create_x11_window(desc);
     }
 
     if (w) {
@@ -89,7 +90,7 @@ Window* create_window_impl(const WindowDesc& desc) {
 void destroy_window_impl(Window* w) {
     linux_impl::g_audio.reset();
     linux_impl::evdev_stop();
-    delete w;   // virtual dtor cleans up the backend
+    delete w;  // virtual dtor cleans up the backend
 }
 
 // ─── Input state ─────────────────────────────────────────────────────────
@@ -111,17 +112,18 @@ struct InputState {
     std::array<std::uint8_t, static_cast<usize>(KeyCode::Count)> down{};
     std::array<std::uint8_t, static_cast<usize>(KeyCode::Count)> prev{};
     MouseState mouse{};
-    float      mouse_dx_accum = 0.f;
-    float      mouse_dy_accum = 0.f;
-    float      wheel_accum    = 0.f;
+    float mouse_dx_accum = 0.f;
+    float mouse_dy_accum = 0.f;
+    float wheel_accum = 0.f;
 };
-std::mutex  g_input_mu;
-InputState  g_input_state;
+std::mutex g_input_mu;
+InputState g_input_state;
 
 }  // namespace
 
 void input_push_key(KeyCode k, bool down) noexcept {
-    if (k == KeyCode::Unknown || k >= KeyCode::Count) return;
+    if (k == KeyCode::Unknown || k >= KeyCode::Count)
+        return;
     std::lock_guard lock(g_input_mu);
     g_input_state.down[static_cast<usize>(k)] = down ? 1u : 0u;
 }
@@ -137,10 +139,17 @@ void input_push_mouse_motion(float dx, float dy, float abs_x, float abs_y) noexc
 void input_push_mouse_button(int button, bool down) noexcept {
     std::lock_guard lock(g_input_mu);
     switch (button) {
-    case 0: g_input_state.mouse.left   = down; break;
-    case 1: g_input_state.mouse.right  = down; break;
-    case 2: g_input_state.mouse.middle = down; break;
-    default: break;
+        case 0:
+            g_input_state.mouse.left = down;
+            break;
+        case 1:
+            g_input_state.mouse.right = down;
+            break;
+        case 2:
+            g_input_state.mouse.middle = down;
+            break;
+        default:
+            break;
     }
 }
 
@@ -152,12 +161,12 @@ void input_push_mouse_wheel(float delta) noexcept {
 void input_frame_advance() noexcept {
     std::lock_guard lock(g_input_mu);
     // Snapshot the per-frame deltas into the mouse state and clear them.
-    g_input_state.mouse.dx    = g_input_state.mouse_dx_accum;
-    g_input_state.mouse.dy    = g_input_state.mouse_dy_accum;
+    g_input_state.mouse.dx = g_input_state.mouse_dx_accum;
+    g_input_state.mouse.dy = g_input_state.mouse_dy_accum;
     g_input_state.mouse.wheel = g_input_state.wheel_accum;
     g_input_state.mouse_dx_accum = 0.f;
     g_input_state.mouse_dy_accum = 0.f;
-    g_input_state.wheel_accum    = 0.f;
+    g_input_state.wheel_accum = 0.f;
     // Promote down→prev so key_pressed() can fire the rising edge once.
     g_input_state.prev = g_input_state.down;
 }
@@ -165,17 +174,19 @@ void input_frame_advance() noexcept {
 namespace {
 
 class LinuxInput final : public Input {
-public:
+   public:
     bool key_down(KeyCode k) const override {
-        if (k == KeyCode::Unknown || k >= KeyCode::Count) return false;
+        if (k == KeyCode::Unknown || k >= KeyCode::Count)
+            return false;
         std::lock_guard lock(g_input_mu);
         return g_input_state.down[static_cast<usize>(k)] != 0u;
     }
     bool key_pressed(KeyCode k) const override {
-        if (k == KeyCode::Unknown || k >= KeyCode::Count) return false;
+        if (k == KeyCode::Unknown || k >= KeyCode::Count)
+            return false;
         std::lock_guard lock(g_input_mu);
-        return g_input_state.down[static_cast<usize>(k)] != 0u
-            && g_input_state.prev[static_cast<usize>(k)] == 0u;
+        return g_input_state.down[static_cast<usize>(k)] != 0u &&
+               g_input_state.prev[static_cast<usize>(k)] == 0u;
     }
     const MouseState& mouse() const override {
         // Return a thread-local snapshot. The shared state may be written
@@ -194,13 +205,16 @@ LinuxInput g_input;
 }  // namespace
 }  // namespace linux_impl
 
-Input* input() { return &linux_impl::g_input; }
+Input* input() {
+    return &linux_impl::g_input;
+}
 
 // ─── Process / FS helpers ────────────────────────────────────────────────
 std::string executable_path() {
     char buf[PATH_MAX];
     ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n <= 0) return {};
+    if (n <= 0)
+        return {};
     buf[n] = '\0';
     return std::string{buf};
 }
@@ -218,12 +232,14 @@ std::string user_config_dir() {
 
 std::string current_working_directory() {
     char buf[PATH_MAX];
-    if (::getcwd(buf, sizeof(buf)) == nullptr) return {};
+    if (::getcwd(buf, sizeof(buf)) == nullptr)
+        return {};
     return std::string{buf};
 }
 
 bool file_exists(std::string_view path) {
-    if (path.empty()) return false;
+    if (path.empty())
+        return false;
     // string_view may not be NUL-terminated; copy into a small buffer.
     std::string p{path};
     struct ::stat st {};

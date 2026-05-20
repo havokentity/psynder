@@ -33,9 +33,9 @@ using namespace psynder;
 namespace {
 
 struct BenchOpts {
-    bool   smoke = false;
-    usize  n     = 1u << 16;       // 64K floats — 256 KB, fits L2 comfortably
-    int    iters = 200;            // outer loop count for averaging
+    bool smoke = false;
+    usize n = 1u << 16;  // 64K floats — 256 KB, fits L2 comfortably
+    int iters = 200;     // outer loop count for averaging
 };
 
 BenchOpts parse_opts(int argc, char** argv) {
@@ -43,7 +43,7 @@ BenchOpts parse_opts(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0) {
             o.smoke = true;
-            o.n     = 1024;
+            o.n = 1024;
             o.iters = 4;
         }
     }
@@ -65,9 +65,7 @@ double median_ns_per_elem(Fn&& fn, usize elements, int iters) {
         double ns = std::chrono::duration<double, std::nano>(t1 - t0).count();
         samples.push_back(ns / static_cast<double>(elements));
     }
-    std::nth_element(samples.begin(),
-                     samples.begin() + samples.size() / 2,
-                     samples.end());
+    std::nth_element(samples.begin(), samples.begin() + samples.size() / 2, samples.end());
     return samples[samples.size() / 2];
 }
 
@@ -84,7 +82,10 @@ PSY_FORCEINLINE void do_not_optimize(const T& x) noexcept {
 
 void bench_case_add(const BenchOpts& o) {
     std::vector<f32> a(o.n), b(o.n), y(o.n);
-    for (usize i = 0; i < o.n; ++i) { a[i] = float(i); b[i] = float(o.n - i); }
+    for (usize i = 0; i < o.n; ++i) {
+        a[i] = float(i);
+        b[i] = float(o.n - i);
+    }
 
     auto fn = [&]() {
         simd::add_buffer(a.data(), b.data(), y.data(), o.n);
@@ -93,28 +94,32 @@ void bench_case_add(const BenchOpts& o) {
     double ns_per = median_ns_per_elem(fn, o.n, o.iters);
     std::printf("simd,add_buffer,%s,%zu,%.3f\n",
                 simd::tier_name(simd::current_tier()),
-                static_cast<size_t>(o.n), ns_per);
+                static_cast<size_t>(o.n),
+                ns_per);
 }
 
 void bench_case_mul(const BenchOpts& o) {
     // mul has no public dispatcher routine — measure the per-lane mul4
     // intrinsic in a hand-rolled loop so we still capture throughput.
     std::vector<f32> a(o.n), b(o.n), y(o.n);
-    for (usize i = 0; i < o.n; ++i) { a[i] = float(i); b[i] = float(o.n - i); }
+    for (usize i = 0; i < o.n; ++i) {
+        a[i] = float(i);
+        b[i] = float(o.n - i);
+    }
 
     auto fn = [&]() {
         for (usize i = 0; i + 4 <= o.n; i += 4) {
-            simd::store_unaligned4(
-                y.data() + i,
-                simd::mul4(simd::load_unaligned4(a.data() + i),
-                           simd::load_unaligned4(b.data() + i)));
+            simd::store_unaligned4(y.data() + i,
+                                   simd::mul4(simd::load_unaligned4(a.data() + i),
+                                              simd::load_unaligned4(b.data() + i)));
         }
         do_not_optimize(y[0]);
     };
     double ns_per = median_ns_per_elem(fn, o.n, o.iters);
     std::printf("simd,mul4_loop,%s,%zu,%.3f\n",
                 simd::tier_name(simd::current_tier()),
-                static_cast<size_t>(o.n), ns_per);
+                static_cast<size_t>(o.n),
+                ns_per);
 }
 
 void bench_case_fma(const BenchOpts& o) {
@@ -132,12 +137,14 @@ void bench_case_fma(const BenchOpts& o) {
     double ns_per = median_ns_per_elem(fn, o.n, o.iters);
     std::printf("simd,fma_buffer,%s,%zu,%.3f\n",
                 simd::tier_name(simd::current_tier()),
-                static_cast<size_t>(o.n), ns_per);
+                static_cast<size_t>(o.n),
+                ns_per);
 }
 
 void bench_case_reduce_add(const BenchOpts& o) {
     std::vector<f32> a(o.n);
-    for (usize i = 0; i < o.n; ++i) a[i] = 1.0f / float(i + 1);
+    for (usize i = 0; i < o.n; ++i)
+        a[i] = 1.0f / float(i + 1);
     auto fn = [&]() {
         f32 s = simd::reduce_add(a.data(), o.n);
         do_not_optimize(s);
@@ -145,7 +152,8 @@ void bench_case_reduce_add(const BenchOpts& o) {
     double ns_per = median_ns_per_elem(fn, o.n, o.iters);
     std::printf("simd,reduce_add,%s,%zu,%.3f\n",
                 simd::tier_name(simd::current_tier()),
-                static_cast<size_t>(o.n), ns_per);
+                static_cast<size_t>(o.n),
+                ns_per);
 }
 
 }  // namespace
@@ -160,7 +168,8 @@ int main(int argc, char** argv) {
         std::printf("# psynder bench — simd lane\n");
         std::printf("# tier=%s, n=%zu, iters=%d\n",
                     simd::tier_name(simd::current_tier()),
-                    static_cast<size_t>(o.n), o.iters);
+                    static_cast<size_t>(o.n),
+                    o.iters);
         std::printf("# columns: lane,case,tier,elements,ns_per_elem\n");
     }
 

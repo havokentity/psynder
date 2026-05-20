@@ -11,8 +11,8 @@
 namespace psynder::world::bsp {
 
 void LightmapAtlas::init(mem::LinearArena* arena) noexcept {
-    arena_           = arena;
-    lru_tick_        = 0u;
+    arena_ = arena;
+    lru_tick_ = 0u;
     allocated_bytes_ = 0u;
     entries_.clear();
     entries_.reserve(kLightmapMaxPages);
@@ -20,19 +20,21 @@ void LightmapAtlas::init(mem::LinearArena* arena) noexcept {
 
 LightmapAtlas::Entry* LightmapAtlas::find_entry(u32 page_id) noexcept {
     for (Entry& e : entries_) {
-        if (e.page_id == page_id) return &e;
+        if (e.page_id == page_id)
+            return &e;
     }
     return nullptr;
 }
 
 void LightmapAtlas::evict_lru() noexcept {
-    if (entries_.empty()) return;
+    if (entries_.empty())
+        return;
     usize victim_idx = 0;
-    u32   victim_clock = entries_[0].lru_clock;
+    u32 victim_clock = entries_[0].lru_clock;
     for (usize i = 1; i < entries_.size(); ++i) {
         if (entries_[i].lru_clock < victim_clock) {
             victim_clock = entries_[i].lru_clock;
-            victim_idx   = i;
+            victim_idx = i;
         }
     }
     // LinearArena is bump-only — we can't return the page bytes. The
@@ -75,13 +77,13 @@ LightmapPage* LightmapAtlas::atlas_page_for_surface(u32 face_id) noexcept {
     }
 
     Entry e{};
-    e.page_id           = face_id;
-    e.lru_clock         = lru_tick_;
-    e.page.page_id      = face_id;
-    e.page.width        = kLightmapPageWidth;
-    e.page.height       = kLightmapPageHeight;
-    e.page.byte_stride  = kLightmapPageWidth * 6u;  // 6 bytes per RGB16F texel
-    e.page.pixels       = pixels;
+    e.page_id = face_id;
+    e.lru_clock = lru_tick_;
+    e.page.page_id = face_id;
+    e.page.width = kLightmapPageWidth;
+    e.page.height = kLightmapPageHeight;
+    e.page.byte_stride = kLightmapPageWidth * 6u;  // 6 bytes per RGB16F texel
+    e.page.pixels = pixels;
     entries_.push_back(e);
     return &entries_.back().page;
 }

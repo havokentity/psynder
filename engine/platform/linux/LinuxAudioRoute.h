@@ -23,8 +23,8 @@ namespace psynder::platform::linux_impl {
 //     the strong overrides this lane links into the audio target).
 enum class AudioBackend : std::uint8_t {
     PipeWire = 0,
-    ALSA     = 1,
-    None     = 2,   // sentinel — no usable backend
+    ALSA = 1,
+    None = 2,  // sentinel — no usable backend
 };
 
 // Strict-weak ordering used by tests + the device-opener loop.
@@ -44,6 +44,6 @@ constexpr AudioBackend prefer(AudioBackend a, AudioBackend b) noexcept {
 // (where the audio TUs link this lane in) and Mac (where the lane is
 // header-only-visible because most TUs are guarded out by
 // PSYNDER_PLATFORM_LINUX).
-inline constexpr char kAudioRouteSentinel = 'P';   // P for PipeWire-first
+inline constexpr char kAudioRouteSentinel = 'P';  // P for PipeWire-first
 
 }  // namespace psynder::platform::linux_impl

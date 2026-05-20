@@ -34,17 +34,13 @@ namespace {
 // Bounds-checked memcpy of `count * sizeof(T)` bytes from `blob + chunk.offset`
 // into `dst`. Returns false if the chunk runs off the end of the blob.
 template <class T>
-bool copy_chunk(const u8*           blob,
-                u32                 blob_bytes,
-                const BspFileChunk& chunk,
-                std::vector<T>&     dst) {
+bool copy_chunk(const u8* blob, u32 blob_bytes, const BspFileChunk& chunk, std::vector<T>& dst) {
     if (chunk.count == 0) {
         dst.clear();
         return true;
     }
     const u64 byte_count = static_cast<u64>(chunk.count) * sizeof(T);
-    if (chunk.offset > blob_bytes ||
-        byte_count > static_cast<u64>(blob_bytes - chunk.offset)) {
+    if (chunk.offset > blob_bytes || byte_count > static_cast<u64>(blob_bytes - chunk.offset)) {
         return false;
     }
     dst.resize(chunk.count);
@@ -53,16 +49,12 @@ bool copy_chunk(const u8*           blob,
 }
 
 // Bounds-checked memcpy of a flat byte chunk (PVS is stored row-packed).
-bool copy_byte_chunk(const u8*           blob,
-                     u32                 blob_bytes,
-                     const BspFileChunk& chunk,
-                     std::vector<u8>&    dst) {
+bool copy_byte_chunk(const u8* blob, u32 blob_bytes, const BspFileChunk& chunk, std::vector<u8>& dst) {
     if (chunk.count == 0) {
         dst.clear();
         return true;
     }
-    if (chunk.offset > blob_bytes ||
-        chunk.count  > blob_bytes - chunk.offset) {
+    if (chunk.offset > blob_bytes || chunk.count > blob_bytes - chunk.offset) {
         return false;
     }
     dst.resize(chunk.count);
@@ -77,24 +69,20 @@ void unpack_nodes(const std::vector<BspFileNode>& src, std::vector<BspNode>& dst
     dst.resize(src.size());
     for (usize i = 0; i < src.size(); ++i) {
         dst[i].plane_normal = math::Vec3{src[i].nx, src[i].ny, src[i].nz};
-        dst[i].plane_d      = src[i].d;
-        dst[i].front_child  = src[i].front_child;
-        dst[i].back_child   = src[i].back_child;
+        dst[i].plane_d = src[i].d;
+        dst[i].front_child = src[i].front_child;
+        dst[i].back_child = src[i].back_child;
     }
 }
 
 void unpack_leaves(const std::vector<BspFileLeaf>& src, std::vector<BspLeaf>& dst) {
     dst.resize(src.size());
     for (usize i = 0; i < src.size(); ++i) {
-        dst[i].cluster    = src[i].cluster;
+        dst[i].cluster = src[i].cluster;
         dst[i].first_face = src[i].first_face;
         dst[i].face_count = src[i].face_count;
-        dst[i].bounds.min = math::Vec3{src[i].bbox_min_x,
-                                       src[i].bbox_min_y,
-                                       src[i].bbox_min_z};
-        dst[i].bounds.max = math::Vec3{src[i].bbox_max_x,
-                                       src[i].bbox_max_y,
-                                       src[i].bbox_max_z};
+        dst[i].bounds.min = math::Vec3{src[i].bbox_min_x, src[i].bbox_min_y, src[i].bbox_min_z};
+        dst[i].bounds.max = math::Vec3{src[i].bbox_max_x, src[i].bbox_max_y, src[i].bbox_max_z};
     }
 }
 
@@ -103,8 +91,8 @@ void unpack_faces(const std::vector<BspFileFace>& src, std::vector<BspFace>& dst
     for (usize i = 0; i < src.size(); ++i) {
         dst[i].first_vertex = src[i].first_vertex;
         dst[i].vertex_count = src[i].vertex_count;
-        dst[i].material     = src[i].material;
-        dst[i].lightmap     = src[i].lightmap;
+        dst[i].material = src[i].material;
+        dst[i].lightmap = src[i].lightmap;
     }
 }
 
@@ -154,8 +142,7 @@ bool load(std::string_view virtual_path, BspMap& out) {
 
     asset::Blob blob = asset::Vfs::Get().read(virtual_path);
     if (blob.data == nullptr || blob.bytes < sizeof(BspFileHeader)) {
-        PSY_LOG_ERROR("[bsp] load({}): empty or truncated blob ({} bytes)",
-                      virtual_path, blob.bytes);
+        PSY_LOG_ERROR("[bsp] load({}): empty or truncated blob ({} bytes)", virtual_path, blob.bytes);
         return false;
     }
 
@@ -168,12 +155,16 @@ bool load(std::string_view virtual_path, BspMap& out) {
     }
     if (header.version != kBspFileVersion) {
         PSY_LOG_ERROR("[bsp] load({}): version {} != expected {}",
-                      virtual_path, header.version, kBspFileVersion);
+                      virtual_path,
+                      header.version,
+                      kBspFileVersion);
         return false;
     }
     if (header.total_bytes > blob.bytes) {
         PSY_LOG_ERROR("[bsp] load({}): header claims {} bytes, blob is {}",
-                      virtual_path, header.total_bytes, blob.bytes);
+                      virtual_path,
+                      header.total_bytes,
+                      blob.bytes);
         return false;
     }
 
@@ -182,9 +173,9 @@ bool load(std::string_view virtual_path, BspMap& out) {
     std::vector<BspFileNode> file_nodes;
     std::vector<BspFileLeaf> file_leaves;
     std::vector<BspFileFace> file_faces;
-    if (!copy_chunk(blob.data, used_bytes, header.nodes,  file_nodes)  ||
+    if (!copy_chunk(blob.data, used_bytes, header.nodes, file_nodes) ||
         !copy_chunk(blob.data, used_bytes, header.leaves, file_leaves) ||
-        !copy_chunk(blob.data, used_bytes, header.faces,  file_faces)  ||
+        !copy_chunk(blob.data, used_bytes, header.faces, file_faces) ||
         !copy_byte_chunk(blob.data, used_bytes, header.pvs, out.pvs)) {
         PSY_LOG_ERROR("[bsp] load({}): chunk offset out of range", virtual_path);
         return false;
@@ -196,10 +187,13 @@ bool load(std::string_view virtual_path, BspMap& out) {
     if (header.cluster_count > 0) {
         const u64 expected = static_cast<u64>(header.cluster_count) * header.pvs_row_bytes;
         if (header.pvs_row_bytes == 0 || expected != out.pvs.size()) {
-            PSY_LOG_ERROR("[bsp] load({}): PVS row mismatch (clusters={}, "
-                          "row_bytes={}, total={})",
-                          virtual_path, header.cluster_count,
-                          header.pvs_row_bytes, out.pvs.size());
+            PSY_LOG_ERROR(
+                "[bsp] load({}): PVS row mismatch (clusters={}, "
+                "row_bytes={}, total={})",
+                virtual_path,
+                header.cluster_count,
+                header.pvs_row_bytes,
+                out.pvs.size());
             return false;
         }
     }
@@ -218,8 +212,11 @@ bool load(std::string_view virtual_path, BspMap& out) {
     }
 
     PSY_LOG_INFO("[bsp] load({}): nodes={}, leaves={}, faces={}, clusters={}",
-                 virtual_path, out.nodes.size(), out.leaves.size(),
-                 out.faces.size(), header.cluster_count);
+                 virtual_path,
+                 out.nodes.size(),
+                 out.leaves.size(),
+                 out.faces.size(),
+                 header.cluster_count);
     return true;
 }
 
@@ -260,9 +257,9 @@ BspLeaf locate(const BspMap& map, math::Vec3 point) {
 //   * No PVS data at all (clusters == 0): emit all leaves (conservative).
 //   * cluster id ≥ row_count: treated as missing data → emit all leaves.
 void walk_visible_leaves(const BspMap& map,
-                         math::Vec3    eye,
+                         math::Vec3 eye,
                          void (*emit)(const BspLeaf&, void*),
-                         void*         user) {
+                         void* user) {
     if (emit == nullptr || map.leaves.empty()) {
         return;
     }
@@ -279,7 +276,8 @@ void walk_visible_leaves(const BspMap& map,
     // possible cluster ids: search up to the maximum cluster id we see.
     i32 max_cluster = 0;
     for (const BspLeaf& l : map.leaves) {
-        if (l.cluster > max_cluster) max_cluster = l.cluster;
+        if (l.cluster > max_cluster)
+            max_cluster = l.cluster;
     }
     const u32 cluster_count = static_cast<u32>(max_cluster + 1);
     if (cluster_count == 0 || map.pvs.empty()) {
@@ -290,22 +288,22 @@ void walk_visible_leaves(const BspMap& map,
         return;
     }
     const u32 row_bytes = static_cast<u32>(map.pvs.size()) / cluster_count;
-    if (row_bytes == 0 ||
-        static_cast<u32>(eye_leaf.cluster) >= cluster_count) {
+    if (row_bytes == 0 || static_cast<u32>(eye_leaf.cluster) >= cluster_count) {
         for (const BspLeaf& l : map.leaves) {
             emit(l, user);
         }
         return;
     }
 
-    const u8* row = map.pvs.data() +
-                    static_cast<usize>(eye_leaf.cluster) * row_bytes;
+    const u8* row = map.pvs.data() + static_cast<usize>(eye_leaf.cluster) * row_bytes;
     for (const BspLeaf& l : map.leaves) {
-        if (l.cluster < 0) continue;  // skip solid leaves
+        if (l.cluster < 0)
+            continue;  // skip solid leaves
         const u32 ci = static_cast<u32>(l.cluster);
-        if (ci >= cluster_count) continue;
-        const u8  byte = row[ci >> 3];
-        const u8  mask = static_cast<u8>(1u << (ci & 7u));
+        if (ci >= cluster_count)
+            continue;
+        const u8 byte = row[ci >> 3];
+        const u8 mask = static_cast<u8>(1u << (ci & 7u));
         if (byte & mask) {
             emit(l, user);
         }
@@ -314,52 +312,48 @@ void walk_visible_leaves(const BspMap& map,
 
 // ─── BSP face → DrawItem converter (BspDraw.h) ───────────────────────────
 
-void build_face_draws(const BspGeometry&        geom,
-                      std::span<const BspFace>  faces,
+void build_face_draws(const BspGeometry& geom,
+                      std::span<const BspFace> faces,
                       const BspMaterialResolve& resolve,
                       std::vector<render::raster::DrawItem>& out) {
     out.reserve(out.size() + faces.size());
     for (const BspFace& f : faces) {
-        if (f.vertex_count == 0) continue;
+        if (f.vertex_count == 0)
+            continue;
         render::raster::DrawItem di{};
-        di.vertices     = (f.first_vertex < geom.vertices.size())
-                            ? &geom.vertices[f.first_vertex]
-                            : nullptr;
+        di.vertices =
+            (f.first_vertex < geom.vertices.size()) ? &geom.vertices[f.first_vertex] : nullptr;
         di.vertex_count = f.vertex_count;
         // BSP convention: each face is an n-gon already fan-triangulated by
         // lm_qbsp into `vertex_count - 2` triangles. The index buffer for a
         // single face is therefore (vertex_count - 2) * 3 indices long; we
         // expose a contiguous slice into geom.indices addressed by first_vertex
         // (lm_qbsp writes the index slab parallel to the vertex slab).
-        const u32 tri_indices = (f.vertex_count >= 3)
-                                  ? (f.vertex_count - 2) * 3
-                                  : 0;
-        di.indices      = (f.first_vertex < geom.indices.size())
-                            ? &geom.indices[f.first_vertex]
-                            : nullptr;
-        di.index_count  = tri_indices;
-        di.model        = math::identity4();
+        const u32 tri_indices = (f.vertex_count >= 3) ? (f.vertex_count - 2) * 3 : 0;
+        di.indices = (f.first_vertex < geom.indices.size()) ? &geom.indices[f.first_vertex] : nullptr;
+        di.index_count = tri_indices;
+        di.model = math::identity4();
         if (resolve.table != nullptr && f.material < resolve.count) {
             di.material = resolve.table[f.material];
         } else {
-            di.material = render::raster::MaterialId{ f.material };
+            di.material = render::raster::MaterialId{f.material};
         }
         di.flags = 0;
         out.push_back(di);
     }
 }
 
-void build_leaf_draws(const BspMap&             map,
-                      const BspGeometry&        geom,
-                      const BspLeaf&            leaf,
+void build_leaf_draws(const BspMap& map,
+                      const BspGeometry& geom,
+                      const BspLeaf& leaf,
                       const BspMaterialResolve& resolve,
                       std::vector<render::raster::DrawItem>& out) {
     if (leaf.face_count == 0 || leaf.first_face >= map.faces.size()) {
         return;
     }
-    const usize lo  = leaf.first_face;
-    const usize hi  = std::min<usize>(lo + leaf.face_count, map.faces.size());
-    std::span<const BspFace> faces{ map.faces.data() + lo, hi - lo };
+    const usize lo = leaf.first_face;
+    const usize hi = std::min<usize>(lo + leaf.face_count, map.faces.size());
+    std::span<const BspFace> faces{map.faces.data() + lo, hi - lo};
     build_face_draws(geom, faces, resolve, out);
 }
 

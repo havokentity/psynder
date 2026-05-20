@@ -29,13 +29,9 @@ namespace {
 // Minimal mock that implements the `platform::Input` virtual interface.
 // Tests poke `pressed_` for the edge frame and `down_` for held frames.
 class FakeInput final : public Input {
-public:
-    bool key_down(KeyCode k) const override {
-        return down_[static_cast<u16>(k)];
-    }
-    bool key_pressed(KeyCode k) const override {
-        return pressed_[static_cast<u16>(k)];
-    }
+   public:
+    bool key_down(KeyCode k) const override { return down_[static_cast<u16>(k)]; }
+    bool key_pressed(KeyCode k) const override { return pressed_[static_cast<u16>(k)]; }
     const MouseState& mouse() const override { return mouse_; }
 
     // Simulate one frame where `k` is on the leading edge (pressed) and
@@ -44,7 +40,7 @@ public:
     void press_edge(KeyCode k) noexcept {
         clear();
         pressed_[static_cast<u16>(k)] = true;
-        down_   [static_cast<u16>(k)] = true;
+        down_[static_cast<u16>(k)] = true;
     }
 
     // Simulate one frame where `k` is being held but did NOT transition
@@ -57,22 +53,23 @@ public:
     // Simulate an idle frame with nothing pressed or held.
     void idle() noexcept { clear(); }
 
-private:
+   private:
     void clear() noexcept {
-        for (auto& b : pressed_) b = false;
-        for (auto& b : down_)    b = false;
+        for (auto& b : pressed_)
+            b = false;
+        for (auto& b : down_)
+            b = false;
     }
 
     static constexpr usize kKeys = static_cast<usize>(KeyCode::Count);
-    bool       pressed_[kKeys] {};
-    bool       down_   [kKeys] {};
-    MouseState mouse_  {};
+    bool pressed_[kKeys]{};
+    bool down_[kKeys]{};
+    MouseState mouse_{};
 };
 
 }  // namespace
 
-TEST_CASE("editor hot-key: Tilde edge toggles mode exactly once",
-          "[editor][hotkey]") {
+TEST_CASE("editor hot-key: Tilde edge toggles mode exactly once", "[editor][hotkey]") {
     FakeInput in;
 
     // Reset to a known starting mode by toggling until we're at Play.
@@ -98,8 +95,7 @@ TEST_CASE("editor hot-key: Tilde edge toggles mode exactly once",
     }
 }
 
-TEST_CASE("editor hot-key: holding Tilde does not retrigger the toggle",
-          "[editor][hotkey]") {
+TEST_CASE("editor hot-key: holding Tilde does not retrigger the toggle", "[editor][hotkey]") {
     FakeInput in;
 
     // Force Play start.

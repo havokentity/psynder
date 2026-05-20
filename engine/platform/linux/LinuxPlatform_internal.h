@@ -39,13 +39,13 @@ void input_frame_advance() noexcept;
 // Concrete window backends. Returns nullptr on failure; caller falls back to
 // the next backend (Wayland → X11 → null).
 Window* try_create_wayland_window(const WindowDesc& desc) noexcept;
-Window* try_create_x11_window    (const WindowDesc& desc) noexcept;
+Window* try_create_x11_window(const WindowDesc& desc) noexcept;
 
 // ─── evdev source ────────────────────────────────────────────────────────
 // Starts a background thread polling /dev/input/event* for gamepads.
 // Idempotent. Stopped at process exit / destroy_window_impl.
 void evdev_start() noexcept;
-void evdev_stop()  noexcept;
+void evdev_stop() noexcept;
 
 // ─── Audio backend ───────────────────────────────────────────────────────
 // PipeWire-first + ALSA fallback. We don't ship an audio API yet (Lane 12
@@ -56,9 +56,9 @@ void evdev_stop()  noexcept;
 struct AudioDevice {
     virtual ~AudioDevice() = default;
     virtual const char* backend_name() const noexcept = 0;
-    virtual bool        ok()           const noexcept = 0;
+    virtual bool ok() const noexcept = 0;
 };
 std::unique_ptr<AudioDevice> try_open_pipewire() noexcept;
-std::unique_ptr<AudioDevice> try_open_alsa()     noexcept;
+std::unique_ptr<AudioDevice> try_open_alsa() noexcept;
 
 }  // namespace psynder::platform::linux_impl

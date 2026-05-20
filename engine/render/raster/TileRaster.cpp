@@ -25,9 +25,9 @@ namespace {
 // Returns RGBA8 packed. Wraps via modulo — width/height don't need to be
 // power-of-two, but pre-divisible by 2 along the mip chain is assumed
 // (lane 05 cooks mips that way).
-PSY_FORCEINLINE u32 sample_bilinear_mip(const Texture::MipLevel& mip,
-                                        f32 u, f32 v) noexcept {
-    if (!mip.texels || mip.width == 0 || mip.height == 0) return 0xFF888888u;
+PSY_FORCEINLINE u32 sample_bilinear_mip(const Texture::MipLevel& mip, f32 u, f32 v) noexcept {
+    if (!mip.texels || mip.width == 0 || mip.height == 0)
+        return 0xFF888888u;
 
     const f32 wf = static_cast<f32>(mip.width);
     const f32 hf = static_cast<f32>(mip.height);
@@ -55,8 +55,8 @@ PSY_FORCEINLINE u32 sample_bilinear_mip(const Texture::MipLevel& mip,
 
     const u32 t00 = mip.texels[y0w * mip.pitch + x0w];
     const u32 t10 = mip.texels[y0w * mip.pitch + x1];
-    const u32 t01 = mip.texels[y1  * mip.pitch + x0w];
-    const u32 t11 = mip.texels[y1  * mip.pitch + x1];
+    const u32 t01 = mip.texels[y1 * mip.pitch + x0w];
+    const u32 t11 = mip.texels[y1 * mip.pitch + x1];
 
     // Per-channel lerp (8 lerps total). Keep in fixed-point so we don't
     // round through float.
@@ -65,9 +65,9 @@ PSY_FORCEINLINE u32 sample_bilinear_mip(const Texture::MipLevel& mip,
         const f32 c10 = static_cast<f32>((t10 >> shift) & 0xFFu);
         const f32 c01 = static_cast<f32>((t01 >> shift) & 0xFFu);
         const f32 c11 = static_cast<f32>((t11 >> shift) & 0xFFu);
-        const f32 a   = c00 + (c10 - c00) * fx;
-        const f32 b   = c01 + (c11 - c01) * fx;
-        const f32 r   = a + (b - a) * fy;
+        const f32 a = c00 + (c10 - c00) * fx;
+        const f32 b = c01 + (c11 - c01) * fx;
+        const f32 r = a + (b - a) * fy;
         return static_cast<u32>(r + 0.5f) & 0xFFu;
     };
 
@@ -78,7 +78,7 @@ PSY_FORCEINLINE u32 sample_bilinear_mip(const Texture::MipLevel& mip,
 // callers that don't care about mip selection (e.g. UI bicubic upscalers
 // when they land in lane 09).
 PSY_FORCEINLINE u32 sample_bilinear(const Texture& tex, f32 u, f32 v) noexcept {
-    Texture::MipLevel m0{ tex.texels, tex.width, tex.height, tex.pitch };
+    Texture::MipLevel m0{tex.texels, tex.width, tex.height, tex.pitch};
     return sample_bilinear_mip(m0, u, v);
 }
 
@@ -88,23 +88,24 @@ PSY_FORCEINLINE u32 sample_bilinear(const Texture& tex, f32 u, f32 v) noexcept {
 // differences of (u,v) — for the within-tile inner loop we approximate
 // du/dx and dv/dx as the 1-pixel stride. The §7.5 "trilinear" cost
 // budget is 8 fetches; we deliver that.
-PSY_FORCEINLINE u32 sample_trilinear(const Texture& tex,
-                                     f32 u, f32 v,
-                                     f32 mip_lod) noexcept {
+PSY_FORCEINLINE u32 sample_trilinear(const Texture& tex, f32 u, f32 v, f32 mip_lod) noexcept {
     if (tex.mip_count <= 1) {
         return sample_bilinear(tex, u, v);
     }
     // Clamp mip LOD into [0, mip_count-1].
     const f32 max_lod = static_cast<f32>(tex.mip_count - 1);
-    if (mip_lod < 0.0f) mip_lod = 0.0f;
-    if (mip_lod > max_lod) mip_lod = max_lod;
+    if (mip_lod < 0.0f)
+        mip_lod = 0.0f;
+    if (mip_lod > max_lod)
+        mip_lod = max_lod;
 
     const i32 m0 = static_cast<i32>(std::floor(mip_lod));
     const i32 m1 = std::min(m0 + 1, static_cast<i32>(tex.mip_count - 1));
-    const f32 t  = mip_lod - static_cast<f32>(m0);
+    const f32 t = mip_lod - static_cast<f32>(m0);
 
     const u32 s0 = sample_bilinear_mip(tex.mips[m0], u, v);
-    if (m0 == m1 || t == 0.0f) return s0;
+    if (m0 == m1 || t == 0.0f)
+        return s0;
     const u32 s1 = sample_bilinear_mip(tex.mips[m1], u, v);
 
     // Per-channel lerp.
@@ -113,8 +114,8 @@ PSY_FORCEINLINE u32 sample_trilinear(const Texture& tex,
         const f32 bf = static_cast<f32>(b);
         return static_cast<u32>(af + (bf - af) * t + 0.5f) & 0xFFu;
     };
-    const u32 r = lerp( s0        & 0xFFu, s1        & 0xFFu);
-    const u32 g = lerp((s0 >>  8) & 0xFFu, (s1 >>  8) & 0xFFu);
+    const u32 r = lerp(s0 & 0xFFu, s1 & 0xFFu);
+    const u32 g = lerp((s0 >> 8) & 0xFFu, (s1 >> 8) & 0xFFu);
     const u32 b = lerp((s0 >> 16) & 0xFFu, (s1 >> 16) & 0xFFu);
     const u32 a = lerp((s0 >> 24) & 0xFFu, (s1 >> 24) & 0xFFu);
     return r | (g << 8) | (b << 16) | (a << 24);
@@ -125,20 +126,20 @@ PSY_FORCEINLINE u32 sample_trilinear(const Texture& tex,
 // derivatives arrive from the quad walk's 1-pixel stride deltas in
 // texture coordinates; we compute the max texel-stride per pixel and
 // take log2.
-PSY_FORCEINLINE f32 compute_mip_lod(const Texture& tex,
-                                    f32 dudx, f32 dvdx,
-                                    f32 dudy, f32 dvdy) noexcept {
-    if (tex.mip_count <= 1) return 0.0f;
+PSY_FORCEINLINE f32 compute_mip_lod(const Texture& tex, f32 dudx, f32 dvdx, f32 dudy, f32 dvdy) noexcept {
+    if (tex.mip_count <= 1)
+        return 0.0f;
     const f32 wf = static_cast<f32>(tex.width);
     const f32 hf = static_cast<f32>(tex.height);
     const f32 ax = dudx * wf;
     const f32 ay = dvdx * hf;
     const f32 bx = dudy * wf;
     const f32 by = dvdy * hf;
-    const f32 d2_dx = ax*ax + ay*ay;
-    const f32 d2_dy = bx*bx + by*by;
+    const f32 d2_dx = ax * ax + ay * ay;
+    const f32 d2_dy = bx * bx + by * by;
     const f32 d2_max = std::max(d2_dx, d2_dy);
-    if (d2_max <= 1.0f) return 0.0f;
+    if (d2_max <= 1.0f)
+        return 0.0f;
     // log2(sqrt(d2_max)) = 0.5 * log2(d2_max).
     return 0.5f * std::log2(d2_max);
 }
@@ -165,11 +166,15 @@ PSY_FORCEINLINE f32 compute_mip_lod(const Texture& tex,
 //
 // All math in floats; no allocations; no virtual.
 PSY_FORCEINLINE u32 aniso_sample(const Texture::MipLevel& mip,
-                                 f32 u, f32 v,
-                                 f32 du_dx, f32 du_dy,
-                                 f32 dv_dx, f32 dv_dy,
+                                 f32 u,
+                                 f32 v,
+                                 f32 du_dx,
+                                 f32 du_dy,
+                                 f32 dv_dx,
+                                 f32 dv_dy,
                                  u32 max_anisotropy) noexcept {
-    if (!mip.texels || mip.width == 0 || mip.height == 0) return 0xFF888888u;
+    if (!mip.texels || mip.width == 0 || mip.height == 0)
+        return 0xFF888888u;
 
     // Map the screen-space (du/dx, dv/dx) and (du/dy, dv/dy) into
     // texel-space axis vectors. The ellipse is the image of the unit
@@ -191,11 +196,15 @@ PSY_FORCEINLINE u32 aniso_sample(const Texture::MipLevel& mip,
     // walking direction; the shorter governs the per-tap mip level.
     f32 maj_x, maj_y, maj2, min2;
     if (lx2 >= ly2) {
-        maj_x = ax_x; maj_y = ax_y;
-        maj2  = lx2;  min2 = ly2;
+        maj_x = ax_x;
+        maj_y = ax_y;
+        maj2 = lx2;
+        min2 = ly2;
     } else {
-        maj_x = ay_x; maj_y = ay_y;
-        maj2  = ly2;  min2 = lx2;
+        maj_x = ay_x;
+        maj_y = ay_y;
+        maj2 = ly2;
+        min2 = lx2;
     }
 
     // Number of taps along the major axis: round(major / minor),
@@ -207,8 +216,10 @@ PSY_FORCEINLINE u32 aniso_sample(const Texture::MipLevel& mip,
     } else {
         const f32 ratio = std::sqrt(maj2 / min2);
         u32 n_raw = static_cast<u32>(ratio + 0.5f);
-        if (n_raw < 1) n_raw = 1;
-        if (n_raw > max_anisotropy) n_raw = max_anisotropy;
+        if (n_raw < 1)
+            n_raw = 1;
+        if (n_raw > max_anisotropy)
+            n_raw = max_anisotropy;
         N = n_raw;
     }
 
@@ -242,14 +253,15 @@ PSY_FORCEINLINE u32 aniso_sample(const Texture::MipLevel& mip,
         if (N <= 2) {
             w = 1.0f;
         } else {
-            const f32 t = off / half;            // ∈ [-1, +1]
-            w = std::cos(t * 1.5707963267948966f); // cos(pi/2 * t)
-            if (w < 0.0f) w = 0.0f;
+            const f32 t = off / half;               // ∈ [-1, +1]
+            w = std::cos(t * 1.5707963267948966f);  // cos(pi/2 * t)
+            if (w < 0.0f)
+                w = 0.0f;
         }
 
         const u32 s = sample_bilinear_mip(mip, uu, vv);
-        acc_r += static_cast<f32>( s        & 0xFFu) * w;
-        acc_g += static_cast<f32>((s >>  8) & 0xFFu) * w;
+        acc_r += static_cast<f32>(s & 0xFFu) * w;
+        acc_g += static_cast<f32>((s >> 8) & 0xFFu) * w;
         acc_b += static_cast<f32>((s >> 16) & 0xFFu) * w;
         acc_a += static_cast<f32>((s >> 24) & 0xFFu) * w;
         acc_w += w;
@@ -264,28 +276,23 @@ PSY_FORCEINLINE u32 aniso_sample(const Texture::MipLevel& mip,
     const f32 inv = 1.0f / acc_w;
     auto sat = [inv](f32 c) noexcept {
         const f32 r = c * inv;
-        if (r <= 0.0f)   return 0u;
-        if (r >= 255.0f) return 255u;
+        if (r <= 0.0f)
+            return 0u;
+        if (r >= 255.0f)
+            return 255u;
         return static_cast<u32>(r + 0.5f);
     };
-    return  sat(acc_r)
-         | (sat(acc_g) <<  8)
-         | (sat(acc_b) << 16)
-         | (sat(acc_a) << 24);
+    return sat(acc_r) | (sat(acc_g) << 8) | (sat(acc_b) << 16) | (sat(acc_a) << 24);
 }
 
 // Anisotropic sample on the mip-0 of `tex` — keeps the (cap=max_aniso)
 // behaviour without needing a per-call mip pick. The major/minor walk
 // happens against the highest-detail level; per-tap mip biasing is a
 // future refinement (DESIGN.md §7.5).
-PSY_FORCEINLINE u32 sample_aniso(const Texture& tex,
-                                 f32 u, f32 v,
-                                 f32 du_dx, f32 du_dy,
-                                 f32 dv_dx, f32 dv_dy,
-                                 u32 max_anisotropy) noexcept {
-    Texture::MipLevel m0{ tex.texels, tex.width, tex.height, tex.pitch };
-    return aniso_sample(m0, u, v, du_dx, du_dy, dv_dx, dv_dy,
-                        max_anisotropy);
+PSY_FORCEINLINE u32 sample_aniso(
+    const Texture& tex, f32 u, f32 v, f32 du_dx, f32 du_dy, f32 dv_dx, f32 dv_dy, u32 max_anisotropy) noexcept {
+    Texture::MipLevel m0{tex.texels, tex.width, tex.height, tex.pitch};
+    return aniso_sample(m0, u, v, du_dx, du_dy, dv_dx, dv_dy, max_anisotropy);
 }
 
 // ─── Pack/unpack f32 depth ───────────────────────────────────────────────
@@ -308,18 +315,16 @@ PSY_FORCEINLINE f32 unpack_depth(u32 packed) noexcept {
 
 PSY_FORCEINLINE u32 pack_rgba(f32 r, f32 g, f32 b, f32 a) noexcept {
     auto sat = [](f32 x) noexcept { return std::min(255.0f, std::max(0.0f, x * 255.0f + 0.5f)); };
-    return static_cast<u32>(sat(r))
-         | (static_cast<u32>(sat(g)) << 8)
-         | (static_cast<u32>(sat(b)) << 16)
-         | (static_cast<u32>(sat(a)) << 24);
+    return static_cast<u32>(sat(r)) | (static_cast<u32>(sat(g)) << 8) |
+           (static_cast<u32>(sat(b)) << 16) | (static_cast<u32>(sat(a)) << 24);
 }
 
 }  // namespace
 
 // ─── Binner ──────────────────────────────────────────────────────────────
-void bin_triangle(TileGrid& grid, u32 draw_idx, u32 tri_idx,
-                  const TriSetup& tri) noexcept {
-    if (!tri.valid || grid.cols == 0 || grid.rows == 0) return;
+void bin_triangle(TileGrid& grid, u32 draw_idx, u32 tri_idx, const TriSetup& tri) noexcept {
+    if (!tri.valid || grid.cols == 0 || grid.rows == 0)
+        return;
 
     const i32 tw = static_cast<i32>(grid.tile_w);
     const i32 th = static_cast<i32>(grid.tile_h);
@@ -337,9 +342,10 @@ void bin_triangle(TileGrid& grid, u32 draw_idx, u32 tri_idx,
             // test (corner edge sign check) is a Wave-B micro-opt; not
             // required to make tests pass.
             const u32 tile_idx = static_cast<u32>(ty) * grid.cols + static_cast<u32>(tx);
-            if (grid.entries_used >= grid.entries_capacity) return;  // arena full
+            if (grid.entries_used >= grid.entries_capacity)
+                return;  // arena full
             const u32 slot = grid.entries_used++;
-            grid.entries[slot] = BinEntry{ draw_idx, tri_idx };
+            grid.entries[slot] = BinEntry{draw_idx, tri_idx};
             // Two-pass approach: tile_count is bumped in pass 1; the actual
             // sort by offset happens in the consume step. For Wave-A we
             // do a simple stable build: count, then scan, then place.
@@ -351,14 +357,15 @@ void bin_triangle(TileGrid& grid, u32 draw_idx, u32 tri_idx,
 // ─── Tile rasterizer (templated body) ────────────────────────────────────
 template <u32 TILE_W, u32 TILE_H>
 void rasterize_tile(const Framebuffer& fb,
-                    const DrawCmd*     draws,
-                    u32                /*draw_count*/,
-                    const TileGrid&    grid,
-                    const Texture*     tex,
-                    u32                tile_x,
-                    u32                tile_y,
-                    bool               affine_mode) noexcept {
-    if (!fb.pixels || !draws || !grid.tile_offset || !grid.tile_count) return;
+                    const DrawCmd* draws,
+                    u32 /*draw_count*/,
+                    const TileGrid& grid,
+                    const Texture* tex,
+                    u32 tile_x,
+                    u32 tile_y,
+                    bool affine_mode) noexcept {
+    if (!fb.pixels || !draws || !grid.tile_offset || !grid.tile_count)
+        return;
 
     const i32 fb_w = static_cast<i32>(fb.width);
     const i32 fb_h = static_cast<i32>(fb.height);
@@ -366,11 +373,12 @@ void rasterize_tile(const Framebuffer& fb,
     const i32 tile_y0 = static_cast<i32>(tile_y * TILE_H);
     const i32 tile_x1 = std::min(tile_x0 + static_cast<i32>(TILE_W), fb_w);
     const i32 tile_y1 = std::min(tile_y0 + static_cast<i32>(TILE_H), fb_h);
-    if (tile_x0 >= tile_x1 || tile_y0 >= tile_y1) return;
+    if (tile_x0 >= tile_x1 || tile_y0 >= tile_y1)
+        return;
 
     const u32 tile_idx = tile_y * grid.cols + tile_x;
-    const u32 begin    = grid.tile_offset[tile_idx];
-    const u32 end      = begin + grid.tile_count[tile_idx];
+    const u32 begin = grid.tile_offset[tile_idx];
+    const u32 end = begin + grid.tile_count[tile_idx];
 
     auto* pixels = reinterpret_cast<u32*>(fb.pixels);
 
@@ -384,23 +392,25 @@ void rasterize_tile(const Framebuffer& fb,
 
     for (u32 e = begin; e < end; ++e) {
         const BinEntry& be = grid.entries[e];
-        const DrawCmd&  d  = draws[be.draw_idx];
-        const TriSetup& t  = d.tris[be.tri_idx];
-        if (!t.valid) continue;
+        const DrawCmd& d = draws[be.draw_idx];
+        const TriSetup& t = d.tris[be.tri_idx];
+        if (!t.valid)
+            continue;
 
         // Intersect triangle bbox with tile bbox
         const i32 x0 = std::max(t.minx, tile_x0);
         const i32 y0 = std::max(t.miny, tile_y0);
         const i32 x1 = std::min(t.maxx, tile_x1);
         const i32 y1 = std::min(t.maxy, tile_y1);
-        if (x0 >= x1 || y0 >= y1) continue;
+        if (x0 >= x1 || y0 >= y1)
+            continue;
 
         // HiZ test — find the triangle's minimum z over its three verts
         // (a conservative lower bound; the actual interpolated z varies
         // inside the triangle but never goes below min(z0,z1,z2)). If no
         // cell touching the triangle's bbox has farther geometry, every
         // pixel under this triangle is occluded — skip the inner loop.
-        const f32 tri_z_min = std::min({ t.v0.z, t.v1.z, t.v2.z });
+        const f32 tri_z_min = std::min({t.v0.z, t.v1.z, t.v2.z});
         const i32 tile_lx0 = x0 - tile_x0;
         const i32 tile_ly0 = y0 - tile_y0;
         const i32 tile_lx1 = x1 - tile_x0;
@@ -421,11 +431,11 @@ void rasterize_tile(const Framebuffer& fb,
         // Multiplied by kSubPixelScale because p moves in pixel units
         // (Q24.8 scale). Edge 0 = (v1→v2), edge 1 = (v2→v0), edge 2 = (v0→v1).
         const i64 ex0_dx = -(static_cast<i64>(t.y2.v) - static_cast<i64>(t.y1.v)) * kSubPixelScale;
-        const i64 ex0_dy =  (static_cast<i64>(t.x2.v) - static_cast<i64>(t.x1.v)) * kSubPixelScale;
+        const i64 ex0_dy = (static_cast<i64>(t.x2.v) - static_cast<i64>(t.x1.v)) * kSubPixelScale;
         const i64 ex1_dx = -(static_cast<i64>(t.y0.v) - static_cast<i64>(t.y2.v)) * kSubPixelScale;
-        const i64 ex1_dy =  (static_cast<i64>(t.x0.v) - static_cast<i64>(t.x2.v)) * kSubPixelScale;
+        const i64 ex1_dy = (static_cast<i64>(t.x0.v) - static_cast<i64>(t.x2.v)) * kSubPixelScale;
         const i64 ex2_dx = -(static_cast<i64>(t.y1.v) - static_cast<i64>(t.y0.v)) * kSubPixelScale;
-        const i64 ex2_dy =  (static_cast<i64>(t.x1.v) - static_cast<i64>(t.x0.v)) * kSubPixelScale;
+        const i64 ex2_dy = (static_cast<i64>(t.x1.v) - static_cast<i64>(t.x0.v)) * kSubPixelScale;
 
         // Starting edge values at pixel-centre (+0.5, +0.5) of (x0, y0)
         const FxQ24_8 px = FxQ24_8::from_float(static_cast<f32>(x0) + 0.5f);
@@ -434,9 +444,9 @@ void rasterize_tile(const Framebuffer& fb,
         i64 e1_row = eval_edge1(t, px, py);
         i64 e2_row = eval_edge2(t, px, py);
 
-        const bool has_tex   = (tex != nullptr);
-        const bool alpha_test= (d.flags & draw_flags::kAlphaTest) != 0;
-        const bool affine    = affine_mode || (d.flags & draw_flags::kAffine) != 0;
+        const bool has_tex = (tex != nullptr);
+        const bool alpha_test = (d.flags & draw_flags::kAlphaTest) != 0;
+        const bool affine = affine_mode || (d.flags & draw_flags::kAffine) != 0;
 
         // Dispatch tag — DESIGN.md §7.6. Picked once per draw; the inner
         // pixel loop branches on a const bool, never on a per-pixel
@@ -446,8 +456,8 @@ void rasterize_tile(const Framebuffer& fb,
         // the actual base*lightmap product is filled in by the surface
         // cooker when lane 10 lands.
         const ShadingPath path = static_cast<ShadingPath>(d.shading_path);
-        const bool surface_cached = (path == ShadingPath::SurfaceCached) &&
-                                    d.surface_cache_payload != nullptr;
+        const bool surface_cached =
+            (path == ShadingPath::SurfaceCached) && d.surface_cache_payload != nullptr;
 
         // Per-draw screen→texture jacobian: (du/dx, dv/dx, du/dy, dv/dy)
         // approximated from the 1-pixel finite diff at the triangle's
@@ -464,26 +474,16 @@ void rasterize_tile(const Framebuffer& fb,
             const f32 dw0_dy = static_cast<f32>(ex0_dy) * t.inv_area2x;
             const f32 dw1_dy = static_cast<f32>(ex1_dy) * t.inv_area2x;
             const f32 dw2_dy = static_cast<f32>(ex2_dy) * t.inv_area2x;
-            draw_du_dx = dw0_dx * t.v0.u_over_w
-                       + dw1_dx * t.v1.u_over_w
-                       + dw2_dx * t.v2.u_over_w;
-            draw_dv_dx = dw0_dx * t.v0.v_over_w
-                       + dw1_dx * t.v1.v_over_w
-                       + dw2_dx * t.v2.v_over_w;
-            draw_du_dy = dw0_dy * t.v0.u_over_w
-                       + dw1_dy * t.v1.u_over_w
-                       + dw2_dy * t.v2.u_over_w;
-            draw_dv_dy = dw0_dy * t.v0.v_over_w
-                       + dw1_dy * t.v1.v_over_w
-                       + dw2_dy * t.v2.v_over_w;
+            draw_du_dx = dw0_dx * t.v0.u_over_w + dw1_dx * t.v1.u_over_w + dw2_dx * t.v2.u_over_w;
+            draw_dv_dx = dw0_dx * t.v0.v_over_w + dw1_dx * t.v1.v_over_w + dw2_dx * t.v2.v_over_w;
+            draw_du_dy = dw0_dy * t.v0.u_over_w + dw1_dy * t.v1.u_over_w + dw2_dy * t.v2.u_over_w;
+            draw_dv_dy = dw0_dy * t.v0.v_over_w + dw1_dy * t.v1.v_over_w + dw2_dy * t.v2.v_over_w;
         }
 
         // Trilinear mip-LOD per draw — derived from the jacobian above.
         f32 draw_mip_lod = 0.0f;
         if (has_tex && tex->mip_count > 1 && !affine) {
-            draw_mip_lod = compute_mip_lod(*tex,
-                                           draw_du_dx, draw_dv_dx,
-                                           draw_du_dy, draw_dv_dy);
+            draw_mip_lod = compute_mip_lod(*tex, draw_du_dx, draw_dv_dx, draw_du_dy, draw_dv_dy);
         }
 
         // EWA aniso dispatch — engage when:
@@ -494,7 +494,7 @@ void rasterize_tile(const Framebuffer& fb,
         // Picked once per draw; the inner pixel loop branches on a const
         // bool (no per-pixel dispatch). DESIGN.md §7.5.
         bool use_aniso = false;
-        u32  draw_aniso_max = d.aniso_max;
+        u32 draw_aniso_max = d.aniso_max;
         if (has_tex && !affine && draw_aniso_max >= 2) {
             const f32 wf = static_cast<f32>(tex->width);
             const f32 hf = static_cast<f32>(tex->height);
@@ -502,8 +502,8 @@ void rasterize_tile(const Framebuffer& fb,
             const f32 ax_y = draw_dv_dx * hf;
             const f32 ay_x = draw_du_dy * wf;
             const f32 ay_y = draw_dv_dy * hf;
-            const f32 lx2 = ax_x*ax_x + ax_y*ax_y;
-            const f32 ly2 = ay_x*ay_x + ay_y*ay_y;
+            const f32 lx2 = ax_x * ax_x + ax_y * ax_y;
+            const f32 ly2 = ay_x * ay_x + ay_y * ay_y;
             const f32 maj2 = std::max(lx2, ly2);
             const f32 min2 = std::min(lx2, ly2);
             // major/minor > 2 ⇒ maj² / min² > 4. Guard against min2 = 0
@@ -517,7 +517,7 @@ void rasterize_tile(const Framebuffer& fb,
             i64 e1 = e1_row;
             i64 e2 = e2_row;
             u32* row_pix = pixels + static_cast<usize>(y) * (fb.pitch / 4);
-            u32* row_z   = fb.depth ? fb.depth + static_cast<usize>(y) * fb.width : nullptr;
+            u32* row_z = fb.depth ? fb.depth + static_cast<usize>(y) * fb.width : nullptr;
 
             for (i32 x = x0; x < x1; ++x) {
                 // Inside test — all three edges non-negative
@@ -528,8 +528,8 @@ void rasterize_tile(const Framebuffer& fb,
                     const f32 w2 = static_cast<f32>(e2) * t.inv_area2x;
 
                     // Interpolated z + 1/w (linear in screen space)
-                    const f32 z      = w0 * t.v0.z     + w1 * t.v1.z     + w2 * t.v2.z;
-                    const f32 inv_w  = w0 * t.v0.inv_w + w1 * t.v1.inv_w + w2 * t.v2.inv_w;
+                    const f32 z = w0 * t.v0.z + w1 * t.v1.z + w2 * t.v2.z;
+                    const f32 inv_w = w0 * t.v0.inv_w + w1 * t.v1.inv_w + w2 * t.v2.inv_w;
 
                     // Early-Z (alpha-test off → safe to depth-write up front)
                     bool depth_ok = true;
@@ -538,7 +538,8 @@ void rasterize_tile(const Framebuffer& fb,
                         depth_ok = z < zbuf;
                     }
                     if (PSY_LIKELY(depth_ok && !alpha_test)) {
-                        if (row_z) row_z[x] = pack_depth(z, 0);
+                        if (row_z)
+                            row_z[x] = pack_depth(z, 0);
                     }
 
                     if (depth_ok) {
@@ -549,24 +550,18 @@ void rasterize_tile(const Framebuffer& fb,
                             // Affine — interpolate the un-/w-divided values
                             // directly. Looks like PS1: textures swim with
                             // perspective. The cvar r_affine engages this.
-                            r = w0 * (t.v0.r_over_w / t.v0.inv_w)
-                              + w1 * (t.v1.r_over_w / t.v1.inv_w)
-                              + w2 * (t.v2.r_over_w / t.v2.inv_w);
-                            g = w0 * (t.v0.g_over_w / t.v0.inv_w)
-                              + w1 * (t.v1.g_over_w / t.v1.inv_w)
-                              + w2 * (t.v2.g_over_w / t.v2.inv_w);
-                            b = w0 * (t.v0.b_over_w / t.v0.inv_w)
-                              + w1 * (t.v1.b_over_w / t.v1.inv_w)
-                              + w2 * (t.v2.b_over_w / t.v2.inv_w);
-                            a = w0 * (t.v0.a_over_w / t.v0.inv_w)
-                              + w1 * (t.v1.a_over_w / t.v1.inv_w)
-                              + w2 * (t.v2.a_over_w / t.v2.inv_w);
-                            u = w0 * (t.v0.u_over_w / t.v0.inv_w)
-                              + w1 * (t.v1.u_over_w / t.v1.inv_w)
-                              + w2 * (t.v2.u_over_w / t.v2.inv_w);
-                            v = w0 * (t.v0.v_over_w / t.v0.inv_w)
-                              + w1 * (t.v1.v_over_w / t.v1.inv_w)
-                              + w2 * (t.v2.v_over_w / t.v2.inv_w);
+                            r = w0 * (t.v0.r_over_w / t.v0.inv_w) +
+                                w1 * (t.v1.r_over_w / t.v1.inv_w) + w2 * (t.v2.r_over_w / t.v2.inv_w);
+                            g = w0 * (t.v0.g_over_w / t.v0.inv_w) +
+                                w1 * (t.v1.g_over_w / t.v1.inv_w) + w2 * (t.v2.g_over_w / t.v2.inv_w);
+                            b = w0 * (t.v0.b_over_w / t.v0.inv_w) +
+                                w1 * (t.v1.b_over_w / t.v1.inv_w) + w2 * (t.v2.b_over_w / t.v2.inv_w);
+                            a = w0 * (t.v0.a_over_w / t.v0.inv_w) +
+                                w1 * (t.v1.a_over_w / t.v1.inv_w) + w2 * (t.v2.a_over_w / t.v2.inv_w);
+                            u = w0 * (t.v0.u_over_w / t.v0.inv_w) +
+                                w1 * (t.v1.u_over_w / t.v1.inv_w) + w2 * (t.v2.u_over_w / t.v2.inv_w);
+                            v = w0 * (t.v0.v_over_w / t.v0.inv_w) +
+                                w1 * (t.v1.v_over_w / t.v1.inv_w) + w2 * (t.v2.v_over_w / t.v2.inv_w);
                         } else {
                             const f32 w_recip = inv_w != 0.0f ? 1.0f / inv_w : 0.0f;
                             r = (w0 * t.v0.r_over_w + w1 * t.v1.r_over_w + w2 * t.v2.r_over_w) * w_recip;
@@ -589,10 +584,10 @@ void rasterize_tile(const Framebuffer& fb,
                                 d.surface_cache_width,
                             };
                             const u32 t_rgba = sample_bilinear_mip(sc, u, v);
-                            const f32 tr = static_cast<f32>(t_rgba       & 0xFFu) * (1.0f/255.0f);
-                            const f32 tg = static_cast<f32>((t_rgba >>  8) & 0xFFu) * (1.0f/255.0f);
-                            const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f/255.0f);
-                            const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f/255.0f);
+                            const f32 tr = static_cast<f32>(t_rgba & 0xFFu) * (1.0f / 255.0f);
+                            const f32 tg = static_cast<f32>((t_rgba >> 8) & 0xFFu) * (1.0f / 255.0f);
+                            const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f / 255.0f);
+                            const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f / 255.0f);
                             out_rgba = pack_rgba(r * tr, g * tg, b * tb, a * ta);
                         } else if (has_tex) {
                             // OnTheFly: sample base texture. Three paths,
@@ -602,19 +597,23 @@ void rasterize_tile(const Framebuffer& fb,
                             //   otherwise  → bilinear
                             u32 t_rgba;
                             if (use_aniso) {
-                                t_rgba = sample_aniso(*tex, u, v,
-                                                      draw_du_dx, draw_du_dy,
-                                                      draw_dv_dx, draw_dv_dy,
+                                t_rgba = sample_aniso(*tex,
+                                                      u,
+                                                      v,
+                                                      draw_du_dx,
+                                                      draw_du_dy,
+                                                      draw_dv_dx,
+                                                      draw_dv_dy,
                                                       draw_aniso_max);
                             } else if (tex->mip_count > 1) {
                                 t_rgba = sample_trilinear(*tex, u, v, draw_mip_lod);
                             } else {
                                 t_rgba = sample_bilinear(*tex, u, v);
                             }
-                            const f32 tr = static_cast<f32>(t_rgba       & 0xFFu) * (1.0f/255.0f);
-                            const f32 tg = static_cast<f32>((t_rgba >>  8) & 0xFFu) * (1.0f/255.0f);
-                            const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f/255.0f);
-                            const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f/255.0f);
+                            const f32 tr = static_cast<f32>(t_rgba & 0xFFu) * (1.0f / 255.0f);
+                            const f32 tg = static_cast<f32>((t_rgba >> 8) & 0xFFu) * (1.0f / 255.0f);
+                            const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f / 255.0f);
+                            const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f / 255.0f);
                             out_rgba = pack_rgba(r * tr, g * tg, b * tb, a * ta);
                         } else {
                             out_rgba = pack_rgba(r, g, b, a);
@@ -624,7 +623,8 @@ void rasterize_tile(const Framebuffer& fb,
                         // Late-Z (only matters when alpha test is on; we
                         // approximate by always writing here when depth
                         // wasn't already written above).
-                        if (alpha_test && row_z) row_z[x] = pack_depth(z, 0);
+                        if (alpha_test && row_z)
+                            row_z[x] = pack_depth(z, 0);
                     }
                 }
 
@@ -645,7 +645,7 @@ void rasterize_tile(const Framebuffer& fb,
         // bbox. Real per-cell tightening would scan the depth slice; the
         // conservative tri-max is enough to drive useful occlusion in
         // sample_03's BSP room without the scan cost.
-        const f32 tri_z_max = std::max({ t.v0.z, t.v1.z, t.v2.z });
+        const f32 tri_z_max = std::max({t.v0.z, t.v1.z, t.v2.z});
         const i32 lx0 = std::max(0, x0 - tile_x0);
         const i32 ly0 = std::max(0, y0 - tile_y0);
         const i32 lx1 = std::min(static_cast<i32>(TILE_W), x1 - tile_x0);
@@ -665,16 +665,18 @@ void rasterize_tile(const Framebuffer& fb,
 }
 
 // ─── Explicit instantiations — ADR-002 specializations ───────────────────
-template void rasterize_tile< 32,  32>(const Framebuffer&, const DrawCmd*, u32,
-                                       const TileGrid&, const Texture*, u32, u32, bool) noexcept;
-template void rasterize_tile< 64,  64>(const Framebuffer&, const DrawCmd*, u32,
-                                       const TileGrid&, const Texture*, u32, u32, bool) noexcept;
-template void rasterize_tile<128, 128>(const Framebuffer&, const DrawCmd*, u32,
-                                       const TileGrid&, const Texture*, u32, u32, bool) noexcept;
+template void rasterize_tile<32, 32>(
+    const Framebuffer&, const DrawCmd*, u32, const TileGrid&, const Texture*, u32, u32, bool) noexcept;
+template void rasterize_tile<64, 64>(
+    const Framebuffer&, const DrawCmd*, u32, const TileGrid&, const Texture*, u32, u32, bool) noexcept;
+template void rasterize_tile<128, 128>(
+    const Framebuffer&, const DrawCmd*, u32, const TileGrid&, const Texture*, u32, u32, bool) noexcept;
 
 TileRasterFn select_tile_raster_fn(u32 tile_w, u32 tile_h) noexcept {
-    if (tile_w ==  32 && tile_h ==  32) return &rasterize_tile< 32,  32>;
-    if (tile_w == 128 && tile_h == 128) return &rasterize_tile<128, 128>;
+    if (tile_w == 32 && tile_h == 32)
+        return &rasterize_tile<32, 32>;
+    if (tile_w == 128 && tile_h == 128)
+        return &rasterize_tile<128, 128>;
     return &rasterize_tile<64, 64>;  // default per ADR-002
 }
 

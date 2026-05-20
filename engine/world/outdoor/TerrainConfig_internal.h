@@ -24,12 +24,12 @@ namespace psynder::world::outdoor::detail {
 inline bool parse_backend(std::string_view value, TerrainBackend& out) noexcept {
     // Trim leading whitespace — the .psylevel parser hands us the raw token
     // and may include indentation. We never see embedded NULs.
-    while (!value.empty() && (value.front() == ' '  || value.front() == '\t' ||
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t' ||
                               value.front() == '\r' || value.front() == '\n')) {
         value.remove_prefix(1);
     }
-    while (!value.empty() && (value.back()  == ' '  || value.back()  == '\t' ||
-                              value.back()  == '\r' || value.back()  == '\n')) {
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '\r' ||
+                              value.back() == '\n')) {
         value.remove_suffix(1);
     }
 
@@ -48,8 +48,10 @@ inline bool parse_backend(std::string_view value, TerrainBackend& out) noexcept 
 // inspector panel and for diagnostic logs.
 inline const char* backend_name(TerrainBackend b) noexcept {
     switch (b) {
-        case TerrainBackend::PolygonCDLOD:      return "mesh";
-        case TerrainBackend::HeightmapRaymarch: return "raymarch";
+        case TerrainBackend::PolygonCDLOD:
+            return "mesh";
+        case TerrainBackend::HeightmapRaymarch:
+            return "raymarch";
     }
     return "unknown";
 }

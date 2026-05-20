@@ -48,15 +48,15 @@
 #include <vector>
 
 #if defined(_WIN32)
-#  include <winsock2.h>
-#  include <ws2tcpip.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #else
-#  include <arpa/inet.h>
-#  include <netinet/in.h>
-#  include <netinet/tcp.h>
-#  include <sys/socket.h>
-#  include <sys/types.h>
-#  include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 #endif
 
 using namespace psynder;
@@ -66,13 +66,21 @@ namespace {
 
 #if defined(_WIN32)
 using sock_t = SOCKET;
-inline int sock_close(sock_t s) { return closesocket(s); }
-inline bool sock_valid(sock_t s) { return s != INVALID_SOCKET; }
+inline int sock_close(sock_t s) {
+    return closesocket(s);
+}
+inline bool sock_valid(sock_t s) {
+    return s != INVALID_SOCKET;
+}
 constexpr sock_t kBadSock = INVALID_SOCKET;
 #else
 using sock_t = int;
-inline int sock_close(sock_t s) { return ::close(s); }
-inline bool sock_valid(sock_t s) { return s >= 0; }
+inline int sock_close(sock_t s) {
+    return ::close(s);
+}
+inline bool sock_valid(sock_t s) {
+    return s >= 0;
+}
 constexpr sock_t kBadSock = -1;
 #endif
 
@@ -80,8 +88,7 @@ constexpr sock_t kBadSock = -1;
     sock_t s = ::socket(AF_INET, SOCK_STREAM, 0);
     REQUIRE(sock_valid(s));
     int one = 1;
-    ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
-                 reinterpret_cast<const char*>(&one), sizeof(one));
+    ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(0);
@@ -100,7 +107,8 @@ constexpr sock_t kBadSock = -1;
 
 sock_t connect_local(::psynder::u16 port) {
     sock_t s = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (!sock_valid(s)) return s;
+    if (!sock_valid(s))
+        return s;
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -119,7 +127,8 @@ bool send_all(sock_t s, const ::psynder::u8* data, size_t n) {
 #else
         auto sent = ::send(s, reinterpret_cast<const char*>(data), n, 0);
 #endif
-        if (sent <= 0) return false;
+        if (sent <= 0)
+            return false;
         data += sent;
         n -= static_cast<size_t>(sent);
     }
@@ -133,8 +142,7 @@ bool send_all_sv(sock_t s, std::string_view sv) {
 void set_recv_timeout(sock_t s, std::chrono::milliseconds ms) {
 #if defined(_WIN32)
     DWORD tv = static_cast<DWORD>(ms.count());
-    ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
-                 reinterpret_cast<const char*>(&tv), sizeof(tv));
+    ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 #else
     timeval tv;
     tv.tv_sec = ms.count() / 1000;
@@ -145,7 +153,8 @@ void set_recv_timeout(sock_t s, std::chrono::milliseconds ms) {
 
 // Read the HTTP response head off the socket, leaving any extra bytes in
 // `tail` for the caller. Mirrors session.cpp's helper precisely.
-std::string read_http_head(sock_t s, std::vector<::psynder::u8>& tail,
+std::string read_http_head(sock_t s,
+                           std::vector<::psynder::u8>& tail,
                            std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
     set_recv_timeout(s, timeout);
     tail.clear();
@@ -153,16 +162,16 @@ std::string read_http_head(sock_t s, std::vector<::psynder::u8>& tail,
     char tmp[1024];
     for (;;) {
         auto got = ::recv(s, tmp, sizeof(tmp), 0);
-        if (got <= 0) break;
+        if (got <= 0)
+            break;
         size_t prev = buf.size();
         buf.append(tmp, static_cast<size_t>(got));
         auto pos = buf.find("\r\n\r\n", prev > 3 ? prev - 3 : 0);
         if (pos != std::string::npos) {
             size_t head_end = pos + 4;
             if (head_end < buf.size()) {
-                tail.assign(
-                    reinterpret_cast<const ::psynder::u8*>(buf.data() + head_end),
-                    reinterpret_cast<const ::psynder::u8*>(buf.data() + buf.size()));
+                tail.assign(reinterpret_cast<const ::psynder::u8*>(buf.data() + head_end),
+                            reinterpret_cast<const ::psynder::u8*>(buf.data() + buf.size()));
                 buf.resize(head_end);
             }
             break;
@@ -171,7 +180,8 @@ std::string read_http_head(sock_t s, std::vector<::psynder::u8>& tail,
     return buf;
 }
 
-std::vector<::psynder::u8> read_exact(sock_t s, size_t want,
+std::vector<::psynder::u8> read_exact(sock_t s,
+                                      size_t want,
                                       std::vector<::psynder::u8>& tail,
                                       std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
     set_recv_timeout(s, timeout);
@@ -184,7 +194,8 @@ std::vector<::psynder::u8> read_exact(sock_t s, size_t want,
     while (out.size() < want) {
         char tmp[512];
         auto got = ::recv(s, tmp, sizeof(tmp), 0);
-        if (got <= 0) break;
+        if (got <= 0)
+            break;
         // Push into `out` up to `want`; spill any extra back into `tail` so
         // subsequent reads can consume it. (Without this spill the helper
         // silently drops bytes when the server merges multiple frames into
@@ -206,11 +217,13 @@ std::vector<::psynder::u8> read_exact(sock_t s, size_t want,
 // Pull one server-sent WebSocket frame off the socket. Server frames are
 // unmasked and we expect single-frame (FIN=1) binary; everything else is a
 // protocol error in our test surface.
-std::vector<::psynder::u8> recv_ws_binary(sock_t s, std::vector<::psynder::u8>& tail,
-                                          std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
+std::vector<::psynder::u8> recv_ws_binary(
+    sock_t s,
+    std::vector<::psynder::u8>& tail,
+    std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
     auto hdr = read_exact(s, 2, tail, timeout);
     REQUIRE(hdr.size() == 2);
-    REQUIRE(hdr[0] == 0x82);  // FIN + binary
+    REQUIRE(hdr[0] == 0x82);        // FIN + binary
     REQUIRE((hdr[1] & 0x80) == 0);  // server frames are unmasked
     size_t len = hdr[1] & 0x7F;
     if (len == 126) {
@@ -221,7 +234,8 @@ std::vector<::psynder::u8> recv_ws_binary(sock_t s, std::vector<::psynder::u8>& 
         auto ext = read_exact(s, 8, tail, timeout);
         REQUIRE(ext.size() == 8);
         len = 0;
-        for (auto b : ext) len = (len << 8) | b;
+        for (auto b : ext)
+            len = (len << 8) | b;
     }
     return read_exact(s, len, tail, timeout);
 }
@@ -240,28 +254,34 @@ void send_ws_client_binary(sock_t s, const ::psynder::u8* data, size_t n) {
         hdr.push_back(static_cast<::psynder::u8>(n));
     } else {
         hdr.push_back(static_cast<::psynder::u8>(0x80 | 127));
-        for (int i = 7; i >= 0; --i) hdr.push_back(static_cast<::psynder::u8>(n >> (i * 8)));
+        for (int i = 7; i >= 0; --i)
+            hdr.push_back(static_cast<::psynder::u8>(n >> (i * 8)));
     }
     // mask key — four zero bytes, payload XOR is identity.
-    hdr.push_back(0); hdr.push_back(0); hdr.push_back(0); hdr.push_back(0);
+    hdr.push_back(0);
+    hdr.push_back(0);
+    hdr.push_back(0);
+    hdr.push_back(0);
     REQUIRE(send_all(s, hdr.data(), hdr.size()));
-    if (n) REQUIRE(send_all(s, data, n));
+    if (n)
+        REQUIRE(send_all(s, data, n));
 }
 
 // Run an HTTP+WS upgrade and consume the WelcomeFrame; returns the parsed
 // Welcome and leaves `tail` ready for further server frames.
-sock_t open_panel(::psynder::u16 port, const std::string& token,
+sock_t open_panel(::psynder::u16 port,
+                  const std::string& token,
                   proto::Welcome& welcome,
                   std::vector<::psynder::u8>& tail) {
     sock_t s = connect_local(port);
     REQUIRE(sock_valid(s));
-    std::string upgrade =
-        "GET /ws?token=" + token + " HTTP/1.1\r\n"
-        "Host: 127.0.0.1\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-        "Sec-WebSocket-Version: 13\r\n\r\n";
+    std::string upgrade = "GET /ws?token=" + token +
+                          " HTTP/1.1\r\n"
+                          "Host: 127.0.0.1\r\n"
+                          "Upgrade: websocket\r\n"
+                          "Connection: Upgrade\r\n"
+                          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                          "Sec-WebSocket-Version: 13\r\n\r\n";
     REQUIRE(send_all_sv(s, upgrade));
     auto head = read_http_head(s, tail);
     REQUIRE(head.rfind("HTTP/1.1 101", 0) == 0);
@@ -308,8 +328,8 @@ struct ServerGuard {
 // and a std::string with a mutex.
 struct StubBackendState {
     std::atomic<int> calls{0};
-    std::mutex       mu;
-    std::string      last_line;
+    std::mutex mu;
+    std::string last_line;
 };
 StubBackendState g_stub{};
 
@@ -332,7 +352,6 @@ bool stub_repl_backend(std::string_view line, std::string& out) noexcept {
 }
 
 }  // namespace
-
 
 TEST_CASE("ipc: push_scene_delta routes per slice", "[ipc][delta]") {
     ServerGuard guard;
@@ -361,9 +380,9 @@ TEST_CASE("ipc: push_scene_delta routes per slice", "[ipc][delta]") {
     // single u32 frame index so the assert side has something to verify.
     msgpack::Writer payload;
     payload.u32_(42u);
-    internal::Server::Get().push_scene_delta(
-        proto::channels::kperf,
-        std::span<const ::psynder::u8>(payload.data(), payload.size()));
+    internal::Server::Get().push_scene_delta(proto::channels::kperf,
+                                             std::span<const ::psynder::u8>(payload.data(),
+                                                                            payload.size()));
 
     // A should receive a SceneDeltaFrame; B should NOT.
     auto pl = recv_ws_binary(sA, tailA, std::chrono::milliseconds(2000));
@@ -391,7 +410,6 @@ TEST_CASE("ipc: push_scene_delta routes per slice", "[ipc][delta]") {
     sock_close(sA);
     sock_close(sB);
 }
-
 
 TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     ServerGuard guard;
@@ -433,9 +451,9 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     wait_for_subscriptions();
     msgpack::Writer dpayload;
     dpayload.str("schema-list-v2");
-    internal::Server::Get().push_scene_delta(
-        proto::channels::kschemas,
-        std::span<const ::psynder::u8>(dpayload.data(), dpayload.size()));
+    internal::Server::Get().push_scene_delta(proto::channels::kschemas,
+                                             std::span<const ::psynder::u8>(dpayload.data(),
+                                                                            dpayload.size()));
 
     auto pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
     REQUIRE_FALSE(pl.empty());
@@ -449,7 +467,6 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
 
     sock_close(s);
 }
-
 
 TEST_CASE("ipc: REPL hook routes console eval through script lane", "[ipc][repl]") {
     // Install our stub backend BEFORE starting the server so install_repl

@@ -18,18 +18,18 @@ namespace psynder::physics::detail {
 namespace {
 
 struct AxisJobCtx {
-    const AabbEntry*   aabbs;
-    usize              count;
-    u32                axis;
+    const AabbEntry* aabbs;
+    usize count;
+    u32 axis;
     std::vector<CandidatePair>* out_pairs;
 };
 
 }  // anonymous namespace
 
-void broadphase_sap(std::vector<AabbEntry>& aabbs,
-                    std::vector<CandidatePair>& out_pairs) {
+void broadphase_sap(std::vector<AabbEntry>& aabbs, std::vector<CandidatePair>& out_pairs) {
     out_pairs.clear();
-    if (aabbs.size() < 2) return;
+    if (aabbs.size() < 2)
+        return;
 
     std::vector<CandidatePair> per_axis[3];
     AxisJobCtx ctxs[3] = {
@@ -48,7 +48,8 @@ void broadphase_sap(std::vector<AabbEntry>& aabbs,
     for (u32 i = 0; i < 3; ++i) {
         hs[i] = js.submit(jobs::JobDesc{job_fn, &ctxs[i], "phys-sap-axis", 1});
     }
-    for (u32 i = 0; i < 3; ++i) js.wait(hs[i]);
+    for (u32 i = 0; i < 3; ++i)
+        js.wait(hs[i]);
 
     // 3-way intersection of sorted, unique pair lists. Use the
     // max-then-advance idiom: at each step compute the max of the three
@@ -59,7 +60,8 @@ void broadphase_sap(std::vector<AabbEntry>& aabbs,
     const auto& c = per_axis[2];
     usize ia = 0, ib = 0, ic = 0;
     auto less = [](CandidatePair x, CandidatePair y) {
-        if (x.a != y.a) return x.a < y.a;
+        if (x.a != y.a)
+            return x.a < y.a;
         return x.b < y.b;
     };
     auto pair_max = [&](CandidatePair x, CandidatePair y, CandidatePair z) {
@@ -73,11 +75,16 @@ void broadphase_sap(std::vector<AabbEntry>& aabbs,
         bool ec = !less(c[ic], m) && !less(m, c[ic]);
         if (ea && eb && ec) {
             out_pairs.push_back(m);
-            ++ia; ++ib; ++ic;
+            ++ia;
+            ++ib;
+            ++ic;
         } else {
-            if (!ea) ++ia;
-            if (!eb) ++ib;
-            if (!ec) ++ic;
+            if (!ea)
+                ++ia;
+            if (!eb)
+                ++ib;
+            if (!ec)
+                ++ic;
         }
     }
 }

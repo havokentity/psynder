@@ -46,23 +46,23 @@ enum class CompletionKind : std::uint8_t {
 // these to bold / colour matched chars. Empty `spans` means an empty
 // query matched everything trivially.
 struct CompletionMatch {
-    std::string                                       name;
-    CompletionKind                                    kind = CompletionKind::Cvar;
-    std::string                                       value;        // current value or "current"/"default" tag
-    std::string                                       description;  // truncated by BuildCompletions
-    std::vector<std::pair<std::size_t, std::size_t>>  spans;
-    int                                               score = 0;
+    std::string name;
+    CompletionKind kind = CompletionKind::Cvar;
+    std::string value;        // current value or "current"/"default" tag
+    std::string description;  // truncated by BuildCompletions
+    std::vector<std::pair<std::size_t, std::size_t>> spans;
+    int score = 0;
 };
 
 // Word at the cursor plus enough context to pick the right candidate
 // pool. `start..end` are byte indices into the original input string --
 // ready for splice-style replacement on commit.
 struct TokenInfo {
-    std::size_t  start     = 0;
-    std::size_t  end       = 0;
-    std::string  text;          // input.substr(start, end - start)
-    bool         is_token0 = true;
-    std::string  first_tok;     // first non-space token (for value-position picks)
+    std::size_t start = 0;
+    std::size_t end = 0;
+    std::string text;  // input.substr(start, end - start)
+    bool is_token0 = true;
+    std::string first_tok;  // first non-space token (for value-position picks)
 };
 
 TokenInfo CurrentToken(std::string_view input, std::size_t cursor);
@@ -71,7 +71,8 @@ TokenInfo CurrentToken(std::string_view input, std::size_t cursor);
 // otherwise. `out_spans`, when non-null, is overwritten with the
 // matched-char ranges within `name`. Spans are sorted ascending and
 // non-overlapping.
-int ScoreMatch(std::string_view name, std::string_view query,
+int ScoreMatch(std::string_view name,
+               std::string_view query,
                std::vector<std::pair<std::size_t, std::size_t>>* out_spans);
 
 // Build the ranked candidate list for the current token context.
@@ -82,7 +83,7 @@ int ScoreMatch(std::string_view name, std::string_view query,
 // description before returning so the caller doesn't have to. 0 = keep
 // full text. Truncation is UTF-8 safe.
 std::vector<CompletionMatch> BuildCompletions(const TokenInfo& token,
-                                              std::size_t max_results     = 60,
+                                              std::size_t max_results = 60,
                                               std::size_t description_clip = 120);
 
 // Truncate a UTF-8 string to AT MOST `max_bytes` bytes WITHOUT
@@ -91,9 +92,9 @@ std::vector<CompletionMatch> BuildCompletions(const TokenInfo& token,
 // a codepoint START byte. Worst-case backup is 3 bytes (UTF-8 codepoints
 // are at most 4 bytes long).
 inline void Utf8SafeTruncate(std::string& s, std::size_t max_bytes) {
-    if (s.size() <= max_bytes) return;
-    while (max_bytes > 0 &&
-           (static_cast<unsigned char>(s[max_bytes]) & 0xC0) == 0x80) {
+    if (s.size() <= max_bytes)
+        return;
+    while (max_bytes > 0 && (static_cast<unsigned char>(s[max_bytes]) & 0xC0) == 0x80) {
         --max_bytes;
     }
     s.resize(max_bytes);

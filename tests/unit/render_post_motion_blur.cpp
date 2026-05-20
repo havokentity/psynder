@@ -37,8 +37,7 @@ std::vector<HdrPixel> make_gradient(u32 w, u32 h) {
         for (u32 x = 0; x < w; ++x) {
             const f32 fx = static_cast<f32>(x) / static_cast<f32>(w);
             const f32 fy = static_cast<f32>(y) / static_cast<f32>(h);
-            img[static_cast<usize>(y) * w + x] =
-                HdrPixel{fx, fy, fx * fy, 1.0f};
+            img[static_cast<usize>(y) * w + x] = HdrPixel{fx, fy, fx * fy, 1.0f};
         }
     }
     return img;
@@ -46,15 +45,12 @@ std::vector<HdrPixel> make_gradient(u32 w, u32 h) {
 
 }  // namespace
 
-TEST_CASE("render_post: motion_blur taps=1 is identity at centre",
-          "[render_post][motion_blur]")
-{
+TEST_CASE("render_post: motion_blur taps=1 is identity at centre", "[render_post][motion_blur]") {
     const u32 W = 16, H = 16;
     const auto src = make_gradient(W, H);
     for (u32 y = 0; y < H; ++y) {
         for (u32 x = 0; x < W; ++x) {
-            const HdrPixel out =
-                motion_blur_tap(src.data(), W, H, x, y, 1.5f, 0.7f, 1);
+            const HdrPixel out = motion_blur_tap(src.data(), W, H, x, y, 1.5f, 0.7f, 1);
             const HdrPixel& ref = src[static_cast<usize>(y) * W + x];
             REQUIRE(out.r == Catch::Approx(ref.r).margin(1e-6f));
             REQUIRE(out.g == Catch::Approx(ref.g).margin(1e-6f));
@@ -64,14 +60,12 @@ TEST_CASE("render_post: motion_blur taps=1 is identity at centre",
 }
 
 TEST_CASE("render_post: motion_blur zero velocity yields centre pixel",
-          "[render_post][motion_blur]")
-{
+          "[render_post][motion_blur]") {
     const u32 W = 16, H = 16;
     const auto src = make_gradient(W, H);
     for (u32 y = 1; y < H - 1; ++y) {
         for (u32 x = 1; x < W - 1; ++x) {
-            const HdrPixel out =
-                motion_blur_tap(src.data(), W, H, x, y, 0.0f, 0.0f, 8);
+            const HdrPixel out = motion_blur_tap(src.data(), W, H, x, y, 0.0f, 0.0f, 8);
             const HdrPixel& ref = src[static_cast<usize>(y) * W + x];
             REQUIRE(out.r == Catch::Approx(ref.r).margin(1e-5f));
             REQUIRE(out.g == Catch::Approx(ref.g).margin(1e-5f));
@@ -80,9 +74,7 @@ TEST_CASE("render_post: motion_blur zero velocity yields centre pixel",
     }
 }
 
-TEST_CASE("render_post: motion_blur is symmetric in velocity sign",
-          "[render_post][motion_blur]")
-{
+TEST_CASE("render_post: motion_blur is symmetric in velocity sign", "[render_post][motion_blur]") {
     const u32 W = 32, H = 32;
     const auto src = make_gradient(W, H);
     const u32 x = 16, y = 16;
@@ -93,16 +85,12 @@ TEST_CASE("render_post: motion_blur is symmetric in velocity sign",
     REQUIRE(a.b == Catch::Approx(b.b).margin(1e-5f));
 }
 
-TEST_CASE("render_post: motion_blur preserves uniform image",
-          "[render_post][motion_blur]")
-{
+TEST_CASE("render_post: motion_blur preserves uniform image", "[render_post][motion_blur]") {
     const u32 W = 16, H = 16;
-    std::vector<HdrPixel> src(static_cast<usize>(W) * H,
-                              HdrPixel{0.7f, 0.3f, 0.9f, 1.0f});
+    std::vector<HdrPixel> src(static_cast<usize>(W) * H, HdrPixel{0.7f, 0.3f, 0.9f, 1.0f});
     for (u32 y = 0; y < H; ++y) {
         for (u32 x = 0; x < W; ++x) {
-            const HdrPixel out =
-                motion_blur_tap(src.data(), W, H, x, y, 4.0f, 2.0f, 6);
+            const HdrPixel out = motion_blur_tap(src.data(), W, H, x, y, 4.0f, 2.0f, 6);
             REQUIRE(out.r == Catch::Approx(0.7f).margin(1e-5f));
             REQUIRE(out.g == Catch::Approx(0.3f).margin(1e-5f));
             REQUIRE(out.b == Catch::Approx(0.9f).margin(1e-5f));
@@ -111,8 +99,7 @@ TEST_CASE("render_post: motion_blur preserves uniform image",
 }
 
 TEST_CASE("render_post: apply_motion_blur public path runs and is stable",
-          "[render_post][motion_blur]")
-{
+          "[render_post][motion_blur]") {
     // Build a tiny HDR framebuffer + a velocity field that pushes every pixel
     // one pixel to the right. The blur should run, mutate the buffer, and
     // not crash for any pixel; we don't assert per-pixel equality (the
@@ -120,25 +107,23 @@ TEST_CASE("render_post: apply_motion_blur public path runs and is stable",
     // the average luminance is conserved across the image (the kernel is
     // unbiased on a tile-uniform image).
     const u32 W = 8, H = 8;
-    std::vector<HdrPixel> fb(static_cast<usize>(W) * H,
-                             HdrPixel{0.5f, 0.5f, 0.5f, 1.0f});
-    std::vector<math::Vec2> vel(static_cast<usize>(W) * H,
-                                math::Vec2{2.0f, 0.0f});
+    std::vector<HdrPixel> fb(static_cast<usize>(W) * H, HdrPixel{0.5f, 0.5f, 0.5f, 1.0f});
+    std::vector<math::Vec2> vel(static_cast<usize>(W) * H, math::Vec2{2.0f, 0.0f});
     Framebuffer hdr_fb;
-    hdr_fb.width  = W;
+    hdr_fb.width = W;
     hdr_fb.height = H;
-    hdr_fb.pitch  = W * static_cast<u32>(sizeof(HdrPixel));
+    hdr_fb.pitch = W * static_cast<u32>(sizeof(HdrPixel));
     hdr_fb.pixels = reinterpret_cast<u8*>(fb.data());
 
     VelocityField vf;
     vf.pixels = vel.data();
-    vf.width  = W;
+    vf.width = W;
     vf.height = H;
 
     MotionBlurParams p;
-    p.enabled  = true;
+    p.enabled = true;
     p.strength = 1.0f;
-    p.taps     = 4;
+    p.taps = 4;
     p.max_pixel = 8.0f;
 
     apply_motion_blur(hdr_fb, vf, p);
@@ -152,28 +137,26 @@ TEST_CASE("render_post: apply_motion_blur public path runs and is stable",
 }
 
 TEST_CASE("render_post: apply_motion_blur with strength=0 is a no-op",
-          "[render_post][motion_blur]")
-{
+          "[render_post][motion_blur]") {
     const u32 W = 8, H = 8;
     auto fb = make_gradient(W, H);
     auto reference = fb;
-    std::vector<math::Vec2> vel(static_cast<usize>(W) * H,
-                                math::Vec2{4.0f, -4.0f});
+    std::vector<math::Vec2> vel(static_cast<usize>(W) * H, math::Vec2{4.0f, -4.0f});
     Framebuffer hdr_fb;
-    hdr_fb.width  = W;
+    hdr_fb.width = W;
     hdr_fb.height = H;
-    hdr_fb.pitch  = W * static_cast<u32>(sizeof(HdrPixel));
+    hdr_fb.pitch = W * static_cast<u32>(sizeof(HdrPixel));
     hdr_fb.pixels = reinterpret_cast<u8*>(fb.data());
 
     VelocityField vf;
     vf.pixels = vel.data();
-    vf.width  = W;
+    vf.width = W;
     vf.height = H;
 
     MotionBlurParams p;
-    p.enabled  = true;
+    p.enabled = true;
     p.strength = 0.0f;
-    p.taps     = 8;
+    p.taps = 8;
 
     apply_motion_blur(hdr_fb, vf, p);
 
@@ -185,8 +168,7 @@ TEST_CASE("render_post: apply_motion_blur with strength=0 is a no-op",
 }
 
 TEST_CASE("render_post: motion_blur_depth handles zero-delta camera gracefully",
-          "[render_post][motion_blur]")
-{
+          "[render_post][motion_blur]") {
     // Stationary camera: prev_vp == cur_vp implies cur_vp_inv ∘ prev_vp ≈ I,
     // and the reconstructed velocity should be near zero, leaving the
     // framebuffer essentially unchanged. The exact threshold depends on
@@ -198,23 +180,23 @@ TEST_CASE("render_post: motion_blur_depth handles zero-delta camera gracefully",
     std::vector<f32> depth(static_cast<usize>(W) * H, 5.0f);
 
     Framebuffer hdr_fb;
-    hdr_fb.width  = W;
+    hdr_fb.width = W;
     hdr_fb.height = H;
-    hdr_fb.pitch  = W * static_cast<u32>(sizeof(HdrPixel));
+    hdr_fb.pitch = W * static_cast<u32>(sizeof(HdrPixel));
     hdr_fb.pixels = reinterpret_cast<u8*>(fb.data());
 
     DepthReprojectMotion r;
-    r.depth      = depth.data();
-    r.width      = W;
-    r.height     = H;
+    r.depth = depth.data();
+    r.width = W;
+    r.height = H;
     // Identity for prev_vp and cur_vp_inv → reconstructed velocity ≈ 0
-    r.prev_vp    = psynder::math::identity4();
+    r.prev_vp = psynder::math::identity4();
     r.cur_vp_inv = psynder::math::identity4();
 
     MotionBlurParams p;
-    p.enabled  = true;
+    p.enabled = true;
     p.strength = 1.0f;
-    p.taps     = 4;
+    p.taps = 4;
     p.max_pixel = 32.0f;
 
     apply_motion_blur_depth(hdr_fb, r, p);

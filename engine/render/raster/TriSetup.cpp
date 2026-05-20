@@ -13,17 +13,32 @@ namespace psynder::render::raster {
 
 namespace {
 
-PSY_FORCEINLINE u8 unpack_r(u32 c) noexcept { return static_cast<u8>(c & 0xFFu); }
-PSY_FORCEINLINE u8 unpack_g(u32 c) noexcept { return static_cast<u8>((c >> 8) & 0xFFu); }
-PSY_FORCEINLINE u8 unpack_b(u32 c) noexcept { return static_cast<u8>((c >> 16) & 0xFFu); }
-PSY_FORCEINLINE u8 unpack_a(u32 c) noexcept { return static_cast<u8>((c >> 24) & 0xFFu); }
+PSY_FORCEINLINE u8 unpack_r(u32 c) noexcept {
+    return static_cast<u8>(c & 0xFFu);
+}
+PSY_FORCEINLINE u8 unpack_g(u32 c) noexcept {
+    return static_cast<u8>((c >> 8) & 0xFFu);
+}
+PSY_FORCEINLINE u8 unpack_b(u32 c) noexcept {
+    return static_cast<u8>((c >> 16) & 0xFFu);
+}
+PSY_FORCEINLINE u8 unpack_a(u32 c) noexcept {
+    return static_cast<u8>((c >> 24) & 0xFFu);
+}
 
 }  // namespace
 
-bool setup_triangle(const math::Vec4& cp0, const math::Vec4& cp1, const math::Vec4& cp2,
-                    math::Vec2 uv0, math::Vec2 uv1, math::Vec2 uv2,
-                    u32 col0, u32 col1, u32 col2,
-                    u32 viewport_w, u32 viewport_h,
+bool setup_triangle(const math::Vec4& cp0,
+                    const math::Vec4& cp1,
+                    const math::Vec4& cp2,
+                    math::Vec2 uv0,
+                    math::Vec2 uv1,
+                    math::Vec2 uv2,
+                    u32 col0,
+                    u32 col1,
+                    u32 col2,
+                    u32 viewport_w,
+                    u32 viewport_h,
                     TriSetup& out) noexcept {
     // Reject anything fully behind the near plane. Wave-A keeps the clipper
     // primitive: triangles that straddle the near plane get culled here.
@@ -59,22 +74,25 @@ bool setup_triangle(const math::Vec4& cp0, const math::Vec4& cp1, const math::Ve
 
     // Signed 2× area in Q48.16. Positive ⇒ CCW (front-facing).
     const i64 area2x = tri_area_2x(x0, y0, x1, y1, x2, y2);
-    if (area2x <= 0) {                       // back-face or degenerate
+    if (area2x <= 0) {  // back-face or degenerate
         out.valid = false;
         return false;
     }
 
-    out.x0 = x0; out.y0 = y0;
-    out.x1 = x1; out.y1 = y1;
-    out.x2 = x2; out.y2 = y2;
+    out.x0 = x0;
+    out.y0 = y0;
+    out.x1 = x1;
+    out.y1 = y1;
+    out.x2 = x2;
+    out.y2 = y2;
 
     // Bounding box, clipped to viewport.
     const i32 vw_i = static_cast<i32>(viewport_w);
     const i32 vh_i = static_cast<i32>(viewport_h);
     const i32 minx_raw = std::min({x0.floor_to_int(), x1.floor_to_int(), x2.floor_to_int()});
     const i32 miny_raw = std::min({y0.floor_to_int(), y1.floor_to_int(), y2.floor_to_int()});
-    const i32 maxx_raw = std::max({x0.ceil_to_int(),  x1.ceil_to_int(),  x2.ceil_to_int()});
-    const i32 maxy_raw = std::max({y0.ceil_to_int(),  y1.ceil_to_int(),  y2.ceil_to_int()});
+    const i32 maxx_raw = std::max({x0.ceil_to_int(), x1.ceil_to_int(), x2.ceil_to_int()});
+    const i32 maxy_raw = std::max({y0.ceil_to_int(), y1.ceil_to_int(), y2.ceil_to_int()});
     out.minx = std::max(0, minx_raw);
     out.miny = std::max(0, miny_raw);
     out.maxx = std::min(vw_i, maxx_raw);
@@ -94,13 +112,12 @@ bool setup_triangle(const math::Vec4& cp0, const math::Vec4& cp1, const math::Ve
 
     // Pack ScreenVerts with 1/w + attributes premultiplied by 1/w for
     // perspective-correct interpolation (DESIGN.md §7.4).
-    auto make_screen_vert = [&](f32 sx, f32 sy, f32 z_div_w, f32 inv_w,
-                                math::Vec2 uv, u32 col) noexcept {
+    auto make_screen_vert = [&](f32 sx, f32 sy, f32 z_div_w, f32 inv_w, math::Vec2 uv, u32 col) noexcept {
         ScreenVertex v;
-        v.x        = sx;
-        v.y        = sy;
-        v.z        = z_div_w;            // NDC depth in [-1,1]
-        v.inv_w    = inv_w;
+        v.x = sx;
+        v.y = sy;
+        v.z = z_div_w;  // NDC depth in [-1,1]
+        v.inv_w = inv_w;
         v.u_over_w = uv.x * inv_w;
         v.v_over_w = uv.y * inv_w;
         v.r_over_w = static_cast<f32>(unpack_r(col)) * (1.0f / 255.0f) * inv_w;

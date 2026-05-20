@@ -25,10 +25,10 @@ namespace psynder::jobs::detail {
 // observe pending_deps_ falling to zero and the task gets dispatched).
 struct PSY_CACHELINE_ALIGN Job {
     // Task payload — written once at submit, read many times.
-    JobFn       fn       = nullptr;
-    void*       user     = nullptr;
-    const char* name     = "job";
-    u32         priority = 0;
+    JobFn fn = nullptr;
+    void* user = nullptr;
+    const char* name = "job";
+    u32 priority = 0;
 
     // DAG edges.
     //   pending_deps_   — count of unfinished prerequisites; runs at zero.
@@ -40,13 +40,13 @@ struct PSY_CACHELINE_ALIGN Job {
     std::atomic<i32> pending_deps{0};
 
     static constexpr u32 kInlineChildren = 4;
-    u32 inline_children[kInlineChildren] = {0,0,0,0};
+    u32 inline_children[kInlineChildren] = {0, 0, 0, 0};
     u32 inline_child_count = 0;
 
     // Heap spill. Owned by this Job; freed when the job recycles.
-    u32* spill_children   = nullptr;
-    u32  spill_count      = 0;
-    u32  spill_capacity   = 0;
+    u32* spill_children = nullptr;
+    u32 spill_count = 0;
+    u32 spill_capacity = 0;
 
     // Generation counter for handle freshness. Bumped on completion.
     std::atomic<u32> gen{1};
@@ -70,7 +70,8 @@ struct PSY_CACHELINE_ALIGN Job {
         priority = 0;
         pending_deps.store(0, std::memory_order_relaxed);
         inline_child_count = 0;
-        for (u32 i = 0; i < kInlineChildren; ++i) inline_children[i] = 0;
+        for (u32 i = 0; i < kInlineChildren; ++i)
+            inline_children[i] = 0;
         if (spill_children) {
             std::free(spill_children);
             spill_children = nullptr;
@@ -88,8 +89,7 @@ struct PSY_CACHELINE_ALIGN Job {
         }
         if (spill_count == spill_capacity) {
             u32 new_cap = spill_capacity ? spill_capacity * 2 : 8;
-            auto* nb = static_cast<u32*>(
-                std::realloc(spill_children, new_cap * sizeof(u32)));
+            auto* nb = static_cast<u32*>(std::realloc(spill_children, new_cap * sizeof(u32)));
             // realloc failure on a u32 array of tiny size on a desktop OS
             // is effectively fatal; in Wave A we accept the crash.
             spill_children = nb;
@@ -101,18 +101,16 @@ struct PSY_CACHELINE_ALIGN Job {
 
 // A pool of Job slots indexed 1..N. Slot 0 is reserved as "null handle".
 class JobPool {
-  public:
+   public:
     void init(u32 capacity) noexcept {
         capacity_ = capacity;
         // Slot 0 is the sentinel; valid slots are [1, capacity_].
-        slots_ = static_cast<Job*>(
-            aligned_xalloc(kCacheLine, sizeof(Job) * (capacity_ + 1)));
+        slots_ = static_cast<Job*>(aligned_xalloc(kCacheLine, sizeof(Job) * (capacity_ + 1)));
         for (u32 i = 0; i <= capacity_; ++i) {
             new (&slots_[i]) Job();
         }
         free_list_top_.store(static_cast<i64>(capacity_), std::memory_order_relaxed);
-        free_list_ = static_cast<u32*>(
-            aligned_xalloc(kCacheLine, sizeof(u32) * capacity_));
+        free_list_ = static_cast<u32*>(aligned_xalloc(kCacheLine, sizeof(u32) * capacity_));
         // Push slots 1..N onto the stack so claim() pops them in N..1 order.
         for (u32 i = 0; i < capacity_; ++i) {
             free_list_[i] = i + 1;
@@ -140,7 +138,8 @@ class JobPool {
     u32 claim() noexcept {
         std::lock_guard<std::mutex> lk(mu_);
         i64 top = free_list_top_.load(std::memory_order_relaxed);
-        if (top <= 0) return 0;
+        if (top <= 0)
+            return 0;
         i64 new_top = top - 1;
         u32 slot = free_list_[new_top];
         free_list_top_.store(new_top, std::memory_order_release);
@@ -163,16 +162,16 @@ class JobPool {
         free_list_top_.fetch_add(1, std::memory_order_release);
     }
 
-    Job&       at(u32 slot) noexcept { return slots_[slot]; }
+    Job& at(u32 slot) noexcept { return slots_[slot]; }
     const Job& at(u32 slot) const noexcept { return slots_[slot]; }
-    u32        capacity() const noexcept { return capacity_; }
+    u32 capacity() const noexcept { return capacity_; }
 
-  private:
-    Job*               slots_   = nullptr;
-    u32*               free_list_ = nullptr;
-    std::atomic<i64>   free_list_top_{0};
-    u32                capacity_ = 0;
-    std::mutex         mu_;  // brief — protects free list claim/release
+   private:
+    Job* slots_ = nullptr;
+    u32* free_list_ = nullptr;
+    std::atomic<i64> free_list_top_{0};
+    u32 capacity_ = 0;
+    std::mutex mu_;  // brief — protects free list claim/release
 };
 
 }  // namespace psynder::jobs::detail

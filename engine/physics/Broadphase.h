@@ -19,7 +19,7 @@ namespace psynder::physics::detail {
 struct AabbEntry {
     math::Vec3 min;
     math::Vec3 max;
-    u32        body_index;
+    u32 body_index;
 };
 
 struct CandidatePair {
@@ -31,7 +31,6 @@ struct CandidatePair {
 // Run the 3 axis-pass jobs in parallel via the job system. The output vector
 // is sorted, unique, and contains exactly the pairs whose AABBs overlap on
 // all three axes. Pairs are normalised so a < b.
-void broadphase_sap(std::vector<AabbEntry>& aabbs,
-                    std::vector<CandidatePair>& out_pairs);
+void broadphase_sap(std::vector<AabbEntry>& aabbs, std::vector<CandidatePair>& out_pairs);
 
 }  // namespace psynder::physics::detail

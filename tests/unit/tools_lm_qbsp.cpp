@@ -109,13 +109,16 @@ namespace {
 i32 first_empty_leaf_in_subtree(const CompiledBsp& bsp, i32 child) {
     if (child < 0) {
         i32 leaf_idx = ~child;
-        if (leaf_idx < 0 || static_cast<usize>(leaf_idx) >= bsp.leaves.size()) return -1;
+        if (leaf_idx < 0 || static_cast<usize>(leaf_idx) >= bsp.leaves.size())
+            return -1;
         return (bsp.leaves[static_cast<usize>(leaf_idx)].flags & kLeafFlagEmpty) ? leaf_idx : -1;
     }
-    if (static_cast<usize>(child) >= bsp.nodes.size()) return -1;
+    if (static_cast<usize>(child) >= bsp.nodes.size())
+        return -1;
     const auto& n = bsp.nodes[static_cast<usize>(child)];
     i32 a = first_empty_leaf_in_subtree(bsp, n.front);
-    if (a >= 0) return a;
+    if (a >= 0)
+        return a;
     return first_empty_leaf_in_subtree(bsp, n.back);
 }
 u32 expected_portal_count(const CompiledBsp& bsp) {
@@ -123,11 +126,12 @@ u32 expected_portal_count(const CompiledBsp& bsp) {
     for (const auto& node : bsp.nodes) {
         i32 fl = first_empty_leaf_in_subtree(bsp, node.front);
         i32 bl = first_empty_leaf_in_subtree(bsp, node.back);
-        if (fl >= 0 && bl >= 0 && fl != bl) ++n;
+        if (fl >= 0 && bl >= 0 && fl != bl)
+            ++n;
     }
     return n;
 }
-}  // anon
+}  // namespace
 
 TEST_CASE("lm_qbsp portal output matches Wave-A leaf adjacency", "[tools][lm_qbsp][wave-b]") {
     // A two-brush .map: a small floor + a ceiling chunk. The BSP build will
@@ -221,8 +225,8 @@ TEST_CASE("lm_qbsp .psybsp v2 round-trips portals", "[tools][lm_qbsp][wave-b]") 
     REQUIRE(back.portals.size() == bsp.portals.size());
     REQUIRE(back.portal_vertices.size() == bsp.portal_vertices.size());
     for (usize i = 0; i < bsp.portals.size(); ++i) {
-        REQUIRE(back.portals[i].front_leaf   == bsp.portals[i].front_leaf);
-        REQUIRE(back.portals[i].back_leaf    == bsp.portals[i].back_leaf);
+        REQUIRE(back.portals[i].front_leaf == bsp.portals[i].front_leaf);
+        REQUIRE(back.portals[i].back_leaf == bsp.portals[i].back_leaf);
         REQUIRE(back.portals[i].vertex_count == bsp.portals[i].vertex_count);
         REQUIRE(back.portals[i].first_vertex == bsp.portals[i].first_vertex);
     }

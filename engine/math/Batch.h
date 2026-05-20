@@ -33,15 +33,12 @@ namespace psynder::math {
 // expression in the same evaluation order.
 //
 // `in` and `out` may not alias. Passing `n == 0` is a no-op.
-inline void transform_points(const Mat4& m,
-                             const Vec3* in,
-                             Vec3* out,
-                             usize n) noexcept {
+inline void transform_points(const Mat4& m, const Vec3* in, Vec3* out, usize n) noexcept {
     // Hoist matrix columns into locals so the compiler can keep them in
     // registers across the loop. Mat4 is column-major: m.m[col*4 + row].
-    const f32 m00 = m.m[0],  m10 = m.m[1],  m20 = m.m[2];
-    const f32 m01 = m.m[4],  m11 = m.m[5],  m21 = m.m[6];
-    const f32 m02 = m.m[8],  m12 = m.m[9],  m22 = m.m[10];
+    const f32 m00 = m.m[0], m10 = m.m[1], m20 = m.m[2];
+    const f32 m01 = m.m[4], m11 = m.m[5], m21 = m.m[6];
+    const f32 m02 = m.m[8], m12 = m.m[9], m22 = m.m[10];
     const f32 m03 = m.m[12], m13 = m.m[13], m23 = m.m[14];
 
     for (usize i = 0; i < n; ++i) {
@@ -57,13 +54,10 @@ inline void transform_points(const Mat4& m,
 // Direction-vector flavour: treats each input as homogeneous w = 0, so
 // the translation column does *not* contribute. Use this for normals
 // and tangents. Caller is responsible for any subsequent normalization.
-inline void transform_dirs(const Mat4& m,
-                           const Vec3* in,
-                           Vec3* out,
-                           usize n) noexcept {
-    const f32 m00 = m.m[0],  m10 = m.m[1],  m20 = m.m[2];
-    const f32 m01 = m.m[4],  m11 = m.m[5],  m21 = m.m[6];
-    const f32 m02 = m.m[8],  m12 = m.m[9],  m22 = m.m[10];
+inline void transform_dirs(const Mat4& m, const Vec3* in, Vec3* out, usize n) noexcept {
+    const f32 m00 = m.m[0], m10 = m.m[1], m20 = m.m[2];
+    const f32 m01 = m.m[4], m11 = m.m[5], m21 = m.m[6];
+    const f32 m02 = m.m[8], m12 = m.m[9], m22 = m.m[10];
 
     for (usize i = 0; i < n; ++i) {
         f32 x = in[i].x;
