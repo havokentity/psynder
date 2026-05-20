@@ -584,6 +584,13 @@ int main(int argc, char** argv) {
     samples::CharacterControllerConfig cc_cfg{};
     cc_cfg.floor_y = w.floor_y;
     cc_cfg.eye_height = 1.6f;
+    // Wall standoff (collision skin). Must comfortably exceed the camera
+    // near-plane distance (0.05, see perspective_rh below) so the near clip
+    // can't poke through a wall and reveal the void/next room when you stand
+    // close. ~0.3 m also reads like a player's body radius. The old 0.05
+    // default equalled the near plane, hence the see-through.
+    constexpr f32 kWallStandoff = 0.3f;
+    cc_cfg.bounds_skin = kWallStandoff;
     samples::CharacterController controller{cc_cfg};
     // Generic collision: keep the eye inside the UNION of the room / corridor
     // volumes (the BSP leaf bounds), sliding along their boundary. A single
@@ -594,8 +601,12 @@ int main(int argc, char** argv) {
     // doorways (no dead gap to snag on) — the stretch only re-covers floor
     // already inside the adjacent room.
     math::Aabb corridor = w.map.leaves[1].bounds;
-    corridor.min.z -= 0.3f;
-    corridor.max.z += 0.3f;
+    // Overlap each room by > 2*standoff so the skinned volumes still meet at the
+    // doorways (no dead gap to get stuck in once the skin grew); the stretch
+    // only re-covers floor already inside the adjacent room.
+    const f32 portal_overlap = 2.5f * kWallStandoff;  // 0.75 > 2 * 0.3
+    corridor.min.z -= portal_overlap;
+    corridor.max.z += portal_overlap;
     const std::array<math::Aabb, 3> walk_volumes = {{
         w.map.leaves[0].bounds,  // Room A
         corridor,                // doorway corridor (overlaps both rooms)
