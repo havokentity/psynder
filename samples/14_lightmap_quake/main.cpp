@@ -75,6 +75,7 @@
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as a PNG.
 
 #include "common/CharacterController.h"
+#include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
 #include "core/Log.h"
@@ -208,6 +209,10 @@ struct World {
     // One baked chunk per face (filled after the bake round-trips).
     std::vector<FaceChunk> face_chunks;
     math::Aabb bounds{};
+    // Per-leaf walkable volumes (Room A, doorway corridor, Room B) for the
+    // generic convex-volume slide collision — the union AABB alone lets you
+    // walk through the wall strips beside the doorway.
+    std::array<math::Aabb, 3> walk_volumes{};
     f32 floor_y = 0.0f;
 };
 
@@ -537,6 +542,13 @@ void build_world(World& w) {
     w.floor_y = kFloorY;
     w.bounds.min = {kRoomX0, kFloorY, kRoomAZ0};
     w.bounds.max = {kRoomX1, kCeilY, kRoomBZ1};
+    // Walkable volumes for slide collision. The corridor is stretched +/-0.75
+    // in Z so it overlaps both rooms past the 0.3 wall standoff (no dead gap at
+    // the doorways); the stretch only re-covers floor already inside the rooms.
+    w.walk_volumes[0] = math::Aabb{{kRoomX0, kFloorY, kRoomAZ0}, {kRoomX1, kCeilY, kRoomAZ1}};
+    w.walk_volumes[1] =
+        math::Aabb{{kDoorX0, kFloorY, kDoorZ0 - 0.75f}, {kDoorX1, kCeilY, kDoorZ1 + 0.75f}};
+    w.walk_volumes[2] = math::Aabb{{kRoomX0, kFloorY, kRoomBZ0}, {kRoomX1, kCeilY, kRoomBZ1}};
 }
 
 // ─── Bake round-trip ──────────────────────────────────────────────────────
@@ -820,6 +832,22 @@ int main(int argc, char** argv) {
     // Build the room + parallel bake scene once.
     World w;
     build_world(w);
+    // Back-face culling is on by default; the room faces carry interior-facing
+    // normals, so rewind every render triangle to agree with them — otherwise
+    // mis-wound walls are culled and you see through to black. (Our Vertex wraps
+    // a raster vertex, so copy the raster verts out for the winding decision;
+    // fix_winding only reorders indices, never the verts, and per-vertex uv is
+    // untouched so the baked chunks still map correctly.)
+    {
+        std::vector<render::raster::Vertex> rverts;
+        rverts.reserve(w.verts.size());
+        for (const auto& v : w.verts)
+            rverts.push_back(v.r);
+        samples::fix_winding(rverts.data(),
+                             static_cast<u32>(rverts.size()),
+                             w.indices.data(),
+                             static_cast<u32>(w.indices.size()));
+    }
     PSY_LOG_INFO("sample_14: room built — {} faces, {} verts, {} bake triangles, {} lights",
                  w.map.faces.size(),
                  w.verts.size(),
@@ -871,8 +899,14 @@ int main(int argc, char** argv) {
     samples::CharacterControllerConfig cc_cfg{};
     cc_cfg.floor_y = w.floor_y;
     cc_cfg.eye_height = 1.6f;
+    // Wall standoff > the camera near plane so you can't poke the near clip
+    // through a wall and see the void/next room when standing close.
+    cc_cfg.bounds_skin = 0.3f;
     samples::CharacterController controller{cc_cfg};
-    controller.set_bounds(w.bounds);
+    // Generic slide collision against the per-leaf volumes (Room A / corridor /
+    // Room B) — the union AABB alone let you walk through the wall strips beside
+    // the doorway.
+    controller.set_volumes(w.walk_volumes.data(), static_cast<u32>(w.walk_volumes.size()));
     controller.set_mode(samples::ControllerMode::Fps);
     // SAME start pose as sample 13: stand deep in Room A looking straight down
     // +Z toward the doorway and Room B, so the two demos frame the identical
