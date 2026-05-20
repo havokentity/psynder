@@ -22,6 +22,8 @@
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as a PNG.
 
 #include "common/CharacterController.h"
+#include "common/Lighting.h"
+#include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
 #include "core/Log.h"
@@ -551,6 +553,13 @@ int main(int argc, char** argv) {
     // Build the synthetic BSP world once.
     World w;
     build_world(w);
+    // Back-face culling is on by default now. Room faces carry inward-pointing
+    // normals, so rewind every triangle to agree with them — that keeps the
+    // interior visible and culls the back of each wall. Then bake a static
+    // directional light into the vertex colours so same-coloured adjacent
+    // walls read as distinct surfaces (form/depth) instead of a flat slab.
+    samples::fix_winding(w.verts.data(), w.indices.data(), static_cast<u32>(w.indices.size()));
+    samples::apply_gouraud(w.verts.data(), static_cast<u32>(w.verts.size()), samples::DirLight{});
     PSY_LOG_INFO("sample_03: world built — {} faces, {} leaves, {} verts",
                  w.map.faces.size(),
                  w.map.leaves.size(),

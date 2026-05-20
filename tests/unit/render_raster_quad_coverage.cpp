@@ -41,7 +41,7 @@ struct Image {
 // Draw a square quad facing the camera, with the given index winding, and
 // return the number of BACKGROUND pixels found inside the central 40% box
 // (which projects well inside the quad). 0 = fully covered, no holes.
-u32 background_holes_in_centre(const u32* indices, u32 index_count) {
+u32 background_holes_in_centre(const u32* indices, u32 index_count, u8 cull) {
     constexpr u32 W = 160, H = 160;
     Image img(W, H);
 
@@ -72,6 +72,7 @@ u32 background_holes_in_centre(const u32* indices, u32 index_count) {
     d.indices = indices;
     d.index_count = index_count;
     d.model = math::identity4();
+    d.cull = cull;
 
     auto& r = Rasterizer::Get();
     r.begin_frame(v);
@@ -90,15 +91,25 @@ u32 background_holes_in_centre(const u32* indices, u32 index_count) {
 
 }  // namespace
 
-TEST_CASE("camera-facing quad fills solid with no holes (CCW fan)", "[raster][coverage][quad]") {
+// HiZ coplanar-quad guard (the original "holes pop" regression): a
+// camera-facing quad must fill with NO interior holes. Rendered two-sided so
+// the assertion is winding-independent — the HiZ early-reject bug was unrelated
+// to culling, and this is the test that would have caught it.
+TEST_CASE("HiZ: coplanar camera-facing quad fills with no holes", "[raster][coverage][quad]") {
     const u32 idx[] = {0, 1, 2, 0, 2, 3};
-    REQUIRE(background_holes_in_centre(idx, 6) == 0);
+    REQUIRE(background_holes_in_centre(idx, 6, /*cull=None*/ 2) == 0);
 }
 
-TEST_CASE("camera-facing quad fills solid regardless of winding (two-sided)",
-          "[raster][coverage][quad]") {
-    // The reversed winding must fill identically — two-sided rasterization
-    // means neither winding may drop a triangle and leave a hole.
-    const u32 idx[] = {0, 2, 1, 0, 3, 2};
-    REQUIRE(background_holes_in_centre(idx, 6) == 0);
+// Back-face culling keeps exactly one winding and culls its mirror — proves
+// culling is real (not globally two-sided) while still hole-free on the kept
+// side.
+TEST_CASE("back-face culling: one winding fills, the mirror is culled", "[raster][coverage][cull]") {
+    const u32 a_idx[] = {0, 1, 2, 0, 2, 3};
+    const u32 b_idx[] = {0, 2, 1, 0, 3, 2};
+    const u32 a = background_holes_in_centre(a_idx, 6, /*cull=Back*/ 0);
+    const u32 b = background_holes_in_centre(b_idx, 6, /*cull=Back*/ 0);
+    // Exactly one winding is front-facing (0 holes); the other is fully culled
+    // (its central box is all background).
+    REQUIRE((a == 0) != (b == 0));
+    REQUIRE((a == 0 ? b : a) > 1000);
 }

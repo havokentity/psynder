@@ -81,46 +81,41 @@ TEST_CASE("setup_triangle: screen-CCW triangle is front-facing", "[raster][setup
     REQUIRE(t.inv_area2x > 0.0f);
 }
 
-TEST_CASE("setup_triangle: opposite-winding triangle still rasterizes (two-sided)",
-          "[raster][setup]") {
-    // The rasterizer is two-sided: a triangle that comes out back-facing in
-    // screen space is re-wound front-facing rather than culled, so neither
-    // winding silently drops polygons (which previously left holes in any
-    // mesh that wasn't wound to match the screen-space convention). Both this
-    // winding and its mirror must set up valid with a positive front-area.
-    TriSetup cw{};
-    const bool ok_cw = setup_triangle(ndc(-0.5f, -0.5f),
-                                      ndc(0.5f, -0.5f),
-                                      ndc(0.0f, 0.5f),
-                                      math::Vec2{0, 1},
-                                      math::Vec2{1, 1},
-                                      math::Vec2{0.5f, 0},
-                                      0xFFFFFFFFu,
-                                      0xFFFFFFFFu,
-                                      0xFFFFFFFFu,
-                                      640,
-                                      360,
-                                      cw);
-    REQUIRE(ok_cw);
-    REQUIRE(cw.valid);
-    REQUIRE(cw.inv_area2x > 0.0f);
+TEST_CASE("setup_triangle: cull modes (Back / Front / None)", "[raster][setup][cull]") {
+    // (BL, BR, TOP) in NDC y-up is CCW; after the viewport y-flip it is a
+    // BACK face (negative screen area) in this engine's convention.
+    auto setup = [](u8 cull, TriSetup& t) {
+        return setup_triangle(ndc(-0.5f, -0.5f),
+                              ndc(0.5f, -0.5f),
+                              ndc(0.0f, 0.5f),
+                              math::Vec2{0, 1},
+                              math::Vec2{1, 1},
+                              math::Vec2{0.5f, 0},
+                              0xFFFFFFFFu,
+                              0xFFFFFFFFu,
+                              0xFFFFFFFFu,
+                              640,
+                              360,
+                              t,
+                              cull);
+    };
 
-    TriSetup ccw{};
-    const bool ok_ccw = setup_triangle(ndc(-0.5f, -0.5f),
-                                       ndc(0.0f, 0.5f),
-                                       ndc(0.5f, -0.5f),
-                                       math::Vec2{0, 1},
-                                       math::Vec2{0.5f, 0},
-                                       math::Vec2{1, 1},
-                                       0xFFFFFFFFu,
-                                       0xFFFFFFFFu,
-                                       0xFFFFFFFFu,
-                                       640,
-                                       360,
-                                       ccw);
-    REQUIRE(ok_ccw);
-    REQUIRE(ccw.valid);
-    REQUIRE(ccw.inv_area2x > 0.0f);
+    // Back-cull (default): this back face is culled.
+    TriSetup tb{};
+    REQUIRE_FALSE(setup(0, tb));
+    REQUIRE_FALSE(tb.valid);
+
+    // Front-cull: the back face is kept (rewound front for setup).
+    TriSetup tf{};
+    REQUIRE(setup(1, tf));
+    REQUIRE(tf.valid);
+    REQUIRE(tf.inv_area2x > 0.0f);
+
+    // None (two-sided): kept regardless of winding.
+    TriSetup tn{};
+    REQUIRE(setup(2, tn));
+    REQUIRE(tn.valid);
+    REQUIRE(tn.inv_area2x > 0.0f);
 }
 
 TEST_CASE("setup_triangle: a zero-area (degenerate) triangle is still rejected", "[raster][setup]") {

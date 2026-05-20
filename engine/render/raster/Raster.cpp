@@ -285,7 +285,8 @@ void Rasterizer::end_frame() {
                                repack(poly[k + 1]),
                                fs.view.target.width,
                                fs.view.target.height,
-                               tris[produced]);
+                               tris[produced],
+                               d.cull);
                 ++produced;  // binner skips entries with valid == false
             }
         }

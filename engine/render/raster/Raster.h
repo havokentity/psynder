@@ -28,6 +28,18 @@ struct Vertex {
     u32 color = 0xFFFFFFFFu;  // packed RGBA8
 };
 
+// ─── Face culling (DESIGN.md §7.3) ───────────────────────────────────────
+// Front-facing is CCW after the viewport Y-flip (signed screen area > 0).
+// Meshes must be wound consistently; samples/common/MeshWinding.h can fix a
+// mesh's winding from its per-vertex normals. Use `None` only for genuinely
+// two-sided geometry (thin walls, foliage, debug) — it costs the back-face
+// pixels and disables the cull's overdraw savings.
+enum class CullMode : u8 {
+    Back = 0,   // cull back faces (default — closed, consistently-wound meshes)
+    Front = 1,  // cull front faces (e.g. rendering interiors / inverted hulls)
+    None = 2,   // two-sided: rewind back faces to front, draw both sides
+};
+
 // ─── DrawItem — the unit the binner sees ─────────────────────────────────
 struct DrawItem {
     const Vertex* vertices = nullptr;
@@ -37,6 +49,7 @@ struct DrawItem {
     math::Mat4 model;
     MaterialId material;
     u8 flags = 0;
+    u8 cull = static_cast<u8>(CullMode::Back);  // CullMode
 };
 
 // ─── Scene-wide rasterizer state ─────────────────────────────────────────

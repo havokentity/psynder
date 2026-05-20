@@ -32,6 +32,7 @@
 //                            as a 24-bit RGB PNG. Used by the golden-cell
 //                            harness.
 
+#include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
 #include "asset/Vfs.h"
@@ -655,7 +656,16 @@ int main(int argc, char** argv) {
 
     // ─── Track build ────────────────────────────────────────────────────
     const auto track_segs = build_oval_track();
-    const TrackMesh track_mesh = tessellate_track(track_segs);
+    TrackMesh track_mesh = tessellate_track(track_segs);
+    // The rasterizer back-face culls by default; the track ribbon, chassis cube
+    // and wheel cylinders are wound from their per-vertex normals so none of
+    // them drop out (the track in particular faces straight up and was being
+    // culled to the sky colour). The cube winding is shared, so rewind it once.
+    samples::fix_winding(track_mesh.verts.data(),
+                         track_mesh.indices.data(),
+                         static_cast<u32>(track_mesh.indices.size()));
+    std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
+    samples::fix_winding(kCubeVerts.data(), cube_idx.data(), static_cast<u32>(cube_idx.size()));
 
     // ─── Vehicle ────────────────────────────────────────────────────────
     auto& world = physics::World::Get();
@@ -703,7 +713,10 @@ int main(int argc, char** argv) {
     physics::vehicle::set_ground_plane(veh, start_p.y);
 
     // ─── Wheel mesh ─────────────────────────────────────────────────────
-    const CylinderMesh wheel_mesh = build_cylinder(0.35f, 0.18f);
+    CylinderMesh wheel_mesh = build_cylinder(0.35f, 0.18f);
+    samples::fix_winding(wheel_mesh.verts.data(),
+                         wheel_mesh.indices.data(),
+                         static_cast<u32>(wheel_mesh.indices.size()));
 
     // ─── Sim state for interp ───────────────────────────────────────────
     math::Vec3 prev_pos = chassis_desc.position;
@@ -903,8 +916,8 @@ int main(int argc, char** argv) {
             render::raster::DrawItem item{};
             item.vertices = kCubeVerts.data();
             item.vertex_count = static_cast<u32>(kCubeVerts.size());
-            item.indices = kCubeIndices.data();
-            item.index_count = static_cast<u32>(kCubeIndices.size());
+            item.indices = cube_idx.data();
+            item.index_count = static_cast<u32>(cube_idx.size());
             item.model = math::mul(trs, math::mul(yaw_mat, scl));
             rasterizer.submit(item);
         }

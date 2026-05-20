@@ -40,7 +40,8 @@ bool setup_triangle(const math::Vec4& cp0_in,
                     u32 col2,
                     u32 viewport_w,
                     u32 viewport_h,
-                    TriSetup& out) noexcept {
+                    TriSetup& out,
+                    u8 cull_mode) noexcept {
     // Reject anything fully behind the near plane. Wave-A keeps the clipper
     // primitive: triangles that straddle the near plane get culled here.
     // The proper polygon clipper is a Wave-B item; for the M1 sample the
@@ -50,19 +51,15 @@ bool setup_triangle(const math::Vec4& cp0_in,
         return false;
     }
 
-    // Two-sided rasterization. The screen transform below flips Y (screen is
-    // Y-down), which inverts the sign of the signed area relative to the
-    // NDC winding — so a triangle's "front/back" sign here depends on how its
-    // source mesh was wound, and hand-built sample meshes (cubes, icospheres,
-    // BSP-room quads) are not all wound consistently. Rather than cull on a
-    // winding convention the meshes don't honour — which silently drops
-    // visible polygons and leaves holes that pop as geometry rotates — we
-    // render both sides: if the triangle comes out back-facing, swap two
-    // vertices so it sets up front-facing with correct edge functions and
-    // barycentrics. Closed meshes are visually unchanged (the genuine back
-    // faces stay Z-occluded by the front faces); only the wrongly-dropped
-    // triangles get filled. A per-draw single-sided cull mode for known
-    // watertight, consistently-wound meshes is a perf follow-up (issue #121).
+    // Face culling. The screen transform below flips Y (screen is Y-down),
+    // so a front-facing (CCW-in-NDC) triangle has a POSITIVE signed screen
+    // area; back faces are negative; zero is degenerate. We decide front/back
+    // from the float screen area here (cheap, and avoids the Q24.8 snap
+    // affecting the cull). Meshes must be wound consistently — see
+    // samples/common/MeshWinding.h for a normal-based rewind helper.
+    //   Back  (0): keep front faces  (area > 0)
+    //   Front (1): keep back faces   (area < 0), rewound to front for setup
+    //   None  (2): two-sided — rewind back faces to front, draw both sides
     math::Vec4 cp0 = cp0_in;
     math::Vec4 cp1 = cp1_in;
     math::Vec4 cp2 = cp2_in;
@@ -80,10 +77,30 @@ bool setup_triangle(const math::Vec4& cp0_in,
         return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
     };
 
-    if (screen_area2x(cp0, cp1, cp2) < 0.0f) {
-        std::swap(cp1, cp2);
+    const f32 sa = screen_area2x(cp0, cp1, cp2);
+    if (cull_mode == 0) {  // Back
+        if (sa <= 0.0f) {  // back face or degenerate
+            out.valid = false;
+            return false;
+        }
+    } else if (cull_mode == 1) {  // Front
+        if (sa >= 0.0f) {         // front face or degenerate
+            out.valid = false;
+            return false;
+        }
+        std::swap(cp1, cp2);  // rewind the kept back face to front for setup
         std::swap(uv1, uv2);
         std::swap(col1, col2);
+    } else {               // None — two-sided
+        if (sa == 0.0f) {  // degenerate
+            out.valid = false;
+            return false;
+        }
+        if (sa < 0.0f) {
+            std::swap(cp1, cp2);
+            std::swap(uv1, uv2);
+            std::swap(col1, col2);
+        }
     }
 
     const f32 inv_w0 = 1.0f / cp0.w;

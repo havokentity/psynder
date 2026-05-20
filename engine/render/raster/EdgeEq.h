@@ -65,7 +65,9 @@ PSY_FORCEINLINE i64 eval_edge2(const TriSetup& t, FxQ24_8 px, FxQ24_8 py) noexce
 }
 
 // Setup a triangle from three post-MVP clipspace verts.
-// Returns false if degenerate / back-facing / fully outside viewport.
+// Returns false if degenerate / culled / fully outside viewport.
+// cull_mode is a render::raster::CullMode (0 Back, 1 Front, 2 None); passed as
+// u8 to keep this lane-local header free of the public Raster.h include.
 bool setup_triangle(const math::Vec4& cp0,
                     const math::Vec4& cp1,
                     const math::Vec4& cp2,
@@ -77,6 +79,7 @@ bool setup_triangle(const math::Vec4& cp0,
                     u32 col2,
                     u32 viewport_w,
                     u32 viewport_h,
-                    TriSetup& out) noexcept;
+                    TriSetup& out,
+                    u8 cull_mode = 0) noexcept;  // 0 Back, 1 Front, 2 None
 
 }  // namespace psynder::render::raster

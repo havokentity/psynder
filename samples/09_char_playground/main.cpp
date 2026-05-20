@@ -49,6 +49,8 @@
 //   --smoke-capture-out PATH Write the last framebuffer to PATH as a PNG.
 
 #include "common/CharacterController.h"
+#include "common/Lighting.h"
+#include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
 #include "core/Log.h"
@@ -291,12 +293,12 @@ Block make_block(
     return b;
 }
 
-void submit_block(render::raster::Rasterizer& r, const Block& b) {
+void submit_block(render::raster::Rasterizer& r, const Block& b, const u32* cube_idx, u32 idx_count) {
     render::raster::DrawItem item{};
     item.vertices = b.mesh.data();
     item.vertex_count = static_cast<u32>(b.mesh.size());
-    item.indices = kCubeIndices.data();
-    item.index_count = static_cast<u32>(kCubeIndices.size());
+    item.indices = cube_idx;
+    item.index_count = idx_count;
     // Unit cube -> full extent: scale by 2 * half.
     item.model = pose_model(b.center, b.rot, v3(b.half.x * 2.0f, b.half.y * 2.0f, b.half.z * 2.0f));
     r.submit(item);
@@ -446,7 +448,27 @@ int main(int argc, char** argv) {
     };
 
     // Capsule render mesh (unit radius; scaled per-frame to kRadius).
-    const Mesh capsule_mesh = build_capsule(kHalfCyl / kRadius, 12, 20, pack_rgba(230, 200, 90));
+    Mesh capsule_mesh = build_capsule(kHalfCyl / kRadius, 12, 20, pack_rgba(230, 200, 90));
+
+    // The rasterizer back-face culls by default, so every mesh must be wound
+    // to agree with its outward normals; bake a directional key light into the
+    // vertex colours too so the flat-tinted course blocks + capsule gain real
+    // form (samples/common/{MeshWinding,Lighting}.h).
+    const samples::DirLight kLight{};
+    samples::fix_winding(capsule_mesh.verts.data(),
+                         capsule_mesh.indices.data(),
+                         static_cast<u32>(capsule_mesh.indices.size()));
+    samples::apply_gouraud(capsule_mesh.verts.data(), static_cast<u32>(capsule_mesh.verts.size()), kLight);
+
+    // Cube winding is shared across every course block; rewind once against the
+    // unit-cube template, then light each block by its own (static) rotation so
+    // tilted ramps/wedges shade correctly in world space.
+    std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
+    samples::fix_winding(kCubeVerts.data(), cube_idx.data(), static_cast<u32>(cube_idx.size()));
+    for (Block& b : course) {
+        const math::Mat4 rot = math::rotate_quat(math::quat_normalize(b.rot));
+        samples::apply_gouraud_rotated(b.mesh.data(), static_cast<u32>(b.mesh.size()), rot, kLight);
+    }
 
     // ─── Shared look/intent controller (mouse-look only) ────────────────
     // We use the shared controller solely for yaw/pitch (mouse-look) and the
@@ -574,7 +596,7 @@ int main(int argc, char** argv) {
 
         // ── Course. ─────────────────────────────────────────────────────
         for (const Block& b : course)
-            submit_block(rasterizer, b);
+            submit_block(rasterizer, b, cube_idx.data(), static_cast<u32>(cube_idx.size()));
 
         // ── Capsule (centre = resolved physics position). ──────────────
         {
