@@ -189,39 +189,32 @@ void Rasterizer::end_frame() {
             cp[i] = math::mul(mvp, math::Vec4{p.x, p.y, p.z, 1.0f});
         }
 
-        // Triangle setup per index triple, with near-plane clipping.
+        // Triangle setup per index triple, with FULL-FRUSTUM clipping.
         //
-        // A triangle that straddles the near plane must be CLIPPED, not
-        // dropped: in an interior (FPS-room) view the camera is surrounded by
+        // Each triangle is Sutherland-Hodgman-clipped against all SIX clip-space
+        // frustum planes (inside: dot >= 0) before setup, interpolating uv +
+        // colour at every cut, then fan-triangulated. Clipping the near plane is
+        // mandatory — an interior (FPS-room) view surrounds the camera with
         // geometry, so big floor/wall/ceiling quads routinely have a vertex
-        // behind the near plane. Dropping those whole left the room mostly
-        // black with holes at corners. We Sutherland-Hodgman-clip each
-        // triangle against the clip-space near plane (inside: z + w >= 0),
-        // interpolating uv + colour at the cut, then fan-triangulate the 3-or-4
-        // vertex result. One input triangle yields up to two output triangles.
+        // behind the near plane and dropping the whole triangle left the room
+        // black with holes at corners. Clipping the other five planes makes
+        // SETUP robust: a vertex far outside the viewport (e.g. a wall that
+        // extends well past the left/right/top/bottom edge, or geometry beyond
+        // the far plane) would otherwise reach the Q24.8 fixed-point edge
+        // functions with huge screen coordinates and risk overflow. We rely on
+        // the clip rather than the screen-space bbox clamp for that safety.
+        //
+        // A triangle (3 verts) gains at most one vertex per clip plane, so the
+        // 6-plane result is at most a 9-gon -> fan-triangulates to <= 7 tris.
         const u32 tri_count = d.index_count / 3;
-        // Near-plane clipping turns a triangle that straddles z + w = 0 into a
-        // quad -> two triangles; triangles fully in front stay one, fully behind
-        // contribute none. Count the straddlers up front so we reserve the tight
-        // bound (tri_count + straddlers) rather than an unconditional 2x, which
-        // on big meshes wastes frame-arena space and risks exhaustion (a failed
-        // alloc silently drops the draw).
-        u32 straddlers = 0;
-        for (u32 ti = 0; ti < tri_count; ++ti) {
-            const u32 j0 = d.indices[ti * 3 + 0];
-            const u32 j1 = d.indices[ti * 3 + 1];
-            const u32 j2 = d.indices[ti * 3 + 2];
-            if (j0 >= d.vertex_count || j1 >= d.vertex_count || j2 >= d.vertex_count)
-                continue;
-            const f32 s0 = cp[j0].z + cp[j0].w;
-            const f32 s1 = cp[j1].z + cp[j1].w;
-            const f32 s2 = cp[j2].z + cp[j2].w;
-            const bool any_behind = (s0 < 0.0f) || (s1 < 0.0f) || (s2 < 0.0f);
-            const bool any_front = (s0 >= 0.0f) || (s1 >= 0.0f) || (s2 >= 0.0f);
-            if (any_behind && any_front)
-                ++straddlers;  // crosses the near plane -> up to 2 output tris
-        }
-        TriSetup* tris = fs.arena.alloc_array<TriSetup>(tri_count + straddlers + 1);
+        // Arena bound: each input triangle yields at most 7 output triangles
+        // (6-plane clip -> <=9-gon -> 7-tri fan). We allocate the worst case
+        // `tri_count * 7 + 1` directly. A straddler pre-pass (as the prior
+        // near-plane-only path used) cannot cheaply predict the 6-plane fan
+        // count, and under-allocating is unsafe: alloc_array returns nullptr on
+        // overflow, which silently drops the entire draw. The +1 keeps a tiny
+        // headroom and a non-zero request when tri_count == 0.
+        TriSetup* tris = fs.arena.alloc_array<TriSetup>(tri_count * 7 + 1);
         if (!tris) {
             fs.draw_cmds[di] = DrawCmd{};
             continue;
@@ -260,11 +253,52 @@ void Rasterizer::end_frame() {
             auto cl = [](f32 x) noexcept {
                 // Clamp then round-to-nearest (+0.5), matching TileRaster's
                 // pack_rgba — plain truncation biased clipped-edge colours
-                // darker and left visible seams along near-plane cuts.
+                // darker and left visible seams along clip cuts.
                 const f32 c = x < 0.0f ? 0.0f : (x > 255.0f ? 255.0f : x);
                 return static_cast<u32>(c + 0.5f) & 0xFFu;
             };
             return cl(v.r) | (cl(v.g) << 8) | (cl(v.b) << 16) | (cl(v.a) << 24);
+        };
+        // Signed distance to clip-space frustum plane `plane` (0..5); inside is
+        // >= 0. Order: 0 near (z+w), 1 far (w-z), 2 left (x+w), 3 right (w-x),
+        // 4 bottom (y+w), 5 top (w-y).
+        auto plane_dist = [](const ClipVtx& v, u32 plane) noexcept -> f32 {
+            switch (plane) {
+                case 0:
+                    return v.cp.z + v.cp.w;  // near
+                case 1:
+                    return v.cp.w - v.cp.z;  // far
+                case 2:
+                    return v.cp.x + v.cp.w;  // left
+                case 3:
+                    return v.cp.w - v.cp.x;  // right
+                case 4:
+                    return v.cp.y + v.cp.w;  // bottom
+                default:
+                    return v.cp.w - v.cp.y;  // top
+            }
+        };
+        // General single-plane Sutherland-Hodgman clip: keep inside vertices,
+        // emit one interpolated vertex at each in<->out edge crossing. Writes up
+        // to `n_in + 1` vertices to `out`; returns the count.
+        auto clip_plane = [&](const ClipVtx* in, u32 n_in, ClipVtx* out, u32 plane) noexcept -> u32 {
+            u32 n_out = 0;
+            for (u32 e = 0; e < n_in; ++e) {
+                const ClipVtx& a = in[e];
+                const ClipVtx& b = in[(e + 1u == n_in) ? 0u : e + 1u];
+                const f32 da = plane_dist(a, plane);
+                const f32 db = plane_dist(b, plane);
+                const bool ina = da >= 0.0f;
+                const bool inb = db >= 0.0f;
+                if (ina)
+                    out[n_out++] = a;
+                if (ina != inb) {
+                    const f32 denom = da - db;
+                    const f32 t = (denom != 0.0f) ? (da / denom) : 0.0f;
+                    out[n_out++] = lerp_vtx(a, b, t);
+                }
+            }
+            return n_out;
         };
 
         u32 produced = 0;
@@ -275,29 +309,28 @@ void Rasterizer::end_frame() {
             if (i0 >= d.vertex_count || i1 >= d.vertex_count || i2 >= d.vertex_count)
                 continue;
 
-            const ClipVtx in[3] = {make_vtx(i0), make_vtx(i1), make_vtx(i2)};
-            // Clip the triangle against the near plane.
-            ClipVtx poly[4];
-            u32 np = 0;
-            for (u32 e = 0; e < 3; ++e) {
-                const ClipVtx& a = in[e];
-                const ClipVtx& b = in[(e + 1) % 3];
-                const f32 da = a.cp.z + a.cp.w;  // signed distance to near plane
-                const f32 db = b.cp.z + b.cp.w;
-                const bool ina = da >= 0.0f;
-                const bool inb = db >= 0.0f;
-                if (ina && np < 4)
-                    poly[np++] = a;
-                if (ina != inb && np < 4) {
-                    const f32 denom = da - db;
-                    const f32 t = (denom != 0.0f) ? (da / denom) : 0.0f;
-                    poly[np++] = lerp_vtx(a, b, t);
-                }
+            // Clip the triangle against all six frustum planes in sequence,
+            // ping-ponging between two fixed buffers. A 3-gon gains <=1 vertex
+            // per plane, so the largest intermediate polygon is a 9-gon; size
+            // 10 is the safe upper bound.
+            ClipVtx buf_a[10];
+            ClipVtx buf_b[10];
+            buf_a[0] = make_vtx(i0);
+            buf_a[1] = make_vtx(i1);
+            buf_a[2] = make_vtx(i2);
+            ClipVtx* poly = buf_a;
+            ClipVtx* scratch = buf_b;
+            u32 np = 3;
+            for (u32 plane = 0; plane < 6 && np >= 3; ++plane) {
+                np = clip_plane(poly, np, scratch, plane);
+                ClipVtx* tmp = poly;
+                poly = scratch;
+                scratch = tmp;
             }
             if (np < 3)
-                continue;  // fully behind the near plane
+                continue;  // fully outside the frustum
 
-            // Fan-triangulate the clipped polygon (3 or 4 verts).
+            // Fan-triangulate the clipped polygon (3..9 verts -> 1..7 tris).
             for (u32 k = 1; k + 1 < np; ++k) {
                 const bool ok = setup_triangle(poly[0].cp,
                                                poly[k].cp,
