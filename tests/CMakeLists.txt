@@ -48,4 +48,11 @@ if(PSYNDER_BUILD_SAMPLES)
             RESOURCE_LOCK "psynder_platform_singleton"
             TIMEOUT 30)
     endif()
+    if(TARGET sample_11_rt_spheres)
+        add_test(NAME sample_11_rt_spheres_smoke
+                 COMMAND sample_11_rt_spheres --smoke-frames=4)
+        set_tests_properties(sample_11_rt_spheres_smoke PROPERTIES
+            RESOURCE_LOCK "psynder_platform_singleton"
+            TIMEOUT 30)
+    endif()
 endif()
