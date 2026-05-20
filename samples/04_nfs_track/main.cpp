@@ -614,10 +614,13 @@ void push_hud_telemetry(f32 speed_mps, f32 rpm, i32 gear, f32 throttle, f32 brak
 inline math::Mat4 yaw_from_forward(math::Vec3 fwd) noexcept {
     fwd.y = 0.0f;
     fwd = math::normalize(fwd);
-    // The chassis cube faces -Z in local space (matches the camera in sample
-    // 02). Rotate about +Y by atan2(fwd.x, -fwd.z) so that local -Z maps to
-    // the world forward direction.
-    const f32 yaw = std::atan2(fwd.x, -fwd.z);
+    // The chassis's long axis (4.2 vs 1.8) and its front wheels both sit on
+    // local X, so the car must drive along X — not -Z. atan2(fwd.x, -fwd.z)
+    // aligns local -Z with travel; the extra quarter turn rolls that onto the
+    // long -X axis so the chassis points where it drives instead of broadside
+    // (front wheels, at local -X, lead). The wheels share this matrix, so the
+    // whole assembly rotates together and stays attached.
+    const f32 yaw = std::atan2(fwd.x, -fwd.z) - math::kHalfPi;
     return math::rotate_quat(math::quat_from_axis_angle(v3(0, 1, 0), yaw));
 }
 
@@ -873,12 +876,22 @@ int main(int argc, char** argv) {
         const math::Vec3 render_pos = lerp_v3(prev_pos, cur_pos, alpha);
 
         // ── Camera: chase ────────────────────────────────────────────
-        // Eye sits ~5m behind the car along -car_fwd, raised 2m. We push the
-        // target ahead of the car so the camera tilts into oncoming track.
+        // car_fwd is the velocity heading, which is noisy at low speed (it can
+        // point across the road). Frame the chase — and orient the chassis —
+        // off the *track tangent* at the car's position instead: smooth and
+        // always down-road, independent of how fast the car is actually going.
+        const TrackPos cam_tp = closest_on_track(track_segs, render_pos);
+        math::Vec3 road_fwd = bezier_tangent(track_segs[cam_tp.seg], cam_tp.t);
+        road_fwd.y = 0.0f;
+        road_fwd = math::normalize(road_fwd);
+        // Classic NFS chase: eye ~8.5m behind the car along -road_fwd and ~3.2m
+        // up (the 4.2m-long car then frames in the lower third with road
+        // visible ahead), aiming ~12m down-track and near ground level so the
+        // camera tilts into the oncoming tarmac.
         const math::Vec3 eye =
-            math::add(render_pos, math::add(math::mul(car_fwd, -5.5f), v3(0.0f, 2.2f, 0.0f)));
+            math::add(render_pos, math::add(math::mul(road_fwd, -8.5f), v3(0.0f, 3.2f, 0.0f)));
         const math::Vec3 tgt =
-            math::add(render_pos, math::add(math::mul(car_fwd, 6.0f), v3(0.0f, 0.8f, 0.0f)));
+            math::add(render_pos, math::add(math::mul(road_fwd, 12.0f), v3(0.0f, 0.6f, 0.0f)));
 
         // ── Clear + frame setup ──────────────────────────────────────
         render::raster::clear_framebuffer(fb, 0xFF8FA7C8u);  // dusk sky
@@ -908,7 +921,9 @@ int main(int argc, char** argv) {
         }
 
         // ── Chassis submit ──────────────────────────────────────────
-        const math::Mat4 yaw_mat = yaw_from_forward(car_fwd);
+        // Orient the car (and its wheels, which share this matrix) along the
+        // smooth track heading rather than the jittery velocity vector.
+        const math::Mat4 yaw_mat = yaw_from_forward(road_fwd);
         {
             // Scale the unit cube to chassis dimensions, raise to wheel hub.
             const math::Mat4 scl = math::scale(v3(4.2f, 1.1f, 1.8f));
