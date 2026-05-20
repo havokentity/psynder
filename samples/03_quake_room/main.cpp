@@ -580,13 +580,28 @@ int main(int argc, char** argv) {
     fb.depth = depth.data();
 
     // Shared first-person / free-cam controller (samples/common). FPS mode
-    // by default; press V to fly. World bounds = the room union so walls
-    // block you; `noclip 1` at the console lifts the clamp + gravity.
+    // by default; press V to fly; `noclip 1` lifts collision + gravity.
     samples::CharacterControllerConfig cc_cfg{};
     cc_cfg.floor_y = w.floor_y;
     cc_cfg.eye_height = 1.6f;
     samples::CharacterController controller{cc_cfg};
-    controller.set_bounds(w.bounds);
+    // Generic collision: keep the eye inside the UNION of the room / corridor
+    // volumes (the BSP leaf bounds), sliding along their boundary. A single
+    // union AABB (the old set_bounds(w.bounds)) spanned the full room width at
+    // the doorway, so you could walk straight through the wall strips beside
+    // the corridor. Per-leaf volumes block those. The corridor (leaf 1) is
+    // stretched a little into both rooms so its volume overlaps theirs at the
+    // doorways (no dead gap to snag on) — the stretch only re-covers floor
+    // already inside the adjacent room.
+    math::Aabb corridor = w.map.leaves[1].bounds;
+    corridor.min.z -= 0.3f;
+    corridor.max.z += 0.3f;
+    const std::array<math::Aabb, 3> walk_volumes = {{
+        w.map.leaves[0].bounds,  // Room A
+        corridor,                // doorway corridor (overlaps both rooms)
+        w.map.leaves[2].bounds,  // Room B
+    }};
+    controller.set_volumes(walk_volumes.data(), static_cast<u32>(walk_volumes.size()));
     controller.set_mode(samples::ControllerMode::Fps);
     controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f});  // in Room A
     controller.set_look(0.0f, 0.0f);
