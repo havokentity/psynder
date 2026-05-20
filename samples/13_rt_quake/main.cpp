@@ -139,6 +139,10 @@ struct RoomGeo {
     // Axis-aligned union of both rooms + corridor — the character controller
     // clamps the eye inside this so the outer walls block you.
     math::Aabb bounds{};
+    // Per-leaf walkable volumes (Room A / corridor / Room B) for the generic
+    // slide collision — the union AABB alone lets you walk through the wall
+    // strips beside the doorway corridor.
+    std::array<math::Aabb, 3> walk_volumes{};
     f32 floor_y = 0.0f;
 };
 
@@ -345,6 +349,13 @@ void build_room(RoomGeo& g) {
     g.floor_y = kFloorY;
     g.bounds.min = {kRoomX0, kFloorY, kRoomAZ0};
     g.bounds.max = {kRoomX1, kCeilY, kRoomBZ1};
+    // Walkable volumes for slide collision. The corridor is stretched +/-0.75
+    // in Z so it overlaps both rooms past the 0.3 wall standoff (no dead gap at
+    // the doorways); the stretch only re-covers floor already inside the rooms.
+    g.walk_volumes[0] = math::Aabb{{kRoomX0, kFloorY, kRoomAZ0}, {kRoomX1, kCeilY, kRoomAZ1}};
+    g.walk_volumes[1] =
+        math::Aabb{{kDoorX0, kFloorY, kDoorZ0 - 0.75f}, {kDoorX1, kCeilY, kDoorZ1 + 0.75f}};
+    g.walk_volumes[2] = math::Aabb{{kRoomX0, kFloorY, kRoomBZ0}, {kRoomX1, kCeilY, kRoomBZ1}};
 }
 
 // ─── Camera ──────────────────────────────────────────────────────────────
@@ -509,8 +520,12 @@ int main(int argc, char** argv) {
     samples::CharacterControllerConfig cc_cfg{};
     cc_cfg.floor_y = room.floor_y;
     cc_cfg.eye_height = 1.6f;
+    cc_cfg.bounds_skin = 0.3f;  // standoff > any near plane; ~player radius
     samples::CharacterController controller{cc_cfg};
-    controller.set_bounds(room.bounds);
+    // Generic slide collision against the per-leaf volumes (Room A / corridor /
+    // Room B) — the union AABB alone let you walk through the wall strips beside
+    // the doorway.
+    controller.set_volumes(room.walk_volumes.data(), static_cast<u32>(room.walk_volumes.size()));
     controller.set_mode(samples::ControllerMode::Fps);
     controller.set_position({0.0f, room.floor_y + cc_cfg.eye_height, -5.0f});  // in Room A
     controller.set_look(0.0f, 0.0f);
