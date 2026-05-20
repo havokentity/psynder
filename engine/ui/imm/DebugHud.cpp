@@ -29,7 +29,10 @@ namespace {
 namespace d = ::psynder::ui::imm::detail;
 
 // ─── Cvar mirror ──────────────────────────────────────────────────────────
-DebugHudMode g_mode = DebugHudMode::Full;
+// Default OFF so the HUD never blasts the scene unprompted; F1 (wired in
+// editor::sample_step) cycles Off -> Compact -> Full, and the `r_debug_hud`
+// cvar still sets it explicitly.
+DebugHudMode g_mode = DebugHudMode::Off;
 
 // ─── Diag-line ring ───────────────────────────────────────────────────────
 //
