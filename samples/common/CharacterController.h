@@ -198,13 +198,18 @@ class CharacterController {
     }
 
    private:
-    // Collision geometry present? Either an explicit volume set or a non-empty
-    // legacy single box.
+    // Collision geometry present? Either an explicit volume set, or a legacy
+    // single box with positive volume (min < max on EVERY axis). The
+    // positive-volume test treats the default zero box, a fully-degenerate box,
+    // AND a partially-inverted box (e.g. min.x > max.x) all as "no collision" —
+    // so an invalid AABB disables collision rather than locking movement (which
+    // a per-axis `min >= max` AND-check would do, since point_in_box then always
+    // fails on the bad axis).
     bool collision_enabled() const noexcept {
         if (volume_count_ > 0)
             return true;
-        return !(bounds_.min.x >= bounds_.max.x && bounds_.min.y >= bounds_.max.y &&
-                 bounds_.min.z >= bounds_.max.z);
+        return bounds_.min.x < bounds_.max.x && bounds_.min.y < bounds_.max.y &&
+               bounds_.min.z < bounds_.max.z;
     }
 
     // Is `p` inside a single box, shrunk by the skin so the eye stops just shy

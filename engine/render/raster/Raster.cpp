@@ -258,7 +258,11 @@ void Rasterizer::end_frame() {
         };
         auto repack = [](const ClipVtx& v) noexcept -> u32 {
             auto cl = [](f32 x) noexcept {
-                return static_cast<u32>(x < 0.0f ? 0.0f : (x > 255.0f ? 255.0f : x)) & 0xFFu;
+                // Clamp then round-to-nearest (+0.5), matching TileRaster's
+                // pack_rgba — plain truncation biased clipped-edge colours
+                // darker and left visible seams along near-plane cuts.
+                const f32 c = x < 0.0f ? 0.0f : (x > 255.0f ? 255.0f : x);
+                return static_cast<u32>(c + 0.5f) & 0xFFu;
             };
             return cl(v.r) | (cl(v.g) << 8) | (cl(v.b) << 16) | (cl(v.a) << 24);
         };
