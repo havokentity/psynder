@@ -294,6 +294,45 @@ void World::set_gravity(math::Vec3 g) {
     detail::world_state().gravity = g;
 }
 
+void World::set_body_position(BodyId id, math::Vec3 p) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;  // static — leave it pinned
+    b.position = p;
+    b.prev_position = p;  // no interpolation across the teleport
+    b.linear_velocity = {0, 0, 0};
+    b.angular_velocity = {0, 0, 0};
+}
+
+void World::set_body_velocity(BodyId id, math::Vec3 v) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;
+    b.linear_velocity = v;
+}
+
+void World::apply_impulse(BodyId id, math::Vec3 impulse) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;
+    b.linear_velocity = math::add(b.linear_velocity, math::mul(impulse, b.inv_mass));
+}
+
 math::Vec3 World::get_position(BodyId id) const {
     auto& w = detail::world_state();
     u32 idx = id.raw & 0x00FFFFFFu;

@@ -41,6 +41,27 @@ class World {
     void set_gravity(math::Vec3 g);
     math::Vec3 get_position(BodyId id) const;
     math::Quat get_rotation(BodyId id) const;
+
+    // ─── Body mutation (sample 10 physgun; DESIGN.md §10.8) ───────────────
+    // Minimal deterministic writers so an external "physgun" (or any gameplay
+    // code) can grab and fling a body without owning the internal Body struct.
+    // All three are no-ops on a stale handle or a static body (inv_mass == 0).
+    // Determinism: each is a plain field write — no RNG, no time dependence,
+    // -fno-fast-math friendly — so a scripted call sequence reproduces bit-for-
+    // bit across hosts.
+    //
+    // Teleport the body's centre to `p`. Also snaps prev_position to `p` so the
+    // render interpolation does not lerp across the jump, and zeroes linear +
+    // angular velocity so a held body stays put rather than carrying momentum
+    // from before the grab. Use this each frame to hold a grabbed body.
+    void set_body_position(BodyId id, math::Vec3 p);
+
+    // Overwrite the linear velocity (m/s). Use on release to fling a body.
+    void set_body_velocity(BodyId id, math::Vec3 v);
+
+    // Apply an instantaneous linear impulse J (kg·m/s): v += J * inv_mass.
+    // Alternative throw path that scales the resulting speed by 1/mass.
+    void apply_impulse(BodyId id, math::Vec3 impulse);
 };
 
 // Vehicle module (DESIGN.md §10.1 vehicle specialization)
