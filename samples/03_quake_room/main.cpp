@@ -460,15 +460,23 @@ void build_world(World& w) {
 
     // ── PVS ─────────────────────────────────────────────────────────────
     // 3 clusters (A=0, corridor=1, B=2). One byte per row (3 bits used).
-    //   row 0 (Room A)   : sees 0,1
+    // The two rooms are joined by a straight doorway corridor, so a viewer
+    // standing in Room A can see through the doorway into Room B (and vice
+    // versa). PVS is "potentially visible" — conservative — so each room's
+    // row MUST include the far room, otherwise the far room's faces get
+    // culled and you see an empty hole through the doorway. Earlier this
+    // row only listed {self, corridor}, which is why the other room was
+    // invisible from a side room. All three clusters are mutually visible
+    // here.
+    //   row 0 (Room A)   : sees 0,1,2
     //   row 1 (corridor) : sees 0,1,2
-    //   row 2 (Room B)   : sees 1,2
+    //   row 2 (Room B)   : sees 0,1,2
     constexpr u32 kClusters = 3;
     constexpr u32 kRowBytes = 1;
     w.map.pvs.assign(kClusters * kRowBytes, 0);
-    w.map.pvs[0] = 0b0000'0011;  // 0,1
+    w.map.pvs[0] = 0b0000'0111;  // 0,1,2
     w.map.pvs[1] = 0b0000'0111;  // 0,1,2
-    w.map.pvs[2] = 0b0000'0110;  // 1,2
+    w.map.pvs[2] = 0b0000'0111;  // 0,1,2
 }
 
 // ─── Camera ──────────────────────────────────────────────────────────────
