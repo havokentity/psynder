@@ -50,6 +50,15 @@ struct DrawItem {
     MaterialId material;
     u8 flags = 0;
     CullMode cull = CullMode::Back;
+    // Optional per-draw baked lightmap chunk (RGBA8, row-major, pitch == w).
+    // When set, the draw is forced onto the SurfaceCached shading path and
+    // this chunk is sampled bilinearly through the base `uv` — i.e. the inner
+    // loop computes vertexColor × chunk per pixel (see TileRaster's
+    // surface_cached branch). Takes precedence over the SurfaceCache slab
+    // lookup. Lifetime must outlive end_frame().
+    const u32* lightmap_texels = nullptr;
+    u32 lightmap_w = 0;
+    u32 lightmap_h = 0;
 };
 
 // ─── Scene-wide rasterizer state ─────────────────────────────────────────
