@@ -696,6 +696,12 @@ int main(int argc, char** argv) {
     vd.drag_coefficient = 0.30f;
     const physics::vehicle::VehicleId veh = physics::vehicle::create(vd);
 
+    // The oval track lies flat at y = 0 (every Bezier control point has
+    // y = 0), so the per-wheel suspension rays contact a single flat ground
+    // plane at the track height. Without this the wheels never find ground
+    // and the chassis falls straight through under gravity alone.
+    physics::vehicle::set_ground_plane(veh, start_p.y);
+
     // ─── Wheel mesh ─────────────────────────────────────────────────────
     const CylinderMesh wheel_mesh = build_cylinder(0.35f, 0.18f);
 
@@ -952,6 +958,18 @@ int main(int argc, char** argv) {
         }
 
         window->present(fb);
+
+        // In smoke mode, log the chassis position each frame so CI (and the
+        // suspension fix verification) can confirm the car rests on the track
+        // instead of sinking through it.
+        if (args.smoke_frames > 0) {
+            PSY_LOG_INFO("sample_04: frame {} car_pos=({:.3f}, {:.3f}, {:.3f}) speed={:.2f}",
+                         frame,
+                         cur_pos.x,
+                         cur_pos.y,
+                         cur_pos.z,
+                         car_speed);
+        }
 
         ++frame;
         if (args.smoke_frames > 0 && frame >= args.smoke_frames) {

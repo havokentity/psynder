@@ -18,6 +18,7 @@
 #include "Physics.h"
 #include "WorldImpl.h"
 #include "Shape.h"
+#include "Vehicle.h"
 #include "FpControl.h"
 
 #include "jobs/JobSystem.h"
@@ -75,6 +76,26 @@ static void integrate_positions(WorldState& w, f32 dt) noexcept {
             b.rotation.z + 0.5f * dt * dq.z,
             b.rotation.w + 0.5f * dt * dq.w,
         });
+    }
+}
+
+// Run the vehicle solver for every live vehicle, accumulating tire +
+// suspension + aero forces onto each chassis body's force/torque before the
+// integrator consumes (and clears) them this sub-tick. Maps a vehicle's
+// stored chassis handle back to its Body slot via the low 24 bits, skipping
+// stale handles. Single-threaded with the rest of the tick — no allocation.
+static void step_vehicles(WorldState& w, f32 dt) noexcept {
+    VehicleWorld& vw = vehicle_world();
+    for (Vehicle& v : vw.vehicles) {
+        if (v.gen == 0)
+            continue;  // freed slot
+        const u32 bidx = v.chassis_body & 0x00FFFFFFu;
+        if (bidx >= w.bodies.size())
+            continue;
+        Body& chassis = w.bodies[bidx];
+        if (chassis.gen == 0 || chassis.inv_mass == 0.0f)
+            continue;  // stale or static chassis
+        vehicle_step(v, chassis, dt);
     }
 }
 
@@ -254,6 +275,9 @@ void World::step(f32 dt_seconds) {
             b.prev_rotation = b.rotation;
         }
 
+        // Vehicle solver runs first so its tire/suspension/aero forces are
+        // in the chassis accumulators when integrate_forces consumes them.
+        detail::step_vehicles(w, dt);
         detail::integrate_forces(w, dt);
         detail::rebuild_aabbs(w);
         detail::broadphase_sap(w.aabb_scratch, w.pair_scratch);
