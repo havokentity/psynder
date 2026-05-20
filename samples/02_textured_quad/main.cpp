@@ -4,13 +4,15 @@
 //
 // Wave-B brings the rasterizer up to tiled-binner + bilinear + Z (lane 07
 // landed those in this wave). Sample 02 is the demo target for M2 per
-// DESIGN.md §13: rotating crate room with the new pipeline. The crates use
-// per-face vertex colours rather than texture binds because the public
-// rasterizer surface (DrawItem) still routes textures via `MaterialId`,
-// and lane 05 / 24's material binding plumbing arrives in Wave-C — the
-// shape is correct regardless, and the geometry exercises every hot path
-// in the rasterizer (vertex transform → triangle setup → tile bin →
-// perspective-correct interpolation → Z reject).
+// DESIGN.md §13: rotating crate room with the new pipeline. The crates now
+// carry a real per-pixel procedural wooden-crate texture: each cube vertex
+// is white and the whole RGBA8 chunk is bound on the DrawItem via
+// `lightmap_texels`/`w`/`h`, so `end_frame` routes the draw onto the
+// rasterizer's per-pixel bilinear surface_cached path (it samples the
+// chunk through each face's 0..1 `uv` and multiplies by the white vertex
+// colour ⇒ the texture dominates). The geometry still exercises every hot
+// path in the rasterizer (vertex transform → triangle setup → tile bin →
+// perspective-correct interpolation → Z reject) plus the textured fetch.
 //
 // CLI flags:
 //   --smoke-frames=N         Headless CI run for N frames then exit.
@@ -83,56 +85,171 @@ Args parse_args(int argc, char** argv) {
     return a;
 }
 
-// Unit cube — 24 verts (4 per face × 6 faces), per-face colour packed into
-// the Vertex::color slot so the perspective-correct interpolator routes it
-// through the (r/w, g/w, b/w) channels — same path the texture pipeline
-// will eventually use. Z faces forward (-Z), so the front of each crate
-// faces the camera at angle 0.
+// Unit cube — 24 verts (4 per face × 6 faces). Every vertex colour is white
+// so the surface_cached path's `vertexColor × chunk` reduces to the crate
+// texture itself (the chunk dominates; see kCrateWhite + build_crate_texture
+// below). Each face's `uv` spans the full 0..1 range, so the whole crate
+// chunk maps across every face. Z faces forward (-Z), so the front of each
+// crate faces the camera at angle 0.
 constexpr u32 pack_rgba(u8 r, u8 g, u8 b, u8 a = 255) noexcept {
     return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
            (static_cast<u32>(a) << 24);
 }
 
-constexpr u32 kColPosX = pack_rgba(220, 110, 60);   // warm orange
-constexpr u32 kColNegX = pack_rgba(160, 90, 50);    // dim orange
-constexpr u32 kColPosY = pack_rgba(220, 200, 130);  // top lighter
-constexpr u32 kColNegY = pack_rgba(80, 60, 40);     // floor darker
-constexpr u32 kColPosZ = pack_rgba(200, 100, 60);   // mid orange
-constexpr u32 kColNegZ = pack_rgba(140, 80, 50);    // back dim
+// White ⇒ out = texture. The rasterizer multiplies the interpolated vertex
+// colour by the sampled chunk, so a flat white vertex colour lets the
+// procedural crate texture come through unmodulated.
+constexpr u32 kCrateWhite = 0xFFFFFFFFu;
 
 // 24 vertices for a unit cube centered at origin, ±0.5 on each axis.
 const std::array<render::raster::Vertex, 24> kCubeVerts{{
     // +X face (BL → TL → TR → BR in face-local space)
-    {{0.5f, -0.5f, -0.5f}, {1, 0, 0}, {0, 1}, {0, 0}, kColPosX},
-    {{0.5f, 0.5f, -0.5f}, {1, 0, 0}, {0, 0}, {0, 0}, kColPosX},
-    {{0.5f, 0.5f, 0.5f}, {1, 0, 0}, {1, 0}, {0, 0}, kColPosX},
-    {{0.5f, -0.5f, 0.5f}, {1, 0, 0}, {1, 1}, {0, 0}, kColPosX},
+    {{0.5f, -0.5f, -0.5f}, {1, 0, 0}, {0, 1}, {0, 0}, kCrateWhite},
+    {{0.5f, 0.5f, -0.5f}, {1, 0, 0}, {0, 0}, {0, 0}, kCrateWhite},
+    {{0.5f, 0.5f, 0.5f}, {1, 0, 0}, {1, 0}, {0, 0}, kCrateWhite},
+    {{0.5f, -0.5f, 0.5f}, {1, 0, 0}, {1, 1}, {0, 0}, kCrateWhite},
     // -X face
-    {{-0.5f, -0.5f, 0.5f}, {-1, 0, 0}, {0, 1}, {0, 0}, kColNegX},
-    {{-0.5f, 0.5f, 0.5f}, {-1, 0, 0}, {0, 0}, {0, 0}, kColNegX},
-    {{-0.5f, 0.5f, -0.5f}, {-1, 0, 0}, {1, 0}, {0, 0}, kColNegX},
-    {{-0.5f, -0.5f, -0.5f}, {-1, 0, 0}, {1, 1}, {0, 0}, kColNegX},
+    {{-0.5f, -0.5f, 0.5f}, {-1, 0, 0}, {0, 1}, {0, 0}, kCrateWhite},
+    {{-0.5f, 0.5f, 0.5f}, {-1, 0, 0}, {0, 0}, {0, 0}, kCrateWhite},
+    {{-0.5f, 0.5f, -0.5f}, {-1, 0, 0}, {1, 0}, {0, 0}, kCrateWhite},
+    {{-0.5f, -0.5f, -0.5f}, {-1, 0, 0}, {1, 1}, {0, 0}, kCrateWhite},
     // +Y face (top)
-    {{-0.5f, 0.5f, -0.5f}, {0, 1, 0}, {0, 1}, {0, 0}, kColPosY},
-    {{-0.5f, 0.5f, 0.5f}, {0, 1, 0}, {0, 0}, {0, 0}, kColPosY},
-    {{0.5f, 0.5f, 0.5f}, {0, 1, 0}, {1, 0}, {0, 0}, kColPosY},
-    {{0.5f, 0.5f, -0.5f}, {0, 1, 0}, {1, 1}, {0, 0}, kColPosY},
+    {{-0.5f, 0.5f, -0.5f}, {0, 1, 0}, {0, 1}, {0, 0}, kCrateWhite},
+    {{-0.5f, 0.5f, 0.5f}, {0, 1, 0}, {0, 0}, {0, 0}, kCrateWhite},
+    {{0.5f, 0.5f, 0.5f}, {0, 1, 0}, {1, 0}, {0, 0}, kCrateWhite},
+    {{0.5f, 0.5f, -0.5f}, {0, 1, 0}, {1, 1}, {0, 0}, kCrateWhite},
     // -Y face (bottom)
-    {{-0.5f, -0.5f, 0.5f}, {0, -1, 0}, {0, 1}, {0, 0}, kColNegY},
-    {{-0.5f, -0.5f, -0.5f}, {0, -1, 0}, {0, 0}, {0, 0}, kColNegY},
-    {{0.5f, -0.5f, -0.5f}, {0, -1, 0}, {1, 0}, {0, 0}, kColNegY},
-    {{0.5f, -0.5f, 0.5f}, {0, -1, 0}, {1, 1}, {0, 0}, kColNegY},
+    {{-0.5f, -0.5f, 0.5f}, {0, -1, 0}, {0, 1}, {0, 0}, kCrateWhite},
+    {{-0.5f, -0.5f, -0.5f}, {0, -1, 0}, {0, 0}, {0, 0}, kCrateWhite},
+    {{0.5f, -0.5f, -0.5f}, {0, -1, 0}, {1, 0}, {0, 0}, kCrateWhite},
+    {{0.5f, -0.5f, 0.5f}, {0, -1, 0}, {1, 1}, {0, 0}, kCrateWhite},
     // +Z face
-    {{-0.5f, -0.5f, 0.5f}, {0, 0, 1}, {0, 1}, {0, 0}, kColPosZ},
-    {{0.5f, -0.5f, 0.5f}, {0, 0, 1}, {1, 1}, {0, 0}, kColPosZ},
-    {{0.5f, 0.5f, 0.5f}, {0, 0, 1}, {1, 0}, {0, 0}, kColPosZ},
-    {{-0.5f, 0.5f, 0.5f}, {0, 0, 1}, {0, 0}, {0, 0}, kColPosZ},
+    {{-0.5f, -0.5f, 0.5f}, {0, 0, 1}, {0, 1}, {0, 0}, kCrateWhite},
+    {{0.5f, -0.5f, 0.5f}, {0, 0, 1}, {1, 1}, {0, 0}, kCrateWhite},
+    {{0.5f, 0.5f, 0.5f}, {0, 0, 1}, {1, 0}, {0, 0}, kCrateWhite},
+    {{-0.5f, 0.5f, 0.5f}, {0, 0, 1}, {0, 0}, {0, 0}, kCrateWhite},
     // -Z face (front when camera looks down -Z)
-    {{0.5f, -0.5f, -0.5f}, {0, 0, -1}, {0, 1}, {0, 0}, kColNegZ},
-    {{-0.5f, -0.5f, -0.5f}, {0, 0, -1}, {1, 1}, {0, 0}, kColNegZ},
-    {{-0.5f, 0.5f, -0.5f}, {0, 0, -1}, {1, 0}, {0, 0}, kColNegZ},
-    {{0.5f, 0.5f, -0.5f}, {0, 0, -1}, {0, 0}, {0, 0}, kColNegZ},
+    {{0.5f, -0.5f, -0.5f}, {0, 0, -1}, {0, 1}, {0, 0}, kCrateWhite},
+    {{-0.5f, -0.5f, -0.5f}, {0, 0, -1}, {1, 1}, {0, 0}, kCrateWhite},
+    {{-0.5f, 0.5f, -0.5f}, {0, 0, -1}, {1, 0}, {0, 0}, kCrateWhite},
+    {{0.5f, 0.5f, -0.5f}, {0, 0, -1}, {0, 0}, {0, 0}, kCrateWhite},
 }};
+
+// ─── Procedural wooden-crate texture ─────────────────────────────────────
+// Deterministic RGBA8 chunk (kCrateTexDim², pitch == width) that reads as a
+// shipping crate: vertical wooden planks with darker grooves between them,
+// a heavy dark frame around the border, two diagonal cross-battens, and a
+// metal bolt in each corner. No RNG — a couple of cheap integer hashes give
+// the planks per-column grain + light per-texel speckle so the wood doesn't
+// look like flat bands. The buffer is owned by main() and outlives the
+// render loop; its data pointer is handed to each crate's DrawItem.
+constexpr u32 kCrateTexDim = 128;
+
+// Small deterministic 2D value hash → [0,1). Cheap, repeatable, no global
+// state; used only to add fine grain/speckle so the result isn't banded.
+f32 hash2(u32 x, u32 y) noexcept {
+    u32 h = x * 374761393u + y * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return static_cast<f32>(h & 0xFFFFFFu) / static_cast<f32>(0x1000000u);
+}
+
+u8 clamp_u8(i32 v) noexcept {
+    return static_cast<u8>(v < 0 ? 0 : (v > 255 ? 255 : v));
+}
+
+std::vector<u32> build_crate_texture() {
+    const u32 dim = kCrateTexDim;
+    std::vector<u32> tex(static_cast<usize>(dim) * dim, 0u);
+
+    // Palette (warm wood + dark iron frame). Plank base is a mid wood brown;
+    // each plank gets a small per-column shade offset so adjacent boards read
+    // as separate boards.
+    constexpr i32 kWoodR = 150, kWoodG = 103, kWoodB = 56;      // base plank
+    constexpr i32 kGrooveR = 64, kGrooveG = 40, kGrooveB = 20;  // gap shadow
+    constexpr i32 kFrameR = 78, kFrameG = 50, kFrameB = 26;     // border/batten
+    constexpr i32 kBoltR = 92, kBoltG = 96, kBoltB = 104;       // iron bolt
+
+    const u32 frame = dim / 12;                 // border thickness (~10 px @128)
+    const u32 plank_w = dim / 6;                // 6 vertical planks across the face
+    const u32 groove = std::max(2u, dim / 64);  // dark gap between planks
+    const f32 dimf = static_cast<f32>(dim);
+
+    for (u32 y = 0; y < dim; ++y) {
+        for (u32 x = 0; x < dim; ++x) {
+            // Per-plank shade so neighbouring boards differ; deterministic
+            // off the plank index. ±18 luma swing across the 6 planks.
+            const u32 plank_idx = x / plank_w;
+            const i32 plank_shade =
+                static_cast<i32>((plank_idx * 37u) % 37u) - 18 + static_cast<i32>(plank_idx * 6u);
+            // Long vertical grain: a slow cosine down the board + fine speckle.
+            const f32 grain =
+                std::cos((static_cast<f32>(x) + static_cast<f32>(plank_idx) * 11.0f) * 0.9f) * 10.0f;
+            const f32 speckle = (hash2(x, y) - 0.5f) * 22.0f;
+            i32 r = kWoodR + plank_shade + static_cast<i32>(grain + speckle);
+            i32 g = kWoodG + plank_shade + static_cast<i32>(grain * 0.8f + speckle);
+            i32 b = kWoodB + plank_shade + static_cast<i32>(grain * 0.5f + speckle);
+
+            // Dark groove between planks (skip the leading edge at x==0).
+            const u32 col_in_plank = x % plank_w;
+            const bool in_groove = (col_in_plank < groove) && (plank_idx > 0);
+
+            // Diagonal cross-battens (two bars forming an X across the
+            // interior). Bar half-width scales with the face.
+            const f32 fx = static_cast<f32>(x) / dimf;
+            const f32 fy = static_cast<f32>(y) / dimf;
+            const f32 bar = 0.06f;
+            const bool on_batten = (std::fabs(fx - fy) < bar) || (std::fabs(fx - (1.0f - fy)) < bar);
+
+            // Heavy border frame around the whole face.
+            const bool in_frame =
+                (x < frame) || (y < frame) || (x >= dim - frame) || (y >= dim - frame);
+
+            // Corner bolts: small discs centred inside each corner of the
+            // frame so the crate reads as bolted-together.
+            const f32 bolt_in = static_cast<f32>(frame) * 0.5f;
+            const f32 corners[4][2] = {
+                {bolt_in, bolt_in},
+                {dimf - bolt_in, bolt_in},
+                {bolt_in, dimf - bolt_in},
+                {dimf - bolt_in, dimf - bolt_in},
+            };
+            bool on_bolt = false;
+            const f32 bolt_rad = static_cast<f32>(frame) * 0.30f;
+            for (const auto& c : corners) {
+                const f32 dx = static_cast<f32>(x) + 0.5f - c[0];
+                const f32 dy = static_cast<f32>(y) + 0.5f - c[1];
+                if (dx * dx + dy * dy <= bolt_rad * bolt_rad) {
+                    on_bolt = true;
+                    break;
+                }
+            }
+
+            if (on_bolt) {
+                // Tiny top-left shading so the bolt reads as a rounded head.
+                const i32 sh = static_cast<i32>((hash2(x, y) - 0.5f) * 30.0f);
+                r = kBoltR + sh;
+                g = kBoltG + sh;
+                b = kBoltB + sh;
+            } else if (in_groove) {
+                r = kGrooveR;
+                g = kGrooveG;
+                b = kGrooveB;
+            } else if (in_frame || on_batten) {
+                // Frame/batten share the dark iron-stained timber tone, with
+                // the same fine speckle so they aren't dead flat.
+                const i32 sp = static_cast<i32>((hash2(x, y) - 0.5f) * 16.0f);
+                r = kFrameR + sp;
+                g = kFrameG + sp;
+                b = kFrameB + sp;
+            }
+
+            tex[static_cast<usize>(y) * dim + x] =
+                pack_rgba(clamp_u8(r), clamp_u8(g), clamp_u8(b), 255);
+        }
+    }
+    return tex;
+}
 
 // 36 indices — two triangles per face, wound CCW in the post-flip screen
 // frame (matches the front-face convention in TriSetup.cpp).
@@ -195,6 +312,13 @@ int main(int argc, char** argv) {
     fb.depth = depth.data();
 
     auto& rasterizer = render::raster::Rasterizer::Get();
+
+    // Procedural wooden-crate texture, built once and owned here so its
+    // storage outlives every end_frame() that samples it. Each crate's
+    // DrawItem points `lightmap_texels` at this buffer (pitch == width), so
+    // the rasterizer's per-pixel surface_cached path samples it through the
+    // cube's 0..1 face `uv` and multiplies by the white vertex colour.
+    const std::vector<u32> crate_tex = build_crate_texture();
 
     // The rasterizer now back-face culls by default, so the cube must be
     // wound consistently with its per-vertex normals or faces drop out as a
@@ -297,6 +421,12 @@ int main(int argc, char** argv) {
             item.indices = cube_idx.data();
             item.index_count = static_cast<u32>(cube_idx.size());
             item.model = math::mul(tr, ro);
+            // Bind the procedural crate chunk: forces the SurfaceCached path
+            // so the inner loop computes white × crate(uv) per pixel. Buffer
+            // is owned by `crate_tex` above and outlives this loop.
+            item.lightmap_texels = crate_tex.data();
+            item.lightmap_w = kCrateTexDim;
+            item.lightmap_h = kCrateTexDim;
             rasterizer.submit(item);
         }
 
