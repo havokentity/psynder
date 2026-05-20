@@ -4,6 +4,20 @@
 // `lm_bake` library (tools/lm_bake), then renders back through the public
 // Rasterizer::submit() API. Press B to toggle baked vs. flat (unbaked).
 //
+// ─── Scene: a deliberate twin of sample 13 (RT Quake) for bake-vs-RT A/B ────
+//
+//   The geometry, the two ceiling point lights (position/colour/intensity),
+//   and the camera start pose are copied verbatim from samples/13_rt_quake so
+//   the two demos frame the IDENTICAL room: sample 13 lights it with runtime
+//   raytraced shadows, sample 14 with this offline-baked lightmap. Stand them
+//   side by side to compare a baked atlas against a per-pixel raytrace of the
+//   same world. lm_bake casts real shadow rays (Bake.cpp::occluded), so the
+//   dividing wall + doorway throw a baked shadow between the two rooms, just
+//   as sample 13's runtime shadow rays do. The one model difference is light
+//   falloff: lm_bake is pure inverse-square (I/r²) with no range cutoff, while
+//   sample 13 softens with 1/(1+0.05·r²) and clamps at range 16 — the per-face
+//   chunk tonemap (build_face_chunks) absorbs the brightness difference.
+//
 // ─── What lm_bake actually bakes (verified against tools/lm_bake/Bake.cpp) ──
 //
 //   lm_bake is a CPU lightmap baker. Its scene model is fully 3D:
@@ -23,10 +37,11 @@
 //
 // ─── How this sample round-trips through the baker ──────────────────────────
 //
-//   1. Build a small 3D room (floor/ceiling/4 walls) as one shared
-//      vertex/index pool, sample_03 style. Each face is a single quad whose
-//      two triangles are also pushed into a `bake::BakeScene` with the face's
-//      albedo, plus one warm ceiling point light. NOTE: lm_bake takes each
+//   1. Build the sample-13 two-room-plus-doorway box (floor/ceiling/walls,
+//      with a doorway gap punched in the dividing wall) as one shared
+//      vertex/index pool, sample_03 style. Each face is a quad whose two
+//      triangles are also pushed into a `bake::BakeScene` with the face's
+//      albedo, plus the two warm ceiling point lights. NOTE: lm_bake takes each
 //      triangle's shading normal from its WINDING (cross(v1-v0, v2-v0)), not
 //      the BakeTriangle::normal field — see Bake.cpp::build_basis. So
 //      emit_quad orients the bake copy's winding to face the room interior
@@ -155,7 +170,8 @@ void clear_depth_far(render::Framebuffer& fb) noexcept {
 
 // ─── Room geometry + parallel bake scene ─────────────────────────────────
 //
-// One axis-aligned box room. Every quad is fan-triangulated into a shared
+// Two axis-aligned box rooms joined by a doorway corridor — the exact layout
+// sample 13 raytraces. Every quad is fan-triangulated into a shared
 // vertex/index pool (rendered via Rasterizer::submit, sample_03 style). The
 // SAME triangles are pushed into a bake::BakeScene so the lightmap we bake
 // lines up 1:1 with what we draw. Per-vertex we store the surface albedo in
@@ -263,94 +279,231 @@ void emit_quad(World& w,
     w.face_quad.push_back({a, b, c, d});
 }
 
+// Linear-RGB albedo from 8-bit channels (mirrors sample 13's rgb01 so the
+// baked room uses the SAME surface colours the raytraced room does).
+math::Vec3 rgb01(u32 r, u32 g, u32 b) noexcept {
+    return {static_cast<f32>(r) / 255.0f, static_cast<f32>(g) / 255.0f, static_cast<f32>(b) / 255.0f};
+}
+
 void build_world(World& w) {
+    // ── Geometry copied verbatim from samples/13_rt_quake (build_room). ────
+    // Two boxy rooms joined by a doorway corridor; floor at Y=0, ceiling Y=3.
+    //
+    //      Z = -8 ┌──────────────┐
+    //             │              │   ROOM A
+    //      Z = -2 └──┐        ┌──┘
+    //                │ doorway│
+    //      Z =  0 ┌──┘        └──┐
+    //             │              │   ROOM B
+    //      Z =  6 └──────────────┘
+    //             X=-4          X=4
     constexpr f32 kFloorY = 0.0f;
     constexpr f32 kCeilY = 3.0f;
-    constexpr f32 kX0 = -3.0f;
-    constexpr f32 kX1 = 3.0f;
-    constexpr f32 kZ0 = -3.5f;
-    constexpr f32 kZ1 = 3.5f;
+    constexpr f32 kRoomAZ0 = -8.0f;  // back wall of room A
+    constexpr f32 kRoomAZ1 = -2.0f;  // front wall of room A (doorway side)
+    constexpr f32 kDoorZ0 = -2.0f;   // doorway near A
+    constexpr f32 kDoorZ1 = 0.0f;    // doorway near B
+    constexpr f32 kRoomBZ0 = 0.0f;   // back wall of room B (doorway side)
+    constexpr f32 kRoomBZ1 = 6.0f;   // front wall of room B
+    constexpr f32 kRoomX0 = -4.0f;
+    constexpr f32 kRoomX1 = 4.0f;
+    constexpr f32 kDoorX0 = -1.0f;  // doorway corridor extent
+    constexpr f32 kDoorX1 = 1.0f;
 
     // Logical material ids (the rasterizer doesn't resolve them today; we use
-    // per-vertex colour × the baked chunk). Albedos are mid-grey with subtle
-    // tints so the baked falloff reads clearly against a single ceiling light.
+    // per-vertex colour × the baked chunk). Same per-surface colours sample 13
+    // shades with: cool-blue room A, warm-orange room B, green corridor.
     constexpr u32 kMatFloor = 1, kMatCeil = 2, kMatWall = 3;
-    const math::Vec3 kAlbFloor{0.72f, 0.70f, 0.66f};
-    const math::Vec3 kAlbCeil{0.62f, 0.64f, 0.70f};
-    const math::Vec3 kAlbWallX{0.78f, 0.70f, 0.64f};  // warm side walls
-    const math::Vec3 kAlbWallZ{0.66f, 0.70f, 0.78f};  // cool end walls
+    const math::Vec3 cA_floor = rgb01(110, 140, 180);  // cool blue room A
+    const math::Vec3 cA_ceil = rgb01(70, 90, 130);
+    const math::Vec3 cA_wall = rgb01(150, 170, 200);
+    const math::Vec3 cB_floor = rgb01(180, 140, 110);  // warm orange room B
+    const math::Vec3 cB_ceil = rgb01(130, 90, 70);
+    const math::Vec3 cB_wall = rgb01(200, 170, 150);
+    const math::Vec3 cDoor_floor = rgb01(160, 200, 130);  // green corridor
+    const math::Vec3 cDoor_ceil = rgb01(110, 150, 90);
+    const math::Vec3 cDoor_wall = rgb01(180, 210, 150);
+
+    const math::Vec3 up{0, 1, 0};
+    const math::Vec3 down{0, -1, 0};
+    const math::Vec3 px{1, 0, 0};
+    const math::Vec3 nx{-1, 0, 0};
+    const math::Vec3 pz{0, 0, 1};
+    const math::Vec3 nz{0, 0, -1};
 
     const u32 leaf0_first = static_cast<u32>(w.map.faces.size());
 
-    // One quad per face. The lightmap's hotspot + 1/r^2 falloff is now
-    // resolved per-pixel inside each face's baked chunk (build_face_chunk), so
-    // no mesh subdivision is needed — a single quad per face keeps the bake
-    // scene tiny (6 faces × 2 = 12 triangles) and the round-trip near-instant.
-    // Floor (+Y up normal, interior-facing).
+    // emit_quad orients each bake triangle's winding to face `normal` and the
+    // render winding is taken as given; the corner orders below match the
+    // proven interior-facing convention (CCW seen from the room interior).
+    // One quad (or two strips around the doorway) per face — the lightmap's
+    // hotspot + 1/r^2 falloff is resolved per-pixel inside each face's baked
+    // chunk (build_face_chunks), so no mesh subdivision is needed.
+
+    // ── Room A ─────────────────────────────────────────────────────────────
     emit_quad(w,
-              {kX0, kFloorY, kZ0},
-              {kX1, kFloorY, kZ0},
-              {kX1, kFloorY, kZ1},
-              {kX0, kFloorY, kZ1},
-              {0, 1, 0},
-              kAlbFloor,
+              {kRoomX0, kFloorY, kRoomAZ0},
+              {kRoomX1, kFloorY, kRoomAZ0},
+              {kRoomX1, kFloorY, kRoomAZ1},
+              {kRoomX0, kFloorY, kRoomAZ1},
+              up,
+              cA_floor,
               kMatFloor);
-    // Ceiling (-Y).
     emit_quad(w,
-              {kX0, kCeilY, kZ1},
-              {kX1, kCeilY, kZ1},
-              {kX1, kCeilY, kZ0},
-              {kX0, kCeilY, kZ0},
-              {0, -1, 0},
-              kAlbCeil,
+              {kRoomX0, kCeilY, kRoomAZ1},
+              {kRoomX1, kCeilY, kRoomAZ1},
+              {kRoomX1, kCeilY, kRoomAZ0},
+              {kRoomX0, kCeilY, kRoomAZ0},
+              down,
+              cA_ceil,
               kMatCeil);
-    // -X wall.
-    emit_quad(w,
-              {kX0, kFloorY, kZ1},
-              {kX0, kCeilY, kZ1},
-              {kX0, kCeilY, kZ0},
-              {kX0, kFloorY, kZ0},
-              {1, 0, 0},
-              kAlbWallX,
+    emit_quad(w,  // -X wall (faces +X interior)
+              {kRoomX0, kFloorY, kRoomAZ1},
+              {kRoomX0, kCeilY, kRoomAZ1},
+              {kRoomX0, kCeilY, kRoomAZ0},
+              {kRoomX0, kFloorY, kRoomAZ0},
+              px,
+              cA_wall,
               kMatWall);
-    // +X wall.
-    emit_quad(w,
-              {kX1, kFloorY, kZ0},
-              {kX1, kCeilY, kZ0},
-              {kX1, kCeilY, kZ1},
-              {kX1, kFloorY, kZ1},
-              {-1, 0, 0},
-              kAlbWallX,
+    emit_quad(w,  // +X wall (faces -X interior)
+              {kRoomX1, kFloorY, kRoomAZ0},
+              {kRoomX1, kCeilY, kRoomAZ0},
+              {kRoomX1, kCeilY, kRoomAZ1},
+              {kRoomX1, kFloorY, kRoomAZ1},
+              nx,
+              cA_wall,
               kMatWall);
-    // -Z wall.
-    emit_quad(w,
-              {kX0, kFloorY, kZ0},
-              {kX0, kCeilY, kZ0},
-              {kX1, kCeilY, kZ0},
-              {kX1, kFloorY, kZ0},
-              {0, 0, 1},
-              kAlbWallZ,
+    emit_quad(w,  // -Z back wall (faces +Z interior)
+              {kRoomX0, kFloorY, kRoomAZ0},
+              {kRoomX0, kCeilY, kRoomAZ0},
+              {kRoomX1, kCeilY, kRoomAZ0},
+              {kRoomX1, kFloorY, kRoomAZ0},
+              pz,
+              cA_wall,
               kMatWall);
-    // +Z wall.
+    // +Z front wall (doorway side) — two strips around the door opening.
     emit_quad(w,
-              {kX1, kFloorY, kZ1},
-              {kX1, kCeilY, kZ1},
-              {kX0, kCeilY, kZ1},
-              {kX0, kFloorY, kZ1},
-              {0, 0, -1},
-              kAlbWallZ,
+              {kRoomX0, kFloorY, kRoomAZ1},
+              {kRoomX0, kCeilY, kRoomAZ1},
+              {kDoorX0, kCeilY, kRoomAZ1},
+              {kDoorX0, kFloorY, kRoomAZ1},
+              nz,
+              cA_wall,
+              kMatWall);
+    emit_quad(w,
+              {kDoorX1, kFloorY, kRoomAZ1},
+              {kDoorX1, kCeilY, kRoomAZ1},
+              {kRoomX1, kCeilY, kRoomAZ1},
+              {kRoomX1, kFloorY, kRoomAZ1},
+              nz,
+              cA_wall,
+              kMatWall);
+
+    // ── Doorway corridor ────────────────────────────────────────────────
+    emit_quad(w,
+              {kDoorX0, kFloorY, kDoorZ0},
+              {kDoorX1, kFloorY, kDoorZ0},
+              {kDoorX1, kFloorY, kDoorZ1},
+              {kDoorX0, kFloorY, kDoorZ1},
+              up,
+              cDoor_floor,
+              kMatFloor);
+    emit_quad(w,
+              {kDoorX0, kCeilY, kDoorZ1},
+              {kDoorX1, kCeilY, kDoorZ1},
+              {kDoorX1, kCeilY, kDoorZ0},
+              {kDoorX0, kCeilY, kDoorZ0},
+              down,
+              cDoor_ceil,
+              kMatCeil);
+    emit_quad(w,  // corridor -X wall (faces +X interior)
+              {kDoorX0, kFloorY, kDoorZ1},
+              {kDoorX0, kCeilY, kDoorZ1},
+              {kDoorX0, kCeilY, kDoorZ0},
+              {kDoorX0, kFloorY, kDoorZ0},
+              px,
+              cDoor_wall,
+              kMatWall);
+    emit_quad(w,  // corridor +X wall (faces -X interior)
+              {kDoorX1, kFloorY, kDoorZ0},
+              {kDoorX1, kCeilY, kDoorZ0},
+              {kDoorX1, kCeilY, kDoorZ1},
+              {kDoorX1, kFloorY, kDoorZ1},
+              nx,
+              cDoor_wall,
+              kMatWall);
+
+    // ── Room B ─────────────────────────────────────────────────────────────
+    emit_quad(w,
+              {kRoomX0, kFloorY, kRoomBZ0},
+              {kRoomX1, kFloorY, kRoomBZ0},
+              {kRoomX1, kFloorY, kRoomBZ1},
+              {kRoomX0, kFloorY, kRoomBZ1},
+              up,
+              cB_floor,
+              kMatFloor);
+    emit_quad(w,
+              {kRoomX0, kCeilY, kRoomBZ1},
+              {kRoomX1, kCeilY, kRoomBZ1},
+              {kRoomX1, kCeilY, kRoomBZ0},
+              {kRoomX0, kCeilY, kRoomBZ0},
+              down,
+              cB_ceil,
+              kMatCeil);
+    emit_quad(w,  // -X wall (faces +X interior)
+              {kRoomX0, kFloorY, kRoomBZ1},
+              {kRoomX0, kCeilY, kRoomBZ1},
+              {kRoomX0, kCeilY, kRoomBZ0},
+              {kRoomX0, kFloorY, kRoomBZ0},
+              px,
+              cB_wall,
+              kMatWall);
+    emit_quad(w,  // +X wall (faces -X interior)
+              {kRoomX1, kFloorY, kRoomBZ0},
+              {kRoomX1, kCeilY, kRoomBZ0},
+              {kRoomX1, kCeilY, kRoomBZ1},
+              {kRoomX1, kFloorY, kRoomBZ1},
+              nx,
+              cB_wall,
+              kMatWall);
+    emit_quad(w,  // +Z far wall (faces -Z interior)
+              {kRoomX0, kFloorY, kRoomBZ1},
+              {kRoomX0, kCeilY, kRoomBZ1},
+              {kRoomX1, kCeilY, kRoomBZ1},
+              {kRoomX1, kFloorY, kRoomBZ1},
+              nz,
+              cB_wall,
+              kMatWall);
+    // -Z back wall (doorway side) — two strips around the door opening.
+    emit_quad(w,
+              {kRoomX0, kFloorY, kRoomBZ0},
+              {kRoomX0, kCeilY, kRoomBZ0},
+              {kDoorX0, kCeilY, kRoomBZ0},
+              {kDoorX0, kFloorY, kRoomBZ0},
+              pz,
+              cB_wall,
+              kMatWall);
+    emit_quad(w,
+              {kDoorX1, kFloorY, kRoomBZ0},
+              {kDoorX1, kCeilY, kRoomBZ0},
+              {kRoomX1, kCeilY, kRoomBZ0},
+              {kRoomX1, kFloorY, kRoomBZ0},
+              pz,
+              cB_wall,
               kMatWall);
 
     const u32 leaf_face_end = static_cast<u32>(w.map.faces.size());
 
-    // One leaf containing every face (single convex room), plus a solid
-    // outside leaf so `locate()` is honest when the eye leaves the box.
+    // One leaf containing every face (the whole two-room box reads as one
+    // convex cluster for this demo — the doorway never occludes a full room
+    // from the camera path), plus a solid outside leaf so `locate()` is honest
+    // when the eye leaves the box.
     w.map.leaves.resize(2);
     w.map.leaves[0].cluster = 0;
     w.map.leaves[0].first_face = leaf0_first;
     w.map.leaves[0].face_count = leaf_face_end - leaf0_first;
-    w.map.leaves[0].bounds.min = {kX0, kFloorY, kZ0};
-    w.map.leaves[0].bounds.max = {kX1, kCeilY, kZ1};
+    w.map.leaves[0].bounds.min = {kRoomX0, kFloorY, kRoomAZ0};
+    w.map.leaves[0].bounds.max = {kRoomX1, kCeilY, kRoomBZ1};
     w.map.leaves[1].cluster = world::bsp::kBspSolidCluster;
     w.map.leaves[1].first_face = 0;
     w.map.leaves[1].face_count = 0;
@@ -358,23 +511,32 @@ void build_world(World& w) {
     w.map.leaves[1].bounds.max = {0, 0, 0};
 
     // No node tree -> locate() falls back to leaves.front(); the PVS walk
-    // emits the single room. One cluster, visible to itself.
+    // emits the single cluster. One cluster, visible to itself.
     w.map.pvs.assign(1, 0b0000'0001);
 
-    // Bake lights: a warm point light hung near the ceiling, off-centre to
-    // +Z so the hotspot lands on the floor/walls asymmetrically and the
-    // 1/r^2 falloff is obvious across the room. Intensity tuned for the
-    // ~3-4 m room scale.
-    bake::BakeLight key{};
-    key.kind = bake::LightKind::kPoint;
-    key.position = {0.0f, kCeilY - 0.5f, 1.4f};
-    key.color = {1.0f, 0.92f, 0.78f};
-    key.intensity = 11.0f;
-    w.scene.lights.push_back(key);
+    // Bake lights: the two warm ceiling point lights from sample 13, copied
+    // position/colour/intensity for an apples-to-apples bake-vs-RT compare.
+    // lm_bake's point model is pure inverse-square (I/r²) with shadow rays and
+    // no range cutoff — sample 13 additionally softens 1/(1+0.05·r²) and clamps
+    // at range 16, so the falloff curve differs slightly; the chunk tonemap
+    // soaks up the brightness offset.
+    bake::BakeLight room_a{};  // cool-white over room A
+    room_a.kind = bake::LightKind::kPoint;
+    room_a.position = {0.0f, 2.7f, -5.0f};
+    room_a.color = {0.95f, 0.97f, 1.0f};
+    room_a.intensity = 11.0f;
+    w.scene.lights.push_back(room_a);
+
+    bake::BakeLight room_b{};  // warm-amber over room B
+    room_b.kind = bake::LightKind::kPoint;
+    room_b.position = {0.0f, 2.7f, 3.0f};
+    room_b.color = {1.0f, 0.85f, 0.65f};
+    room_b.intensity = 11.0f;
+    w.scene.lights.push_back(room_b);
 
     w.floor_y = kFloorY;
-    w.bounds.min = {kX0, kFloorY, kZ0};
-    w.bounds.max = {kX1, kCeilY, kZ1};
+    w.bounds.min = {kRoomX0, kFloorY, kRoomAZ0};
+    w.bounds.max = {kRoomX1, kCeilY, kRoomBZ1};
 }
 
 // ─── Bake round-trip ──────────────────────────────────────────────────────
@@ -664,17 +826,20 @@ int main(int argc, char** argv) {
                  w.scene.triangles.size(),
                  w.scene.lights.size());
 
-    // Bake the lightmap and round-trip it through .lmlight. A modest 24-lumel
-    // per-triangle resolution + a single bounce keeps --smoke-frames well under
-    // the 30 s test budget (the scene is 12 triangles) while giving each face
-    // chunk real per-texel detail. Direct + 1 bounce so indirect fill is
-    // visible in the corners.
-    const bake::BakedAtlas atlas = bake_and_roundtrip(w, /*resolution=*/24, /*bounces=*/1);
+    // Bake the lightmap and round-trip it through .lmlight. The two-room scene
+    // is ~36 triangles, several of them large (8x6 m floors, 8x3 m walls), so
+    // we bump the per-triangle resolution to 40 lumels: a coarser grid leaves
+    // visible blotches on the big surfaces once the chunk upsamples it. Even at
+    // 40, direct + 1 bounce stays comfortably under the 30 s smoke budget.
+    // Direct + 1 bounce so indirect fill is visible in the corners and the
+    // doorway shadow stays soft.
+    const bake::BakedAtlas atlas = bake_and_roundtrip(w, /*resolution=*/40, /*bounces=*/1);
     const bool have_bake = !atlas.surfaces.empty();
 
     // Exposure for the per-texel tonemap: chunk channel = 1 - exp(-irr * k).
-    // Tuned for this room + the 11 W/sr ceiling light so the hotspot is bright
-    // without flat-clipping to white and the far corners stay readable.
+    // Tuned for this room + the two 11 W/sr ceiling lights so each room's
+    // hotspot is bright without flat-clipping to white and the shadowed
+    // doorway / far corners stay readable.
     constexpr f32 kExposure = 2.2f;
 
     // Baked vs. unbaked toggle. Mirrors CharacterController's lazy-cvar
@@ -709,12 +874,11 @@ int main(int argc, char** argv) {
     samples::CharacterController controller{cc_cfg};
     controller.set_bounds(w.bounds);
     controller.set_mode(samples::ControllerMode::Fps);
-    // Stand in the -Z/+X corner looking diagonally toward +Z/-X (toward the
-    // far corner past the ceiling light), so the floor, the far wall and a
-    // side wall all fill the frame and the baked hotspot + falloff are
-    // visible at once. yaw=pi faces +Z; +0.42 swings the view toward -X.
-    controller.set_position({2.2f, w.floor_y + cc_cfg.eye_height, -2.8f});
-    controller.set_look(math::kPi + 0.42f, -0.16f);
+    // SAME start pose as sample 13: stand deep in Room A looking straight down
+    // +Z toward the doorway and Room B, so the two demos frame the identical
+    // room for an A/B compare. yaw=0,pitch=0 faces +Z.
+    controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f});
+    controller.set_look(0.0f, 0.0f);
 
     // CPU framebuffer + depth.
     std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
@@ -761,13 +925,13 @@ int main(int argc, char** argv) {
         }
 
         if (args.smoke_frames > 0) {
-            // Deterministic pose looking diagonally across the lit room so the
-            // capture is host-stable. A gentle dolly toward the centre keeps
-            // every smoke frame inside the room bounds.
+            // Deterministic camera path identical to sample 13: walk from deep
+            // in Room A through the doorway into Room B over the first 60
+            // frames (z: -5 -> +3), looking straight down +Z. Host-stable, and
+            // it frames the same transition the raytraced demo captures.
             const f32 t01 = std::clamp(static_cast<f32>(frame) / 60.0f, 0.0f, 1.0f);
-            controller.set_position(
-                {2.2f - 1.2f * t01, w.floor_y + cc_cfg.eye_height, -2.8f + 1.6f * t01});
-            controller.set_look(math::kPi + 0.42f, -0.16f);
+            controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f + 8.0f * t01});
+            controller.set_look(0.0f, 0.0f);
             // Exercise the toggle path mid-smoke so both branches run in CI.
             if (frame == 2 && baked_cvar)
                 console.SetCVarOverride("r_lightmap_baked", "0");
