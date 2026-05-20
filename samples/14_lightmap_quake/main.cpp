@@ -24,35 +24,35 @@
 // ─── How this sample round-trips through the baker ──────────────────────────
 //
 //   1. Build a small 3D room (floor/ceiling/4 walls) as one shared
-//      vertex/index pool, sample_03 style, but each face is subdivided into a
-//      grid of sub-quads so per-vertex shading can resolve the light's
-//      hotspot + falloff. Each sub-quad's two triangles are also pushed into a
-//      `bake::BakeScene` with the face's albedo, plus one warm ceiling point
-//      light. NOTE: lm_bake takes each triangle's shading normal from its
-//      WINDING (cross(v1-v0, v2-v0)), not the BakeTriangle::normal field, so
+//      vertex/index pool, sample_03 style. Each face is a single quad whose
+//      two triangles are also pushed into a `bake::BakeScene` with the face's
+//      albedo, plus one warm ceiling point light. NOTE: lm_bake takes each
+//      triangle's shading normal from its WINDING (cross(v1-v0, v2-v0)), not
+//      the BakeTriangle::normal field — see Bake.cpp::build_basis. So
 //      emit_quad orients the bake copy's winding to face the room interior
-//      (see the comment there) — otherwise every surface bakes to black.
+//      (see the comment there); otherwise every surface bakes to black.
 //   2. Call `bake::bake(scene, opt)` in-process (link lm_bake_lib) -> a
 //      `BakedAtlas`. Serialize it with `bake::write_lmlight()` to a real
 //      `.lmlight` file in the OS temp dir, then load it straight back with
 //      `bake::read_lmlight()`. The render path consumes ONLY the reloaded
 //      atlas, so the demo genuinely round-trips through the on-disk format.
-//   3. The rasterizer's first-class lightmap-atlas sampling path is still a
-//      lane-10 stub (SurfaceCache is keyed but the base*lightmap product is
-//      not cooked yet — see engine/render/raster/TileRaster.cpp:454). The
-//      rasterizer DOES do perspective-correct per-vertex Gouraud colour with
-//      no texture, so this sample does the lightmap lookup itself: for every
-//      vertex it inverts the baker's texel mapping, samples the reloaded
-//      atlas at that lumel, and folds `albedo * lumel` into the vertex
-//      colour. The result is a 3D room lit by the baked lightmap, shaded by
-//      the stock rasterizer. Toggling baked off restores flat albedo so the
+//   3. PER-PIXEL lightmap. For every face we rasterise its baked irradiance
+//      into a small RGBA8 "chunk" (build_face_chunk): each chunk texel (s,t)
+//      is mapped back to the quad's 3D point, the covering bake triangle is
+//      picked, its barycentrics taken, and the matching BakedSurface sampled
+//      bilinearly. The chunk is tonemapped to LDR. We then set the quad's
+//      base `uv` to the canonical 0,0/1,0/1,1/0,1 corners, set the vertex
+//      `color` to the face albedo, and hand the chunk to the rasterizer via
+//      DrawItem::lightmap_texels. The stock per-pixel surface_cached path
+//      then computes albedo × chunk bilinearly at every covered pixel — a
+//      true per-texel lightmap fetch, no Gouraud creases. Toggling baked off
+//      drops the chunk (lightmap_texels=nullptr) and shows flat albedo so the
 //      lightmap's contribution is obvious.
 //
-// This is a 3D lit room driven end-to-end by the actual baker, not a faked
-// approximation. The only honesty caveat is that shading is per-vertex
-// (Gouraud over the subdivided mesh) rather than a true per-lumel texture
-// fetch — forced by the missing lane-10 surface cooker. The bake itself is
-// the real lm_bake output, reloaded from disk through the public reader.
+// This is a 3D lit room driven end-to-end by the actual baker: the bake is
+// real lm_bake output reloaded from disk through the public reader, and the
+// shading is a genuine per-pixel lightmap fetch through the rasterizer's
+// surface-cached sampler.
 //
 // CLI flags (mirror the other samples):
 //   --smoke-frames=N         Run N frames then exit (CI liveness check).
@@ -159,11 +159,21 @@ void clear_depth_far(render::Framebuffer& fb) noexcept {
 // vertex/index pool (rendered via Rasterizer::submit, sample_03 style). The
 // SAME triangles are pushed into a bake::BakeScene so the lightmap we bake
 // lines up 1:1 with what we draw. Per-vertex we store the surface albedo in
-// `albedo_rgb` so the toggle can pick flat-albedo or albedo*lumel.
+// `albedo` so the toggle can pick flat-albedo or albedo×chunk.
 
 struct Vertex {
     render::raster::Vertex r{};  // position/normal/uv/lightmap_uv/color
     math::Vec3 albedo{0.7f, 0.7f, 0.7f};
+};
+
+// A baked per-face lightmap chunk: a small RGBA8 grid that maps across the
+// face's quad through the base uv (0,0)-(1,1). Owned by World so its bytes
+// outlive the render loop (the rasterizer holds the raw pointer per frame).
+struct FaceChunk {
+    std::vector<u32> texels;  // kChunkRes × kChunkRes RGBA8, row-major
+    u32 width = 0;
+    u32 height = 0;
+    math::Vec3 albedo{0.7f, 0.7f, 0.7f};  // flat fallback when baked is off
 };
 
 struct World {
@@ -173,11 +183,14 @@ struct World {
     std::vector<u32> face_indices_offset;
     std::vector<u32> face_indices_count;
     // Parallel bake scene: triangle index t maps 1:1 to the t-th BakedSurface.
-    // `tri_render_verts[t]` are the three render-vertex indices that triangle
-    // covers, in the SAME winding order as the bake triangle's v0/v1/v2 — so a
-    // texel lookup for any of those vertices uses matching barycentrics.
+    // Every emit_quad pushes exactly two triangles, so face `fi` owns bake
+    // surfaces 2*fi (the a,b,c half) and 2*fi+1 (the a,c,d half).
     bake::BakeScene scene;
-    std::vector<std::array<u32, 3>> tri_render_verts;
+    // The four world-space corners (a,b,c,d) of each face's quad, in emit
+    // order; chunk texel (s,t) bilerps these to a 3D point.
+    std::vector<std::array<math::Vec3, 4>> face_quad;
+    // One baked chunk per face (filled after the bake round-trips).
+    std::vector<FaceChunk> face_chunks;
     math::Aabb bounds{};
     f32 floor_y = 0.0f;
 };
@@ -219,17 +232,14 @@ void emit_quad(World& w,
     // So we orient the bake triangle so its geometric normal faces the room
     // interior (the `normal` arg). If the render winding's geometric normal
     // disagrees, we swap v1/v2 for the bake copy (the render winding stays as
-    // emitted). `tri_render_verts` records the render-vertex indices in the
-    // bake winding order so the texel lookup uses matching barycentrics.
+    // emitted) so the baked surface lights the interior side.
     auto add_tri = [&](u32 i0, u32 i1, u32 i2) {
         math::Vec3 p0 = w.verts[i0].r.position;
         math::Vec3 p1 = w.verts[i1].r.position;
         math::Vec3 p2 = w.verts[i2].r.position;
         const math::Vec3 geo = math::cross(math::sub(p1, p0), math::sub(p2, p0));
-        if (math::dot(geo, normal) < 0.0f) {
-            std::swap(i1, i2);
+        if (math::dot(geo, normal) < 0.0f)
             std::swap(p1, p2);
-        }
         bake::BakeTriangle t{};
         t.v0 = p0;
         t.v1 = p1;
@@ -237,7 +247,6 @@ void emit_quad(World& w,
         t.normal = normal;
         t.albedo = albedo;
         w.scene.triangles.push_back(t);
-        w.tri_render_verts.push_back({i0, i1, i2});
     };
     add_tri(base + 0, base + 1, base + 2);
     add_tri(base + 0, base + 2, base + 3);
@@ -250,38 +259,8 @@ void emit_quad(World& w,
     w.map.faces.push_back(face);
     w.face_indices_offset.push_back(idx_base);
     w.face_indices_count.push_back(6);
-}
-
-// Emit a CCW quad subdivided into an `n x n` grid of sub-quads (each its own
-// face / lightmap surface). Bilinear-interpolating the four corners gives the
-// sub-quad vertices. Subdivision matters here: per-vertex Gouraud shading only
-// captures the lightmap's curvature where the mesh has vertices, so a single
-// big wall would show just a linear ramp. A modest grid resolves the point
-// light's hotspot + 1/r^2 falloff so the bake actually looks baked.
-void emit_wall(World& w,
-               math::Vec3 a,
-               math::Vec3 b,
-               math::Vec3 c,
-               math::Vec3 d,
-               math::Vec3 normal,
-               math::Vec3 albedo,
-               u32 material_id,
-               u32 n) {
-    const auto bilerp = [&](f32 s, f32 t) {
-        // s along a->b (and d->c), t along a->d (and b->c).
-        const math::Vec3 ab = math::add(math::mul(a, 1.0f - s), math::mul(b, s));
-        const math::Vec3 dc = math::add(math::mul(d, 1.0f - s), math::mul(c, s));
-        return math::add(math::mul(ab, 1.0f - t), math::mul(dc, t));
-    };
-    for (u32 j = 0; j < n; ++j) {
-        for (u32 i = 0; i < n; ++i) {
-            const f32 s0 = static_cast<f32>(i) / static_cast<f32>(n);
-            const f32 s1 = static_cast<f32>(i + 1) / static_cast<f32>(n);
-            const f32 t0 = static_cast<f32>(j) / static_cast<f32>(n);
-            const f32 t1 = static_cast<f32>(j + 1) / static_cast<f32>(n);
-            emit_quad(w, bilerp(s0, t0), bilerp(s1, t0), bilerp(s1, t1), bilerp(s0, t1), normal, albedo, material_id);
-        }
-    }
+    // Record the quad corners (emit order a,b,c,d) for per-texel chunk baking.
+    w.face_quad.push_back({a, b, c, d});
 }
 
 void build_world(World& w) {
@@ -291,15 +270,10 @@ void build_world(World& w) {
     constexpr f32 kX1 = 3.0f;
     constexpr f32 kZ0 = -3.5f;
     constexpr f32 kZ1 = 3.5f;
-    // Per-face subdivision. 6 faces * kSub^2 quads * 2 tris each. At kSub=5
-    // that's 300 triangles — small enough that the brute-force baker finishes
-    // a 10-lumel/1-bounce bake in a fraction of a second, but dense enough
-    // that per-vertex Gouraud resolves the light's hotspot + falloff.
-    constexpr u32 kSub = 5;
 
     // Logical material ids (the rasterizer doesn't resolve them today; we use
-    // per-vertex colour). Albedos are mid-grey with subtle tints so the baked
-    // falloff reads clearly against a single ceiling light.
+    // per-vertex colour × the baked chunk). Albedos are mid-grey with subtle
+    // tints so the baked falloff reads clearly against a single ceiling light.
     constexpr u32 kMatFloor = 1, kMatCeil = 2, kMatWall = 3;
     const math::Vec3 kAlbFloor{0.72f, 0.70f, 0.66f};
     const math::Vec3 kAlbCeil{0.62f, 0.64f, 0.70f};
@@ -308,66 +282,64 @@ void build_world(World& w) {
 
     const u32 leaf0_first = static_cast<u32>(w.map.faces.size());
 
+    // One quad per face. The lightmap's hotspot + 1/r^2 falloff is now
+    // resolved per-pixel inside each face's baked chunk (build_face_chunk), so
+    // no mesh subdivision is needed — a single quad per face keeps the bake
+    // scene tiny (6 faces × 2 = 12 triangles) and the round-trip near-instant.
     // Floor (+Y up normal, interior-facing).
-    emit_wall(w,
+    emit_quad(w,
               {kX0, kFloorY, kZ0},
               {kX1, kFloorY, kZ0},
               {kX1, kFloorY, kZ1},
               {kX0, kFloorY, kZ1},
               {0, 1, 0},
               kAlbFloor,
-              kMatFloor,
-              kSub);
+              kMatFloor);
     // Ceiling (-Y).
-    emit_wall(w,
+    emit_quad(w,
               {kX0, kCeilY, kZ1},
               {kX1, kCeilY, kZ1},
               {kX1, kCeilY, kZ0},
               {kX0, kCeilY, kZ0},
               {0, -1, 0},
               kAlbCeil,
-              kMatCeil,
-              kSub);
+              kMatCeil);
     // -X wall.
-    emit_wall(w,
+    emit_quad(w,
               {kX0, kFloorY, kZ1},
               {kX0, kCeilY, kZ1},
               {kX0, kCeilY, kZ0},
               {kX0, kFloorY, kZ0},
               {1, 0, 0},
               kAlbWallX,
-              kMatWall,
-              kSub);
+              kMatWall);
     // +X wall.
-    emit_wall(w,
+    emit_quad(w,
               {kX1, kFloorY, kZ0},
               {kX1, kCeilY, kZ0},
               {kX1, kCeilY, kZ1},
               {kX1, kFloorY, kZ1},
               {-1, 0, 0},
               kAlbWallX,
-              kMatWall,
-              kSub);
+              kMatWall);
     // -Z wall.
-    emit_wall(w,
+    emit_quad(w,
               {kX0, kFloorY, kZ0},
               {kX0, kCeilY, kZ0},
               {kX1, kCeilY, kZ0},
               {kX1, kFloorY, kZ0},
               {0, 0, 1},
               kAlbWallZ,
-              kMatWall,
-              kSub);
+              kMatWall);
     // +Z wall.
-    emit_wall(w,
+    emit_quad(w,
               {kX1, kFloorY, kZ1},
               {kX1, kCeilY, kZ1},
               {kX0, kCeilY, kZ1},
               {kX0, kFloorY, kZ1},
               {0, 0, -1},
               kAlbWallZ,
-              kMatWall,
-              kSub);
+              kMatWall);
 
     const u32 leaf_face_end = static_cast<u32>(w.map.faces.size());
 
@@ -457,14 +429,15 @@ bake::BakedAtlas bake_and_roundtrip(const World& w, u32 resolution, u32 bounces)
     return loaded;
 }
 
-// Sample the baked lumel for a world-space point on triangle `tri`. Inverts
-// the baker's texel mapping: barycentrics (u,v) of `p` on the triangle, then
-// nearest lumel (i,j) = clamp(u*W), clamp(v*H). Mirrors Bake.cpp's
-// sample_surface_radiance so we read the same texel the baker filled.
-math::Vec3 sample_lumel(
-    const bake::BakedSurface& surf, math::Vec3 v0, math::Vec3 v1, math::Vec3 v2, math::Vec3 p) {
-    if (surf.width == 0 || surf.height == 0)
-        return {0, 0, 0};
+// Chunk resolution: each face's baked irradiance is rasterised into a
+// kChunkRes × kChunkRes RGBA8 grid that maps across the quad through the base
+// uv. 32 is plenty to resolve a single point light's hotspot smoothly across a
+// ~6 m wall while staying cache-friendly (32×32×4 = 4 KiB per face).
+constexpr u32 kChunkRes = 32;
+
+// Barycentrics of point `p` w.r.t. triangle (v0,v1,v2). Returns false on a
+// degenerate triangle. (u,v) are the v1/v2 weights; the v0 weight is 1-u-v.
+bool barycentric(math::Vec3 p, math::Vec3 v0, math::Vec3 v1, math::Vec3 v2, f32& u, f32& v) noexcept {
     const math::Vec3 e1 = math::sub(v1, v0);
     const math::Vec3 e2 = math::sub(v2, v0);
     const math::Vec3 q = math::sub(p, v0);
@@ -474,91 +447,156 @@ math::Vec3 sample_lumel(
     const f32 d20 = math::dot(q, e1);
     const f32 d21 = math::dot(q, e2);
     const f32 denom = d00 * d11 - d01 * d01;
-    if (std::fabs(denom) < 1e-9f)
-        return {0, 0, 0};
+    if (std::fabs(denom) < 1e-12f)
+        return false;
     const f32 inv = 1.0f / denom;
-    f32 u = (d11 * d20 - d01 * d21) * inv;
-    f32 v = (d00 * d21 - d01 * d20) * inv;
-    u = std::clamp(u, 0.0f, 1.0f);
-    v = std::clamp(v, 0.0f, 1.0f);
-    const i32 i = std::clamp(static_cast<i32>(u * static_cast<f32>(surf.width)),
-                             0,
-                             static_cast<i32>(surf.width) - 1);
-    const i32 j = std::clamp(static_cast<i32>(v * static_cast<f32>(surf.height)),
-                             0,
-                             static_cast<i32>(surf.height) - 1);
-    const usize px = (static_cast<usize>(j) * surf.width + static_cast<usize>(i)) * 3u;
-    return {surf.pixels[px + 0], surf.pixels[px + 1], surf.pixels[px + 2]};
+    u = (d11 * d20 - d01 * d21) * inv;
+    v = (d00 * d21 - d01 * d20) * inv;
+    return true;
 }
 
-// Fold the reloaded lightmap into per-vertex colours. For each triangle in
-// the bake scene we look up the lumel nearest to each of its three corners
-// and accumulate `albedo * lumel` into the corresponding render vertices,
-// averaging across the (up to two) triangles that share a vertex. A small
-// ambient term keeps unlit corners from going pure black. `exposure` maps
-// linear irradiance into the 0..1 LDR framebuffer.
-void apply_baked_colors(World& w, const bake::BakedAtlas& atlas, f32 exposure, f32 ambient) {
-    if (atlas.surfaces.size() != w.scene.triangles.size()) {
-        PSY_LOG_WARN("sample_14: atlas/scene triangle mismatch ({} vs {}); using flat albedo",
+// Bilinearly sample a BakedSurface at triangle barycentrics (bu,bv). The baker
+// maps texel (i,j) -> barycentric ((i+0.5)/W, (j+0.5)/H) and only fills the
+// u+v<=1 half, so we sample with the half-texel bias and clamp to in-range
+// texels (an out-of-half corner clamps to its nearest filled neighbour rather
+// than reading the zeroed upper-right). Returns linear RGB irradiance.
+math::Vec3 sample_surface_bilinear(const bake::BakedSurface& surf, f32 bu, f32 bv) noexcept {
+    if (surf.width == 0 || surf.height == 0 || surf.pixels.empty())
+        return {0, 0, 0};
+    const f32 wf = static_cast<f32>(surf.width);
+    const f32 hf = static_cast<f32>(surf.height);
+    const f32 tx = std::clamp(bu, 0.0f, 1.0f) * wf - 0.5f;
+    const f32 ty = std::clamp(bv, 0.0f, 1.0f) * hf - 0.5f;
+    const i32 x0 = static_cast<i32>(std::floor(tx));
+    const i32 y0 = static_cast<i32>(std::floor(ty));
+    const f32 fx = tx - static_cast<f32>(x0);
+    const f32 fy = ty - static_cast<f32>(y0);
+    const auto fetch = [&](i32 x, i32 y) -> math::Vec3 {
+        x = std::clamp(x, 0, static_cast<i32>(surf.width) - 1);
+        y = std::clamp(y, 0, static_cast<i32>(surf.height) - 1);
+        // The baker leaves the upper-right (u+v>1) half at zero; nudge such a
+        // sample back onto the diagonal so corners read the lit edge texel.
+        if (static_cast<u32>(x) + static_cast<u32>(y) >= surf.width) {
+            const i32 m = static_cast<i32>(surf.width) - 1;
+            const i32 s = x + y;
+            if (s > m && s > 0) {
+                x = std::clamp(x * m / s, 0, m);
+                y = std::clamp(m - x, 0, m);
+            }
+        }
+        const usize px = (static_cast<usize>(y) * surf.width + static_cast<usize>(x)) * 3u;
+        return {surf.pixels[px + 0], surf.pixels[px + 1], surf.pixels[px + 2]};
+    };
+    const math::Vec3 c00 = fetch(x0, y0);
+    const math::Vec3 c10 = fetch(x0 + 1, y0);
+    const math::Vec3 c01 = fetch(x0, y0 + 1);
+    const math::Vec3 c11 = fetch(x0 + 1, y0 + 1);
+    const math::Vec3 a = math::add(math::mul(c00, 1.0f - fx), math::mul(c10, fx));
+    const math::Vec3 b = math::add(math::mul(c01, 1.0f - fx), math::mul(c11, fx));
+    return math::add(math::mul(a, 1.0f - fy), math::mul(b, fy));
+}
+
+// Reinhard-style tonemap of linear irradiance into an LDR [0,1] channel:
+// c = 1 - exp(-irradiance * exposure). Soft-clips so the hotspot doesn't blow
+// to flat white while still lifting the dim corners.
+u8 tonemap_channel(f32 irradiance, f32 exposure) noexcept {
+    const f32 c = 1.0f - std::exp(-std::max(0.0f, irradiance) * exposure);
+    return to_u8(c);
+}
+
+// Build one RGBA8 chunk per face from the reloaded atlas. For each chunk texel
+// (s,t) in [0,1]^2 we bilerp the quad's 3D point, pick which of the quad's two
+// bake triangles covers it (the a,b,c half is t<=s, the a,c,d half t>=s — the
+// fan diagonal a->c is s==t), take that triangle's barycentrics and sample its
+// BakedSurface, then tonemap to RGBA8. The chunk maps across the quad through
+// the base uv, so the rasterizer's surface_cached path fetches it per pixel.
+void build_face_chunks(World& w, const bake::BakedAtlas& atlas, f32 exposure) {
+    const usize face_count = w.map.faces.size();
+    w.face_chunks.assign(face_count, FaceChunk{});
+
+    const bool atlas_ok = atlas.surfaces.size() == w.scene.triangles.size();
+    if (!atlas_ok) {
+        PSY_LOG_WARN("sample_14: atlas/scene triangle mismatch ({} vs {}); chunks left empty",
                      atlas.surfaces.size(),
                      w.scene.triangles.size());
-        for (Vertex& v : w.verts)
-            v.r.color = pack_rgba(to_u8(v.albedo.x), to_u8(v.albedo.y), to_u8(v.albedo.z));
-        return;
     }
 
-    std::vector<math::Vec3> accum(w.verts.size(), math::Vec3{0, 0, 0});
-    std::vector<u32> hits(w.verts.size(), 0);
+    for (usize fi = 0; fi < face_count; ++fi) {
+        FaceChunk& chunk = w.face_chunks[fi];
+        chunk.width = kChunkRes;
+        chunk.height = kChunkRes;
+        chunk.albedo = w.verts[w.map.faces[fi].first_vertex].albedo;
+        chunk.texels.assign(static_cast<usize>(kChunkRes) * kChunkRes, 0xFFFFFFFFu);
+        if (!atlas_ok)
+            continue;
 
-    // Iterate the bake scene triangles directly. Surface t was baked for
-    // scene.triangles[t]; tri_render_verts[t] are the render vertices it
-    // covers, in the bake winding order, so sample_lumel reads the same texel
-    // the baker filled. A corner texel can fall just outside the valid
-    // u+v<=1 half (the baker leaves the upper-right of each chart at 0), so we
-    // pull each sample point a little toward the triangle centroid to land on
-    // a covered lumel.
-    for (usize t = 0; t < w.scene.triangles.size(); ++t) {
-        const bake::BakedSurface& surf = atlas.surfaces[t];
-        const bake::BakeTriangle& tri = w.scene.triangles[t];
-        const std::array<u32, 3>& rv = w.tri_render_verts[t];
-        const math::Vec3 centroid =
-            math::mul(math::add(math::add(tri.v0, tri.v1), tri.v2), 1.0f / 3.0f);
-        for (u32 c = 0; c < 3; ++c) {
-            const u32 vi = rv[c];
-            const math::Vec3 p =
-                math::add(math::mul(w.verts[vi].r.position, 0.8f), math::mul(centroid, 0.2f));
-            const math::Vec3 lumel = sample_lumel(surf, tri.v0, tri.v1, tri.v2, p);
-            const math::Vec3 alb = w.verts[vi].albedo;
-            const math::Vec3 lit{(ambient + lumel.x * exposure) * alb.x,
-                                 (ambient + lumel.y * exposure) * alb.y,
-                                 (ambient + lumel.z * exposure) * alb.z};
-            accum[vi] = math::add(accum[vi], lit);
-            ++hits[vi];
+        const std::array<math::Vec3, 4>& quad = w.face_quad[fi];  // a,b,c,d
+        const math::Vec3 a = quad[0], b = quad[1], c = quad[2], d = quad[3];
+        // The two bake triangles for this face (emit_quad pushes them in order
+        // (a,b,c) then (a,c,d), so they sit at 2*fi and 2*fi+1).
+        const usize st0 = fi * 2u + 0u;  // covers a,b,c
+        const usize st1 = fi * 2u + 1u;  // covers a,c,d
+        const bake::BakeTriangle& bt0 = w.scene.triangles[st0];
+        const bake::BakeTriangle& bt1 = w.scene.triangles[st1];
+        const bake::BakedSurface& bs0 = atlas.surfaces[st0];
+        const bake::BakedSurface& bs1 = atlas.surfaces[st1];
+
+        for (u32 j = 0; j < kChunkRes; ++j) {
+            const f32 t = (static_cast<f32>(j) + 0.5f) / static_cast<f32>(kChunkRes);
+            for (u32 i = 0; i < kChunkRes; ++i) {
+                const f32 s = (static_cast<f32>(i) + 0.5f) / static_cast<f32>(kChunkRes);
+                // Bilerp the quad: s along a->b (and d->c), t along a->d.
+                const math::Vec3 ab = math::add(math::mul(a, 1.0f - s), math::mul(b, s));
+                const math::Vec3 dc = math::add(math::mul(d, 1.0f - s), math::mul(c, s));
+                const math::Vec3 p = math::add(math::mul(ab, 1.0f - t), math::mul(dc, t));
+
+                // Pick the covering triangle and sample its surface. We sample
+                // with the bake triangle's own v0/v1/v2 barycentrics so the
+                // texel mapping matches what the baker filled.
+                math::Vec3 irr{0, 0, 0};
+                f32 bu = 0.0f, bv = 0.0f;
+                if (t <= s) {
+                    if (barycentric(p, bt0.v0, bt0.v1, bt0.v2, bu, bv))
+                        irr = sample_surface_bilinear(bs0, bu, bv);
+                } else {
+                    if (barycentric(p, bt1.v0, bt1.v1, bt1.v2, bu, bv))
+                        irr = sample_surface_bilinear(bs1, bu, bv);
+                }
+
+                const u8 r = tonemap_channel(irr.x, exposure);
+                const u8 g = tonemap_channel(irr.y, exposure);
+                const u8 bl = tonemap_channel(irr.z, exposure);
+                chunk.texels[static_cast<usize>(j) * kChunkRes + i] = pack_rgba(r, g, bl);
+            }
         }
-    }
-
-    for (usize i = 0; i < w.verts.size(); ++i) {
-        math::Vec3 c = w.verts[i].albedo;  // fallback: flat albedo
-        if (hits[i] > 0)
-            c = math::mul(accum[i], 1.0f / static_cast<f32>(hits[i]));
-        w.verts[i].r.color = pack_rgba(to_u8(c.x), to_u8(c.y), to_u8(c.z));
     }
 }
 
-// Reset every vertex to its flat (unbaked) albedo.
-void apply_flat_colors(World& w) {
-    for (Vertex& v : w.verts)
-        v.r.color = pack_rgba(to_u8(v.albedo.x), to_u8(v.albedo.y), to_u8(v.albedo.z));
+// Set every vertex colour to its flat (unbaked) albedo. The base uv is reset
+// to the quad's canonical 0,0/1,0/1,1/0,1 corners so the per-face chunk maps
+// across the quad when baked rendering is on.
+void set_quad_uvs_and_albedo(World& w) {
+    for (usize fi = 0; fi < w.map.faces.size(); ++fi) {
+        const u32 base = w.map.faces[fi].first_vertex;
+        const math::Vec2 uvs[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+        for (u32 k = 0; k < 4; ++k) {
+            Vertex& v = w.verts[base + k];
+            v.r.uv = uvs[k];
+            v.r.color = pack_rgba(to_u8(v.albedo.x), to_u8(v.albedo.y), to_u8(v.albedo.z));
+        }
+    }
 }
 
 // ─── Visibility callback ──────────────────────────────────────────────────
 struct DrawCtx {
     const World* world = nullptr;
     render::raster::Rasterizer* rasterizer = nullptr;
-    // Flat snapshot of render vertices (positions/uv/normal constant; only
-    // `color` differs between baked/flat). Submitted as the vertex buffer.
+    // Render-vertex buffer (positions/uv/normal/color all constant — colour is
+    // always the face albedo; the lightmap modulates it per pixel via the
+    // chunk). Submitted as the vertex buffer for every face.
     const render::raster::Vertex* verts = nullptr;
     u32 vert_count = 0;
+    bool show_baked = false;  // attach each face's lightmap chunk when true
     u32 draw_count = 0;
     u32 tri_count = 0;
 };
@@ -582,6 +620,15 @@ void emit_leaf_faces(const world::bsp::BspLeaf& leaf, void* user) {
         item.index_count = idx_cnt;
         item.model = math::identity4();
         item.material = render::raster::MaterialId{w.map.faces[fi].material};
+        // Baked mode: hand this face's lightmap chunk to the rasterizer so the
+        // surface_cached path computes albedo × chunk per pixel. Flat mode:
+        // leave it null so the room renders as plain albedo (toggle proof).
+        if (ctx->show_baked && fi < w.face_chunks.size() && !w.face_chunks[fi].texels.empty()) {
+            const FaceChunk& chunk = w.face_chunks[fi];
+            item.lightmap_texels = chunk.texels.data();
+            item.lightmap_w = chunk.width;
+            item.lightmap_h = chunk.height;
+        }
         ctx->rasterizer->submit(item);
         ++ctx->draw_count;
         ctx->tri_count += idx_cnt / 3u;
@@ -617,17 +664,18 @@ int main(int argc, char** argv) {
                  w.scene.triangles.size(),
                  w.scene.lights.size());
 
-    // Bake the lightmap and round-trip it through .lmlight. Tiny resolution +
-    // a single bounce keeps --smoke-frames=4 well under the 30 s test budget
-    // (the scene is 12 triangles). Direct + 1 bounce so indirect fill is
+    // Bake the lightmap and round-trip it through .lmlight. A modest 24-lumel
+    // per-triangle resolution + a single bounce keeps --smoke-frames well under
+    // the 30 s test budget (the scene is 12 triangles) while giving each face
+    // chunk real per-texel detail. Direct + 1 bounce so indirect fill is
     // visible in the corners.
-    const bake::BakedAtlas atlas = bake_and_roundtrip(w, /*resolution=*/10, /*bounces=*/1);
+    const bake::BakedAtlas atlas = bake_and_roundtrip(w, /*resolution=*/24, /*bounces=*/1);
     const bool have_bake = !atlas.surfaces.empty();
 
-    // Exposure/ambient tuned for this room + light intensity so the baked
-    // gradient lands in a pleasant LDR range.
-    constexpr f32 kExposure = 0.85f;
-    constexpr f32 kAmbient = 0.06f;
+    // Exposure for the per-texel tonemap: chunk channel = 1 - exp(-irr * k).
+    // Tuned for this room + the 11 W/sr ceiling light so the hotspot is bright
+    // without flat-clipping to white and the far corners stay readable.
+    constexpr f32 kExposure = 2.2f;
 
     // Baked vs. unbaked toggle. Mirrors CharacterController's lazy-cvar
     // pattern: `r_lightmap_baked` (bool, default 1) plus the B key for an
@@ -643,19 +691,16 @@ int main(int argc, char** argv) {
                                  "albedo (0). Toggle with the B key in sample_14.");
     }
 
-    // Pre-bake both colour sets once; the toggle just swaps the active vertex
-    // buffer (cheap, no per-frame relight). `verts_baked`/`verts_flat` hold
-    // the render-vertex view (color differs) of `w.verts`.
-    apply_flat_colors(w);
-    std::vector<render::raster::Vertex> verts_flat(w.verts.size());
-    for (usize i = 0; i < w.verts.size(); ++i)
-        verts_flat[i] = w.verts[i].r;
-
+    // Set canonical quad UVs (0,0..1,1) + flat-albedo vertex colours once, then
+    // rasterise the reloaded atlas into one RGBA8 chunk per face. The vertex
+    // buffer is constant across the toggle — only DrawItem::lightmap_texels
+    // differs (the surface_cached path multiplies albedo × chunk per pixel).
+    set_quad_uvs_and_albedo(w);
     if (have_bake)
-        apply_baked_colors(w, atlas, kExposure, kAmbient);
-    std::vector<render::raster::Vertex> verts_baked(w.verts.size());
+        build_face_chunks(w, atlas, kExposure);
+    std::vector<render::raster::Vertex> verts(w.verts.size());
     for (usize i = 0; i < w.verts.size(); ++i)
-        verts_baked[i] = w.verts[i].r;
+        verts[i] = w.verts[i].r;
 
     // Camera: shared FPS/free-cam controller, started inside the room.
     samples::CharacterControllerConfig cc_cfg{};
@@ -753,8 +798,9 @@ int main(int argc, char** argv) {
         DrawCtx ctx{};
         ctx.world = &w;
         ctx.rasterizer = &rasterizer;
-        ctx.verts = show_baked ? verts_baked.data() : verts_flat.data();
+        ctx.verts = verts.data();
         ctx.vert_count = static_cast<u32>(w.verts.size());
+        ctx.show_baked = show_baked;
         world::bsp::walk_visible_leaves(w.map, eye, &emit_leaf_faces, &ctx);
 
         rasterizer.end_frame();

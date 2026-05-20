@@ -336,6 +336,19 @@ void Rasterizer::end_frame() {
                                   // selector in the inner loop picks the
                                   // sample LOD for trilinear.
         sd.flags = d.flags;
+        // Explicit per-draw lightmap chunk overrides the classifier + slab:
+        // the caller hands us a ready RGBA8 chunk to sample through `uv`, so
+        // force SurfaceCached and point the cmd straight at it. This is the
+        // per-pixel lightmap path samples drive (e.g. sample_14) until lane 10
+        // cooks the slab product; it cleanly bypasses the find() below.
+        if (d.lightmap_texels != nullptr && d.lightmap_w > 0 && d.lightmap_h > 0) {
+            cmd.shading_path = static_cast<u8>(ShadingPath::SurfaceCached);
+            cmd.surface_cache_payload = d.lightmap_texels;
+            cmd.surface_cache_width = d.lightmap_w;
+            cmd.surface_cache_height = d.lightmap_h;
+            fs.draw_cmds[di] = cmd;
+            continue;
+        }
         const ShadingPath path = classify_surface(sd);
         cmd.shading_path = static_cast<u8>(path);
         // The actual pre-multiplied payload arrives via the surface cache
