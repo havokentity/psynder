@@ -21,10 +21,13 @@
 //   --smoke-frames N         Space-separated form.
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as a PNG.
 
+#include "common/CharacterController.h"
 #include "common/PngWriter.h"
 
 #include "core/Log.h"
 #include "core/Types.h"
+#include "editor/core/Editor.h"
+#include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
@@ -130,6 +133,10 @@ struct World {
     std::vector<u32> indices;              // 1:1 with verts; fan
     std::vector<u32> face_indices_offset;  // per BspFace
     std::vector<u32> face_indices_count;
+    // Axis-aligned union of every room/corridor — the character controller
+    // clamps the eye inside this so walls block you (unless `noclip`).
+    math::Aabb bounds{};
+    f32 floor_y = 0.0f;  // ground plane the FPS eye rides on
 };
 
 // Append a CCW (viewed from `normal`) quad to the world geometry pool and
@@ -460,30 +467,31 @@ void build_world(World& w) {
 
     // ── PVS ─────────────────────────────────────────────────────────────
     // 3 clusters (A=0, corridor=1, B=2). One byte per row (3 bits used).
-    //   row 0 (Room A)   : sees 0,1
+    // The two rooms are joined by a straight doorway corridor, so a viewer
+    // standing in Room A can see through the doorway into Room B (and vice
+    // versa). PVS is "potentially visible" — conservative — so each room's
+    // row MUST include the far room, otherwise the far room's faces get
+    // culled and you see an empty hole through the doorway. Earlier this
+    // row only listed {self, corridor}, which is why the other room was
+    // invisible from a side room. All three clusters are mutually visible
+    // here.
+    //   row 0 (Room A)   : sees 0,1,2
     //   row 1 (corridor) : sees 0,1,2
-    //   row 2 (Room B)   : sees 1,2
+    //   row 2 (Room B)   : sees 0,1,2
     constexpr u32 kClusters = 3;
     constexpr u32 kRowBytes = 1;
     w.map.pvs.assign(kClusters * kRowBytes, 0);
-    w.map.pvs[0] = 0b0000'0011;  // 0,1
+    w.map.pvs[0] = 0b0000'0111;  // 0,1,2
     w.map.pvs[1] = 0b0000'0111;  // 0,1,2
-    w.map.pvs[2] = 0b0000'0110;  // 1,2
-}
+    w.map.pvs[2] = 0b0000'0111;  // 0,1,2
 
-// ─── Camera ──────────────────────────────────────────────────────────────
-struct Camera {
-    math::Vec3 pos = {0.0f, 1.6f, -5.0f};  // eye in Room A, head height
-    f32 yaw = 0.0f;                        // around +Y, radians
-    f32 pitch = 0.0f;                      // around camera-right axis
-};
-
-math::Vec3 camera_forward(const Camera& c) noexcept {
-    // yaw rotates around +Y, pitch around right axis. In right-handed
-    // world space the default forward is -Z; yaw == 0, pitch == 0 → -Z.
-    const f32 cy = std::cos(c.yaw), sy = std::sin(c.yaw);
-    const f32 cp = std::cos(c.pitch), sp = std::sin(c.pitch);
-    return {sy * cp, sp, -cy * cp};
+    // ── World bounds ──────────────────────────────────────────────────────
+    // Axis-aligned union of room A, the corridor, and room B. The character
+    // controller clamps the eye inside this so the player can't walk through
+    // the outer walls; `noclip 1` lifts the clamp so you can fly out.
+    w.floor_y = kFloorY;
+    w.bounds.min = {kRoomX0, kFloorY, kRoomAZ0};
+    w.bounds.max = {kRoomX1, kCeilY, kRoomBZ1};
 }
 
 // ─── Visibility callback context ─────────────────────────────────────────
@@ -559,7 +567,17 @@ int main(int argc, char** argv) {
     fb.pixels = reinterpret_cast<u8*>(pixels.data());
     fb.depth = depth.data();
 
-    Camera cam;
+    // Shared first-person / free-cam controller (samples/common). FPS mode
+    // by default; press V to fly. World bounds = the room union so walls
+    // block you; `noclip 1` at the console lifts the clamp + gravity.
+    samples::CharacterControllerConfig cc_cfg{};
+    cc_cfg.floor_y = w.floor_y;
+    cc_cfg.eye_height = 1.6f;
+    samples::CharacterController controller{cc_cfg};
+    controller.set_bounds(w.bounds);
+    controller.set_mode(samples::ControllerMode::Fps);
+    controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f});  // in Room A
+    controller.set_look(0.0f, 0.0f);
 
     auto& rasterizer = render::raster::Rasterizer::Get();
 
@@ -588,44 +606,25 @@ int main(int argc, char** argv) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now - last_ticks)));
         last_ticks = now;
 
-        // Mouse look — read deltas, scale to radians/pixel.
-        const platform::MouseState& m = input->mouse();
-        constexpr f32 kMouseSens = 0.0025f;
-        cam.yaw += m.dx * kMouseSens;
-        cam.pitch -= m.dy * kMouseSens;
-        constexpr f32 kPitchLimit = math::kHalfPi - 0.05f;
-        cam.pitch = std::clamp(cam.pitch, -kPitchLimit, kPitchLimit);
-
-        // WASD on the XZ plane. Move along the yaw-aligned forward/right so
-        // walking feels FPS-correct (pitch doesn't fly you up/down).
-        const math::Vec3 fwd_xz{std::sin(cam.yaw), 0.0f, -std::cos(cam.yaw)};
-        const math::Vec3 right_xz{std::cos(cam.yaw), 0.0f, std::sin(cam.yaw)};
-        constexpr f32 kWalkSpeed = 3.0f;  // m/s
-        math::Vec3 move{0, 0, 0};
-        if (input->key_down(platform::KeyCode::W))
-            move = math::add(move, fwd_xz);
-        if (input->key_down(platform::KeyCode::S))
-            move = math::sub(move, fwd_xz);
-        if (input->key_down(platform::KeyCode::D))
-            move = math::add(move, right_xz);
-        if (input->key_down(platform::KeyCode::A))
-            move = math::sub(move, right_xz);
-        if (move.x != 0.0f || move.z != 0.0f) {
-            move = math::normalize(move);
-            cam.pos = math::add(cam.pos, math::mul(move, kWalkSpeed * dt));
-        }
-
-        // Smoke mode pins the camera to a deterministic path so the capture
-        // is identical across hosts. We sweep through Room A → corridor →
-        // Room B over the first 60 frames so every PVS branch gets exercised.
         if (args.smoke_frames > 0) {
+            // Smoke mode pins the camera to a deterministic path so the
+            // capture is identical across hosts. We sweep through Room A →
+            // corridor → Room B over the first 60 frames so every PVS branch
+            // gets exercised. Drive the controller's pose directly rather
+            // than through input so the path stays reproducible.
             const f32 phase = static_cast<f32>(frame) / 60.0f;
             const f32 t01 = std::clamp(phase, 0.0f, 1.0f);
             // Linearly walk z from -5 (deep in A) to +3 (deep in B).
-            cam.pos = {0.0f, 1.6f, -5.0f + 8.0f * t01};
-            cam.yaw = 0.0f;
-            cam.pitch = 0.0f;
+            controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f + 8.0f * t01});
+            controller.set_look(0.0f, 0.0f);
+        } else {
+            // Live play: WASD + mouse-look via the shared controller. FPS
+            // mode walks on the floor and clamps to the room bounds; V flies;
+            // `noclip 1` lifts the clamp + gravity.
+            controller.update(*input, dt);
         }
+
+        const math::Vec3 eye = controller.eye();
 
         // ── Clear + view setup ───────────────────────────────────────────
         render::raster::clear_framebuffer(fb, 0xFF101418u);  // near-black
@@ -633,8 +632,7 @@ int main(int argc, char** argv) {
 
         render::raster::ViewState view{};
         view.target = fb;
-        const math::Vec3 fwd = camera_forward(cam);
-        view.view = math::look_at_rh(cam.pos, math::add(cam.pos, fwd), math::Vec3{0, 1, 0});
+        view.view = controller.view_matrix();
         view.projection = math::perspective_rh(70.0f * math::kDegToRad,
                                                static_cast<f32>(desc.render_width) /
                                                    static_cast<f32>(desc.render_height),
@@ -648,9 +646,15 @@ int main(int argc, char** argv) {
         DrawCtx ctx{};
         ctx.world = &w;
         ctx.rasterizer = &rasterizer;
-        world::bsp::walk_visible_leaves(w.map, cam.pos, &emit_leaf_faces, &ctx);
+        world::bsp::walk_visible_leaves(w.map, eye, &emit_leaf_faces, &ctx);
 
         rasterizer.end_frame();
+
+        // Editor F2/~ toggle + PLAY/EDIT badge bottom-right (lane 18). Drawn
+        // after the rasterizer so the badge composites on top of the scene.
+        // Mode toggle is independent of the controller's V fly-toggle.
+        (void)editor::sample_step(*input, fb);
+
         window->present(fb);
 
         if (args.smoke_frames > 0) {
@@ -658,9 +662,9 @@ int main(int argc, char** argv) {
                 "sample_03: frame {} — eye ({:.2f},{:.2f},{:.2f}) "
                 "submitted {} draws",
                 frame,
-                cam.pos.x,
-                cam.pos.y,
-                cam.pos.z,
+                eye.x,
+                eye.y,
+                eye.z,
                 ctx.draw_count);
         }
 

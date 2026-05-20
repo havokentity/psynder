@@ -15,4 +15,5 @@ target_link_libraries(sample_03_quake_room PRIVATE
     psynder_render_raster
     psynder_world_bsp psynder_scene psynder_asset psynder_platform
     psynder_samples_common
+    psynder_ui_imm psynder_editor_core
 )

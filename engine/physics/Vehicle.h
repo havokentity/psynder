@@ -11,6 +11,7 @@
 
 #include "core/Types.h"
 #include "math/Math.h"
+#include "Body.h"
 #include "internal/Kernels.h"
 
 #include <array>
@@ -55,6 +56,14 @@ struct Vehicle {
     f32 tire_friction = 1.0f;  // overall mu multiplier
     kernels::DrivetrainParams drivetrain{};
 
+    // ─── Ground contact ───────────────────────────────────────────────
+    // Flat ground-plane height (world Y) used by the per-wheel suspension
+    // raycast. Default 0. Set via vehicle::set_ground_plane(). The sample-04
+    // oval track is flat; elevated terrain would swap this scalar for a
+    // height-query hook (function pointer + void* user) so the 120 Hz loop
+    // stays free of virtual / std::function dispatch.
+    f32 ground_y = 0.0f;
+
     // ─── Persistent drivetrain state ──────────────────────────────────
     f32 engine_rpm = 800.0f;  // idle by default
 
@@ -71,6 +80,11 @@ struct VehicleWorld {
 };
 
 VehicleWorld& vehicle_world();
+
+// Per-vehicle solver step (defined in Vehicle.cpp). Runs once per fixed
+// sub-tick, accumulating tire / suspension / aero forces into the chassis
+// body's force + torque accumulators. Single-pass, no heap, no virtual.
+void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept;
 
 // Build a default 6-point passenger-car engine curve scaled to a given peak.
 inline void vehicle_default_engine_curve(kernels::DrivetrainParams& d, f32 peak_torque_nm) noexcept {
