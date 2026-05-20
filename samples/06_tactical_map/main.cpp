@@ -300,7 +300,10 @@ struct CameraView {
 constexpr f32 kFlyoverClearance = 10.0f;
 constexpr f32 kTowerHeight = 7.0f;
 
-CameraView make_flyover_camera(f32 t_seconds, const world::outdoor::HeightmapDesc& hm) {
+CameraView make_flyover_camera(f32 t_seconds,
+                               const world::outdoor::HeightmapDesc& hm,
+                               f32& smoothed_eye_y,
+                               f32 dt) {
     // Centre of the map (the central ridge crest).
     const f32 map_m = static_cast<f32>(kHmSize) * kHmSpacing;
     const math::Vec3 centre{map_m * 0.5f, 14.0f, map_m * 0.5f};
@@ -318,11 +321,19 @@ CameraView make_flyover_camera(f32 t_seconds, const world::outdoor::HeightmapDes
     // `kTowerHeight` headroom keeps it clear of a watchtower the orbit may pass
     // over. The orbit's XZ motion is untouched — we only raise Y when the
     // scripted `alt` would otherwise clip.
+    // Terrain collision with ASYMMETRIC smoothing: target a height clearing the
+    // terrain below (+ tower headroom), but only RISE to it instantly (never let
+    // the eye clip a hill); DESCEND at a limited rate so the eye eases back down
+    // off a peak instead of snapping straight through the mountain.
     const f32 ground = terrain_height(hm, eye.x, eye.z);
-    const f32 min_eye_y = ground + kTowerHeight + kFlyoverClearance;
-    if (eye.y < min_eye_y) {
-        eye.y = min_eye_y;
+    const f32 target_y = std::max(eye.y, ground + kTowerHeight + kFlyoverClearance);
+    if (target_y >= smoothed_eye_y) {
+        smoothed_eye_y = target_y;  // instant rise — clear the terrain at once
+    } else {
+        constexpr f32 kDescendRate = 12.0f;  // m/s — gentle settle off a peak
+        smoothed_eye_y = std::max(target_y, smoothed_eye_y - kDescendRate * dt);
     }
+    eye.y = smoothed_eye_y;
     const math::Vec3 up_world{0, 1, 0};
     const math::Vec3 fwd = math::normalize(math::sub(centre, eye));
     const math::Vec3 right = math::normalize(math::cross(fwd, up_world));
@@ -693,6 +704,10 @@ int main(int argc, char** argv) {
 
     const u64 t0 = platform::Clock::ticks_now();
     u32 frame = 0;
+    // Smoothed flyover eye height (asymmetric terrain collision) + previous-time
+    // for the per-frame dt the descent integrates against.
+    f32 cam_eye_y = 30.0f;  // the flyover's base altitude
+    f64 prev_t = 0.0;
 
     while (!window->should_close()) {
         window->poll_events();
@@ -704,8 +719,12 @@ int main(int argc, char** argv) {
         // Smoke mode pins time to frame so the captured PNG is deterministic.
         const f64 t = smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
                                        : platform::Clock::seconds(platform::Clock::ticks_now() - t0);
+        f32 dt = static_cast<f32>(t - prev_t);
+        if (dt <= 0.0f || dt > 0.1f)
+            dt = 1.0f / 60.0f;  // first frame / hitch guard
+        prev_t = t;
 
-        const CameraView cam = make_flyover_camera(static_cast<f32>(t), hm_desc);
+        const CameraView cam = make_flyover_camera(static_cast<f32>(t), hm_desc, cam_eye_y, dt);
 
         // ── Step 1: terrain via the public TerrainRaymarch ─────────────
         // Reset depth to far before the raymarch (the public render writes
