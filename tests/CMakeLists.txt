@@ -34,4 +34,11 @@ if(PSYNDER_BUILD_SAMPLES)
             RESOURCE_LOCK "psynder_platform_singleton"
             TIMEOUT 30)
     endif()
+    if(TARGET sample_07_phys_stacks)
+        add_test(NAME sample_07_phys_stacks_smoke
+                 COMMAND sample_07_phys_stacks --smoke-frames=4)
+        set_tests_properties(sample_07_phys_stacks_smoke PROPERTIES
+            RESOURCE_LOCK "psynder_platform_singleton"
+            TIMEOUT 30)
+    endif()
 endif()
