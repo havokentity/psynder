@@ -62,4 +62,11 @@ if(PSYNDER_BUILD_SAMPLES)
             RESOURCE_LOCK "psynder_platform_singleton"
             TIMEOUT 30)
     endif()
+    if(TARGET sample_14_lightmap_quake)
+        add_test(NAME sample_14_lightmap_quake_smoke
+                 COMMAND sample_14_lightmap_quake --smoke-frames=4)
+        set_tests_properties(sample_14_lightmap_quake_smoke PROPERTIES
+            RESOURCE_LOCK "psynder_platform_singleton"
+            TIMEOUT 30)
+    endif()
 endif()
