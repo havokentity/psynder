@@ -102,7 +102,16 @@ struct HiZTile {
         const u32 cy1 = (static_cast<u32>(y1 - 1) / kHiZCellPx) + 1;
         for (u32 cy = cy0; cy < cy1 && cy < kRows; ++cy) {
             for (u32 cx = cx0; cx < cx1 && cx < kCols; ++cx) {
-                if (max_z[cy * kCols + cx] > test_z)
+                // `>=`, not `>`: the early-reject is conservative — a triangle
+                // whose nearest depth EQUALS a cell's farthest stored depth is
+                // still potentially visible (e.g. the second triangle of a
+                // coplanar, camera-facing quad, whose z matches what the first
+                // triangle just wrote). Rejecting on equality dropped that
+                // second triangle entirely, leaving half the quad as a hole —
+                // visible on face-on walls/floors while angled geometry, with
+                // its varying depth, slipped past. The precise per-pixel depth
+                // test downstream is the real authority.
+                if (max_z[cy * kCols + cx] >= test_z)
                     return true;
             }
         }
