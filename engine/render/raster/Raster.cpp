@@ -189,41 +189,139 @@ void Rasterizer::end_frame() {
             cp[i] = math::mul(mvp, math::Vec4{p.x, p.y, p.z, 1.0f});
         }
 
-        // Triangle setup per index triple
+        // Triangle setup per index triple, with near-plane clipping.
+        //
+        // A triangle that straddles the near plane must be CLIPPED, not
+        // dropped: in an interior (FPS-room) view the camera is surrounded by
+        // geometry, so big floor/wall/ceiling quads routinely have a vertex
+        // behind the near plane. Dropping those whole left the room mostly
+        // black with holes at corners. We Sutherland-Hodgman-clip each
+        // triangle against the clip-space near plane (inside: z + w >= 0),
+        // interpolating uv + colour at the cut, then fan-triangulate the 3-or-4
+        // vertex result. One input triangle yields up to two output triangles.
         const u32 tri_count = d.index_count / 3;
-        TriSetup* tris = fs.arena.alloc_array<TriSetup>(tri_count);
+        // Near-plane clipping turns a triangle that straddles z + w = 0 into a
+        // quad -> two triangles; triangles fully in front stay one, fully behind
+        // contribute none. Count the straddlers up front so we reserve the tight
+        // bound (tri_count + straddlers) rather than an unconditional 2x, which
+        // on big meshes wastes frame-arena space and risks exhaustion (a failed
+        // alloc silently drops the draw).
+        u32 straddlers = 0;
+        for (u32 ti = 0; ti < tri_count; ++ti) {
+            const u32 j0 = d.indices[ti * 3 + 0];
+            const u32 j1 = d.indices[ti * 3 + 1];
+            const u32 j2 = d.indices[ti * 3 + 2];
+            if (j0 >= d.vertex_count || j1 >= d.vertex_count || j2 >= d.vertex_count)
+                continue;
+            const f32 s0 = cp[j0].z + cp[j0].w;
+            const f32 s1 = cp[j1].z + cp[j1].w;
+            const f32 s2 = cp[j2].z + cp[j2].w;
+            const bool any_behind = (s0 < 0.0f) || (s1 < 0.0f) || (s2 < 0.0f);
+            const bool any_front = (s0 >= 0.0f) || (s1 >= 0.0f) || (s2 >= 0.0f);
+            if (any_behind && any_front)
+                ++straddlers;  // crosses the near plane -> up to 2 output tris
+        }
+        TriSetup* tris = fs.arena.alloc_array<TriSetup>(tri_count + straddlers + 1);
         if (!tris) {
             fs.draw_cmds[di] = DrawCmd{};
             continue;
         }
-        u32 valid_tris = 0;
+
+        struct ClipVtx {
+            math::Vec4 cp;
+            math::Vec2 uv;
+            f32 r, g, b, a;  // unpacked colour, lerp-able across the cut
+        };
+        auto make_vtx = [&](u32 idx) noexcept {
+            const u32 c = d.vertices[idx].color;
+            ClipVtx v;
+            v.cp = cp[idx];
+            v.uv = d.vertices[idx].uv;
+            v.r = static_cast<f32>(c & 0xFFu);
+            v.g = static_cast<f32>((c >> 8) & 0xFFu);
+            v.b = static_cast<f32>((c >> 16) & 0xFFu);
+            v.a = static_cast<f32>((c >> 24) & 0xFFu);
+            return v;
+        };
+        auto lerp_vtx = [](const ClipVtx& p, const ClipVtx& q, f32 t) noexcept {
+            ClipVtx v;
+            v.cp = math::Vec4{p.cp.x + (q.cp.x - p.cp.x) * t,
+                              p.cp.y + (q.cp.y - p.cp.y) * t,
+                              p.cp.z + (q.cp.z - p.cp.z) * t,
+                              p.cp.w + (q.cp.w - p.cp.w) * t};
+            v.uv = math::Vec2{p.uv.x + (q.uv.x - p.uv.x) * t, p.uv.y + (q.uv.y - p.uv.y) * t};
+            v.r = p.r + (q.r - p.r) * t;
+            v.g = p.g + (q.g - p.g) * t;
+            v.b = p.b + (q.b - p.b) * t;
+            v.a = p.a + (q.a - p.a) * t;
+            return v;
+        };
+        auto repack = [](const ClipVtx& v) noexcept -> u32 {
+            auto cl = [](f32 x) noexcept {
+                // Clamp then round-to-nearest (+0.5), matching TileRaster's
+                // pack_rgba — plain truncation biased clipped-edge colours
+                // darker and left visible seams along near-plane cuts.
+                const f32 c = x < 0.0f ? 0.0f : (x > 255.0f ? 255.0f : x);
+                return static_cast<u32>(c + 0.5f) & 0xFFu;
+            };
+            return cl(v.r) | (cl(v.g) << 8) | (cl(v.b) << 16) | (cl(v.a) << 24);
+        };
+
+        u32 produced = 0;
         for (u32 ti = 0; ti < tri_count; ++ti) {
             const u32 i0 = d.indices[ti * 3 + 0];
             const u32 i1 = d.indices[ti * 3 + 1];
             const u32 i2 = d.indices[ti * 3 + 2];
-            if (i0 >= d.vertex_count || i1 >= d.vertex_count || i2 >= d.vertex_count) {
-                tris[ti].valid = false;
+            if (i0 >= d.vertex_count || i1 >= d.vertex_count || i2 >= d.vertex_count)
                 continue;
+
+            const ClipVtx in[3] = {make_vtx(i0), make_vtx(i1), make_vtx(i2)};
+            // Clip the triangle against the near plane.
+            ClipVtx poly[4];
+            u32 np = 0;
+            for (u32 e = 0; e < 3; ++e) {
+                const ClipVtx& a = in[e];
+                const ClipVtx& b = in[(e + 1) % 3];
+                const f32 da = a.cp.z + a.cp.w;  // signed distance to near plane
+                const f32 db = b.cp.z + b.cp.w;
+                const bool ina = da >= 0.0f;
+                const bool inb = db >= 0.0f;
+                if (ina && np < 4)
+                    poly[np++] = a;
+                if (ina != inb && np < 4) {
+                    const f32 denom = da - db;
+                    const f32 t = (denom != 0.0f) ? (da / denom) : 0.0f;
+                    poly[np++] = lerp_vtx(a, b, t);
+                }
             }
-            setup_triangle(cp[i0],
-                           cp[i1],
-                           cp[i2],
-                           d.vertices[i0].uv,
-                           d.vertices[i1].uv,
-                           d.vertices[i2].uv,
-                           d.vertices[i0].color,
-                           d.vertices[i1].color,
-                           d.vertices[i2].color,
-                           fs.view.target.width,
-                           fs.view.target.height,
-                           tris[ti]);
-            if (tris[ti].valid)
-                ++valid_tris;
+            if (np < 3)
+                continue;  // fully behind the near plane
+
+            // Fan-triangulate the clipped polygon (3 or 4 verts).
+            for (u32 k = 1; k + 1 < np; ++k) {
+                const bool ok = setup_triangle(poly[0].cp,
+                                               poly[k].cp,
+                                               poly[k + 1].cp,
+                                               poly[0].uv,
+                                               poly[k].uv,
+                                               poly[k + 1].uv,
+                                               repack(poly[0]),
+                                               repack(poly[k]),
+                                               repack(poly[k + 1]),
+                                               fs.view.target.width,
+                                               fs.view.target.height,
+                                               tris[produced],
+                                               static_cast<u8>(d.cull));
+                // Advance only on success so cmd.tri_count counts valid tris and
+                // the binner never iterates culled / degenerate setups.
+                if (ok)
+                    ++produced;
+            }
         }
 
         DrawCmd cmd{};
         cmd.tris = tris;
-        cmd.tri_count = tri_count;
+        cmd.tri_count = produced;
         cmd.material_id = d.material.raw;
         cmd.flags = d.flags;
         cmd.aniso_max = frame_aniso_max;
@@ -259,7 +357,6 @@ void Rasterizer::end_frame() {
             }
         }
         fs.draw_cmds[di] = cmd;
-        (void)valid_tris;
     }
 
     // ── Step 2: build tile grid ──────────────────────────────────────────

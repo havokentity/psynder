@@ -50,6 +50,8 @@
 //   --smoke-frames N         Same, space-separated form (matches Goldens.cmake).
 //   --smoke-capture-out PATH Write the last framebuffer to PATH as a PNG.
 
+#include "common/Lighting.h"
+#include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
 #include "core/Log.h"
@@ -433,7 +435,7 @@ int main(int argc, char** argv) {
         ground.half = d.half_extent;
         ground.color = pack_rgba(64, 68, 76);
     }
-    const auto ground_mesh = tint_cube(ground.color);
+    auto ground_mesh = tint_cube(ground.color);
 
     // ── Mixed-shape drop set. Each entry seeds one dynamic body. Heights are
     // staggered so they don't all land at once; lateral offsets keep them in a
@@ -504,6 +506,35 @@ int main(int argc, char** argv) {
         }
         b.id = world.create_body(d);
         bodies.push_back(b);
+    }
+
+    // Back-face culling is on by default, so every mesh must be wound to agree
+    // with its outward normals (procedural sphere/capsule especially), and a
+    // directional key light is baked into the vertex colours so the flat-tinted
+    // primitives gain real form (samples/common/{MeshWinding,Lighting}.h). The
+    // cube winding is shared, so rewind it once against the unit-cube template.
+    const samples::DirLight kLight{};
+    std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
+    samples::fix_winding(kCubeVerts.data(),
+                         static_cast<u32>(kCubeVerts.size()),
+                         cube_idx.data(),
+                         static_cast<u32>(cube_idx.size()));
+    samples::apply_gouraud(ground_mesh.data(), static_cast<u32>(ground_mesh.size()), kLight);
+    for (auto& m : box_meshes)
+        samples::apply_gouraud(m.data(), static_cast<u32>(m.size()), kLight);
+    for (auto& m : sphere_meshes) {
+        samples::fix_winding(m.verts.data(),
+                             static_cast<u32>(m.verts.size()),
+                             m.indices.data(),
+                             static_cast<u32>(m.indices.size()));
+        samples::apply_gouraud(m.verts.data(), static_cast<u32>(m.verts.size()), kLight);
+    }
+    for (auto& m : capsule_meshes) {
+        samples::fix_winding(m.verts.data(),
+                             static_cast<u32>(m.verts.size()),
+                             m.indices.data(),
+                             static_cast<u32>(m.indices.size()));
+        samples::apply_gouraud(m.verts.data(), static_cast<u32>(m.verts.size()), kLight);
     }
 
     // Track one body (the convex-hull, spawn index 6) for the smoke log + the
@@ -655,8 +686,8 @@ int main(int argc, char** argv) {
             render::raster::DrawItem item{};
             item.vertices = ground_mesh.data();
             item.vertex_count = static_cast<u32>(ground_mesh.size());
-            item.indices = kCubeIndices.data();
-            item.index_count = static_cast<u32>(kCubeIndices.size());
+            item.indices = cube_idx.data();
+            item.index_count = static_cast<u32>(cube_idx.size());
             item.model = pose_model(world.get_position(ground.id),
                                     world.get_rotation(ground.id),
                                     math::mul(ground.half, 2.0f));
@@ -682,8 +713,8 @@ int main(int argc, char** argv) {
                     const auto& mesh = box_meshes[bodies[i].mesh_index];
                     item.vertices = mesh.data();
                     item.vertex_count = static_cast<u32>(mesh.size());
-                    item.indices = kCubeIndices.data();
-                    item.index_count = static_cast<u32>(kCubeIndices.size());
+                    item.indices = cube_idx.data();
+                    item.index_count = static_cast<u32>(cube_idx.size());
                     item.model = pose_model(p, r, math::mul(bodies[i].half, 2.0f));
                     break;
                 }

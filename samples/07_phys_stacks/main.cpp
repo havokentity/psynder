@@ -35,6 +35,8 @@
 //   --smoke-frames N         Same, space-separated form (matches Goldens.cmake).
 //   --smoke-capture-out PATH Write the last framebuffer to PATH as a PNG.
 
+#include "common/Lighting.h"
+#include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
 #include "core/Log.h"
@@ -420,10 +422,34 @@ int main(int argc, char** argv) {
 
     // Sphere render mesh — one shared unit icosphere; colour is per-vertex so
     // we rebuild a tinted copy per sphere (cheap, done once).
+    // Key light for Gouraud shading (samples/common/Lighting.h) — gives the
+    // flat-coloured primitives real form. Baked into vertex colour at build
+    // time (model-space normals; fine for the sphere, and the boxes barely
+    // rotate at rest).
+    const samples::DirLight kLight{};
+
     std::vector<Mesh> sphere_meshes;
     sphere_meshes.reserve(spheres.size());
-    for (const auto& s : spheres)
-        sphere_meshes.push_back(build_icosphere(1, s.color));
+    for (const auto& s : spheres) {
+        Mesh m = build_icosphere(1, s.color);
+        samples::fix_winding(m.verts.data(),
+                             static_cast<u32>(m.verts.size()),
+                             m.indices.data(),
+                             static_cast<u32>(m.indices.size()));
+        samples::apply_gouraud(m.verts.data(), static_cast<u32>(m.verts.size()), kLight);
+        sphere_meshes.push_back(std::move(m));
+    }
+
+    // Cube index winding is shared across ground + boxes — fix it once against
+    // the unit-cube template, then reuse for every cube DrawItem.
+    std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
+    samples::fix_winding(kCubeVerts.data(),
+                         static_cast<u32>(kCubeVerts.size()),
+                         cube_idx.data(),
+                         static_cast<u32>(cube_idx.size()));
+    samples::apply_gouraud(ground.mesh.data(), static_cast<u32>(ground.mesh.size()), kLight);
+    for (auto& b : boxes)
+        samples::apply_gouraud(b.mesh.data(), static_cast<u32>(b.mesh.size()), kLight);
 
     PSY_LOG_INFO("Psynder sample 07 running{} — {} stacked boxes, {} spheres",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -520,8 +546,8 @@ int main(int argc, char** argv) {
             render::raster::DrawItem item{};
             item.vertices = ground.mesh.data();
             item.vertex_count = static_cast<u32>(ground.mesh.size());
-            item.indices = kCubeIndices.data();
-            item.index_count = static_cast<u32>(kCubeIndices.size());
+            item.indices = cube_idx.data();
+            item.index_count = static_cast<u32>(cube_idx.size());
             item.model = pose_model(world.get_position(ground.id),
                                     world.get_rotation(ground.id),
                                     math::mul(ground.half, 2.0f));  // unit cube → full extent
@@ -539,8 +565,8 @@ int main(int argc, char** argv) {
             render::raster::DrawItem item{};
             item.vertices = boxes[i].mesh.data();
             item.vertex_count = static_cast<u32>(boxes[i].mesh.size());
-            item.indices = kCubeIndices.data();
-            item.index_count = static_cast<u32>(kCubeIndices.size());
+            item.indices = cube_idx.data();
+            item.index_count = static_cast<u32>(cube_idx.size());
             item.model = pose_model(p, r, math::mul(boxes[i].half, 2.0f));
             rasterizer.submit(item);
         }

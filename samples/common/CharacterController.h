@@ -72,10 +72,28 @@ class CharacterController {
     void set_config(const CharacterControllerConfig& cfg) noexcept { cfg_ = cfg; }
     const CharacterControllerConfig& config() const noexcept { return cfg_; }
 
-    // World box the eye is clamped inside (unless `noclip`). Pass the level
-    // bounds; an empty/zero box disables clamping.
-    void set_bounds(const math::Aabb& bounds) noexcept { bounds_ = bounds; }
+    // Single world box the eye is kept inside (unless `noclip`). Back-compat
+    // convenience for box-shaped levels; an empty/zero box disables collision.
+    // Clears any volume set previously passed to set_volumes().
+    void set_bounds(const math::Aabb& bounds) noexcept {
+        bounds_ = bounds;
+        volumes_ = nullptr;
+        volume_count_ = 0;
+    }
     const math::Aabb& bounds() const noexcept { return bounds_; }
+
+    // Generic collision: a set of convex AABB volumes the eye must stay within
+    // the UNION of. Movement slides per-axis along their boundary, so a level
+    // that isn't a single box — e.g. rooms joined by a narrow corridor — blocks
+    // correctly: pass each room's and the corridor's AABB and the player can't
+    // clip through the wall strips beside a doorway. The volumes must OVERLAP at
+    // each portal by more than `bounds_skin` so there's no dead gap between
+    // them. Storage is BORROWED (not copied) — keep it alive for the
+    // controller's lifetime. count 0 clears (falls back to set_bounds()).
+    void set_volumes(const math::Aabb* volumes, u32 count) noexcept {
+        volumes_ = volumes;
+        volume_count_ = count;
+    }
 
     void set_mode(ControllerMode m) noexcept {
         mode_ = m;
@@ -160,40 +178,83 @@ class CharacterController {
                 move = math::sub(move, math::Vec3{0, 1, 0});
         }
 
+        math::Vec3 delta{0.0f, 0.0f, 0.0f};
         if (move.x != 0.0f || move.y != 0.0f || move.z != 0.0f) {
             move = math::normalize(move);
-            pos_ = math::add(pos_, math::mul(move, speed * dt));
+            delta = math::mul(move, speed * dt);
         }
+
+        // Apply the move with collision. noclip (or a level with no collision
+        // geometry) flies straight through; otherwise slide along the level
+        // boundary per-axis so a blocked direction doesn't freeze the others.
+        if (noclip() || !collision_enabled())
+            pos_ = math::add(pos_, delta);
+        else
+            pos_ = resolve_collision(pos_, delta, fly);
 
         // Ground pin: FPS (when not flying) always rides the floor plane.
         if (mode_ == ControllerMode::Fps && !noclip())
             pos_.y = cfg_.floor_y + cfg_.eye_height;
-
-        // World clamp: skip entirely when noclip is set so you can leave the
-        // level. A zero-sized box (default) also disables the clamp.
-        if (!noclip())
-            clamp_to_bounds();
     }
 
    private:
-    void clamp_to_bounds() noexcept {
-        const bool empty = bounds_.min.x >= bounds_.max.x && bounds_.min.y >= bounds_.max.y &&
-                           bounds_.min.z >= bounds_.max.z;
-        if (empty)
-            return;
+    // Collision geometry present? Either an explicit volume set, or a legacy
+    // single box with positive volume (min < max on EVERY axis). The
+    // positive-volume test treats the default zero box, a fully-degenerate box,
+    // AND a partially-inverted box (e.g. min.x > max.x) all as "no collision" —
+    // so an invalid AABB disables collision rather than locking movement (which
+    // a per-axis `min >= max` AND-check would do, since point_in_box then always
+    // fails on the bad axis).
+    bool collision_enabled() const noexcept {
+        if (volume_count_ > 0)
+            return true;
+        return bounds_.min.x < bounds_.max.x && bounds_.min.y < bounds_.max.y &&
+               bounds_.min.z < bounds_.max.z;
+    }
+
+    // Is `p` inside a single box, shrunk by the skin so the eye stops just shy
+    // of the geometry? An axis thinner than 2*skin isn't skinned there, so a
+    // narrow corridor stays walkable.
+    bool point_in_box(math::Vec3 p, const math::Aabb& box) const noexcept {
         const f32 s = cfg_.bounds_skin;
-        // Clamp each axis independently; guard against a skin larger than the
-        // box extent by collapsing to the box centre on that axis.
-        auto clamp_axis = [s](f32 v, f32 lo, f32 hi) noexcept {
-            const f32 a = lo + s;
-            const f32 b = hi - s;
-            if (a > b)
-                return 0.5f * (lo + hi);
-            return std::clamp(v, a, b);
+        auto within = [s](f32 v, f32 lo, f32 hi) noexcept {
+            if (hi - lo > 2.0f * s) {
+                lo += s;
+                hi -= s;
+            }
+            return v >= lo && v <= hi;
         };
-        pos_.x = clamp_axis(pos_.x, bounds_.min.x, bounds_.max.x);
-        pos_.y = clamp_axis(pos_.y, bounds_.min.y, bounds_.max.y);
-        pos_.z = clamp_axis(pos_.z, bounds_.min.z, bounds_.max.z);
+        return within(p.x, box.min.x, box.max.x) && within(p.y, box.min.y, box.max.y) &&
+               within(p.z, box.min.z, box.max.z);
+    }
+
+    // Inside the UNION of the walkable volumes (or the legacy single box)?
+    bool inside_union(math::Vec3 p) const noexcept {
+        if (volume_count_ > 0) {
+            for (u32 i = 0; i < volume_count_; ++i)
+                if (point_in_box(p, volumes_[i]))
+                    return true;
+            return false;
+        }
+        return point_in_box(p, bounds_);
+    }
+
+    // Move from `old` by `delta`, keeping the eye inside the union. Resolve each
+    // axis independently: take the per-axis step only if it lands inside the
+    // union, else hold that axis (slide along the boundary). Generic for any
+    // AABB-union level; crossing a portal works when the two volumes overlap
+    // there. Vertical only resolves in fly mode (FPS pins Y to the floor).
+    math::Vec3 resolve_collision(math::Vec3 old, math::Vec3 delta, bool fly) const noexcept {
+        math::Vec3 p = old;
+        if (const math::Vec3 tx{old.x + delta.x, p.y, p.z}; inside_union(tx))
+            p.x = tx.x;
+        if (const math::Vec3 tz{p.x, p.y, old.z + delta.z}; inside_union(tz))
+            p.z = tz.z;
+        if (fly) {
+            if (const math::Vec3 ty{p.x, old.y + delta.y, p.z}; inside_union(ty))
+                p.y = ty.y;
+        }
+        return p;
     }
 
     // Lazily register (or look up) the `noclip` cvar exactly once and cache
@@ -213,7 +274,9 @@ class CharacterController {
     }
 
     CharacterControllerConfig cfg_{};
-    math::Aabb bounds_{};  // zero box => no clamp
+    math::Aabb bounds_{};                  // legacy single box; zero => no collision
+    const math::Aabb* volumes_ = nullptr;  // borrowed walkable-volume set (union)
+    u32 volume_count_ = 0;
     ControllerMode mode_ = ControllerMode::Fps;
     math::Vec3 pos_{0.0f, 1.6f, 0.0f};
     f32 yaw_ = 0.0f;
