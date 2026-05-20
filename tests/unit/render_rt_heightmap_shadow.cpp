@@ -73,7 +73,7 @@ Ray make_ray(math::Vec3 o, math::Vec3 d, f32 t_max = 1e30f) {
 
 // ─── Flat fixture ────────────────────────────────────────────────────────
 
-TEST_CASE("Heightmap shadow flat: horizontal ray above the surface — miss",
+TEST_CASE("Heightmap shadow flat: horizontal ray above the surface - miss",
           "[render_rt][heightmap_shadow][flat]") {
     FlatHm fx(16, 16, /*y=*/2.0f);
     // Ray at y=5 moving in +X (entirely above the y=2 plane).
@@ -81,7 +81,7 @@ TEST_CASE("Heightmap shadow flat: horizontal ray above the surface — miss",
     REQUIRE_FALSE(trace_heightmap_shadow(fx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow flat: ray dipping into surface — hit",
+TEST_CASE("Heightmap shadow flat: ray dipping into surface - hit",
           "[render_rt][heightmap_shadow][flat]") {
     FlatHm fx(16, 16, /*y=*/2.0f);
     // Ray starts above (y=5) and points down +X +Y_neg into the plane.
@@ -89,14 +89,14 @@ TEST_CASE("Heightmap shadow flat: ray dipping into surface — hit",
     REQUIRE(trace_heightmap_shadow(fx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow flat: ray pointing up away from surface — miss",
+TEST_CASE("Heightmap shadow flat: ray pointing up away from surface - miss",
           "[render_rt][heightmap_shadow][flat]") {
     FlatHm fx(16, 16, /*y=*/2.0f);
     Ray r = make_ray({0.5f, 5.0f, 8.0f}, math::normalize(math::Vec3{1.0f, 1.0f, 0.0f}));
     REQUIRE_FALSE(trace_heightmap_shadow(fx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow flat: ray with t_max clamped before surface — miss",
+TEST_CASE("Heightmap shadow flat: ray with t_max clamped before surface - miss",
           "[render_rt][heightmap_shadow][flat]") {
     FlatHm fx(16, 16, /*y=*/2.0f);
     // The ray would hit the surface at t=3 (descending 1 unit per t), but
@@ -107,7 +107,7 @@ TEST_CASE("Heightmap shadow flat: ray with t_max clamped before surface — miss
     REQUIRE_FALSE(trace_heightmap_shadow(fx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow flat: ray starting below the surface — hit",
+TEST_CASE("Heightmap shadow flat: ray starting below the surface - hit",
           "[render_rt][heightmap_shadow][flat]") {
     FlatHm fx(16, 16, /*y=*/5.0f);
     Ray r = make_ray({0.5f, 1.0f, 8.0f},  // below y=5
@@ -117,7 +117,7 @@ TEST_CASE("Heightmap shadow flat: ray starting below the surface — hit",
 
 // ─── Ramp fixture ────────────────────────────────────────────────────────
 
-TEST_CASE("Heightmap shadow ramp: ray above the rising ramp — miss",
+TEST_CASE("Heightmap shadow ramp: ray above the rising ramp - miss",
           "[render_rt][heightmap_shadow][ramp]") {
     // y rises from 0 at x=0 to 15 at x=15; grid is 16 cells wide.
     RampHm rx(16, 16, /*base=*/0.0f, /*slope_x=*/1.0f, /*slope_z=*/0.0f);
@@ -126,7 +126,7 @@ TEST_CASE("Heightmap shadow ramp: ray above the rising ramp — miss",
     REQUIRE_FALSE(trace_heightmap_shadow(rx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow ramp: horizontal ray clipped by the ramp — hit",
+TEST_CASE("Heightmap shadow ramp: horizontal ray clipped by the ramp - hit",
           "[render_rt][heightmap_shadow][ramp]") {
     // y rises from 0 to 15. A horizontal ray at y=5 will pass at low x
     // (where ramp y < 5) but the ramp rises through y=5 at x=5. At x≥5
@@ -136,7 +136,7 @@ TEST_CASE("Heightmap shadow ramp: horizontal ray clipped by the ramp — hit",
     REQUIRE(trace_heightmap_shadow(rx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow ramp: ray parallel to the ramp slope — miss",
+TEST_CASE("Heightmap shadow ramp: ray parallel to the ramp slope - miss",
           "[render_rt][heightmap_shadow][ramp]") {
     // Ramp slope +x: each +1 x adds +1 y. Ray rising at the same slope
     // (dy/dx = 1) just above the surface should miss.
@@ -146,7 +146,7 @@ TEST_CASE("Heightmap shadow ramp: ray parallel to the ramp slope — miss",
     REQUIRE_FALSE(trace_heightmap_shadow(rx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow ramp: ray descending into ramp — hit",
+TEST_CASE("Heightmap shadow ramp: ray descending into ramp - hit",
           "[render_rt][heightmap_shadow][ramp]") {
     RampHm rx(16, 16, /*base=*/0.0f, /*slope_x=*/0.0f, /*slope_z=*/1.0f);
     // Surface rises along +Z. Ray starts at y=10 moving in +Z and slightly
@@ -155,7 +155,7 @@ TEST_CASE("Heightmap shadow ramp: ray descending into ramp — hit",
     REQUIRE(trace_heightmap_shadow(rx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow ramp: ray entirely below ramp peak but starting under — hit",
+TEST_CASE("Heightmap shadow ramp: ray entirely below ramp peak but starting under - hit",
           "[render_rt][heightmap_shadow][ramp]") {
     RampHm rx(16, 16, /*base=*/0.0f, /*slope_x=*/1.0f, /*slope_z=*/0.0f);
     // Ramp y(x=10) = 10. Start ray at (10, 5, 8) — under the surface.
@@ -163,7 +163,7 @@ TEST_CASE("Heightmap shadow ramp: ray entirely below ramp peak but starting unde
     REQUIRE(trace_heightmap_shadow(rx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow ramp: vertical ray hits below — hit",
+TEST_CASE("Heightmap shadow ramp: vertical ray hits below - hit",
           "[render_rt][heightmap_shadow][ramp]") {
     RampHm rx(16, 16, /*base=*/0.0f, /*slope_x=*/1.0f, /*slope_z=*/0.0f);
     // Surface at (x=5, z=5) is y=5. Vertical ray at (5,10) → (5,0): hits.
@@ -171,7 +171,7 @@ TEST_CASE("Heightmap shadow ramp: vertical ray hits below — hit",
     REQUIRE(trace_heightmap_shadow(rx.hm, r));
 }
 
-TEST_CASE("Heightmap shadow ramp: vertical ray going up — miss",
+TEST_CASE("Heightmap shadow ramp: vertical ray going up - miss",
           "[render_rt][heightmap_shadow][ramp]") {
     RampHm rx(16, 16, /*base=*/0.0f, /*slope_x=*/1.0f, /*slope_z=*/0.0f);
     // Surface at (5, 5) is y=5. Vertical ray starting at y=10 going up

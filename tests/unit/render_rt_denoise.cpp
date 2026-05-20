@@ -64,7 +64,7 @@ void run_denoise(DenoiseFixture& f) {
 
 }  // namespace
 
-TEST_CASE("Denoiser is monotone — filtered ≥ V0 when V0 is the input minimum",
+TEST_CASE("Denoiser is monotone - filtered >= V0 when V0 is the input minimum",
           "[render_rt][denoise][monotone]") {
     DenoiseFixture f;
     const f32 V0 = 0.10f;

@@ -1,0 +1,43 @@
+# Psynder line-ending + binary policy.
+#
+# Default: let git normalize text to LF in the repo, native on checkout.
+* text=auto
+
+# Source + build files are always LF, on every platform. Keeps clang-format
+# and the compilers seeing identical bytes on Mac/Linux/Windows.
+*.h     text eol=lf
+*.hpp   text eol=lf
+*.c     text eol=lf
+*.cpp   text eol=lf
+*.mm    text eol=lf
+*.cmake text eol=lf
+*.txt   text eol=lf
+*.md    text eol=lf
+*.py    text eol=lf
+*.sh    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+CMakeLists.txt text eol=lf
+
+# Golden test inputs: scene scripts are LF text; reference images are BINARY.
+# Reference .ppm files have no NUL bytes, so without this git's autocrlf
+# heuristic treats them as text and rewrites LF->CRLF on Windows checkout —
+# which shifts the binary raster past the header and fails the golden diff
+# 100%. Mark every binary asset format the engine ships so none are ever
+# line-ending-converted.
+*.psyscene text eol=lf
+*.ppm    binary
+*.png    binary
+*.jpg    binary
+*.tga    binary
+*.wav    binary
+*.lmpak  binary
+*.psybsp binary
+*.lmm    binary
+*.lmt    binary
+*.lma    binary
+*.lmlight binary
+*.psylevel binary
+*.psyc   binary
+*.bin    binary

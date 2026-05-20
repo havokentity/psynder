@@ -77,7 +77,7 @@ TEST_CASE("Bvh8 single triangle: occluded() agrees with intersect()",
     REQUIRE_FALSE(bvh.occluded(r));
 }
 
-TEST_CASE("Bvh8 single triangle: backface hit (Möller–Trumbore double-sided)",
+TEST_CASE("Bvh8 single triangle: backface hit (Moller-Trumbore double-sided)",
           "[render_rt][single_triangle]") {
     Triangle t = make_triangle_xy_at(5.0f);
     Bvh8 bvh;

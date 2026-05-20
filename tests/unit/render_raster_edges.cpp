@@ -100,7 +100,7 @@ TEST_CASE("setup_triangle: screen-CW triangle is back-face culled", "[raster][se
     REQUIRE_FALSE(t.valid);
 }
 
-TEST_CASE("inside test: pixel inside the triangle has all edges ≥ 0", "[raster][coverage]") {
+TEST_CASE("inside test: pixel inside the triangle has all edges >= 0", "[raster][coverage]") {
     TriSetup t{};
     REQUIRE(setup_triangle(ndc(-0.5f, -0.5f),
                            ndc(0.0f, 0.5f),

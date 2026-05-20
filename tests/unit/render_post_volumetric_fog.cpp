@@ -50,7 +50,7 @@ FogScene make_scene(const std::vector<FogLight>* lights = nullptr) {
 
 }  // namespace
 
-TEST_CASE("render_post: froxel grid dimensions match DESIGN §8.4", "[render_post][fog]") {
+TEST_CASE("render_post: froxel grid dimensions match DESIGN sec 8.4", "[render_post][fog]") {
     REQUIRE(kFroxelW == 160u);
     REQUIRE(kFroxelH == 90u);
     REQUIRE(kFroxelD == 64u);

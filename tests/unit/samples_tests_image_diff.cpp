@@ -80,7 +80,7 @@ TEST_CASE("samples_tests: differing sizes refuse to compare", "[lane25][golden]"
     REQUIRE(r.mismatch_pct() == 0.0);
 }
 
-TEST_CASE("samples_tests: tolerance bar honours DESIGN.md §14 0.5%", "[lane25][golden]") {
+TEST_CASE("samples_tests: tolerance bar honours DESIGN.md sec 14 0.5%", "[lane25][golden]") {
     // 200x200 = 40000 pixels. 0.5% = 200 allowed mismatches.
     Image a = solid(200, 200, 64, 96, 128);
     Image b = a;

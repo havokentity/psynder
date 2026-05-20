@@ -70,7 +70,14 @@ bool read_ppm(const fs::path& path, Image& out) {
         std::fclose(f);
         return false;
     }
-    std::fgetc(f);  // exactly one whitespace byte
+    // Per the PPM spec a single whitespace byte separates maxval from the
+    // raster. If the file was line-ending-converted to CRLF (e.g. a Windows
+    // checkout without the .gitattributes binary rule), that one byte is
+    // "\r\n" — consume the trailing '\n' too so the raster isn't shifted by
+    // one byte (which corrupts every pixel and fails the diff 100%).
+    int sep = std::fgetc(f);
+    if (sep == '\r')
+        std::fgetc(f);  // swallow the paired '\n'
     const usize uw = static_cast<usize>(w);
     const usize uh = static_cast<usize>(h);
     out.width = static_cast<u32>(w);
