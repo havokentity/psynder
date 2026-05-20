@@ -33,6 +33,7 @@
 //   --smoke-frames N         Same, space-separated.
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
+#include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
 #include "core/Log.h"
@@ -221,6 +222,49 @@ std::vector<u16> build_heightmap() {
     return heights;
 }
 
+// ─── Heightmap sampling ──────────────────────────────────────────────────
+//
+// Bilinear sample of the u16 heightmap at world-space (wx, wz), returning
+// metres. Shared by watchtower placement *and* the flyover camera's terrain-
+// collision clamp so both agree on the ground height under any world point.
+//
+// Semantics deliberately match `world::outdoor::detail::sample_bilinear`:
+//   * null heights / zero size / non-positive spacing  →  return 0
+//   * out-of-bounds (fx/fz outside [0, size-1])         →  return 0
+//   * in-bounds                                          →  bilinear blend
+// (The Copilot review on PR #114 flagged edge-clamp extrapolation for props
+// near the map edge — falling back to 0 keeps this consistent with the rest
+// of the engine.)
+f32 terrain_height(const world::outdoor::HeightmapDesc& hm, f32 wx, f32 wz) noexcept {
+    if (!hm.heights || hm.size_x == 0 || hm.size_z == 0 || hm.spacing <= 0.0f) {
+        return 0.0f;
+    }
+    const f32 fx = wx / hm.spacing;
+    const f32 fz = wz / hm.spacing;
+    const f32 max_x = static_cast<f32>(hm.size_x - 1);
+    const f32 max_z = static_cast<f32>(hm.size_z - 1);
+    if (fx < 0.0f || fx > max_x || fz < 0.0f || fz > max_z) {
+        return 0.0f;
+    }
+    const i32 ix = static_cast<i32>(std::floor(fx));
+    const i32 iz = static_cast<i32>(std::floor(fz));
+    const f32 tx = fx - static_cast<f32>(ix);
+    const f32 tz = fz - static_cast<f32>(iz);
+    auto fetch = [&hm](i32 cx, i32 cz) noexcept -> f32 {
+        cx = std::clamp(cx, 0, static_cast<i32>(hm.size_x) - 1);
+        cz = std::clamp(cz, 0, static_cast<i32>(hm.size_z) - 1);
+        const usize idx = static_cast<usize>(cz) * hm.size_x + static_cast<usize>(cx);
+        return static_cast<f32>(hm.heights[idx]) * hm.height_scale;
+    };
+    const f32 h00 = fetch(ix, iz);
+    const f32 h10 = fetch(ix + 1, iz);
+    const f32 h01 = fetch(ix, iz + 1);
+    const f32 h11 = fetch(ix + 1, iz + 1);
+    const f32 a = h00 * (1.0f - tx) + h10 * tx;
+    const f32 b = h01 * (1.0f - tx) + h11 * tx;
+    return a * (1.0f - tz) + b * tz;
+}
+
 // ─── Sky gradient ────────────────────────────────────────────────────────
 // Vertical screen-Y gradient: warm orange near the horizon (bottom of the
 // upper-screen band), cool blue at zenith.
@@ -249,7 +293,14 @@ struct CameraView {
     f32 far_z;
 };
 
-CameraView make_flyover_camera(f32 t_seconds) {
+// Vertical clearance the flyover eye keeps above whatever it passes over.
+// Sized to clear the ~7m watchtowers when the orbit carries the camera near
+// one (terrain + clearance > terrain + tower height) and to leave comfortable
+// headroom over the ~30m central ridge.
+constexpr f32 kFlyoverClearance = 10.0f;
+constexpr f32 kTowerHeight = 7.0f;
+
+CameraView make_flyover_camera(f32 t_seconds, const world::outdoor::HeightmapDesc& hm) {
     // Centre of the map (the central ridge crest).
     const f32 map_m = static_cast<f32>(kHmSize) * kHmSpacing;
     const math::Vec3 centre{map_m * 0.5f, 14.0f, map_m * 0.5f};
@@ -257,11 +308,21 @@ CameraView make_flyover_camera(f32 t_seconds) {
     const f32 ang = -math::kHalfPi + t_seconds * 0.10f;
     const f32 radius = 130.0f;
     const f32 alt = 30.0f;
-    const math::Vec3 eye{
+    math::Vec3 eye{
         centre.x + std::cos(ang) * radius,
         alt,
         centre.z + std::sin(ang) * radius,
     };
+    // Terrain collision: never let the eye dip into a hill or a tower. Lift it
+    // to sit `kFlyoverClearance` above the terrain directly below; the extra
+    // `kTowerHeight` headroom keeps it clear of a watchtower the orbit may pass
+    // over. The orbit's XZ motion is untouched — we only raise Y when the
+    // scripted `alt` would otherwise clip.
+    const f32 ground = terrain_height(hm, eye.x, eye.z);
+    const f32 min_eye_y = ground + kTowerHeight + kFlyoverClearance;
+    if (eye.y < min_eye_y) {
+        eye.y = min_eye_y;
+    }
     const math::Vec3 up_world{0, 1, 0};
     const math::Vec3 fwd = math::normalize(math::sub(centre, eye));
     const math::Vec3 right = math::normalize(math::cross(fwd, up_world));
@@ -314,6 +375,95 @@ constexpr u32 kColTowerRoof = pack_rgba8(48, 38, 32);
 constexpr u32 kColHeliBody = pack_rgba8(60, 70, 56);
 constexpr u32 kColHeliTrim = pack_rgba8(36, 44, 36);
 constexpr u32 kColRotor = pack_rgba8(32, 32, 32);
+
+// ─── Building facade texture ─────────────────────────────────────────────
+//
+// Deterministic RGBA8 chunk (kFacadeDim², pitch == width) read as a concrete
+// watchtower facade: a mid-grey concrete field with fine speckle, a grid of
+// lit windows (warm panes with dark mullions between them), and a darker
+// roof/parapet band across the top. No RNG — one cheap integer hash gives the
+// concrete its grain. Each tower's DrawItem points `lightmap_texels` here and
+// the cube's 0..1 per-face uv spans the chunk, so the surface_cached path
+// computes vertexColor × facade(uv) per pixel. Buffer is owned by main() and
+// outlives the render loop.
+constexpr u32 kFacadeDim = 64;
+
+// Small deterministic 2D value hash → [0,1). Cheap, repeatable, no global
+// state; adds fine concrete grain so the wall isn't a dead flat field.
+PSY_FORCEINLINE f32 facade_hash2(u32 x, u32 y) noexcept {
+    u32 h = x * 374761393u + y * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return static_cast<f32>(h & 0xFFFFFFu) / static_cast<f32>(0x1000000u);
+}
+
+std::vector<u32> build_facade_texture() {
+    const u32 dim = kFacadeDim;
+    std::vector<u32> tex(static_cast<usize>(dim) * dim, 0u);
+
+    // Palette: cool concrete field, dark mullion/parapet, warm lit panes.
+    constexpr i32 kConcR = 150, kConcG = 152, kConcB = 150;  // concrete base
+    constexpr i32 kMullR = 58, kMullG = 60, kMullB = 64;     // window frame
+    constexpr i32 kRoofR = 70, kRoofG = 66, kRoofB = 60;     // roof/parapet band
+    constexpr i32 kWinR = 196, kWinG = 176, kWinB = 96;      // lit pane
+
+    const u32 roof_h = std::max(3u, dim / 8);  // parapet band height (top)
+    const u32 cols = 3;                        // window columns across the face
+    const u32 rows = 3;                        // window rows down the face
+    const u32 cell_w = dim / cols;
+    const u32 cell_h = (dim - roof_h) / rows;
+    const u32 pane_inset = std::max(2u, cell_w / 6);  // mullion thickness
+
+    for (u32 y = 0; y < dim; ++y) {
+        for (u32 x = 0; x < dim; ++x) {
+            // Concrete base with fine speckle so it isn't banded.
+            const i32 sp = static_cast<i32>((facade_hash2(x, y) - 0.5f) * 18.0f);
+            i32 r = kConcR + sp;
+            i32 g = kConcG + sp;
+            i32 b = kConcB + sp;
+
+            if (y < roof_h) {
+                // Darker roof / parapet band across the top.
+                const i32 rs = static_cast<i32>((facade_hash2(x, y) - 0.5f) * 12.0f);
+                r = kRoofR + rs;
+                g = kRoofG + rs;
+                b = kRoofB + rs;
+            } else {
+                // Window grid below the parapet. A pane is the inset interior
+                // of each cell; the surrounding band reads as the mullion.
+                const u32 wy = y - roof_h;
+                const u32 col_in = x % cell_w;
+                const u32 row_in = wy % cell_h;
+                const bool in_pane = col_in >= pane_inset && col_in < cell_w - pane_inset &&
+                                     row_in >= pane_inset && row_in < cell_h - pane_inset &&
+                                     wy < rows * cell_h;
+                if (in_pane) {
+                    // Warm lit glass with a faint top-down gradient + speckle
+                    // so the panes read as glazing rather than flat fill.
+                    const f32 gy = static_cast<f32>(row_in) / static_cast<f32>(cell_h);
+                    const i32 grad = static_cast<i32>((0.5f - gy) * 24.0f);
+                    const i32 gs = static_cast<i32>((facade_hash2(x, y) - 0.5f) * 14.0f);
+                    r = kWinR + grad + gs;
+                    g = kWinG + grad + gs;
+                    b = kWinB + grad + gs;
+                } else if ((col_in < pane_inset || col_in >= cell_w - pane_inset ||
+                            row_in < pane_inset || row_in >= cell_h - pane_inset) &&
+                           wy < rows * cell_h) {
+                    // Dark mullion between/around the panes.
+                    r = kMullR;
+                    g = kMullG;
+                    b = kMullB;
+                }
+            }
+
+            tex[static_cast<usize>(y) * dim + x] = pack_rgba8(clamp_u8(static_cast<f32>(r)),
+                                                              clamp_u8(static_cast<f32>(g)),
+                                                              clamp_u8(static_cast<f32>(b)),
+                                                              255u);
+        }
+    }
+    return tex;
+}
 
 // Build a cube with a single per-face colour; populates `verts`/`indices`
 // appended to whatever the caller already has, returning the index offsets.
@@ -413,54 +563,12 @@ std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
         {cx - 40.0f, cz - 80.0f},
         {cx + 60.0f, cz - 90.0f},
     }};
-    // Bilinear sample of the u16 heightmap at world-space (x, z). Inlined
-    // so the sample doesn't depend on the `detail::*` raymarch internals
-    // (the public `TerrainRaymarch::render` is the canonical paint path).
-    //
-    // Semantics deliberately match `world::outdoor::detail::sample_bilinear`:
-    //   * null heights / zero size / non-positive spacing  →  return 0
-    //   * out-of-bounds (fx/fz outside [0, size-1])         →  return 0
-    //   * in-bounds                                          →  bilinear blend
-    // The Copilot review on PR #114 flagged the previous edge-clamp
-    // behavior — for the watchtower hex ring inside the map it'd never
-    // fire, but a future change that places props near the map edge
-    // would silently get extrapolated edge heights instead of falling
-    // back to 0 the way the rest of the engine does.
-    auto sample_height_at = [&hm](f32 wx, f32 wz) noexcept -> f32 {
-        if (!hm.heights || hm.size_x == 0 || hm.size_z == 0 || hm.spacing <= 0.0f) {
-            return 0.0f;
-        }
-        const f32 fx = wx / hm.spacing;
-        const f32 fz = wz / hm.spacing;
-        const f32 max_x = static_cast<f32>(hm.size_x - 1);
-        const f32 max_z = static_cast<f32>(hm.size_z - 1);
-        if (fx < 0.0f || fx > max_x || fz < 0.0f || fz > max_z) {
-            return 0.0f;
-        }
-        const i32 ix = static_cast<i32>(std::floor(fx));
-        const i32 iz = static_cast<i32>(std::floor(fz));
-        const f32 tx = fx - static_cast<f32>(ix);
-        const f32 tz = fz - static_cast<f32>(iz);
-        auto fetch = [&hm](i32 cx, i32 cz) noexcept -> f32 {
-            cx = std::clamp(cx, 0, static_cast<i32>(hm.size_x) - 1);
-            cz = std::clamp(cz, 0, static_cast<i32>(hm.size_z) - 1);
-            const usize idx = static_cast<usize>(cz) * hm.size_x + static_cast<usize>(cx);
-            return static_cast<f32>(hm.heights[idx]) * hm.height_scale;
-        };
-        const f32 h00 = fetch(ix, iz);
-        const f32 h10 = fetch(ix + 1, iz);
-        const f32 h01 = fetch(ix, iz + 1);
-        const f32 h11 = fetch(ix + 1, iz + 1);
-        const f32 a = h00 * (1.0f - tx) + h10 * tx;
-        const f32 b = h01 * (1.0f - tx) + h11 * tx;
-        return a * (1.0f - tz) + b * tz;
-    };
 
     std::array<Tower, 6> towers{};
     for (u32 i = 0; i < 6; ++i) {
         const f32 wx = xz[i].x;
         const f32 wz = xz[i].y;
-        const f32 hy = sample_height_at(wx, wz);
+        const f32 hy = terrain_height(hm, wx, wz);
         towers[i].ground_pos = {wx, hy, wz};
         towers[i].height = 7.0f;
         towers[i].half_extent = 1.6f;
@@ -545,10 +653,35 @@ int main(int argc, char** argv) {
     terrain_rm.set_heightmap(hm_desc);
     world::outdoor::set_target(terrain_rm, &fb);
 
+    // ─── Building facade texture ─────────────────────────────────────────
+    // Owned here so its storage outlives every end_frame() that samples it;
+    // each tower's DrawItem points `lightmap_texels` at this buffer.
+    const std::vector<u32> facade_tex = build_facade_texture();
+
     // ─── Scene props ─────────────────────────────────────────────────────
-    const Mesh tower_mesh = build_cube_mesh(kColTowerBody, kColTowerRoof);
-    const Mesh heli_body = build_cube_mesh(kColHeliBody, kColHeliTrim);
-    const Mesh heli_blade = build_cube_mesh(kColRotor, kColRotor);
+    // Towers wear the facade texture, so their verts are white — the
+    // surface_cached path computes white × facade(uv) and shows the texture
+    // faithfully. The heli keeps its flat per-face palette.
+    Mesh tower_mesh = build_cube_mesh(pack_rgba8(255, 255, 255), pack_rgba8(255, 255, 255));
+    Mesh heli_body = build_cube_mesh(kColHeliBody, kColHeliTrim);
+    Mesh heli_blade = build_cube_mesh(kColRotor, kColRotor);
+
+    // The rasterizer back-face culls by default (DESIGN.md §7.3), so each cube
+    // must be wound consistently with its per-vertex normals or faces drop out
+    // as the camera orbits. Rewind once from the shared normals; the per-face
+    // colours/uv are left untouched.
+    samples::fix_winding(tower_mesh.verts.data(),
+                         static_cast<u32>(tower_mesh.verts.size()),
+                         tower_mesh.indices.data(),
+                         static_cast<u32>(tower_mesh.indices.size()));
+    samples::fix_winding(heli_body.verts.data(),
+                         static_cast<u32>(heli_body.verts.size()),
+                         heli_body.indices.data(),
+                         static_cast<u32>(heli_body.indices.size()));
+    samples::fix_winding(heli_blade.verts.data(),
+                         static_cast<u32>(heli_blade.verts.size()),
+                         heli_blade.indices.data(),
+                         static_cast<u32>(heli_blade.indices.size()));
 
     const auto towers = make_watchtowers(hm_desc);
 
@@ -572,7 +705,7 @@ int main(int argc, char** argv) {
         const f64 t = smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
                                        : platform::Clock::seconds(platform::Clock::ticks_now() - t0);
 
-        const CameraView cam = make_flyover_camera(static_cast<f32>(t));
+        const CameraView cam = make_flyover_camera(static_cast<f32>(t), hm_desc);
 
         // ── Step 1: terrain via the public TerrainRaymarch ─────────────
         // Reset depth to far before the raymarch (the public render writes
@@ -611,6 +744,12 @@ int main(int argc, char** argv) {
             item.indices = tower_mesh.indices.data();
             item.index_count = static_cast<u32>(tower_mesh.indices.size());
             item.model = math::mul(trs, scl);
+            // Bind the procedural facade chunk: forces the surface_cached path
+            // so each pixel is white × facade(uv). Buffer owned by `facade_tex`
+            // above and outlives this loop.
+            item.lightmap_texels = facade_tex.data();
+            item.lightmap_w = kFacadeDim;
+            item.lightmap_h = kFacadeDim;
             rasterizer.submit(item);
         }
 
