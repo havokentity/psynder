@@ -76,7 +76,14 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
         }
     }
     math::Vec3 forward = quat_rotate(chassis.rotation, fwd_local);
-    math::Vec3 right = math::normalize(math::cross(up, forward));
+    // right = up x forward, but guard the degenerate case: if the chassis has
+    // pitched/rolled so forward is ~parallel to up (e.g. mid-flip) the cross
+    // collapses to ~0 and a plain normalize() would yield NaN, poisoning the
+    // tire basis for the tick. Fall back to the chassis's own local +X axis.
+    const math::Vec3 right_raw = math::cross(up, forward);
+    const f32 right_len2 = math::dot(right_raw, right_raw);
+    math::Vec3 right = (right_len2 > 1e-8f) ? math::mul(right_raw, 1.0f / std::sqrt(right_len2))
+                                            : quat_rotate(chassis.rotation, {1, 0, 0});
 
     // Drivetrain: read drive-wheel omegas and step the engine + gearbox.
     f32 omega_l = 0.0f, omega_r = 0.0f;
@@ -182,7 +189,10 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
 
     // Per-wheel tire forces (Pacejka). For each wheel:
     //   * slip_long = (r·ω − v_long) / max(|v_long|, eps)
-    //   * slip_lat  = atan2(v_lat, |v_long|) − steer_angle (radians)
+    //   * slip_lat  = atan2(v_lat, |v_long|) in the STEERED tire basis. Steering
+    //                 is baked into that basis (tire_fwd/tire_right are the
+    //                 chassis axes rotated by steer_angle below), so it is NOT
+    //                 subtracted again here — doing so would double-count it.
     //   * Fz        = suspension normal load computed above this tick
     for (VehicleWheel& wh : v.wheels) {
         // Propagate the chassis steering command to the steered wheels. Only
