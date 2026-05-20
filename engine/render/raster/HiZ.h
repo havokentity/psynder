@@ -109,16 +109,12 @@ struct HiZTile {
                 // dropped that second triangle, leaving half the quad as a hole
                 // on face-on walls/floors — so equality must pass.
                 //
-                // This early-reject is only strictly conservative while max_z
-                // stays an upper bound on the cell's farthest depth. update_cell
-                // tightens from a triangle's max-vertex z over its whole bbox,
-                // so a partially-covering near triangle can pull max_z below the
-                // cell's true farthest and over-reject a later visible triangle.
-                // Not observed on current sample content (and rebuild_from_fb
-                // restores a true bound each tile pass); the strictly-correct
-                // fix — tighten only fully-covered cells — is tracked as
-                // follow-up. The per-pixel depth test remains the authority for
-                // triangles that survive the early-reject.
+                // This early-reject is conservative because max_z is kept a true
+                // upper bound on the cell's farthest depth: the tile rasterizer
+                // only tightens a cell (update_cell) when a triangle FULLY covers
+                // it, so max_z never drops below the cell's actual farthest. The
+                // per-pixel depth test remains the authority for triangles that
+                // survive the early-reject.
                 if (max_z[cy * kCols + cx] >= test_z)
                     return true;
             }
@@ -126,12 +122,13 @@ struct HiZTile {
         return false;
     }
 
-    // Tighten a single cell's max_z after a quad finishes (monotonically lowers
-    // it). NOTE: this is a conservative upper bound only when `new_max_z` bounds
-    // the farthest depth over the WHOLE cell. The tile rasterizer feeds a
-    // triangle's max-vertex z across its bbox, which is NOT conservative for
-    // partially-covered cells — see the caller and any_cell_passes(). Kept as a
-    // heuristic; rebuild_from_fb() restores a true bound at each tile pass.
+    // Tighten a single cell's max_z (monotonically lowers it). Conservative by
+    // contract: callers must only pass a `new_max_z` that bounds the farthest
+    // depth over the WHOLE cell. The tile rasterizer satisfies this by calling
+    // here only for cells a triangle FULLY covers (then min(old, tri_z) <=
+    // tri_z_max for every pixel) — see the caller. Tightening a partially-
+    // covered cell would underestimate its farthest depth and make
+    // any_cell_passes() over-reject visible geometry.
     PSY_FORCEINLINE void update_cell(u32 cell, f32 new_max_z) noexcept {
         if (new_max_z < max_z[cell])
             max_z[cell] = new_max_z;
