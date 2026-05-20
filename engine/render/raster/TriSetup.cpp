@@ -3,6 +3,7 @@
 // DESIGN.md §7.3 — edge functions in Q24.8, sub-pixel precision 1/256 px.
 
 #include "EdgeEq.h"
+#include "Raster.h"
 
 #include "core/Types.h"
 
@@ -42,24 +43,26 @@ bool setup_triangle(const math::Vec4& cp0_in,
                     u32 viewport_h,
                     TriSetup& out,
                     u8 cull_mode) noexcept {
-    // Reject anything fully behind the near plane. Wave-A keeps the clipper
-    // primitive: triangles that straddle the near plane get culled here.
-    // The proper polygon clipper is a Wave-B item; for the M1 sample the
-    // model sits inside the frustum.
+    // Reject triangles with any vertex on or behind the eye plane (w <= 0),
+    // where the perspective divide is invalid. This is the eye-plane test, not
+    // the near-plane test (z + w >= 0): near-plane straddlers are already split
+    // upstream by Raster.cpp's Sutherland-Hodgman clipper, so by the time setup
+    // runs every vertex has w > 0.
     if (cp0_in.w <= 0.0f || cp1_in.w <= 0.0f || cp2_in.w <= 0.0f) {
         out.valid = false;
         return false;
     }
 
-    // Face culling. The screen transform below flips Y (screen is Y-down),
-    // so a front-facing (CCW-in-NDC) triangle has a POSITIVE signed screen
-    // area; back faces are negative; zero is degenerate. We decide front/back
-    // from the float screen area here (cheap, and avoids the Q24.8 snap
-    // affecting the cull). Meshes must be wound consistently — see
+    // Face culling. screen_area2x measures the signed area AFTER the viewport
+    // Y-flip (screen is Y-down). The engine's front-facing convention is a
+    // POSITIVE signed screen area — i.e. CCW after the Y-flip (which is CW in
+    // NDC, Y-up); back faces are negative; zero is degenerate. We decide
+    // front/back from the float screen area here (cheap, and avoids the Q24.8
+    // snap affecting the cull). Meshes must be wound consistently — see
     // samples/common/MeshWinding.h for a normal-based rewind helper.
-    //   Back  (0): keep front faces  (area > 0)
-    //   Front (1): keep back faces   (area < 0), rewound to front for setup
-    //   None  (2): two-sided — rewind back faces to front, draw both sides
+    //   Back  (default): keep front faces (area > 0)
+    //   Front:           keep back faces  (area < 0), rewound to front for setup
+    //   None:            two-sided — rewind back faces to front, draw both sides
     math::Vec4 cp0 = cp0_in;
     math::Vec4 cp1 = cp1_in;
     math::Vec4 cp2 = cp2_in;
@@ -78,21 +81,9 @@ bool setup_triangle(const math::Vec4& cp0_in,
     };
 
     const f32 sa = screen_area2x(cp0, cp1, cp2);
-    if (cull_mode == 0) {  // Back
-        if (sa <= 0.0f) {  // back face or degenerate
-            out.valid = false;
-            return false;
-        }
-    } else if (cull_mode == 1) {  // Front
-        if (sa >= 0.0f) {         // front face or degenerate
-            out.valid = false;
-            return false;
-        }
-        std::swap(cp1, cp2);  // rewind the kept back face to front for setup
-        std::swap(uv1, uv2);
-        std::swap(col1, col2);
-    } else {               // None — two-sided
-        if (sa == 0.0f) {  // degenerate
+    const CullMode mode = static_cast<CullMode>(cull_mode);
+    if (mode == CullMode::None) {  // two-sided
+        if (sa == 0.0f) {          // degenerate
             out.valid = false;
             return false;
         }
@@ -100,6 +91,21 @@ bool setup_triangle(const math::Vec4& cp0_in,
             std::swap(cp1, cp2);
             std::swap(uv1, uv2);
             std::swap(col1, col2);
+        }
+    } else if (mode == CullMode::Front) {
+        if (sa >= 0.0f) {  // front face or degenerate
+            out.valid = false;
+            return false;
+        }
+        std::swap(cp1, cp2);  // rewind the kept back face to front for setup
+        std::swap(uv1, uv2);
+        std::swap(col1, col2);
+    } else {               // Back (default) — also the safe fallback for any
+                           // unexpected cull_mode value: cull, never silently
+                           // disable culling.
+        if (sa <= 0.0f) {  // back face or degenerate
+            out.valid = false;
+            return false;
         }
     }
 

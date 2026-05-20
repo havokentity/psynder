@@ -456,6 +456,7 @@ int main(int argc, char** argv) {
     // form (samples/common/{MeshWinding,Lighting}.h).
     const samples::DirLight kLight{};
     samples::fix_winding(capsule_mesh.verts.data(),
+                         static_cast<u32>(capsule_mesh.verts.size()),
                          capsule_mesh.indices.data(),
                          static_cast<u32>(capsule_mesh.indices.size()));
     samples::apply_gouraud(capsule_mesh.verts.data(), static_cast<u32>(capsule_mesh.verts.size()), kLight);
@@ -464,7 +465,10 @@ int main(int argc, char** argv) {
     // unit-cube template, then light each block by its own (static) rotation so
     // tilted ramps/wedges shade correctly in world space.
     std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
-    samples::fix_winding(kCubeVerts.data(), cube_idx.data(), static_cast<u32>(cube_idx.size()));
+    samples::fix_winding(kCubeVerts.data(),
+                         static_cast<u32>(kCubeVerts.size()),
+                         cube_idx.data(),
+                         static_cast<u32>(cube_idx.size()));
     for (Block& b : course) {
         const math::Mat4 rot = math::rotate_quat(math::quat_normalize(b.rot));
         samples::apply_gouraud_rotated(b.mesh.data(), static_cast<u32>(b.mesh.size()), rot, kLight);

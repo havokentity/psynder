@@ -11,6 +11,7 @@
 
 #include "render/raster/EdgeEq.h"
 #include "render/raster/Fixed.h"
+#include "render/raster/Raster.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -84,7 +85,7 @@ TEST_CASE("setup_triangle: screen-CCW triangle is front-facing", "[raster][setup
 TEST_CASE("setup_triangle: cull modes (Back / Front / None)", "[raster][setup][cull]") {
     // (BL, BR, TOP) in NDC y-up is CCW; after the viewport y-flip it is a
     // BACK face (negative screen area) in this engine's convention.
-    auto setup = [](u8 cull, TriSetup& t) {
+    auto setup = [](CullMode cull, TriSetup& t) {
         return setup_triangle(ndc(-0.5f, -0.5f),
                               ndc(0.5f, -0.5f),
                               ndc(0.0f, 0.5f),
@@ -97,23 +98,23 @@ TEST_CASE("setup_triangle: cull modes (Back / Front / None)", "[raster][setup][c
                               640,
                               360,
                               t,
-                              cull);
+                              static_cast<u8>(cull));
     };
 
     // Back-cull (default): this back face is culled.
     TriSetup tb{};
-    REQUIRE_FALSE(setup(0, tb));
+    REQUIRE_FALSE(setup(CullMode::Back, tb));
     REQUIRE_FALSE(tb.valid);
 
     // Front-cull: the back face is kept (rewound front for setup).
     TriSetup tf{};
-    REQUIRE(setup(1, tf));
+    REQUIRE(setup(CullMode::Front, tf));
     REQUIRE(tf.valid);
     REQUIRE(tf.inv_area2x > 0.0f);
 
     // None (two-sided): kept regardless of winding.
     TriSetup tn{};
-    REQUIRE(setup(2, tn));
+    REQUIRE(setup(CullMode::None, tn));
     REQUIRE(tn.valid);
     REQUIRE(tn.inv_area2x > 0.0f);
 }

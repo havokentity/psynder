@@ -515,16 +515,25 @@ int main(int argc, char** argv) {
     // cube winding is shared, so rewind it once against the unit-cube template.
     const samples::DirLight kLight{};
     std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
-    samples::fix_winding(kCubeVerts.data(), cube_idx.data(), static_cast<u32>(cube_idx.size()));
+    samples::fix_winding(kCubeVerts.data(),
+                         static_cast<u32>(kCubeVerts.size()),
+                         cube_idx.data(),
+                         static_cast<u32>(cube_idx.size()));
     samples::apply_gouraud(ground_mesh.data(), static_cast<u32>(ground_mesh.size()), kLight);
     for (auto& m : box_meshes)
         samples::apply_gouraud(m.data(), static_cast<u32>(m.size()), kLight);
     for (auto& m : sphere_meshes) {
-        samples::fix_winding(m.verts.data(), m.indices.data(), static_cast<u32>(m.indices.size()));
+        samples::fix_winding(m.verts.data(),
+                             static_cast<u32>(m.verts.size()),
+                             m.indices.data(),
+                             static_cast<u32>(m.indices.size()));
         samples::apply_gouraud(m.verts.data(), static_cast<u32>(m.verts.size()), kLight);
     }
     for (auto& m : capsule_meshes) {
-        samples::fix_winding(m.verts.data(), m.indices.data(), static_cast<u32>(m.indices.size()));
+        samples::fix_winding(m.verts.data(),
+                             static_cast<u32>(m.verts.size()),
+                             m.indices.data(),
+                             static_cast<u32>(m.indices.size()));
         samples::apply_gouraud(m.verts.data(), static_cast<u32>(m.verts.size()), kLight);
     }
 

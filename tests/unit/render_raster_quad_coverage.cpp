@@ -41,7 +41,7 @@ struct Image {
 // Draw a square quad facing the camera, with the given index winding, and
 // return the number of BACKGROUND pixels found inside the central 40% box
 // (which projects well inside the quad). 0 = fully covered, no holes.
-u32 background_holes_in_centre(const u32* indices, u32 index_count, u8 cull) {
+u32 background_holes_in_centre(const u32* indices, u32 index_count, CullMode cull) {
     constexpr u32 W = 160, H = 160;
     Image img(W, H);
 
@@ -95,7 +95,7 @@ u32 background_holes_in_centre(const u32* indices, u32 index_count, u8 cull) {
 // floor must project. Near-plane clipping has to split the straddling triangles
 // and keep the in-front part; the pre-fix code dropped any triangle with a
 // vertex behind the near plane, which collapses this count to ~0.
-u32 floor_coverage_lower_band(u8 cull) {
+u32 floor_coverage_lower_band(CullMode cull) {
     constexpr u32 W = 160, H = 160;
     Image img(W, H);
 
@@ -152,7 +152,7 @@ u32 floor_coverage_lower_band(u8 cull) {
 // to culling, and this is the test that would have caught it.
 TEST_CASE("HiZ: coplanar camera-facing quad fills with no holes", "[raster][coverage][quad]") {
     const u32 idx[] = {0, 1, 2, 0, 2, 3};
-    REQUIRE(background_holes_in_centre(idx, 6, /*cull=None*/ 2) == 0);
+    REQUIRE(background_holes_in_centre(idx, 6, CullMode::None) == 0);
 }
 
 // Back-face culling keeps exactly one winding and culls its mirror — proves
@@ -161,8 +161,8 @@ TEST_CASE("HiZ: coplanar camera-facing quad fills with no holes", "[raster][cove
 TEST_CASE("back-face culling: one winding fills, the mirror is culled", "[raster][coverage][cull]") {
     const u32 a_idx[] = {0, 1, 2, 0, 2, 3};
     const u32 b_idx[] = {0, 2, 1, 0, 3, 2};
-    const u32 a = background_holes_in_centre(a_idx, 6, /*cull=Back*/ 0);
-    const u32 b = background_holes_in_centre(b_idx, 6, /*cull=Back*/ 0);
+    const u32 a = background_holes_in_centre(a_idx, 6, CullMode::Back);
+    const u32 b = background_holes_in_centre(b_idx, 6, CullMode::Back);
     // Exactly one winding is front-facing (0 holes); the other is fully culled
     // (its central box is all background).
     REQUIRE((a == 0) != (b == 0));
@@ -178,6 +178,6 @@ TEST_CASE("back-face culling: one winding fills, the mirror is culled", "[raster
 // clipped floor fills essentially all of it, while a dropped straddle yields ~0.
 TEST_CASE("near-plane clip: a straddling floor still fills (no dropped half)",
           "[raster][coverage][clip]") {
-    const u32 covered = floor_coverage_lower_band(/*cull=None*/ 2);
+    const u32 covered = floor_coverage_lower_band(CullMode::None);
     REQUIRE(covered > 3000);
 }

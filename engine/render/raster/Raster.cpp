@@ -307,7 +307,7 @@ void Rasterizer::end_frame() {
                                                fs.view.target.width,
                                                fs.view.target.height,
                                                tris[produced],
-                                               d.cull);
+                                               static_cast<u8>(d.cull));
                 // Advance only on success so cmd.tri_count counts valid tris and
                 // the binner never iterates culled / degenerate setups.
                 if (ok)

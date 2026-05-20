@@ -201,7 +201,10 @@ int main(int argc, char** argv) {
     // crate spins (the old two-sided path hid this). Rewind once from the
     // shared normals; the per-face crate palette is left untouched.
     std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
-    samples::fix_winding(kCubeVerts.data(), cube_idx.data(), static_cast<u32>(cube_idx.size()));
+    samples::fix_winding(kCubeVerts.data(),
+                         static_cast<u32>(kCubeVerts.size()),
+                         cube_idx.data(),
+                         static_cast<u32>(cube_idx.size()));
 
     PSY_LOG_INFO("Psynder sample 02 running{}{}",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)

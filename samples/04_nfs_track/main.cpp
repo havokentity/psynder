@@ -665,10 +665,14 @@ int main(int argc, char** argv) {
     // them drop out (the track in particular faces straight up and was being
     // culled to the sky colour). The cube winding is shared, so rewind it once.
     samples::fix_winding(track_mesh.verts.data(),
+                         static_cast<u32>(track_mesh.verts.size()),
                          track_mesh.indices.data(),
                          static_cast<u32>(track_mesh.indices.size()));
     std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
-    samples::fix_winding(kCubeVerts.data(), cube_idx.data(), static_cast<u32>(cube_idx.size()));
+    samples::fix_winding(kCubeVerts.data(),
+                         static_cast<u32>(kCubeVerts.size()),
+                         cube_idx.data(),
+                         static_cast<u32>(cube_idx.size()));
 
     // ─── Vehicle ────────────────────────────────────────────────────────
     auto& world = physics::World::Get();
@@ -718,6 +722,7 @@ int main(int argc, char** argv) {
     // ─── Wheel mesh ─────────────────────────────────────────────────────
     CylinderMesh wheel_mesh = build_cylinder(0.35f, 0.18f);
     samples::fix_winding(wheel_mesh.verts.data(),
+                         static_cast<u32>(wheel_mesh.verts.size()),
                          wheel_mesh.indices.data(),
                          static_cast<u32>(wheel_mesh.indices.size()));
 

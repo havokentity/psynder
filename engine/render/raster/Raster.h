@@ -49,7 +49,7 @@ struct DrawItem {
     math::Mat4 model;
     MaterialId material;
     u8 flags = 0;
-    u8 cull = static_cast<u8>(CullMode::Back);  // CullMode
+    CullMode cull = CullMode::Back;
 };
 
 // ─── Scene-wide rasterizer state ─────────────────────────────────────────

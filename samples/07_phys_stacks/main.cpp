@@ -432,7 +432,10 @@ int main(int argc, char** argv) {
     sphere_meshes.reserve(spheres.size());
     for (const auto& s : spheres) {
         Mesh m = build_icosphere(1, s.color);
-        samples::fix_winding(m.verts.data(), m.indices.data(), static_cast<u32>(m.indices.size()));
+        samples::fix_winding(m.verts.data(),
+                             static_cast<u32>(m.verts.size()),
+                             m.indices.data(),
+                             static_cast<u32>(m.indices.size()));
         samples::apply_gouraud(m.verts.data(), static_cast<u32>(m.verts.size()), kLight);
         sphere_meshes.push_back(std::move(m));
     }
@@ -440,7 +443,10 @@ int main(int argc, char** argv) {
     // Cube index winding is shared across ground + boxes — fix it once against
     // the unit-cube template, then reuse for every cube DrawItem.
     std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
-    samples::fix_winding(kCubeVerts.data(), cube_idx.data(), static_cast<u32>(cube_idx.size()));
+    samples::fix_winding(kCubeVerts.data(),
+                         static_cast<u32>(kCubeVerts.size()),
+                         cube_idx.data(),
+                         static_cast<u32>(cube_idx.size()));
     samples::apply_gouraud(ground.mesh.data(), static_cast<u32>(ground.mesh.size()), kLight);
     for (auto& b : boxes)
         samples::apply_gouraud(b.mesh.data(), static_cast<u32>(b.mesh.size()), kLight);

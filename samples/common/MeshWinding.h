@@ -21,11 +21,18 @@ namespace psynder::samples {
 
 // In-place: swaps the 2nd/3rd index of any triangle whose geometric winding
 // disagrees with its vertex normals. `indices` length must be a multiple of 3.
-inline void fix_winding(const render::raster::Vertex* verts, u32* indices, u32 index_count) noexcept {
+// `vertex_count` bounds the index range — triangles referencing an out-of-range
+// vertex are skipped (no OOB reads), matching the rasterizer's own guard.
+inline void fix_winding(const render::raster::Vertex* verts,
+                        u32 vertex_count,
+                        u32* indices,
+                        u32 index_count) noexcept {
     for (u32 i = 0; i + 3 <= index_count; i += 3) {
         const u32 a = indices[i + 0];
         const u32 b = indices[i + 1];
         const u32 c = indices[i + 2];
+        if (a >= vertex_count || b >= vertex_count || c >= vertex_count)
+            continue;  // out-of-range triple — skip rather than read OOB
         const math::Vec3 p0 = verts[a].position;
         const math::Vec3 p1 = verts[b].position;
         const math::Vec3 p2 = verts[c].position;
