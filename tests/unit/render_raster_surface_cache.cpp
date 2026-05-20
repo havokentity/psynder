@@ -186,7 +186,7 @@ TEST_CASE("SurfaceCache: LRU evicts the oldest entry when slab fills",
 
 TEST_CASE(
     "SurfaceCache: entries are not destroyed when surface becomes "
-    "ineligible — DESIGN.md §7.6",
+    "ineligible - DESIGN.md sec 7.6",
     "[raster][surface-cache][warm]") {
     CacheReset reset;
     auto& c = SurfaceCache::Get();
