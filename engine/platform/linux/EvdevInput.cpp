@@ -53,33 +53,38 @@ namespace {
 constexpr int kMaxGamepads = 8;
 
 struct EvdevDevice {
-    int   fd       = -1;
-    char  name[64] = {};
-    bool  is_pad   = false;
+    int fd = -1;
+    char name[64] = {};
+    bool is_pad = false;
 };
 
 class EvdevPump {
-public:
+   public:
     EvdevPump() = default;
     ~EvdevPump() { stop(); }
 
     void start() noexcept {
-        if (running_.exchange(true, std::memory_order_acq_rel)) return;
+        if (running_.exchange(true, std::memory_order_acq_rel))
+            return;
         scan();
-        if (devices_.empty()) return;
+        if (devices_.empty())
+            return;
         worker_ = std::thread([this] { run(); });
     }
 
     void stop() noexcept {
-        if (!running_.exchange(false, std::memory_order_acq_rel)) return;
-        if (worker_.joinable()) worker_.join();
+        if (!running_.exchange(false, std::memory_order_acq_rel))
+            return;
+        if (worker_.joinable())
+            worker_.join();
         for (auto& d : devices_) {
-            if (d.fd >= 0) ::close(d.fd);
+            if (d.fd >= 0)
+                ::close(d.fd);
         }
         devices_.clear();
     }
 
-private:
+   private:
     // ─── Bit-test helpers for EVIOCGBIT results ────────────────────────
     static bool test_bit(const std::uint8_t* mask, int bit) {
         return (mask[bit / 8] & (1u << (bit % 8))) != 0;
@@ -87,7 +92,8 @@ private:
 
     bool open_device(const char* path) noexcept {
         int fd = ::open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0) return false;
+        if (fd < 0)
+            return false;
         char name[64] = {};
         if (::ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) < 0) {
             std::strncpy(name, "(unknown)", sizeof(name) - 1);
@@ -97,9 +103,8 @@ private:
         std::uint8_t abs_bits[(ABS_MAX / 8) + 1] = {};
         ::ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits);
         ::ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits);
-        const bool has_pad_btn = test_bit(key_bits, BTN_GAMEPAD)
-                              || test_bit(key_bits, BTN_SOUTH)
-                              || test_bit(key_bits, BTN_A);
+        const bool has_pad_btn = test_bit(key_bits, BTN_GAMEPAD) || test_bit(key_bits, BTN_SOUTH) ||
+                                 test_bit(key_bits, BTN_A);
         const bool has_pad_axis = test_bit(abs_bits, ABS_X) && test_bit(abs_bits, ABS_Y);
         const bool is_pad = has_pad_btn && has_pad_axis;
         if (!is_pad) {
@@ -111,7 +116,7 @@ private:
             return false;
         }
         EvdevDevice d;
-        d.fd     = fd;
+        d.fd = fd;
         d.is_pad = true;
         std::strncpy(d.name, name, sizeof(d.name) - 1);
         devices_.push_back(d);
@@ -121,9 +126,11 @@ private:
 
     void scan() noexcept {
         DIR* dir = ::opendir("/dev/input");
-        if (!dir) return;
+        if (!dir)
+            return;
         while (dirent* ent = ::readdir(dir)) {
-            if (std::strncmp(ent->d_name, "event", 5) != 0) continue;
+            if (std::strncmp(ent->d_name, "event", 5) != 0)
+                continue;
             char path[64];
             std::snprintf(path, sizeof(path), "/dev/input/%s", ent->d_name);
             (void)open_device(path);
@@ -139,12 +146,15 @@ private:
         }
         while (running_.load(std::memory_order_acquire)) {
             int n = ::poll(fds.data(), static_cast<nfds_t>(fds.size()), 50);
-            if (n <= 0) continue;
+            if (n <= 0)
+                continue;
             for (size_t i = 0; i < fds.size(); ++i) {
-                if ((fds[i].revents & POLLIN) == 0) continue;
+                if ((fds[i].revents & POLLIN) == 0)
+                    continue;
                 input_event evs[32];
                 ssize_t got = ::read(fds[i].fd, evs, sizeof(evs));
-                if (got <= 0) continue;
+                if (got <= 0)
+                    continue;
                 const size_t count = static_cast<size_t>(got) / sizeof(input_event);
                 for (size_t j = 0; j < count; ++j) {
                     handle_event(evs[j]);
@@ -161,10 +171,17 @@ private:
             const bool down = (ev.value != 0);
             KeyCode kc = KeyCode::Unknown;
             switch (ev.code) {
-            case BTN_SOUTH: kc = KeyCode::Enter;  break;  // A / Cross
-            case BTN_EAST:  kc = KeyCode::Escape; break;  // B / Circle
-            case BTN_START: kc = KeyCode::Tilde;  break;
-            default: break;
+                case BTN_SOUTH:
+                    kc = KeyCode::Enter;
+                    break;  // A / Cross
+                case BTN_EAST:
+                    kc = KeyCode::Escape;
+                    break;  // B / Circle
+                case BTN_START:
+                    kc = KeyCode::Tilde;
+                    break;
+                default:
+                    break;
             }
             if (kc != KeyCode::Unknown) {
                 input_push_key(kc, down);
@@ -176,7 +193,7 @@ private:
             if (ev.code == ABS_X || ev.code == ABS_Y) {
                 constexpr float kDeadzone = 4000.f;
                 const float v = static_cast<float>(ev.value);
-                if (v >  kDeadzone || v < -kDeadzone) {
+                if (v > kDeadzone || v < -kDeadzone) {
                     const float dx = (ev.code == ABS_X) ? v / 32768.f : 0.f;
                     const float dy = (ev.code == ABS_Y) ? v / 32768.f : 0.f;
                     input_push_mouse_motion(dx, dy, 0.f, 0.f);
@@ -186,8 +203,8 @@ private:
     }
 
     std::vector<EvdevDevice> devices_;
-    std::atomic<bool>        running_{false};
-    std::thread              worker_;
+    std::atomic<bool> running_{false};
+    std::thread worker_;
 };
 
 EvdevPump g_evdev;
@@ -195,8 +212,12 @@ EvdevPump g_evdev;
 }  // namespace
 
 // Called from the Wayland / X11 window backends after a successful create.
-void evdev_start() noexcept { g_evdev.start(); }
-void evdev_stop()  noexcept { g_evdev.stop(); }
+void evdev_start() noexcept {
+    g_evdev.start();
+}
+void evdev_stop() noexcept {
+    g_evdev.stop();
+}
 
 }  // namespace psynder::platform::linux_impl
 

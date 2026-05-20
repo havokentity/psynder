@@ -21,7 +21,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "../../tools/lm_pak/Lmpak.h"
-#include "LmpakFixturePaths.h"   // generated absolute path to demo.lmpak
+#include "LmpakFixturePaths.h"  // generated absolute path to demo.lmpak
 
 #include "asset/LmpakWriter.h"
 #include "asset/Vfs.h"
@@ -47,32 +47,34 @@ constexpr u32 kLmaMagicLE = 0x31414D4Cu;  // 'LMA1'
 
 bool slurp(const std::filesystem::path& p, std::vector<u8>& out) {
     std::ifstream in(p, std::ios::binary);
-    if (!in) return false;
+    if (!in)
+        return false;
     in.seekg(0, std::ios::end);
     auto sz = in.tellg();
-    if (sz < 0) return false;
+    if (sz < 0)
+        return false;
     out.resize(static_cast<usize>(sz));
     in.seekg(0, std::ios::beg);
-    if (!out.empty()) in.read(reinterpret_cast<char*>(out.data()), sz);
+    if (!out.empty())
+        in.read(reinterpret_cast<char*>(out.data()), sz);
     return static_cast<bool>(in);
 }
 
 u32 read_u32_le(const u8* p) noexcept {
-    return  static_cast<u32>(p[0])
-         | (static_cast<u32>(p[1]) <<  8)
-         | (static_cast<u32>(p[2]) << 16)
-         | (static_cast<u32>(p[3]) << 24);
+    return static_cast<u32>(p[0]) | (static_cast<u32>(p[1]) << 8) | (static_cast<u32>(p[2]) << 16) |
+           (static_cast<u32>(p[3]) << 24);
 }
 
 const EntryRecord* find_by_path(const ArchiveInfo& info, std::string_view path) {
     const u64 h = fnv1a64(path);
     for (const auto& r : info.entries) {
-        if (r.hash == h) return &r;
+        if (r.hash == h)
+            return &r;
     }
     return nullptr;
 }
 
-}  // anon namespace
+}  // namespace
 
 TEST_CASE("lm_fixture: demo.lmpak built from real .png/.wav fixtures",
           "[tools][lm_pak][lm_cook][fixture]") {
@@ -149,20 +151,17 @@ TEST_CASE("lm_fixture: demo.lmpak built from real .png/.wav fixtures",
 // canonical dialect was the reader's native format pre-Wave-E; this case
 // guards against regressions in the layout-detection branch when the new
 // tools-dialect path is added alongside.
-TEST_CASE("lm_fixture: LmpakWriter -> Vfs::mount_pak round-trip",
-          "[tools][lm_pak][lmpak][vfs]") {
+TEST_CASE("lm_fixture: LmpakWriter -> Vfs::mount_pak round-trip", "[tools][lm_pak][lmpak][vfs]") {
     namespace fs = std::filesystem;
     psynder::asset::internal::reset_for_tests();
 
     psynder::asset::lmpak::Writer w;
     const std::string greeting = "hello, wave-e\n";
     const std::vector<u8> note_bytes(greeting.begin(), greeting.end());
-    w.add_raw("docs/readme.txt",
-              std::vector<u8>(note_bytes.begin(), note_bytes.end()));
-    const std::vector<u8> bin_bytes = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03,
-                                       0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B};
-    w.add_raw("bin/blob.bin",
-              std::vector<u8>(bin_bytes.begin(), bin_bytes.end()));
+    w.add_raw("docs/readme.txt", std::vector<u8>(note_bytes.begin(), note_bytes.end()));
+    const std::vector<u8> bin_bytes =
+        {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B};
+    w.add_raw("bin/blob.bin", std::vector<u8>(bin_bytes.begin(), bin_bytes.end()));
 
     fs::path tmp = fs::temp_directory_path() / "psynder_wave_e_canonical.lmpak";
     fs::remove(tmp);
@@ -187,8 +186,7 @@ TEST_CASE("lm_fixture: LmpakWriter -> Vfs::mount_pak round-trip",
 // tools/lm_pak producer (lane 24), then read it back through Vfs::mount_pak
 // + Vfs::read. This is the actual bug Wave-E fixes — the two on-disk
 // dialects (header bytes + index placement) used to be incompatible.
-TEST_CASE("lm_fixture: tools::pack_blobs -> Vfs::mount_pak round-trip",
-          "[tools][lm_pak][vfs]") {
+TEST_CASE("lm_fixture: tools::pack_blobs -> Vfs::mount_pak round-trip", "[tools][lm_pak][vfs]") {
     namespace fs = std::filesystem;
     psynder::asset::internal::reset_for_tests();
 

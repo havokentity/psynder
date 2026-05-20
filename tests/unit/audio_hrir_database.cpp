@@ -24,13 +24,13 @@ using psynder::audio::detail::HrirDatabase;
 using psynder::audio::detail::kHrirAzBins;
 using psynder::audio::detail::kHrirElBins;
 using psynder::audio::detail::kHrirTaps;
-using psynder::math::kTwoPi;
 using psynder::math::kPi;
+using psynder::math::kTwoPi;
 
 TEST_CASE("audio: HRIR database dimensions match Wave-B design", "[audio][hrtf][db]") {
-    REQUIRE(HrirDatabase::azimuth_bins()   == 12u);
+    REQUIRE(HrirDatabase::azimuth_bins() == 12u);
     REQUIRE(HrirDatabase::elevation_bins() == 2u);
-    REQUIRE(HrirDatabase::taps()           == 256u);
+    REQUIRE(HrirDatabase::taps() == 256u);
 }
 
 TEST_CASE("audio: HRIR database builds and reports ready", "[audio][hrtf][db]") {
@@ -67,7 +67,7 @@ TEST_CASE("audio: HRIR on-axis cell is L/R-symmetric in peak energy", "[audio][h
     const auto& cell = db.cell(/*az_bin*/ 6u, /*el_bin*/ 0u);
     psynder::f32 le = 0.0f, re = 0.0f;
     for (psynder::u32 i = 0; i < kHrirTaps; ++i) {
-        le += cell.left[i]  * cell.left[i];
+        le += cell.left[i] * cell.left[i];
         re += cell.right[i] * cell.right[i];
     }
     INFO("L energy: " << le << ", R energy: " << re);
@@ -87,7 +87,8 @@ TEST_CASE("audio: HRIR lookup at on-axis returns finite, non-NaN taps", "[audio]
     }
     // total energy should be non-zero (the burst is in the table).
     psynder::f32 e = 0.0f;
-    for (psynder::u32 i = 0; i < kHrirTaps; ++i) e += L[i] * L[i] + R[i] * R[i];
+    for (psynder::u32 i = 0; i < kHrirTaps; ++i)
+        e += L[i] * L[i] + R[i] * R[i];
     REQUIRE(e > 0.0f);
 }
 
@@ -95,14 +96,14 @@ TEST_CASE("audio: HRIR lookup sweeps full grid without NaN or overflow", "[audio
     HrirDatabase db;
     db.build(48000u);
     psynder::f32 L[kHrirTaps]{}, R[kHrirTaps]{};
-    constexpr psynder::u32 kAzSweep = 36;   // 10° steps
+    constexpr psynder::u32 kAzSweep = 36;  // 10° steps
     constexpr psynder::u32 kElSweep = 5;
     for (psynder::u32 a = 0; a < kAzSweep; ++a) {
-        const psynder::f32 az = -kPi + (kTwoPi * static_cast<psynder::f32>(a) /
-                                        static_cast<psynder::f32>(kAzSweep));
+        const psynder::f32 az =
+            -kPi + (kTwoPi * static_cast<psynder::f32>(a) / static_cast<psynder::f32>(kAzSweep));
         for (psynder::u32 e = 0; e < kElSweep; ++e) {
-            const psynder::f32 el = 0.6f * static_cast<psynder::f32>(e) /
-                                    static_cast<psynder::f32>(kElSweep - 1u);
+            const psynder::f32 el =
+                0.6f * static_cast<psynder::f32>(e) / static_cast<psynder::f32>(kElSweep - 1u);
             db.lookup(az, el, L, R);
             psynder::f32 peak = 0.0f;
             for (psynder::u32 i = 0; i < kHrirTaps; ++i) {
@@ -125,9 +126,9 @@ TEST_CASE("audio: HRIR lookup near an azimuth bin reproduces that bin", "[audio]
     // a small FFT round-trip error.
     HrirDatabase db;
     db.build(48000u);
-    constexpr psynder::u32 kBin = 7;       // arbitrary
-    const psynder::f32 az = -kPi + (kTwoPi * static_cast<psynder::f32>(kBin) /
-                                    static_cast<psynder::f32>(kHrirAzBins));
+    constexpr psynder::u32 kBin = 7;  // arbitrary
+    const psynder::f32 az =
+        -kPi + (kTwoPi * static_cast<psynder::f32>(kBin) / static_cast<psynder::f32>(kHrirAzBins));
     psynder::f32 L[kHrirTaps]{}, R[kHrirTaps]{};
     db.lookup(az, /*el*/ 0.0f, L, R);
     const auto& cell = db.cell(kBin, 0u);
@@ -135,7 +136,7 @@ TEST_CASE("audio: HRIR lookup near an azimuth bin reproduces that bin", "[audio]
     // exactly up to roundoff.
     psynder::f32 e_ref = 0.0f, e_act = 0.0f;
     for (psynder::u32 i = 0; i < kHrirTaps; ++i) {
-        e_ref += cell.left[i]  * cell.left[i]  + cell.right[i] * cell.right[i];
+        e_ref += cell.left[i] * cell.left[i] + cell.right[i] * cell.right[i];
         e_act += L[i] * L[i] + R[i] * R[i];
     }
     INFO("e_ref=" << e_ref << " e_act=" << e_act);

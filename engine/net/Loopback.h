@@ -32,16 +32,15 @@ class HostImpl;  // forward.
 // LossPolicy decides whether a single datagram from src_port -> dst_port
 // (carrying `bytes`) reaches the destination. Return true to deliver, false
 // to drop. The default policy (nullptr) delivers everything.
-using LossPolicy = std::function<bool(u16 src_port, u16 dst_port,
-                                      std::span<const u8> bytes,
-                                      u32 deliver_attempt)>;
+using LossPolicy =
+    std::function<bool(u16 src_port, u16 dst_port, std::span<const u8> bytes, u32 deliver_attempt)>;
 
 class LoopbackBus {
-public:
+   public:
     static LoopbackBus& Get();
 
-    bool   bind(u16 port, HostImpl* host) noexcept;
-    void   unbind(u16 port) noexcept;
+    bool bind(u16 port, HostImpl* host) noexcept;
+    void unbind(u16 port) noexcept;
     HostImpl* lookup(u16 port) const noexcept;
 
     // Deliver `bytes` from src_port -> dst_port. Returns true if the dest
@@ -54,12 +53,12 @@ public:
     // Reset state — used by tests in between cases.
     void reset() noexcept;
 
-private:
+   private:
     LoopbackBus() = default;
-    mutable std::mutex                       mu_;
-    std::unordered_map<u16, HostImpl*>       hosts_;
-    LossPolicy                               loss_;
-    u32                                      attempts_ = 0;
+    mutable std::mutex mu_;
+    std::unordered_map<u16, HostImpl*> hosts_;
+    LossPolicy loss_;
+    u32 attempts_ = 0;
 };
 
 }  // namespace psynder::net

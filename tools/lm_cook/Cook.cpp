@@ -21,21 +21,30 @@ namespace {
 
 std::string lower_ext(std::string_view filename) {
     usize dot = filename.find_last_of('.');
-    if (dot == std::string_view::npos) return {};
+    if (dot == std::string_view::npos)
+        return {};
     std::string ext(filename.substr(dot + 1));
-    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<u8>(c)));
+    for (char& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<u8>(c)));
     return ext;
 }
 
 bool read_file(const fs::path& p, std::vector<u8>& out, std::string& err) {
     std::ifstream in(p, std::ios::binary);
-    if (!in) { err = "cannot open " + p.string(); return false; }
+    if (!in) {
+        err = "cannot open " + p.string();
+        return false;
+    }
     in.seekg(0, std::ios::end);
     auto sz = in.tellg();
-    if (sz < 0) { err = "cannot stat " + p.string(); return false; }
+    if (sz < 0) {
+        err = "cannot stat " + p.string();
+        return false;
+    }
     out.resize(static_cast<usize>(sz));
     in.seekg(0, std::ios::beg);
-    if (!out.empty()) in.read(reinterpret_cast<char*>(out.data()), sz);
+    if (!out.empty())
+        in.read(reinterpret_cast<char*>(out.data()), sz);
     return static_cast<bool>(in);
 }
 
@@ -43,7 +52,10 @@ bool write_file(const fs::path& p, std::span<const u8> data, std::string& err) {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
-    if (!out) { err = "cannot write " + p.string(); return false; }
+    if (!out) {
+        err = "cannot write " + p.string();
+        return false;
+    }
     if (!data.empty()) {
         out.write(reinterpret_cast<const char*>(data.data()),
                   static_cast<std::streamsize>(data.size()));
@@ -51,20 +63,25 @@ bool write_file(const fs::path& p, std::span<const u8> data, std::string& err) {
     return static_cast<bool>(out);
 }
 
-}  // anon namespace
+}  // namespace
 
 CookKind classify_extension(std::string_view filename) noexcept {
     std::string ext = lower_ext(filename);
-    if (ext == "obj")  return CookKind::kMeshObj;
-    if (ext == "gltf") return CookKind::kMeshGltf;
-    if (ext == "png")  return CookKind::kTexturePng;
-    if (ext == "wav")  return CookKind::kAudioWav;
+    if (ext == "obj")
+        return CookKind::kMeshObj;
+    if (ext == "gltf")
+        return CookKind::kMeshGltf;
+    if (ext == "png")
+        return CookKind::kTexturePng;
+    if (ext == "wav")
+        return CookKind::kAudioWav;
     return CookKind::kUnknown;
 }
 
 bool cook_obj_blob(std::string_view obj_text, std::vector<u8>& lmm_out, std::string* err) {
     LmmMesh mesh;
-    if (!parse_obj(obj_text, mesh, err)) return false;
+    if (!parse_obj(obj_text, mesh, err))
+        return false;
     write_lmm(mesh, lmm_out);
     return true;
 }
@@ -74,7 +91,8 @@ bool cook_gltf_blob(std::string_view gltf_text,
                     std::vector<u8>& lmm_out,
                     std::string* err) {
     LmmMesh mesh;
-    if (!parse_gltf(gltf_text, external_buffer, mesh, err)) return false;
+    if (!parse_gltf(gltf_text, external_buffer, mesh, err))
+        return false;
     write_lmm(mesh, lmm_out);
     return true;
 }
@@ -82,7 +100,8 @@ bool cook_gltf_blob(std::string_view gltf_text,
 bool cook_png_blob(std::span<const u8> png_bytes, std::vector<u8>& lmt_out, std::string* err) {
     std::vector<u8> rgba;
     u32 w = 0, h = 0;
-    if (!decode_png_stored(png_bytes, rgba, w, h, err)) return false;
+    if (!decode_png_stored(png_bytes, rgba, w, h, err))
+        return false;
     LmtTexture tex = build_mipchain_rgba8(rgba.data(), w, h);
     write_lmt(tex, lmt_out);
     return true;
@@ -90,7 +109,8 @@ bool cook_png_blob(std::span<const u8> png_bytes, std::vector<u8>& lmt_out, std:
 
 bool cook_wav_blob(std::span<const u8> wav_bytes, std::vector<u8>& lma_out, std::string* err) {
     LmaAudio audio;
-    if (!parse_wav(wav_bytes, audio, err)) return false;
+    if (!parse_wav(wav_bytes, audio, err))
+        return false;
     write_lma(audio, lma_out);
     return true;
 }
@@ -115,23 +135,36 @@ CookResult cook_file(std::string_view source_path, std::string_view dest_dir) {
     switch (res.kind) {
         case CookKind::kMeshObj: {
             std::string_view obj(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-            if (!cook_obj_blob(obj, output, &sub_err)) { res.error = sub_err; return res; }
+            if (!cook_obj_blob(obj, output, &sub_err)) {
+                res.error = sub_err;
+                return res;
+            }
             out_ext = ".lmm";
         } break;
         case CookKind::kMeshGltf: {
             std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-            if (!cook_gltf_blob(text, {}, output, &sub_err)) { res.error = sub_err; return res; }
+            if (!cook_gltf_blob(text, {}, output, &sub_err)) {
+                res.error = sub_err;
+                return res;
+            }
             out_ext = ".lmm";
         } break;
         case CookKind::kTexturePng: {
-            if (!cook_png_blob(bytes, output, &sub_err)) { res.error = sub_err; return res; }
+            if (!cook_png_blob(bytes, output, &sub_err)) {
+                res.error = sub_err;
+                return res;
+            }
             out_ext = ".lmt";
         } break;
         case CookKind::kAudioWav: {
-            if (!cook_wav_blob(bytes, output, &sub_err)) { res.error = sub_err; return res; }
+            if (!cook_wav_blob(bytes, output, &sub_err)) {
+                res.error = sub_err;
+                return res;
+            }
             out_ext = ".lma";
         } break;
-        default: break;
+        default:
+            break;
     }
     fs::path out_path = fs::path(dest_dir) / source.stem();
     out_path += out_ext;
@@ -146,24 +179,33 @@ CookResult cook_file(std::string_view source_path, std::string_view dest_dir) {
 
 void print_help() {
     std::fprintf(stdout,
-        "lm_cook — Psynder asset cooker (PNG/WAV/OBJ/glTF → .lmt/.lma/.lmm)\n"
-        "\n"
-        "Usage:\n"
-        "  lm_cook <source_file> <dest_dir>\n"
-        "  lm_cook --help\n"
-        "\n"
-        "Outputs are written as <dest_dir>/<stem>.<lmm|lmt|lma>.\n"
-        "\n"
-        "PNG decoder/encoder routes through stb_image / stb_image_write (vendored\n"
-        "under third_party/) — any standards-compliant PNG decodes, and cooked\n"
-        ".lmt textures can be inspected with any image viewer.\n");
+                 "lm_cook — Psynder asset cooker (PNG/WAV/OBJ/glTF → .lmt/.lma/.lmm)\n"
+                 "\n"
+                 "Usage:\n"
+                 "  lm_cook <source_file> <dest_dir>\n"
+                 "  lm_cook --help\n"
+                 "\n"
+                 "Outputs are written as <dest_dir>/<stem>.<lmm|lmt|lma>.\n"
+                 "\n"
+                 "PNG decoder/encoder routes through stb_image / stb_image_write (vendored\n"
+                 "under third_party/) — any standards-compliant PNG decodes, and cooked\n"
+                 ".lmt textures can be inspected with any image viewer.\n");
 }
 
 int cli_main(int argc, char** argv) {
-    if (argc < 2) { print_help(); return 1; }
+    if (argc < 2) {
+        print_help();
+        return 1;
+    }
     std::string_view a = argv[1];
-    if (a == "--help" || a == "-h" || a == "help") { print_help(); return 0; }
-    if (argc < 3) { print_help(); return 1; }
+    if (a == "--help" || a == "-h" || a == "help") {
+        print_help();
+        return 0;
+    }
+    if (argc < 3) {
+        print_help();
+        return 1;
+    }
     auto r = cook_file(argv[1], argv[2]);
     if (!r.ok) {
         std::fprintf(stderr, "lm_cook: %s\n", r.error.c_str());

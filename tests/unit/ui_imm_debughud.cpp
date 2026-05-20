@@ -31,15 +31,15 @@ constexpr u32 kH = 240;
 
 struct TestFb {
     std::array<u32, kW * kH> pixels{};
-    Framebuffer              fb{};
+    Framebuffer fb{};
 
     TestFb() {
-        fb.width  = kW;
+        fb.width = kW;
         fb.height = kH;
         fb.format = PixelFormat::RGBA8;
-        fb.pitch  = kW * 4U;
+        fb.pitch = kW * 4U;
         fb.pixels = reinterpret_cast<u8*>(pixels.data());
-        fb.depth  = nullptr;
+        fb.depth = nullptr;
         pixels.fill(0U);
     }
 
@@ -50,7 +50,8 @@ struct TestFb {
         usize n = 0;
         for (u32 y = y0; y < y1; ++y) {
             for (u32 x = x0; x < x1; ++x) {
-                if (pixels[y * kW + x] != 0U) ++n;
+                if (pixels[y * kW + x] != 0U)
+                    ++n;
             }
         }
         return n;
@@ -59,18 +60,17 @@ struct TestFb {
 
 imm::DebugHudStats sample_stats() {
     imm::DebugHudStats s{};
-    s.frame_ms      = 16.67f;
-    s.avg_frame_ms  = 16.50f;
-    s.draw_calls    = 1234;
-    s.triangles     = 56789;
+    s.frame_ms = 16.67f;
+    s.avg_frame_ms = 16.50f;
+    s.draw_calls = 1234;
+    s.triangles = 56789;
     s.active_voices = 4;
     return s;
 }
 
 }  // namespace
 
-TEST_CASE("ui_imm::DebugHud: Full mode paints pixels in the top-left panel",
-          "[ui_imm][debug_hud]") {
+TEST_CASE("ui_imm::DebugHud: Full mode paints pixels in the top-left panel", "[ui_imm][debug_hud]") {
     imm::reset_debug_hud();
     imm::set_debug_hud_mode(imm::DebugHudMode::Full);
 
@@ -96,8 +96,7 @@ TEST_CASE("ui_imm::DebugHud: Full mode paints pixels in the top-left panel",
     REQUIRE(t.at(300U, 230U) == 0U);
 }
 
-TEST_CASE("ui_imm::DebugHud: Compact mode writes fewer pixels than Full",
-          "[ui_imm][debug_hud]") {
+TEST_CASE("ui_imm::DebugHud: Compact mode writes fewer pixels than Full", "[ui_imm][debug_hud]") {
     const auto stats = sample_stats();
 
     imm::reset_debug_hud();
@@ -119,7 +118,7 @@ TEST_CASE("ui_imm::DebugHud: Compact mode writes fewer pixels than Full",
     const usize compact_written = imm::draw_debug_hud(t_compact.fb, stats);
 
     REQUIRE(compact_written > 0U);
-    REQUIRE(full_written    > 0U);
+    REQUIRE(full_written > 0U);
     REQUIRE(compact_written < full_written);
 
     // Sanity: Off mode produces zero writes.

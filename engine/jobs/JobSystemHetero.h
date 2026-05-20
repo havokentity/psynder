@@ -50,8 +50,8 @@ JobHandle submit_throughput(const JobDesc& desc, JobHandle dep = {}) noexcept;
 
 // Diagnostics — see header banner.
 bool hetero_is_active() noexcept;
-u32  hetero_latency_workers() noexcept;
-u32  hetero_throughput_workers() noexcept;
+u32 hetero_latency_workers() noexcept;
+u32 hetero_throughput_workers() noexcept;
 
 // Hetero P-core / E-core counts as detected by the platform's topology
 // helper (sysctl perflevels on macOS, GetLogicalProcessorInformationEx on

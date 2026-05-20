@@ -36,14 +36,11 @@
 
 // Forward decls from Rml.cpp (lane 17's test-only injection surface).
 namespace psynder::ui::rml::test_only {
-bool                                inject_source(std::string_view name,
-                                                  std::string_view rml_src,
-                                                  std::string_view rcss_src);
-bool                                fire_handler_with_payload(
-                                        std::string_view name,
-                                        std::string_view element_id,
-                                        std::string_view event_name,
-                                        const ::psynder::ui::rml::detail::EventPayload& payload);
+bool inject_source(std::string_view name, std::string_view rml_src, std::string_view rcss_src);
+bool fire_handler_with_payload(std::string_view name,
+                               std::string_view element_id,
+                               std::string_view event_name,
+                               const ::psynder::ui::rml::detail::EventPayload& payload);
 }  // namespace psynder::ui::rml::test_only
 
 namespace {
@@ -64,8 +61,8 @@ bool exec_via_repl(std::string_view source, std::string_view /*name*/) noexcept 
 }
 
 class ScriptVmFixture {
-public:
-    ScriptVmFixture()  {
+   public:
+    ScriptVmFixture() {
         REQUIRE(psynder::script::Vm::Get().start());
         psynder::ui::rml::detail::set_lua_backend(&exec_via_repl);
     }
@@ -79,16 +76,15 @@ public:
 
 using namespace std::string_view_literals;
 
-TEST_CASE("ui_rml: handler runs through lane-15 Vm::execute_repl",
-          "[ui][rml][lua][integration]") {
+TEST_CASE("ui_rml: handler runs through lane-15 Vm::execute_repl", "[ui][rml][lua][integration]") {
     psynder::ui::rml::initialize();
     ScriptVmFixture vm_fixture;
 
     // Seed a tiny script-side table so the handler body has somewhere
     // to write the event payload it received.
     std::string out;
-    REQUIRE(psynder::script::Vm::Get().execute_repl(
-        "engine = engine or {}; engine.last_fired = ''", out));
+    REQUIRE(psynder::script::Vm::Get().execute_repl("engine = engine or {}; engine.last_fired = ''",
+                                                    out));
 
     constexpr std::string_view kRml = R"RML(<rml><body>
       <button id="fire"
@@ -100,30 +96,26 @@ TEST_CASE("ui_rml: handler runs through lane-15 Vm::execute_repl",
     REQUIRE(psynder::ui::rml::test_only::inject_source("hud", kRml, ""sv));
 
     psynder::ui::rml::detail::EventPayload payload{};
-    payload.kind      = "click";
+    payload.kind = "click";
     payload.target_id = "fire";
-    payload.mouse_x   = 128.f;
-    payload.mouse_y   = 96.f;
-    payload.button    = 0;
+    payload.mouse_x = 128.f;
+    payload.mouse_y = 96.f;
+    payload.button = 0;
 
-    REQUIRE(psynder::ui::rml::test_only::fire_handler_with_payload(
-        "hud", "fire", "onclick", payload));
+    REQUIRE(psynder::ui::rml::test_only::fire_handler_with_payload("hud", "fire", "onclick", payload));
 
     // Verify the script side received the payload via the `event` table.
-    REQUIRE(psynder::script::Vm::Get().execute_repl(
-        "engine.last_fired", out));
+    REQUIRE(psynder::script::Vm::Get().execute_repl("engine.last_fired", out));
     REQUIRE(out == "fire");
 
     // Round-trip through math: assert numerical equality on the Lua
     // side rather than the stringification (%g elides the trailing
     // ".0" for whole-number coordinates, so the REPL prints "128"
     // even though the original payload was 128.f).
-    REQUIRE(psynder::script::Vm::Get().execute_repl(
-        "engine.last_x == 128", out));
+    REQUIRE(psynder::script::Vm::Get().execute_repl("engine.last_x == 128", out));
     REQUIRE(out == "true");
 
-    REQUIRE(psynder::script::Vm::Get().execute_repl(
-        "engine.last_button", out));
+    REQUIRE(psynder::script::Vm::Get().execute_repl("engine.last_button", out));
     REQUIRE(out == "0");
 
     psynder::ui::rml::shutdown();
@@ -141,15 +133,15 @@ TEST_CASE("ui_rml: lane-15 wiring tolerates handler bodies that error",
     REQUIRE(psynder::ui::rml::test_only::inject_source("err", kRml, ""sv));
 
     psynder::ui::rml::detail::EventPayload payload{};
-    payload.kind      = "click";
+    payload.kind = "click";
     payload.target_id = "oops";
 
     // The handler body references a nil global; execute_repl reports
     // the runtime error by returning false.  Our dispatch surface
     // forwards the bool faithfully so the caller can react (e.g.,
     // surface the error in the editor console).
-    REQUIRE_FALSE(psynder::ui::rml::test_only::fire_handler_with_payload(
-        "err", "oops", "onclick", payload));
+    REQUIRE_FALSE(
+        psynder::ui::rml::test_only::fire_handler_with_payload("err", "oops", "onclick", payload));
 
     psynder::ui::rml::shutdown();
 }
@@ -170,15 +162,13 @@ TEST_CASE("ui_rml: handler with no `lua:` prefix is still treated as Lua",
     REQUIRE(psynder::ui::rml::test_only::inject_source("np", kRml, ""sv));
 
     std::string out;
-    REQUIRE(psynder::script::Vm::Get().execute_repl(
-        "engine = engine or {}; engine.tagged = ''", out));
+    REQUIRE(psynder::script::Vm::Get().execute_repl("engine = engine or {}; engine.tagged = ''", out));
 
     psynder::ui::rml::detail::EventPayload payload{};
-    payload.kind      = "click";
+    payload.kind = "click";
     payload.target_id = "tag";
 
-    REQUIRE(psynder::ui::rml::test_only::fire_handler_with_payload(
-        "np", "tag", "onclick", payload));
+    REQUIRE(psynder::ui::rml::test_only::fire_handler_with_payload("np", "tag", "onclick", payload));
 
     REQUIRE(psynder::script::Vm::Get().execute_repl("engine.tagged", out));
     REQUIRE(out == "no-prefix");

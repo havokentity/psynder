@@ -18,10 +18,10 @@ ComponentRegistry& ComponentRegistry::Get() {
 ComponentId ComponentRegistry::register_type(u32 size, u32 align, const char* name) {
     std::lock_guard<std::mutex> lk(mutex_);
     ComponentRecord rec{};
-    rec.id    = from_index(static_cast<u32>(records_.size()));
-    rec.size  = size;
+    rec.id = from_index(static_cast<u32>(records_.size()));
+    rec.size = size;
     rec.align = align;
-    rec.name  = name ? name : "";
+    rec.name = name ? name : "";
     records_.push_back(rec);
     return rec.id;
 }
@@ -29,7 +29,8 @@ ComponentId ComponentRegistry::register_type(u32 size, u32 align, const char* na
 ComponentRecord ComponentRegistry::lookup(ComponentId id) const {
     std::lock_guard<std::mutex> lk(mutex_);
     const u32 idx = to_index(id);
-    if (idx >= records_.size()) return ComponentRecord{};
+    if (idx >= records_.size())
+        return ComponentRecord{};
     return records_[idx];
 }
 
@@ -44,8 +45,7 @@ u32 ComponentRegistry::count() const {
 namespace psynder::scene {
 
 ComponentId register_component(const ComponentTypeInfo& info) {
-    return detail::ComponentRegistry::Get().register_type(
-        info.size, info.align, info.name);
+    return detail::ComponentRegistry::Get().register_type(info.size, info.align, info.name);
 }
 
 }  // namespace psynder::scene

@@ -28,11 +28,11 @@
 namespace psynder::simd {
 
 enum class Tier : psynder::u8 {
-    Scalar  = 0,
-    Sse42   = 1,
-    Avx2    = 2,
-    Avx512  = 3,
-    Neon    = 4,
+    Scalar = 0,
+    Sse42 = 1,
+    Avx2 = 2,
+    Avx512 = 3,
+    Neon = 4,
 };
 
 // Initialise dispatch state. Idempotent — calling repeatedly is safe and
@@ -56,12 +56,13 @@ const char* tier_name(Tier t) noexcept;
 psynder::f32 reduce_add(const psynder::f32* p, psynder::usize n) noexcept;
 
 // y[i] = a[i] + b[i]. Aliasing is fine but undefined for partial overlap.
-void add_buffer(const psynder::f32* a, const psynder::f32* b,
-                psynder::f32* y, psynder::usize n) noexcept;
+void add_buffer(const psynder::f32* a, const psynder::f32* b, psynder::f32* y, psynder::usize n) noexcept;
 
 // y[i] = a[i] * b[i] + c[i]. Uses FMA where available.
-void fma_buffer(const psynder::f32* a, const psynder::f32* b,
-                const psynder::f32* c, psynder::f32* y,
+void fma_buffer(const psynder::f32* a,
+                const psynder::f32* b,
+                const psynder::f32* c,
+                psynder::f32* y,
                 psynder::usize n) noexcept;
 
 }  // namespace psynder::simd

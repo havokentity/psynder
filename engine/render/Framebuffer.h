@@ -21,26 +21,24 @@ enum class PixelFormat : u32 {
 };
 
 struct Framebuffer {
-    u32         width  = 0;
-    u32         height = 0;
+    u32 width = 0;
+    u32 height = 0;
     PixelFormat format = PixelFormat::RGBA8;
-    u32         pitch  = 0;   // bytes per row
-    u8*         pixels = nullptr;
+    u32 pitch = 0;  // bytes per row
+    u8* pixels = nullptr;
 
     // 24-bit float Z + 8-bit stencil interleaved; width*height entries
     u32* depth = nullptr;
 
-    constexpr usize byte_size() const noexcept {
-        return static_cast<usize>(pitch) * height;
-    }
+    constexpr usize byte_size() const noexcept { return static_cast<usize>(pitch) * height; }
 };
 
 // Lane 07/09 fills these; the platform layer reads them.
 struct PresentRequest {
-    const Framebuffer* fb        = nullptr;
-    u32                window_w  = 0;
-    u32                window_h  = 0;
-    bool               vsync     = true;
+    const Framebuffer* fb = nullptr;
+    u32 window_w = 0;
+    u32 window_h = 0;
+    bool vsync = true;
 };
 
 }  // namespace psynder::render

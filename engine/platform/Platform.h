@@ -19,7 +19,7 @@ namespace psynder::platform {
 enum class ScaleMode : u8 {
     Nearest,
     Linear,
-    Integer,    // snap to integer multiples for pixel-perfect upscale
+    Integer,  // snap to integer multiples for pixel-perfect upscale
 };
 
 enum class AspectMode : u8 {
@@ -29,20 +29,20 @@ enum class AspectMode : u8 {
 };
 
 struct WindowDesc {
-    std::string title           = "Psynder";
-    u32         window_width    = 1280;
-    u32         window_height   = 720;
-    u32         render_width    = 1280;
-    u32         render_height   = 720;
-    ScaleMode   scale_mode      = ScaleMode::Linear;
-    AspectMode  aspect_mode     = AspectMode::Letterbox;
-    bool        fullscreen      = false;
-    bool        resizable       = true;
-    bool        vsync           = true;
+    std::string title = "Psynder";
+    u32 window_width = 1280;
+    u32 window_height = 720;
+    u32 render_width = 1280;
+    u32 render_height = 720;
+    ScaleMode scale_mode = ScaleMode::Linear;
+    AspectMode aspect_mode = AspectMode::Letterbox;
+    bool fullscreen = false;
+    bool resizable = true;
+    bool vsync = true;
 };
 
 class Window {
-public:
+   public:
     virtual ~Window() = default;
 
     virtual void poll_events() = 0;
@@ -54,25 +54,70 @@ public:
 
     // Mutable parts
     virtual void set_title(std::string_view title) = 0;
-    virtual u32  window_width()  const = 0;
-    virtual u32  window_height() const = 0;
+    virtual u32 window_width() const = 0;
+    virtual u32 window_height() const = 0;
 };
 
 Window* create_window(const WindowDesc& desc);
-void    destroy_window(Window* w);
+void destroy_window(Window* w);
 
 // ─── Input ───────────────────────────────────────────────────────────────
 enum class KeyCode : u16 {
     Unknown = 0,
-    Escape, Enter, Space, Tab, Backspace,
-    Left, Right, Up, Down,
-    A, B, C, D, E, F, G, H, I, J, K, L, M,
-    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
-    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-    Tilde,    // ~ — toggles editor mode per DESIGN.md §10.8
-    LeftShift, RightShift,
-    LeftCtrl,  RightCtrl,
-    LeftAlt,   RightAlt,
+    Escape,
+    Enter,
+    Space,
+    Tab,
+    Backspace,
+    Left,
+    Right,
+    Up,
+    Down,
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    U,
+    V,
+    W,
+    X,
+    Y,
+    Z,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    Tilde,  // ~ — toggles editor mode per DESIGN.md §10.8
+    LeftShift,
+    RightShift,
+    LeftCtrl,
+    RightCtrl,
+    LeftAlt,
+    RightAlt,
     Count,
 };
 
@@ -84,7 +129,7 @@ struct MouseState {
 };
 
 class Input {
-public:
+   public:
     virtual ~Input() = default;
     virtual bool key_down(KeyCode k) const = 0;
     virtual bool key_pressed(KeyCode k) const = 0;
@@ -104,6 +149,6 @@ struct Clock {
 std::string executable_path();
 std::string user_config_dir();
 std::string current_working_directory();
-bool        file_exists(std::string_view path);
+bool file_exists(std::string_view path);
 
 }  // namespace psynder::platform

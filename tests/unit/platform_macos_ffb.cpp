@@ -29,10 +29,10 @@ TEST_CASE("platform_macos: ffb_build_constant_force clamps + scales magnitude",
     SECTION("unit magnitude → +10000") {
         pm::FfbConstantForce d{};
         d.magnitude = 1.0f;
-        d.gain      = 1.0f;
+        d.gain = 1.0f;
         const auto w = pm::ffb_build_constant_force(d);
         REQUIRE(w.magnitude == 10000);
-        REQUIRE(w.gain      == 10000u);
+        REQUIRE(w.gain == 10000u);
     }
     SECTION("negative-unit magnitude → -10000") {
         pm::FfbConstantForce d{};
@@ -49,11 +49,11 @@ TEST_CASE("platform_macos: ffb_build_constant_force clamps + scales magnitude",
     }
     SECTION("0° direction → +X axis (10000, 0)") {
         pm::FfbConstantForce d{};
-        d.magnitude     = 0.5f;
+        d.magnitude = 0.5f;
         d.direction_deg = 0.0f;
         const auto w = pm::ffb_build_constant_force(d);
         REQUIRE(w.direction_x == 10000);
-        REQUIRE(std::abs(w.direction_y) <= 1);   // round-to-int slop
+        REQUIRE(std::abs(w.direction_y) <= 1);  // round-to-int slop
     }
     SECTION("90° direction → +Y axis (0, 10000)") {
         pm::FfbConstantForce d{};

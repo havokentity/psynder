@@ -19,14 +19,14 @@
 #pragma once
 
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic push
-#  pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 extern "C" {
 #include "lua.h"
 }
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 #endif
 
 namespace psynder::script::detail {

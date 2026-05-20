@@ -31,36 +31,34 @@ struct BspPortal {
     u32 first_vertex;
     u32 vertex_count;
     math::Vec3 plane_normal;
-    f32        plane_d;
+    f32 plane_d;
 };
 
 // Per-BSP portal table. Lives next to the BspMap (or beside it on disk in a
 // future .psybsp format bump); kept separate from BspMap so the public ABI
 // in Bsp.h is preserved while Wave B fills this in.
 struct BspPortalSet {
-    std::vector<BspPortal>   portals;
-    std::vector<math::Vec3>  vertices;
+    std::vector<BspPortal> portals;
+    std::vector<math::Vec3> vertices;
 };
 
 // 4-plane frustum used for portal clipping. Normals point inward; a point p
 // is inside the frustum iff dot(p, plane.normal) >= plane.d for all planes.
 struct PortalFrustum {
     math::Vec3 normals[6];
-    f32        d[6];
-    u32        plane_count;  // 4 (side planes) or 6 (incl. near/far)
+    f32 d[6];
+    u32 plane_count;  // 4 (side planes) or 6 (incl. near/far)
 };
 
 // Walk leaves visible from `eye` via portal clipping. Each emit() invocation
 // passes the leaf and the clipped frustum that reached it (useful for the
 // renderer to in-leaf-cull DrawItems). Wave A impl: degrades to PVS-only.
-void walk_portal_visible_leaves(const BspMap&         map,
-                                const BspPortalSet&   portals,
-                                math::Vec3            eye,
-                                const PortalFrustum&  initial,
-                                void (*emit)(const BspLeaf&,
-                                             const PortalFrustum&,
-                                             void* user),
-                                void*                 user);
+void walk_portal_visible_leaves(const BspMap& map,
+                                const BspPortalSet& portals,
+                                math::Vec3 eye,
+                                const PortalFrustum& initial,
+                                void (*emit)(const BspLeaf&, const PortalFrustum&, void* user),
+                                void* user);
 
 // Build a portal set from a compiled BspMap. Wave B will derive portals from
 // the leaf-pairing edges produced by lm_qbsp; the Wave A stub returns an

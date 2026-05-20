@@ -29,13 +29,13 @@ PSY_FORCEINLINE math::Vec3 snap_origin(math::Vec3 v) noexcept {
 void brush_create(BrushShape s, math::Vec3 origin, math::Vec3 extents) {
     auto& st = detail::get_state();
     brush::Brush b;
-    b.id        = alloc_brush_id();
-    b.shape     = static_cast<u8>(s);
-    b.op        = brush::Op::Add;
-    b.origin    = snap_origin(origin);
-    b.extents   = extents;
+    b.id = alloc_brush_id();
+    b.shape = static_cast<u8>(s);
+    b.op = brush::Op::Add;
+    b.origin = snap_origin(origin);
+    b.extents = extents;
     b.grid_size = 0.25f;
-    b.sides     = 8;
+    b.sides = 8;
     st.brushes.push_back(b);
 
     // Record an undo step. The redo path reinstates the brush id +
@@ -46,15 +46,15 @@ void brush_create(BrushShape s, math::Vec3 origin, math::Vec3 extents) {
 
 void brush_subtract(u32 brush_id, BrushShape s, math::Vec3 origin, math::Vec3 extents) {
     auto& st = detail::get_state();
-    (void)brush_id;     // legacy hook: passes-through to the next free id
+    (void)brush_id;  // legacy hook: passes-through to the next free id
     brush::Brush b;
-    b.id        = alloc_brush_id();
-    b.shape     = static_cast<u8>(s);
-    b.op        = brush::Op::Subtract;
-    b.origin    = snap_origin(origin);
-    b.extents   = extents;
+    b.id = alloc_brush_id();
+    b.shape = static_cast<u8>(s);
+    b.op = brush::Op::Subtract;
+    b.origin = snap_origin(origin);
+    b.extents = extents;
     b.grid_size = 0.25f;
-    b.sides     = 8;
+    b.sides = 8;
     st.brushes.push_back(b);
     st.undo.push(undo::make_brush_sub(b.id, b.origin));
 }

@@ -29,7 +29,7 @@ namespace {
 PSY_CACHELINE_ALIGN GridState g_grid;
 
 PSY_FORCEINLINE SpatialKey pack_key(u32 slot) noexcept {
-    return SpatialKey{ slot + 1u };
+    return SpatialKey{slot + 1u};
 }
 PSY_FORCEINLINE u32 unpack_slot(SpatialKey k) noexcept {
     return k.raw == 0 ? 0xFFFFFFFFu : (k.raw - 1u);
@@ -81,7 +81,7 @@ void insert_slot_into_cells(u32 slot, const math::Aabb& b) noexcept {
         for (i32 cy = r.y0; cy <= r.y1; ++cy) {
             for (i32 cx = r.x0; cx <= r.x1; ++cx) {
                 auto& bucket = g_grid.buckets[hash_cell(cx, cy, cz)];
-                bucket.push_back(GridCellRef{ cx, cy, cz, slot });
+                bucket.push_back(GridCellRef{cx, cy, cz, slot});
             }
         }
     }
@@ -94,29 +94,29 @@ void remove_slot_from_cells(u32 slot, const math::Aabb& b) noexcept {
         for (i32 cy = r.y0; cy <= r.y1; ++cy) {
             for (i32 cx = r.x0; cx <= r.x1; ++cx) {
                 auto& bucket = g_grid.buckets[hash_cell(cx, cy, cz)];
-                bucket.erase(
-                    std::remove_if(bucket.begin(), bucket.end(),
-                        [&](const GridCellRef& e) noexcept {
-                            return e.slot == slot
-                                && e.x == cx && e.y == cy && e.z == cz;
-                        }),
-                    bucket.end());
+                bucket.erase(std::remove_if(bucket.begin(),
+                                            bucket.end(),
+                                            [&](const GridCellRef& e) noexcept {
+                                                return e.slot == slot && e.x == cx && e.y == cy &&
+                                                       e.z == cz;
+                                            }),
+                             bucket.end());
             }
         }
     }
 }
 
 class GridBackend final : public ISpatialIndex {
-public:
+   public:
     SpatialKey insert(u32 entity_index, const math::Aabb& bounds) override {
         u32 slot;
         if (!g_grid.free_slots.empty()) {
             slot = g_grid.free_slots.back();
             g_grid.free_slots.pop_back();
-            g_grid.slots[slot] = GridSlot{ GridEntry{ entity_index, bounds }, true };
+            g_grid.slots[slot] = GridSlot{GridEntry{entity_index, bounds}, true};
         } else {
             slot = static_cast<u32>(g_grid.slots.size());
-            g_grid.slots.push_back(GridSlot{ GridEntry{ entity_index, bounds }, true });
+            g_grid.slots.push_back(GridSlot{GridEntry{entity_index, bounds}, true});
         }
         insert_slot_into_cells(slot, bounds);
         return pack_key(slot);
@@ -124,12 +124,13 @@ public:
 
     void update(SpatialKey key, const math::Aabb& bounds) override {
         const u32 slot = unpack_slot(key);
-        if (slot >= g_grid.slots.size() || !g_grid.slots[slot].alive) return;
+        if (slot >= g_grid.slots.size() || !g_grid.slots[slot].alive)
+            return;
         const auto& old = g_grid.slots[slot].entry.bounds;
         const CellRange r_old = cell_range(old, g_grid.cell_size);
         const CellRange r_new = cell_range(bounds, g_grid.cell_size);
-        if (r_old.x0 != r_new.x0 || r_old.y0 != r_new.y0 || r_old.z0 != r_new.z0
-            || r_old.x1 != r_new.x1 || r_old.y1 != r_new.y1 || r_old.z1 != r_new.z1) {
+        if (r_old.x0 != r_new.x0 || r_old.y0 != r_new.y0 || r_old.z0 != r_new.z0 ||
+            r_old.x1 != r_new.x1 || r_old.y1 != r_new.y1 || r_old.z1 != r_new.z1) {
             remove_slot_from_cells(slot, old);
             g_grid.slots[slot].entry.bounds = bounds;
             insert_slot_into_cells(slot, bounds);
@@ -140,14 +141,16 @@ public:
 
     void remove(SpatialKey key) override {
         const u32 slot = unpack_slot(key);
-        if (slot >= g_grid.slots.size() || !g_grid.slots[slot].alive) return;
+        if (slot >= g_grid.slots.size() || !g_grid.slots[slot].alive)
+            return;
         remove_slot_from_cells(slot, g_grid.slots[slot].entry.bounds);
         g_grid.slots[slot].alive = false;
         g_grid.free_slots.push_back(slot);
     }
 
     void query_aabb(const math::Aabb& q, std::span<u32> out_entities) const override {
-        if (out_entities.empty() || g_grid.buckets.empty()) return;
+        if (out_entities.empty() || g_grid.buckets.empty())
+            return;
         const CellRange r = cell_range(q, g_grid.cell_size);
         usize written = 0;
         // Dedup tracker (entities can occupy multiple cells).
@@ -156,10 +159,13 @@ public:
                 for (i32 cx = r.x0; cx <= r.x1 && written < out_entities.size(); ++cx) {
                     const auto& bucket = g_grid.buckets[hash_cell(cx, cy, cz)];
                     for (const auto& e : bucket) {
-                        if (e.x != cx || e.y != cy || e.z != cz) continue;
+                        if (e.x != cx || e.y != cy || e.z != cz)
+                            continue;
                         const auto& slot = g_grid.slots[e.slot];
-                        if (!slot.alive) continue;
-                        if (!aabb_overlap(slot.entry.bounds, q)) continue;
+                        if (!slot.alive)
+                            continue;
+                        if (!aabb_overlap(slot.entry.bounds, q))
+                            continue;
                         // Linear dedup — out_entities is small (caller-
                         // bounded), and the radius query also dedups in
                         // grid_radius_query(). This branch is for editor /
@@ -167,11 +173,14 @@ public:
                         bool dup = false;
                         for (usize k = 0; k < written; ++k) {
                             if (out_entities[k] == slot.entry.entity_index) {
-                                dup = true; break;
+                                dup = true;
+                                break;
                             }
                         }
-                        if (!dup) out_entities[written++] = slot.entry.entity_index;
-                        if (written >= out_entities.size()) return;
+                        if (!dup)
+                            out_entities[written++] = slot.entry.entity_index;
+                        if (written >= out_entities.size())
+                            return;
                     }
                 }
             }
@@ -183,16 +192,21 @@ PSY_CACHELINE_ALIGN GridBackend g_grid_backend{};
 
 }  // namespace
 
-GridState& grid_state() noexcept { return g_grid; }
+GridState& grid_state() noexcept {
+    return g_grid;
+}
 
-ISpatialIndex* grid_backend() noexcept { return &g_grid_backend; }
+ISpatialIndex* grid_backend() noexcept {
+    return &g_grid_backend;
+}
 
 u32 grid_radius_query(math::Vec3 center, f32 radius, std::span<u32> out) noexcept {
-    if (out.empty() || g_grid.buckets.empty()) return 0;
+    if (out.empty() || g_grid.buckets.empty())
+        return 0;
 
     const math::Aabb q{
-        { center.x - radius, center.y - radius, center.z - radius },
-        { center.x + radius, center.y + radius, center.z + radius },
+        {center.x - radius, center.y - radius, center.z - radius},
+        {center.x + radius, center.y + radius, center.z + radius},
     };
     const CellRange r = cell_range(q, g_grid.cell_size);
     const f32 r2 = radius * radius;
@@ -203,28 +217,35 @@ u32 grid_radius_query(math::Vec3 center, f32 radius, std::span<u32> out) noexcep
             for (i32 cx = r.x0; cx <= r.x1; ++cx) {
                 const auto& bucket = g_grid.buckets[hash_cell(cx, cy, cz)];
                 for (const auto& e : bucket) {
-                    if (e.x != cx || e.y != cy || e.z != cz) continue;
+                    if (e.x != cx || e.y != cy || e.z != cz)
+                        continue;
                     const auto& slot = g_grid.slots[e.slot];
-                    if (!slot.alive) continue;
+                    if (!slot.alive)
+                        continue;
                     // Distance from sphere center to AABB.
                     const auto& b = slot.entry.bounds;
-                    const f32 dx = std::max(b.min.x - center.x, 0.0f)
-                                 + std::max(center.x - b.max.x, 0.0f);
-                    const f32 dy = std::max(b.min.y - center.y, 0.0f)
-                                 + std::max(center.y - b.max.y, 0.0f);
-                    const f32 dz = std::max(b.min.z - center.z, 0.0f)
-                                 + std::max(center.z - b.max.z, 0.0f);
-                    if (dx*dx + dy*dy + dz*dz > r2) continue;
+                    const f32 dx =
+                        std::max(b.min.x - center.x, 0.0f) + std::max(center.x - b.max.x, 0.0f);
+                    const f32 dy =
+                        std::max(b.min.y - center.y, 0.0f) + std::max(center.y - b.max.y, 0.0f);
+                    const f32 dz =
+                        std::max(b.min.z - center.z, 0.0f) + std::max(center.z - b.max.z, 0.0f);
+                    if (dx * dx + dy * dy + dz * dz > r2)
+                        continue;
 
                     // Dedup before writing — entities may sit in many
                     // cells. The caller's `out` is the dedup target.
                     bool dup = false;
                     for (u32 k = 0; k < written; ++k) {
-                        if (out[k] == slot.entry.entity_index) { dup = true; break; }
+                        if (out[k] == slot.entry.entity_index) {
+                            dup = true;
+                            break;
+                        }
                     }
                     if (!dup) {
                         out[written++] = slot.entry.entity_index;
-                        if (written >= out.size()) return written;
+                        if (written >= out.size())
+                            return written;
                     }
                 }
             }

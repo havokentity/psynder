@@ -40,12 +40,11 @@ WorldState& world_state() {
 // because they share the body buffer with the orchestrator).
 static void integrate_forces(WorldState& w, f32 dt) noexcept {
     for (Body& b : w.bodies) {
-        if (b.inv_mass == 0.0f || (b.flags & kFlagSleeping)) continue;
-        b.linear_velocity = math::add(b.linear_velocity,
-                                      math::mul(w.gravity, dt));
+        if (b.inv_mass == 0.0f || (b.flags & kFlagSleeping))
+            continue;
+        b.linear_velocity = math::add(b.linear_velocity, math::mul(w.gravity, dt));
         // External forces accumulated via the public API in Wave B (apply_force).
-        b.linear_velocity = math::add(b.linear_velocity,
-                                      math::mul(b.force, b.inv_mass * dt));
+        b.linear_velocity = math::add(b.linear_velocity, math::mul(b.force, b.inv_mass * dt));
         // Angular: I^-1 * torque * dt — diagonal inertia in local space, so
         // rotate torque into local, scale by inv_inertia, rotate back. For
         // Wave A we approximate with world-space diagonal — sufficient for
@@ -56,14 +55,15 @@ static void integrate_forces(WorldState& w, f32 dt) noexcept {
             b.torque.z * b.inertia.inv_local.z,
         };
         b.angular_velocity = math::add(b.angular_velocity, math::mul(ang_accel, dt));
-        b.force  = {0, 0, 0};
+        b.force = {0, 0, 0};
         b.torque = {0, 0, 0};
     }
 }
 
 static void integrate_positions(WorldState& w, f32 dt) noexcept {
     for (Body& b : w.bodies) {
-        if (b.inv_mass == 0.0f || (b.flags & kFlagSleeping)) continue;
+        if (b.inv_mass == 0.0f || (b.flags & kFlagSleeping))
+            continue;
         b.position = math::add(b.position, math::mul(b.linear_velocity, dt));
 
         // Quaternion integration: q' = q + 0.5 * dt * w * q, then renormalise.
@@ -83,7 +83,8 @@ static void rebuild_aabbs(WorldState& w) {
     w.aabb_scratch.reserve(w.bodies.size());
     for (u32 i = 0; i < w.bodies.size(); ++i) {
         const Body& b = w.bodies[i];
-        if (b.gen == 0) continue;   // hole
+        if (b.gen == 0)
+            continue;  // hole
         math::Aabb box = aabb_world(b.shape, b.half_extent, b.position, b.rotation);
         w.aabb_scratch.push_back({box.min, box.max, i});
     }
@@ -103,10 +104,7 @@ static void run_narrowphase(WorldState& w) {
 }
 
 static void run_island_solve(WorldState& w, f32 dt) {
-    detect_islands(w.contact_scratch,
-                   {w.bodies.data(), w.bodies.size()},
-                   w.island_body_indices,
-                   w.islands);
+    detect_islands(w.contact_scratch, {w.bodies.data(), w.bodies.size()}, w.island_body_indices, w.islands);
 
     // Each island is independent — dispatch one job per island. Lane 04's
     // Phase-0 stub runs jobs synchronously, but the data layout is correct
@@ -114,21 +112,19 @@ static void run_island_solve(WorldState& w, f32 dt) {
     // contiguous and disjoint per island.
     struct IslandJobCtx {
         const Island* island;
-        Contact*      contacts_base;
-        const u32*    body_index_base;
-        Body*         bodies_base;
-        usize         bodies_count;
+        Contact* contacts_base;
+        const u32* body_index_base;
+        Body* bodies_base;
+        usize bodies_count;
         const SolverParams* params;
-        f32           dt;
+        f32 dt;
     };
 
     static auto solve_one = [](void* user) noexcept {
         auto* ctx = static_cast<IslandJobCtx*>(user);
         solve_island(*ctx->island,
-                     {ctx->contacts_base + ctx->island->first_contact,
-                      ctx->island->contact_count},
-                     {ctx->body_index_base + ctx->island->first_body,
-                      ctx->island->body_count},
+                     {ctx->contacts_base + ctx->island->first_contact, ctx->island->contact_count},
+                     {ctx->body_index_base + ctx->island->first_body, ctx->island->body_count},
                      {ctx->bodies_base, ctx->bodies_count},
                      *ctx->params,
                      ctx->dt);
@@ -137,9 +133,13 @@ static void run_island_solve(WorldState& w, f32 dt) {
     std::vector<IslandJobCtx> ctxs(w.islands.size());
     for (usize i = 0; i < w.islands.size(); ++i) {
         ctxs[i] = IslandJobCtx{
-            &w.islands[i], w.contact_scratch.data(),
-            w.island_body_indices.data(), w.bodies.data(), w.bodies.size(),
-            &w.solver, dt,
+            &w.islands[i],
+            w.contact_scratch.data(),
+            w.island_body_indices.data(),
+            w.bodies.data(),
+            w.bodies.size(),
+            &w.solver,
+            dt,
         };
     }
 
@@ -149,7 +149,8 @@ static void run_island_solve(WorldState& w, f32 dt) {
     for (auto& c : ctxs) {
         handles.push_back(js.submit(jobs::JobDesc{solve_one, &c, "phys-island", 0}));
     }
-    for (auto h : handles) js.wait(h);
+    for (auto h : handles)
+        js.wait(h);
 }
 
 }  // namespace detail
@@ -215,36 +216,40 @@ BodyId World::create_body(const BodyDesc& desc) {
             In.z > 0.0f ? 1.0f / In.z : 0.0f,
         };
     }
-    if (b.gen == 0) b.gen = 1;       // re-used slot
-    return BodyId{ (b.gen << 24) | (idx & 0x00FFFFFFu) };
+    if (b.gen == 0)
+        b.gen = 1;  // re-used slot
+    return BodyId{(b.gen << 24) | (idx & 0x00FFFFFFu)};
 }
 
 void World::destroy_body(BodyId id) {
     auto& w = detail::world_state();
     std::lock_guard<std::mutex> lock(w.mutate);
     u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size()) return;
+    if (idx >= w.bodies.size())
+        return;
     w.bodies[idx].gen = 0;
     w.free_slots.push_back(idx);
 }
 
 void World::step(f32 dt_seconds) {
     auto& w = detail::world_state();
-    detail::FpGuard fp_guard;   // round-to-nearest + denormals on, scope-bound
+    detail::FpGuard fp_guard;  // round-to-nearest + denormals on, scope-bound
 
     w.accumulator += dt_seconds;
 
     // Cap the accumulator so a long stall doesn't spin us forever; "spiral
     // of death" guard (DESIGN.md §10.1 fixed-tick contract).
-    constexpr f32 kMaxAccum = 0.25f;     // 250 ms cap
-    if (w.accumulator > kMaxAccum) w.accumulator = kMaxAccum;
+    constexpr f32 kMaxAccum = 0.25f;  // 250 ms cap
+    if (w.accumulator > kMaxAccum)
+        w.accumulator = kMaxAccum;
 
     while (w.accumulator >= detail::WorldState::kFixedDt) {
         const f32 dt = detail::WorldState::kFixedDt;
 
         // Snapshot previous transform for render interpolation.
         for (detail::Body& b : w.bodies) {
-            if (b.gen == 0) continue;
+            if (b.gen == 0)
+                continue;
             b.prev_position = b.position;
             b.prev_rotation = b.rotation;
         }
@@ -268,7 +273,8 @@ void World::set_gravity(math::Vec3 g) {
 math::Vec3 World::get_position(BodyId id) const {
     auto& w = detail::world_state();
     u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0) return {0, 0, 0};
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return {0, 0, 0};
     // Render lerp between prev and current using accumulator alpha.
     const detail::Body& b = w.bodies[idx];
     f32 a = w.alpha;
@@ -282,7 +288,8 @@ math::Vec3 World::get_position(BodyId id) const {
 math::Quat World::get_rotation(BodyId id) const {
     auto& w = detail::world_state();
     u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0) return {0, 0, 0, 1};
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return {0, 0, 0, 1};
     // Quaternion lerp + normalise (cheap nlerp; for sub-step alpha the error
     // is sub-degree). Render side renormalises again before matrix conversion.
     const detail::Body& b = w.bodies[idx];

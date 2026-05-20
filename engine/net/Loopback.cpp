@@ -31,17 +31,17 @@ HostImpl* LoopbackBus::lookup(u16 port) const noexcept {
     return it == hosts_.end() ? nullptr : it->second;
 }
 
-bool LoopbackBus::send_to(u16 src_port, u16 dst_port,
-                          std::span<const u8> bytes) noexcept {
+bool LoopbackBus::send_to(u16 src_port, u16 dst_port, std::span<const u8> bytes) noexcept {
     HostImpl* dst = nullptr;
     LossPolicy policy;
-    u32        attempt;
+    u32 attempt;
     {
         std::lock_guard<std::mutex> lk(mu_);
         attempt = ++attempts_;
         auto it = hosts_.find(dst_port);
-        if (it == hosts_.end()) return false;
-        dst    = it->second;
+        if (it == hosts_.end())
+            return false;
+        dst = it->second;
         policy = loss_;  // copy ref-counted std::function under the lock.
     }
     if (policy && !policy(src_port, dst_port, bytes, attempt)) {
@@ -61,7 +61,7 @@ void LoopbackBus::set_loss_policy(LossPolicy p) noexcept {
 void LoopbackBus::reset() noexcept {
     std::lock_guard<std::mutex> lk(mu_);
     hosts_.clear();
-    loss_     = {};
+    loss_ = {};
     attempts_ = 0;
 }
 

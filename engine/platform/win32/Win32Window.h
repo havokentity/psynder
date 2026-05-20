@@ -12,7 +12,7 @@
 namespace psynder::platform::win32 {
 
 class Win32Window final : public Window {
-public:
+   public:
     explicit Win32Window(const WindowDesc& desc);
     ~Win32Window() override;
 
@@ -21,11 +21,11 @@ public:
 
     // ── Public API (Platform.h Window contract) ─────────────────────────
     void poll_events() override;
-    bool should_close() const override                { return should_close_; }
+    bool should_close() const override { return should_close_; }
     void present(const render::Framebuffer& fb) override;
     void set_title(std::string_view title) override;
-    u32  window_width()  const override               { return window_w_; }
-    u32  window_height() const override               { return window_h_; }
+    u32 window_width() const override { return window_w_; }
+    u32 window_height() const override { return window_h_; }
 
     // True iff the underlying HWND + DXGI surface created successfully.
     bool valid() const noexcept { return hwnd_ != nullptr; }
@@ -35,10 +35,9 @@ public:
     // namespace of Win32Window.cpp) can take its address when filling
     // the WNDCLASSEXW.lpfnWndProc slot. The user-facing API surface is
     // still the virtual `Window` contract — this is an MSVC requirement.
-    static LRESULT CALLBACK static_wnd_proc(
-        HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+    static LRESULT CALLBACK static_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
-private:
+   private:
     LRESULT wnd_proc(UINT msg, WPARAM wparam, LPARAM lparam);
 
     // Raw-input registration — one mouse device with RIDEV_NOLEGACY off
@@ -49,16 +48,16 @@ private:
     void on_wm_input(LPARAM lparam);
 
     // ── State ───────────────────────────────────────────────────────────
-    HWND        hwnd_         = nullptr;
-    HINSTANCE   hinstance_    = nullptr;
+    HWND hwnd_ = nullptr;
+    HINSTANCE hinstance_ = nullptr;
     std::wstring class_name_;
 
-    WindowDesc  desc_;
-    u32         window_w_     = 0;
-    u32         window_h_     = 0;
+    WindowDesc desc_;
+    u32 window_w_ = 0;
+    u32 window_h_ = 0;
 
-    bool        should_close_ = false;
-    bool        size_pending_ = false;
+    bool should_close_ = false;
+    bool size_pending_ = false;
     Win32Present present_;
 };
 

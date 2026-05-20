@@ -30,20 +30,22 @@ struct ScenarioBody {
 // TU (and therefore needs no linkage to psynder_physics).
 struct Sim {
     std::vector<Body> bodies;
-    math::Vec3        gravity{0, -9.81f, 0};
-    SolverParams      params;
+    math::Vec3 gravity{0, -9.81f, 0};
+    SolverParams params;
 
     void step(f32 dt) {
         // Integrate forces.
         for (Body& b : bodies) {
-            if (b.inv_mass == 0.0f) continue;
+            if (b.inv_mass == 0.0f)
+                continue;
             b.linear_velocity = math::add(b.linear_velocity, math::mul(gravity, dt));
         }
         // Narrowphase: O(N^2) pair test, sufficient for small scenarios.
         std::vector<Contact> contacts;
         for (u32 i = 0; i < bodies.size(); ++i) {
             for (u32 j = i + 1; j < bodies.size(); ++j) {
-                if (bodies[i].inv_mass == 0.0f && bodies[j].inv_mass == 0.0f) continue;
+                if (bodies[i].inv_mass == 0.0f && bodies[j].inv_mass == 0.0f)
+                    continue;
                 Contact c;
                 if (kernels::kernel_collide_pair(bodies[i], bodies[j], c)) {
                     c.body_a = i;
@@ -55,21 +57,21 @@ struct Sim {
         // Detect islands and solve each.
         std::vector<u32> body_idx;
         std::vector<Island> islands;
-        kernels::kernel_detect_islands(contacts,
-            {bodies.data(), bodies.size()}, body_idx, islands);
+        kernels::kernel_detect_islands(contacts, {bodies.data(), bodies.size()}, body_idx, islands);
         for (const Island& isl : islands) {
             kernels::kernel_solve_island(isl,
-                {contacts.data() + isl.first_contact, isl.contact_count},
-                {body_idx.data() + isl.first_body, isl.body_count},
-                {bodies.data(), bodies.size()},
-                params, dt);
+                                         {contacts.data() + isl.first_contact, isl.contact_count},
+                                         {body_idx.data() + isl.first_body, isl.body_count},
+                                         {bodies.data(), bodies.size()},
+                                         params,
+                                         dt);
         }
         // Integrate positions.
         for (Body& b : bodies) {
-            if (b.inv_mass == 0.0f) continue;
+            if (b.inv_mass == 0.0f)
+                continue;
             b.position = math::add(b.position, math::mul(b.linear_velocity, dt));
-            math::Quat w_q{b.angular_velocity.x, b.angular_velocity.y,
-                           b.angular_velocity.z, 0.0f};
+            math::Quat w_q{b.angular_velocity.x, b.angular_velocity.y, b.angular_velocity.z, 0.0f};
             math::Quat dq = math::quat_mul(w_q, b.rotation);
             b.rotation = math::quat_normalize({
                 b.rotation.x + 0.5f * dt * dq.x,
@@ -129,8 +131,10 @@ TEST_CASE("Physics step is deterministic across identical runs (single host)",
     Sim a = make_scenario();
     Sim b = make_scenario();
 
-    for (int i = 0; i < 240; ++i) a.step(1.0f / 120.0f);
-    for (int i = 0; i < 240; ++i) b.step(1.0f / 120.0f);
+    for (int i = 0; i < 240; ++i)
+        a.step(1.0f / 120.0f);
+    for (int i = 0; i < 240; ++i)
+        b.step(1.0f / 120.0f);
 
     REQUIRE(a.bodies.size() == b.bodies.size());
     for (usize i = 0; i < a.bodies.size(); ++i) {
@@ -138,14 +142,14 @@ TEST_CASE("Physics step is deterministic across identical runs (single host)",
         // Compare the kinematic state byte-by-byte. Use memcmp instead of
         // structural equality so we catch sign-bit differences on zero
         // values too.
-        REQUIRE(std::memcmp(&a.bodies[i].position,
-                            &b.bodies[i].position, sizeof(math::Vec3)) == 0);
-        REQUIRE(std::memcmp(&a.bodies[i].rotation,
-                            &b.bodies[i].rotation, sizeof(math::Quat)) == 0);
+        REQUIRE(std::memcmp(&a.bodies[i].position, &b.bodies[i].position, sizeof(math::Vec3)) == 0);
+        REQUIRE(std::memcmp(&a.bodies[i].rotation, &b.bodies[i].rotation, sizeof(math::Quat)) == 0);
         REQUIRE(std::memcmp(&a.bodies[i].linear_velocity,
-                            &b.bodies[i].linear_velocity, sizeof(math::Vec3)) == 0);
+                            &b.bodies[i].linear_velocity,
+                            sizeof(math::Vec3)) == 0);
         REQUIRE(std::memcmp(&a.bodies[i].angular_velocity,
-                            &b.bodies[i].angular_velocity, sizeof(math::Vec3)) == 0);
+                            &b.bodies[i].angular_velocity,
+                            sizeof(math::Vec3)) == 0);
     }
 }
 
@@ -153,15 +157,15 @@ TEST_CASE("Pile of spheres comes to rest at expected height after 5 s",
           "[physics][solver][stacking]") {
     FpGuard fp;
     Sim s = make_scenario();
-    for (int i = 0; i < 600; ++i) s.step(1.0f / 120.0f);
+    for (int i = 0; i < 600; ++i)
+        s.step(1.0f / 120.0f);
     // Every sphere should be above the floor (y >= 0) and below the spawn
     // height (y < 5) — i.e. they fell and settled.
     for (usize i = 1; i < s.bodies.size(); ++i) {
         REQUIRE(s.bodies[i].position.y >= -0.1f);
         REQUIRE(s.bodies[i].position.y < 5.0f);
         // Velocity should be small after 5 s settle.
-        f32 v = std::sqrt(math::dot(s.bodies[i].linear_velocity,
-                                    s.bodies[i].linear_velocity));
-        REQUIRE(v < 2.0f);   // generous bound — solver isn't NGS yet
+        f32 v = std::sqrt(math::dot(s.bodies[i].linear_velocity, s.bodies[i].linear_velocity));
+        REQUIRE(v < 2.0f);  // generous bound — solver isn't NGS yet
     }
 }

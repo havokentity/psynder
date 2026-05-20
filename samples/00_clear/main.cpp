@@ -42,23 +42,24 @@ namespace {
 u32 parse_uint(std::string_view v) {
     u32 out = 0;
     for (char c : v) {
-        if (c < '0' || c > '9') return 0;
+        if (c < '0' || c > '9')
+            return 0;
         out = out * 10u + static_cast<u32>(c - '0');
     }
     return out;
 }
 
 struct Args {
-    u32         smoke_frames = 0;
+    u32 smoke_frames = 0;
     std::string capture_out;
 };
 
 Args parse_args(int argc, char** argv) {
     Args a{};
-    constexpr std::string_view kFlag   = "--smoke-frames=";
+    constexpr std::string_view kFlag = "--smoke-frames=";
     constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq  = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp  = "--smoke-capture-out";
+    constexpr std::string_view kCapEq = "--smoke-capture-out=";
+    constexpr std::string_view kCapSp = "--smoke-capture-out";
     for (int i = 1; i < argc; ++i) {
         std::string_view s{argv[i]};
         if (s.starts_with(kFlag)) {
@@ -81,16 +82,16 @@ Args parse_args(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const Args args         = parse_args(argc, argv);
-    const u32  smoke_frames = args.smoke_frames;
+    const Args args = parse_args(argc, argv);
+    const u32 smoke_frames = args.smoke_frames;
 
     platform::WindowDesc desc{};
-    desc.title         = "Psynder — sample 00 (clear)";
-    desc.window_width  = 1280;
+    desc.title = "Psynder — sample 00 (clear)";
+    desc.window_width = 1280;
     desc.window_height = 720;
-    desc.render_width  = 640;
+    desc.render_width = 640;
     desc.render_height = 360;
-    desc.scale_mode    = platform::ScaleMode::Integer;
+    desc.scale_mode = platform::ScaleMode::Integer;
 
     auto* window = platform::create_window(desc);
     if (!window) {
@@ -101,9 +102,9 @@ int main(int argc, char** argv) {
     // CPU-side framebuffer at internal render resolution
     std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
     render::Framebuffer fb{};
-    fb.width  = desc.render_width;
+    fb.width = desc.render_width;
     fb.height = desc.render_height;
-    fb.pitch  = desc.render_width * 4;
+    fb.pitch = desc.render_width * 4;
     fb.format = render::PixelFormat::RGBA8;
     fb.pixels = reinterpret_cast<u8*>(pixels.data());
 
@@ -114,7 +115,7 @@ int main(int argc, char** argv) {
     }
 
     const u64 t0 = platform::Clock::ticks_now();
-    u32 frame    = 0;
+    u32 frame = 0;
 
     while (!window->should_close()) {
         window->poll_events();
@@ -122,17 +123,13 @@ int main(int argc, char** argv) {
         // Drive the colour off frame index in smoke mode so the captured
         // frame is identical across hosts (golden-image determinism). Real
         // runs use wall-clock time so the animation looks smooth.
-        const f64 t = smoke_frames > 0
-                          ? static_cast<f64>(frame) * (1.0 / 60.0)
-                          : platform::Clock::seconds(
-                                platform::Clock::ticks_now() - t0);
-        const u8  r  = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.7));
-        const u8  g  = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.1 + 1.0));
-        const u8  b  = static_cast<u8>(127.0 + 127.0 * std::sin(t * 0.9 + 2.0));
-        const u32 rgba = (static_cast<u32>(r))
-                       | (static_cast<u32>(g) << 8)
-                       | (static_cast<u32>(b) << 16)
-                       | (0xFFu << 24);
+        const f64 t = smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
+                                       : platform::Clock::seconds(platform::Clock::ticks_now() - t0);
+        const u8 r = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.7));
+        const u8 g = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.1 + 1.0));
+        const u8 b = static_cast<u8>(127.0 + 127.0 * std::sin(t * 0.9 + 2.0));
+        const u32 rgba = (static_cast<u32>(r)) | (static_cast<u32>(g) << 8) |
+                         (static_cast<u32>(b) << 16) | (0xFFu << 24);
 
         render::raster::clear_framebuffer(fb, rgba);
         window->present(fb);
@@ -144,12 +141,12 @@ int main(int argc, char** argv) {
     }
 
     if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(
-            args.capture_out.c_str(), pixels.data(),
-            fb.width, fb.height);
+        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
+                                                             pixels.data(),
+                                                             fb.width,
+                                                             fb.height);
         if (!ok) {
-            PSY_LOG_ERROR("sample_00: failed to write capture to {}",
-                          args.capture_out);
+            PSY_LOG_ERROR("sample_00: failed to write capture to {}", args.capture_out);
             platform::destroy_window(window);
             return EXIT_FAILURE;
         }

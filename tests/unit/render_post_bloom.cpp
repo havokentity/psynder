@@ -42,9 +42,7 @@ std::vector<HdrPixel> make_random_hdr(u32 w, u32 h, uint32_t seed) {
 
 }  // namespace
 
-TEST_CASE("render_post: bloom kernel is separable (dense == h * v)",
-          "[render_post][bloom]")
-{
+TEST_CASE("render_post: bloom kernel is separable (dense == h * v)", "[render_post][bloom]") {
     const u32 W = 24;
     const u32 H = 18;
     const auto src = make_random_hdr(W, H, /*seed*/ 0xC0FFEEu);
@@ -65,9 +63,7 @@ TEST_CASE("render_post: bloom kernel is separable (dense == h * v)",
     }
 }
 
-TEST_CASE("render_post: bloom kernel preserves DC on flat image",
-          "[render_post][bloom]")
-{
+TEST_CASE("render_post: bloom kernel preserves DC on flat image", "[render_post][bloom]") {
     // A constant-color image should round-trip unchanged because the kernel
     // sums to 1 and the clamp-edge addressing is a no-op when every sample
     // is the same value.
@@ -85,10 +81,9 @@ TEST_CASE("render_post: bloom kernel preserves DC on flat image",
     }
 }
 
-TEST_CASE("render_post: 1-D Gaussian kernel sums to one",
-          "[render_post][bloom]")
-{
+TEST_CASE("render_post: 1-D Gaussian kernel sums to one", "[render_post][bloom]") {
     float s = 0.0f;
-    for (usize i = 0; i < kBloomTaps; ++i) s += kBloomKernel[i];
+    for (usize i = 0; i < kBloomTaps; ++i)
+        s += kBloomKernel[i];
     REQUIRE(s == Catch::Approx(1.0f).margin(1e-3f));
 }

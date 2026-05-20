@@ -20,9 +20,9 @@ bool approx_eq(f32 a, f32 b, f32 tol = 1e-5f) {
 bool quat_approx_eq(Quat a, Quat b, f32 tol = 1e-5f) {
     // Quaternions q and -q represent the same rotation; accept either.
     f32 d = quat_dot(a, b);
-    Quat bb = d < 0.0f ? Quat{ -b.x, -b.y, -b.z, -b.w } : b;
-    return approx_eq(a.x, bb.x, tol) && approx_eq(a.y, bb.y, tol)
-        && approx_eq(a.z, bb.z, tol) && approx_eq(a.w, bb.w, tol);
+    Quat bb = d < 0.0f ? Quat{-b.x, -b.y, -b.z, -b.w} : b;
+    return approx_eq(a.x, bb.x, tol) && approx_eq(a.y, bb.y, tol) && approx_eq(a.z, bb.z, tol) &&
+           approx_eq(a.w, bb.w, tol);
 }
 
 bool vec3_approx_eq(Vec3 a, Vec3 b, f32 tol = 1e-4f) {
@@ -69,8 +69,8 @@ TEST_CASE("quat_slerp midpoint is the half-angle rotation", "[math][quat]") {
     // Apply the rotation to a probe vector — the rotated probes should
     // match exactly, modulo our usual f32 tolerance.
     Vec3 probe{1, 0, 0};
-    Vec3 v_mid  = quat_rotate(mid, probe);
-    Vec3 v_exp  = quat_rotate(expected, probe);
+    Vec3 v_mid = quat_rotate(mid, probe);
+    Vec3 v_exp = quat_rotate(expected, probe);
     REQUIRE(vec3_approx_eq(v_mid, v_exp, 1e-4f));
 }
 
@@ -79,12 +79,12 @@ TEST_CASE("quat_slerp picks the short arc across hemispheres", "[math][quat]") {
     // shorter path even though dot(a,b) < 0.
     Quat a = quat_from_axis_angle({0, 0, 1}, 0.1f);
     Quat b = quat_from_axis_angle({0, 0, 1}, 0.1f);
-    b = Quat{ -b.x, -b.y, -b.z, -b.w };  // identical rotation, flipped sign
+    b = Quat{-b.x, -b.y, -b.z, -b.w};  // identical rotation, flipped sign
 
     Quat mid = quat_slerp(a, b, 0.5f);
     // The midpoint should still be a rotation by ~0.1 rad around z (up to
     // quaternion double-cover), not the long-way-round 2π - 0.1.
-    Vec3 v_a   = quat_rotate(a, {1, 0, 0});
+    Vec3 v_a = quat_rotate(a, {1, 0, 0});
     Vec3 v_mid = quat_rotate(mid, {1, 0, 0});
     REQUIRE(vec3_approx_eq(v_mid, v_a, 1e-4f));
 }
@@ -101,15 +101,15 @@ TEST_CASE("quat_nlerp endpoints match inputs", "[math][quat]") {
 
 TEST_CASE("quat_from_euler and quat_to_euler round-trip", "[math][quat]") {
     // Avoid the gimbal-lock singularity (|pitch| ≈ π/2). Stay well inside it.
-    f32 roll  = 0.4f;
+    f32 roll = 0.4f;
     f32 pitch = 0.6f;
-    f32 yaw   = 1.1f;
+    f32 yaw = 1.1f;
 
     Quat q = quat_from_euler(roll, pitch, yaw);
     Vec3 e = quat_to_euler(q);
-    REQUIRE(approx_eq(e.x, roll,  1e-4f));
+    REQUIRE(approx_eq(e.x, roll, 1e-4f));
     REQUIRE(approx_eq(e.y, pitch, 1e-4f));
-    REQUIRE(approx_eq(e.z, yaw,   1e-4f));
+    REQUIRE(approx_eq(e.z, yaw, 1e-4f));
 }
 
 TEST_CASE("quat_rotate matches the rotation matrix path", "[math][quat]") {
@@ -130,6 +130,6 @@ TEST_CASE("quat_conjugate inverts unit quat rotations", "[math][quat]") {
     Vec3 v = {0.3f, -1.1f, 0.6f};
 
     Vec3 rotated = quat_rotate(q, v);
-    Vec3 back    = quat_rotate(quat_conjugate(q), rotated);
+    Vec3 back = quat_rotate(quat_conjugate(q), rotated);
     REQUIRE(vec3_approx_eq(back, v));
 }

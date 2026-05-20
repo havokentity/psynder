@@ -30,9 +30,7 @@ OriginRecenterResult origin_recenter(Vec3& world_origin,
         sy - world_origin.y,
         sz - world_origin.z,
     };
-    result.changed = result.shift.x != 0.0f
-                  || result.shift.y != 0.0f
-                  || result.shift.z != 0.0f;
+    result.changed = result.shift.x != 0.0f || result.shift.y != 0.0f || result.shift.z != 0.0f;
 
     world_origin.x = sx;
     world_origin.y = sy;

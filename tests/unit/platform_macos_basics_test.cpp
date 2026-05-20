@@ -31,8 +31,7 @@ TEST_CASE("platform_macos: Clock::ticks_per_second is sane", "[platform_macos]")
     REQUIRE(tps <= 10'000'000'000ull);
 }
 
-TEST_CASE("platform_macos: Clock::seconds is monotonic and roughly real-time",
-          "[platform_macos]") {
+TEST_CASE("platform_macos: Clock::seconds is monotonic and roughly real-time", "[platform_macos]") {
     const auto t0 = Clock::ticks_now();
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     const auto t1 = Clock::ticks_now();
@@ -44,11 +43,10 @@ TEST_CASE("platform_macos: Clock::seconds is monotonic and roughly real-time",
     REQUIRE(dt < 0.6);
 }
 
-TEST_CASE("platform_macos: executable_path returns absolute path to a file",
-          "[platform_macos]") {
+TEST_CASE("platform_macos: executable_path returns absolute path to a file", "[platform_macos]") {
     const auto p = psynder::platform::executable_path();
     REQUIRE_FALSE(p.empty());
-    REQUIRE(p.front() == '/');             // absolute on POSIX
+    REQUIRE(p.front() == '/');  // absolute on POSIX
     std::error_code ec;
     REQUIRE(std::filesystem::exists(p, ec));
     REQUIRE_FALSE(ec);
@@ -63,8 +61,7 @@ TEST_CASE("platform_macos: user_config_dir is absolute", "[platform_macos]") {
     REQUIRE(p.find("Application Support") != std::string::npos);
 }
 
-TEST_CASE("platform_macos: current_working_directory matches std::filesystem",
-          "[platform_macos]") {
+TEST_CASE("platform_macos: current_working_directory matches std::filesystem", "[platform_macos]") {
     const auto p = psynder::platform::current_working_directory();
     REQUIRE_FALSE(p.empty());
     REQUIRE(p.front() == '/');
@@ -74,8 +71,7 @@ TEST_CASE("platform_macos: current_working_directory matches std::filesystem",
     REQUIRE(p == expected);
 }
 
-TEST_CASE("platform_macos: file_exists round-trips the executable path",
-          "[platform_macos]") {
+TEST_CASE("platform_macos: file_exists round-trips the executable path", "[platform_macos]") {
     const auto exe = psynder::platform::executable_path();
     REQUIRE(psynder::platform::file_exists(exe));
     REQUIRE_FALSE(psynder::platform::file_exists("/no/such/path/__psynder__"));

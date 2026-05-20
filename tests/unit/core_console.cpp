@@ -32,8 +32,7 @@
 
 namespace cn = psynder::console;
 
-TEST_CASE("tokenize_line handles quotes, escapes, // comment",
-          "[core][console][token]") {
+TEST_CASE("tokenize_line handles quotes, escapes, // comment", "[core][console][token]") {
     std::string storage;
     auto t = cn::tokenize_line("foo \"bar baz\" qux", storage);
     REQUIRE(t.size() == 3);
@@ -52,11 +51,9 @@ TEST_CASE("tokenize_line handles quotes, escapes, // comment",
     REQUIRE(v[1] == "she said \"hi\"");
 }
 
-TEST_CASE("RegisterCVar / FindCVar / Execute read+write",
-          "[core][console][cvar]") {
+TEST_CASE("RegisterCVar / FindCVar / Execute read+write", "[core][console][cvar]") {
     auto& C = cn::Console::Get();
-    auto* cv = C.RegisterCVar("test_r_clear_color", "0.1 0.1 0.1",
-                              "clear color (xyz floats)");
+    auto* cv = C.RegisterCVar("test_r_clear_color", "0.1 0.1 0.1", "clear color (xyz floats)");
     REQUIRE(cv != nullptr);
     REQUIRE(C.FindCVar("test_r_clear_color") == cv);
 
@@ -69,26 +66,24 @@ TEST_CASE("RegisterCVar / FindCVar / Execute read+write",
     REQUIRE(cv->value == "0.2 0.3 0.4");
 }
 
-TEST_CASE("RegisterCommand executes callback with args",
-          "[core][console][cmd]") {
+TEST_CASE("RegisterCommand executes callback with args", "[core][console][cmd]") {
     auto& C = cn::Console::Get();
     int saw = 0;
-    C.RegisterCommand("test_echo", "echo argc",
-        [&saw](std::span<const std::string_view> args, cn::Output& out) {
-            saw = static_cast<int>(args.size());
-            out.Format("argc={}", args.size());
-        });
+    C.RegisterCommand("test_echo",
+                      "echo argc",
+                      [&saw](std::span<const std::string_view> args, cn::Output& out) {
+                          saw = static_cast<int>(args.size());
+                          out.Format("argc={}", args.size());
+                      });
     auto r = C.Execute("test_echo a b c");
     REQUIRE(r.ok);
     REQUIRE(saw == 3);
     REQUIRE(r.output.find("argc=3") != std::string::npos);
 }
 
-TEST_CASE("Cvar allowed_values gate rejects unknown values",
-          "[core][console][cvar]") {
+TEST_CASE("Cvar allowed_values gate rejects unknown values", "[core][console][cvar]") {
     auto& C = cn::Console::Get();
-    auto* cv = C.RegisterCVar("test_r_denoiser", "svgf_atrous",
-                              "denoiser backend");
+    auto* cv = C.RegisterCVar("test_r_denoiser", "svgf_atrous", "denoiser backend");
     cv->allowed_values = {"svgf_atrous", "metalfx", "nrd_relax"};
     auto bad = C.Execute("test_r_denoiser blurinator");
     REQUIRE_FALSE(bad.ok);
@@ -101,8 +96,7 @@ TEST_CASE("Cvar allowed_values gate rejects unknown values",
 
 TEST_CASE("Cvar CVAR_READONLY blocks writes", "[core][console][cvar]") {
     auto& C = cn::Console::Get();
-    C.RegisterCVar("test_engine_version", "0.1.0", "build version",
-                   cn::CVAR_READONLY);
+    C.RegisterCVar("test_engine_version", "0.1.0", "build version", cn::CVAR_READONLY);
     auto bad = C.Execute("test_engine_version 9.9.9");
     REQUIRE_FALSE(bad.ok);
     REQUIRE(bad.error.find("read-only") != std::string::npos);
@@ -111,8 +105,7 @@ TEST_CASE("Cvar CVAR_READONLY blocks writes", "[core][console][cvar]") {
     REQUIRE(C.FindCVar("test_engine_version")->value == "9.9.9");
 }
 
-TEST_CASE("Smart-resolve picks unique prefix and r_-stripped body",
-          "[core][console][resolve]") {
+TEST_CASE("Smart-resolve picks unique prefix and r_-stripped body", "[core][console][resolve]") {
     auto& C = cn::Console::Get();
     C.RegisterCVar("test_uniqueprefix_alpha", "1", "alpha");
 
@@ -131,22 +124,21 @@ TEST_CASE("Execute through smart-resolve dispatches the canonical command",
           "[core][console][resolve]") {
     auto& C = cn::Console::Get();
     int sentinel = 0;
-    C.RegisterCommand("test_resolve_long_command", "long name",
-        [&](std::span<const std::string_view>, cn::Output& out) {
-            sentinel = 42;
-            out.Print("ok");
-        });
+    C.RegisterCommand("test_resolve_long_command",
+                      "long name",
+                      [&](std::span<const std::string_view>, cn::Output& out) {
+                          sentinel = 42;
+                          out.Print("ok");
+                      });
     auto r = C.Execute("test_resolve_long");
     REQUIRE(r.ok);
     REQUIRE(sentinel == 42);
     REQUIRE(r.output.find("resolved") != std::string::npos);
 }
 
-TEST_CASE("Undo / Redo round-trip a cvar mutation",
-          "[core][console][undo]") {
+TEST_CASE("Undo / Redo round-trip a cvar mutation", "[core][console][undo]") {
     auto& C = cn::Console::Get();
-    auto* cv = C.RegisterCVar("test_undo_target", "alpha",
-                              "undo round-trip");
+    auto* cv = C.RegisterCVar("test_undo_target", "alpha", "undo round-trip");
     REQUIRE(cv->value == "alpha");
 
     // ExecuteScript creates one transaction = one undo entry per script.
@@ -163,11 +155,9 @@ TEST_CASE("Undo / Redo round-trip a cvar mutation",
     REQUIRE(cv->value == "beta");
 }
 
-TEST_CASE("Favourites: AddFavorite + fN magic dispatch",
-          "[core][console][fav]") {
+TEST_CASE("Favourites: AddFavorite + fN magic dispatch", "[core][console][fav]") {
     auto& C = cn::Console::Get();
-    C.RegisterCVar("test_fav_target", "off",
-                   "favourite-dispatch target");
+    C.RegisterCVar("test_fav_target", "off", "favourite-dispatch target");
 
     C.ClearFavorites();
     C.AddFavorite("test_fav_target on");
@@ -184,13 +174,12 @@ TEST_CASE("Favourites: AddFavorite + fN magic dispatch",
     REQUIRE_FALSE(bad.ok);
 }
 
-TEST_CASE("Console input history dedupes and caps at kMaxHistoryDepth",
-          "[core][console][history]") {
+TEST_CASE("Console input history dedupes and caps at kMaxHistoryDepth", "[core][console][history]") {
     auto& C = cn::Console::Get();
     C.ClearHistory();
 
     C.PushHistory("alpha");
-    C.PushHistory("alpha");        // dedupe-of-last
+    C.PushHistory("alpha");  // dedupe-of-last
     C.PushHistory("beta");
     REQUIRE(C.HistoryCount() == 2);
 
@@ -206,8 +195,7 @@ TEST_CASE("Console input history dedupes and caps at kMaxHistoryDepth",
     REQUIRE(C.History().front() == "line_10");
 }
 
-TEST_CASE("Bracket-batch collects then commits as one undo step",
-          "[core][console][batch]") {
+TEST_CASE("Bracket-batch collects then commits as one undo step", "[core][console][batch]") {
     auto& C = cn::Console::Get();
     auto* a = C.RegisterCVar("test_batch_a", "0", "");
     auto* b = C.RegisterCVar("test_batch_b", "0", "");
@@ -246,12 +234,10 @@ TEST_CASE("Bracket-batch collects then commits as one undo step",
 TEST_CASE("SaveArchivedCvars writes only diverged-from-default archive cvars",
           "[core][console][archive]") {
     auto& C = cn::Console::Get();
-    C.RegisterCVar("test_archive_kept", "5", "archived numeric",
-                   cn::CVAR_ARCHIVE);
-    C.RegisterCVar("test_archive_default", "5", "archived but at default",
-                   cn::CVAR_ARCHIVE);
+    C.RegisterCVar("test_archive_kept", "5", "archived numeric", cn::CVAR_ARCHIVE);
+    C.RegisterCVar("test_archive_default", "5", "archived but at default", cn::CVAR_ARCHIVE);
     C.RegisterCVar("test_archive_volatile", "tmp", "not archived");
-    C.SetCVarOverride("test_archive_kept",     "42");
+    C.SetCVarOverride("test_archive_kept", "42");
     C.SetCVarOverride("test_archive_volatile", "modified");
 
     auto path = std::filesystem::temp_directory_path() / "psynder_test_archive.cfg";
@@ -264,7 +250,8 @@ TEST_CASE("SaveArchivedCvars writes only diverged-from-default archive cvars",
     REQUIRE(f != nullptr);
     std::string content;
     char buf[256];
-    while (auto got = std::fread(buf, 1, sizeof buf, f)) content.append(buf, got);
+    while (auto got = std::fread(buf, 1, sizeof buf, f))
+        content.append(buf, got);
     std::fclose(f);
     REQUIRE(content.find("test_archive_kept 42") != std::string::npos);
     REQUIRE(content.find("test_archive_default") == std::string::npos);
@@ -277,14 +264,15 @@ TEST_CASE("SaveArchivedCvars writes only diverged-from-default archive cvars",
     REQUIRE(C.FindCVar("test_archive_kept")->value == "42");
 }
 
-TEST_CASE("requires_predicate warning fires on interactive set, "
-          "but is suppressed during a script replay",
-          "[core][console][deps]") {
+TEST_CASE(
+    "requires_predicate warning fires on interactive set, "
+    "but is suppressed during a script replay",
+    "[core][console][deps]") {
     auto& C = cn::Console::Get();
-    auto* gate = C.RegisterCVar("test_deps_dependent",  "off", "dep cvar");
-    auto* dep  = C.RegisterCVar("test_deps_dependency", "off", "the prerequisite");
+    auto* gate = C.RegisterCVar("test_deps_dependent", "off", "dep cvar");
+    auto* dep = C.RegisterCVar("test_deps_dependency", "off", "the prerequisite");
     dep->requires_predicate = [&]() { return gate->GetBool(); };
-    dep->requires_hint      = "set test_deps_dependent first";
+    dep->requires_hint = "set test_deps_dependent first";
 
     // gate is off; the predicate returns false; we expect a warning.
     auto r = C.Execute("test_deps_dependency on");

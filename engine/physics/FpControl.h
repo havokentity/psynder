@@ -14,11 +14,11 @@
 #include "core/Types.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
-#   include <xmmintrin.h>
-#   include <pmmintrin.h>
+#include <xmmintrin.h>
+#include <pmmintrin.h>
 #endif
 #if defined(__aarch64__) || defined(_M_ARM64)
-#   include <fenv.h>
+#include <fenv.h>
 #endif
 
 namespace psynder::physics::detail {
@@ -28,15 +28,15 @@ namespace psynder::physics::detail {
 // denormal than lose determinism). Restores the previous control word on
 // destruction so we don't leak our state to game code.
 class FpGuard {
-public:
+   public:
     PSY_FORCEINLINE FpGuard() noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
         prev_mxcsr_ = _mm_getcsr();
         // Round-to-nearest (bits 13:14 = 00), exceptions masked, FTZ off, DAZ off
         u32 csr = prev_mxcsr_;
-        csr &= ~(0x6000u);                  // clear rounding-control bits
-        csr &= ~(0x8040u);                  // clear FTZ + DAZ
-        csr |=  (0x1F80u);                  // mask all exceptions
+        csr &= ~(0x6000u);  // clear rounding-control bits
+        csr &= ~(0x8040u);  // clear FTZ + DAZ
+        csr |= (0x1F80u);   // mask all exceptions
         _mm_setcsr(csr);
 #elif defined(__aarch64__) || defined(_M_ARM64)
         // arm64 FPCR: RMode bits 23:22 = 00 (round-to-nearest), FZ bit 24 = 0
@@ -59,11 +59,11 @@ public:
     FpGuard(const FpGuard&) = delete;
     FpGuard& operator=(const FpGuard&) = delete;
 
-private:
+   private:
 #if defined(__x86_64__) || defined(_M_X64)
     u32 prev_mxcsr_ = 0;
 #elif defined(__aarch64__) || defined(_M_ARM64)
-    u64 prev_fpcr_  = 0;
+    u64 prev_fpcr_ = 0;
 #endif
 };
 

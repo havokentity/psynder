@@ -46,36 +46,36 @@
 
 namespace psynder::tools::lmpak {
 
-inline constexpr u32 kMagic         = 0x4B504D4Cu;   // 'LMPK' LE
-inline constexpr u32 kVersion       = 1u;
-inline constexpr u32 kFlagZstd      = 1u << 0;       // archive contains compressed entries
-inline constexpr u32 kEntryFlagZstd = 1u << 0;       // per-entry compressed marker
+inline constexpr u32 kMagic = 0x4B504D4Cu;  // 'LMPK' LE
+inline constexpr u32 kVersion = 1u;
+inline constexpr u32 kFlagZstd = 1u << 0;       // archive contains compressed entries
+inline constexpr u32 kEntryFlagZstd = 1u << 0;  // per-entry compressed marker
 
 // FNV-1a 64-bit over the case-folded UTF-8 byte sequence. Stable; this is
 // the same hash lane 05's VFS will use to look entries up.
 u64 fnv1a64(std::string_view s) noexcept;
 
 struct PackOptions {
-    bool compress       = false;   // zstd per-entry when available
-    u32  zstd_level     = 3;       // lane 05 helpers default
-    u64  min_compress   = 64;      // skip compression for tiny entries
+    bool compress = false;  // zstd per-entry when available
+    u32 zstd_level = 3;     // lane 05 helpers default
+    u64 min_compress = 64;  // skip compression for tiny entries
 };
 
 struct EntryRecord {
-    std::string path;      // virtual path (forward-slashes, lowercased on hash)
-    u64         hash = 0;
-    u64         offset = 0;
-    u64         stored = 0;
-    u64         raw    = 0;
-    u32         flags  = 0;
-    u32         crc32  = 0;
+    std::string path;  // virtual path (forward-slashes, lowercased on hash)
+    u64 hash = 0;
+    u64 offset = 0;
+    u64 stored = 0;
+    u64 raw = 0;
+    u32 flags = 0;
+    u32 crc32 = 0;
 };
 
 struct PackResult {
     bool ok = false;
-    u32  entries = 0;
-    u64  total_raw = 0;
-    u64  total_stored = 0;
+    u32 entries = 0;
+    u64 total_raw = 0;
+    u64 total_stored = 0;
     std::string error;
 };
 
@@ -98,20 +98,19 @@ PackResult pack_blobs(std::span<const MemEntry> entries,
 
 struct UnpackResult {
     bool ok = false;
-    u32  entries = 0;
+    u32 entries = 0;
     std::string error;
 };
 
 // Unpack the archive into `dest_dir`, recreating the directory tree.
-UnpackResult unpack_archive(std::string_view archive_path,
-                            std::string_view dest_dir);
+UnpackResult unpack_archive(std::string_view archive_path, std::string_view dest_dir);
 
 // Read the directory of an archive without unpacking the payload — useful
 // for diagnostics, listing tools, and unit tests.
 struct ArchiveInfo {
-    u32  version = 0;
-    u32  flags   = 0;
-    u32  entry_count = 0;
+    u32 version = 0;
+    u32 flags = 0;
+    u32 entry_count = 0;
     std::vector<EntryRecord> entries;
 };
 bool read_index(std::span<const u8> bytes, ArchiveInfo& out, std::string* err = nullptr);

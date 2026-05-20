@@ -11,10 +11,8 @@ namespace psynder::render::raster::test_mesh {
 namespace {
 
 constexpr u32 pack_rgba8(u8 r, u8 g, u8 b, u8 a) noexcept {
-    return static_cast<u32>(r)
-         | (static_cast<u32>(g) << 8)
-         | (static_cast<u32>(b) << 16)
-         | (static_cast<u32>(a) << 24);
+    return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
+           (static_cast<u32>(a) << 24);
 }
 
 // Single colored triangle in NDC-ish coords. Vertex order is BL → TOP → BR
@@ -22,24 +20,52 @@ constexpr u32 pack_rgba8(u8 r, u8 g, u8 b, u8 a) noexcept {
 // y-flip (DESIGN.md §10.1 right-handed coordinates → screen y-down).
 constexpr Vertex kTriangleVerts[] = {
     // BL (red)
-    Vertex{ math::Vec3{-0.6f, -0.5f, 0.0f}, math::Vec3{0,0,1}, math::Vec2{0.0f, 1.0f}, math::Vec2{0,0}, pack_rgba8(255,  64,  64, 255) },
+    Vertex{math::Vec3{-0.6f, -0.5f, 0.0f},
+           math::Vec3{0, 0, 1},
+           math::Vec2{0.0f, 1.0f},
+           math::Vec2{0, 0},
+           pack_rgba8(255, 64, 64, 255)},
     // TOP (blue)
-    Vertex{ math::Vec3{ 0.0f,  0.6f, 0.0f}, math::Vec3{0,0,1}, math::Vec2{0.5f, 0.0f}, math::Vec2{0,0}, pack_rgba8( 64,  64, 255, 255) },
+    Vertex{math::Vec3{0.0f, 0.6f, 0.0f},
+           math::Vec3{0, 0, 1},
+           math::Vec2{0.5f, 0.0f},
+           math::Vec2{0, 0},
+           pack_rgba8(64, 64, 255, 255)},
     // BR (green)
-    Vertex{ math::Vec3{ 0.6f, -0.5f, 0.0f}, math::Vec3{0,0,1}, math::Vec2{1.0f, 1.0f}, math::Vec2{0,0}, pack_rgba8( 64, 255,  64, 255) },
+    Vertex{math::Vec3{0.6f, -0.5f, 0.0f},
+           math::Vec3{0, 0, 1},
+           math::Vec2{1.0f, 1.0f},
+           math::Vec2{0, 0},
+           pack_rgba8(64, 255, 64, 255)},
 };
-constexpr u32 kTriangleIndices[] = { 0, 1, 2 };
+constexpr u32 kTriangleIndices[] = {0, 1, 2};
 
 // Two-triangle quad spanning roughly the whole framebuffer in NDC.
 // Indices wound so both triangles are front-facing post-flip.
 constexpr Vertex kQuadVerts[] = {
-    Vertex{ math::Vec3{-0.95f, -0.95f, 0.0f}, math::Vec3{0,0,1}, math::Vec2{0,1}, math::Vec2{0,0}, 0xFFFFFFFFu },  // 0 BL
-    Vertex{ math::Vec3{ 0.95f, -0.95f, 0.0f}, math::Vec3{0,0,1}, math::Vec2{1,1}, math::Vec2{0,0}, 0xFFFFFFFFu },  // 1 BR
-    Vertex{ math::Vec3{ 0.95f,  0.95f, 0.0f}, math::Vec3{0,0,1}, math::Vec2{1,0}, math::Vec2{0,0}, 0xFFFFFFFFu },  // 2 TR
-    Vertex{ math::Vec3{-0.95f,  0.95f, 0.0f}, math::Vec3{0,0,1}, math::Vec2{0,0}, math::Vec2{0,0}, 0xFFFFFFFFu },  // 3 TL
+    Vertex{math::Vec3{-0.95f, -0.95f, 0.0f},
+           math::Vec3{0, 0, 1},
+           math::Vec2{0, 1},
+           math::Vec2{0, 0},
+           0xFFFFFFFFu},  // 0 BL
+    Vertex{math::Vec3{0.95f, -0.95f, 0.0f},
+           math::Vec3{0, 0, 1},
+           math::Vec2{1, 1},
+           math::Vec2{0, 0},
+           0xFFFFFFFFu},  // 1 BR
+    Vertex{math::Vec3{0.95f, 0.95f, 0.0f},
+           math::Vec3{0, 0, 1},
+           math::Vec2{1, 0},
+           math::Vec2{0, 0},
+           0xFFFFFFFFu},  // 2 TR
+    Vertex{math::Vec3{-0.95f, 0.95f, 0.0f},
+           math::Vec3{0, 0, 1},
+           math::Vec2{0, 0},
+           math::Vec2{0, 0},
+           0xFFFFFFFFu},  // 3 TL
 };
 // (BL, TL, BR) + (BR, TL, TR) — CCW in screen y-down
-constexpr u32 kQuadIndices[] = { 0, 3, 1,  1, 3, 2 };
+constexpr u32 kQuadIndices[] = {0, 3, 1, 1, 3, 2};
 
 // 8×8 checkerboard
 constexpr u32 kCheckerW = 8;
@@ -48,12 +74,12 @@ u32 g_checker[kCheckerW * kCheckerH];
 bool g_checker_init = false;
 
 void init_checker() noexcept {
-    if (g_checker_init) return;
+    if (g_checker_init)
+        return;
     for (u32 y = 0; y < kCheckerH; ++y) {
         for (u32 x = 0; x < kCheckerW; ++x) {
             const bool light = ((x ^ y) & 1) == 0;
-            g_checker[y * kCheckerW + x] =
-                light ? 0xFFFFFFFFu : 0xFF202020u;
+            g_checker[y * kCheckerW + x] = light ? 0xFFFFFFFFu : 0xFF202020u;
         }
     }
     g_checker_init = true;

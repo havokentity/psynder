@@ -43,7 +43,7 @@ namespace psynder::ui::rml::detail {
 
 namespace {
 
-std::atomic<LuaExecFn> g_lua_exec{ nullptr };
+std::atomic<LuaExecFn> g_lua_exec{nullptr};
 
 bool default_lua_exec(std::string_view source, std::string_view name) noexcept {
     // Wave-A default backend: log + acknowledge.  Lane 15 swaps this.
@@ -77,11 +77,21 @@ std::string lua_str_escape(std::string_view in) {
     out.reserve(in.size() + 2);
     for (char c : in) {
         switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '"':  out += "\\\""; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8];
@@ -100,14 +110,15 @@ std::string lua_str_escape(std::string_view in) {
 // "1.5" → number unambiguously.
 std::string build_event_prelude(const EventPayload& p) {
     char buf[256];
-    std::snprintf(buf, sizeof(buf),
-        "local event = {kind=\"%s\", target_id=\"%s\", "
-        "mouse_x=%g, mouse_y=%g, button=%d};\n",
-        lua_str_escape(p.kind).c_str(),
-        lua_str_escape(p.target_id).c_str(),
-        static_cast<double>(p.mouse_x),
-        static_cast<double>(p.mouse_y),
-        static_cast<int>(p.button));
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "local event = {kind=\"%s\", target_id=\"%s\", "
+                  "mouse_x=%g, mouse_y=%g, button=%d};\n",
+                  lua_str_escape(p.kind).c_str(),
+                  lua_str_escape(p.target_id).c_str(),
+                  static_cast<double>(p.mouse_x),
+                  static_cast<double>(p.mouse_y),
+                  static_cast<int>(p.button));
     return std::string(buf);
 }
 
@@ -121,8 +132,7 @@ void set_lua_backend(LuaExecFn backend) noexcept {
 // path).  Used by tests and for the rare case where a handler body
 // doesn't need the event surface.  Returns true if the installed backend
 // accepted the chunk; false if there is no backend or it rejected it.
-bool dispatch_handler(std::string_view event_name,
-                      std::string_view handler_body) {
+bool dispatch_handler(std::string_view event_name, std::string_view handler_body) {
     EventPayload empty{};
     empty.kind = event_name;
     return dispatch_handler(event_name, handler_body, empty);
@@ -134,7 +144,8 @@ bool dispatch_handler(std::string_view event_name,
 bool dispatch_handler(std::string_view event_name,
                       std::string_view handler_body,
                       const EventPayload& payload) {
-    if (handler_body.empty()) return false;
+    if (handler_body.empty())
+        return false;
     const auto body = strip_lua_prefix(handler_body);
 
     std::string chunk;

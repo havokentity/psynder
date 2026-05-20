@@ -31,31 +31,35 @@ namespace {
 PSY_CACHELINE_ALIGN SapState g_sap;
 
 PSY_FORCEINLINE SpatialKey pack_key(u32 slot) noexcept {
-    return SpatialKey{ slot + 1u };
+    return SpatialKey{slot + 1u};
 }
 PSY_FORCEINLINE u32 unpack_slot(SpatialKey k) noexcept {
     return k.raw == 0 ? 0xFFFFFFFFu : (k.raw - 1u);
 }
 
 void rebuild_endpoints(SapState& s) noexcept {
-    s.ep_x.clear(); s.ep_y.clear(); s.ep_z.clear();
+    s.ep_x.clear();
+    s.ep_y.clear();
+    s.ep_z.clear();
     s.ep_x.reserve(2 * s.boxes.size());
     s.ep_y.reserve(2 * s.boxes.size());
     s.ep_z.reserve(2 * s.boxes.size());
 
     for (u32 i = 0; i < s.boxes.size(); ++i) {
-        if (!s.boxes[i].alive) continue;
+        if (!s.boxes[i].alive)
+            continue;
         const auto& b = s.boxes[i].bounds;
-        s.ep_x.push_back(SapEndpoint{ b.min.x, i, 0 });
-        s.ep_x.push_back(SapEndpoint{ b.max.x, i, 1 });
-        s.ep_y.push_back(SapEndpoint{ b.min.y, i, 0 });
-        s.ep_y.push_back(SapEndpoint{ b.max.y, i, 1 });
-        s.ep_z.push_back(SapEndpoint{ b.min.z, i, 0 });
-        s.ep_z.push_back(SapEndpoint{ b.max.z, i, 1 });
+        s.ep_x.push_back(SapEndpoint{b.min.x, i, 0});
+        s.ep_x.push_back(SapEndpoint{b.max.x, i, 1});
+        s.ep_y.push_back(SapEndpoint{b.min.y, i, 0});
+        s.ep_y.push_back(SapEndpoint{b.max.y, i, 1});
+        s.ep_z.push_back(SapEndpoint{b.min.z, i, 0});
+        s.ep_z.push_back(SapEndpoint{b.max.z, i, 1});
     }
 
     auto cmp = [](const SapEndpoint& a, const SapEndpoint& b) noexcept {
-        if (a.value != b.value) return a.value < b.value;
+        if (a.value != b.value)
+            return a.value < b.value;
         // Tie-break: min endpoints sort before max endpoints at the same
         // coordinate so we don't synthesize a false-positive pair on a
         // boundary touch.
@@ -67,29 +71,31 @@ void rebuild_endpoints(SapState& s) noexcept {
 }
 
 class SapBackend final : public ISpatialIndex {
-public:
+   public:
     SpatialKey insert(u32 entity_index, const math::Aabb& bounds) override {
         u32 slot;
         if (!g_sap.free_slots.empty()) {
             slot = g_sap.free_slots.back();
             g_sap.free_slots.pop_back();
-            g_sap.boxes[slot] = SapBox{ bounds, entity_index, true };
+            g_sap.boxes[slot] = SapBox{bounds, entity_index, true};
         } else {
             slot = static_cast<u32>(g_sap.boxes.size());
-            g_sap.boxes.push_back(SapBox{ bounds, entity_index, true });
+            g_sap.boxes.push_back(SapBox{bounds, entity_index, true});
         }
         return pack_key(slot);
     }
 
     void update(SpatialKey key, const math::Aabb& bounds) override {
         const u32 slot = unpack_slot(key);
-        if (slot >= g_sap.boxes.size() || !g_sap.boxes[slot].alive) return;
+        if (slot >= g_sap.boxes.size() || !g_sap.boxes[slot].alive)
+            return;
         g_sap.boxes[slot].bounds = bounds;
     }
 
     void remove(SpatialKey key) override {
         const u32 slot = unpack_slot(key);
-        if (slot >= g_sap.boxes.size() || !g_sap.boxes[slot].alive) return;
+        if (slot >= g_sap.boxes.size() || !g_sap.boxes[slot].alive)
+            return;
         g_sap.boxes[slot].alive = false;
         g_sap.free_slots.push_back(slot);
     }
@@ -102,8 +108,10 @@ public:
         // / debug callers.
         usize written = 0;
         for (const auto& b : g_sap.boxes) {
-            if (!b.alive) continue;
-            if (written >= out_entities.size()) break;
+            if (!b.alive)
+                continue;
+            if (written >= out_entities.size())
+                break;
             if (aabb_overlap(b.bounds, q)) {
                 out_entities[written++] = b.entity_index;
             }
@@ -115,15 +123,20 @@ PSY_CACHELINE_ALIGN SapBackend g_sap_backend{};
 
 }  // namespace
 
-SapState& sap_state() noexcept { return g_sap; }
+SapState& sap_state() noexcept {
+    return g_sap;
+}
 
-ISpatialIndex* sap_backend() noexcept { return &g_sap_backend; }
+ISpatialIndex* sap_backend() noexcept {
+    return &g_sap_backend;
+}
 
 void sap_step() noexcept {
     rebuild_endpoints(g_sap);
     g_sap.pairs.clear();
 
-    if (g_sap.ep_x.empty()) return;
+    if (g_sap.ep_x.empty())
+        return;
 
     // Scan along X, maintaining the "open" set of slots between min and
     // max endpoints. When a new min endpoint opens slot s, every currently
@@ -137,7 +150,8 @@ void sap_step() noexcept {
         if (ep.is_max) {
             // Close `ep.slot`.
             auto it = std::find(active.begin(), active.end(), ep.slot);
-            if (it != active.end()) active.erase(it);
+            if (it != active.end())
+                active.erase(it);
         } else {
             const u32 slot_b = ep.slot;
             const auto& bb = g_sap.boxes[slot_b].bounds;
@@ -145,12 +159,15 @@ void sap_step() noexcept {
                 const auto& aa = g_sap.boxes[slot_a].bounds;
                 // X axis is already implied by the active set. Validate
                 // Y and Z.
-                if (aa.max.y < bb.min.y || aa.min.y > bb.max.y) continue;
-                if (aa.max.z < bb.min.z || aa.min.z > bb.max.z) continue;
+                if (aa.max.y < bb.min.y || aa.min.y > bb.max.y)
+                    continue;
+                if (aa.max.z < bb.min.z || aa.min.z > bb.max.z)
+                    continue;
                 u32 lo = g_sap.boxes[slot_a].entity_index;
                 u32 hi = g_sap.boxes[slot_b].entity_index;
-                if (lo > hi) std::swap(lo, hi);
-                g_sap.pairs.push_back(SapPair{ lo, hi });
+                if (lo > hi)
+                    std::swap(lo, hi);
+                g_sap.pairs.push_back(SapPair{lo, hi});
             }
             active.push_back(slot_b);
         }

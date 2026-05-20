@@ -14,7 +14,9 @@
 
 #pragma once
 
-namespace psynder::platform { class Input; }
+namespace psynder::platform {
+class Input;
+}
 
 namespace psynder::editor {
 

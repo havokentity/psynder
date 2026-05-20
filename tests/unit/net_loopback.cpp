@@ -25,9 +25,7 @@ namespace {
 
 // Pump both hosts: drain their inbox, advance one logical tick. Returns
 // total messages delivered this round across both inboxes.
-u32 pump(HostImpl& a, HostImpl& b,
-         std::vector<InboundMessage>& a_in,
-         std::vector<InboundMessage>& b_in) {
+u32 pump(HostImpl& a, HostImpl& b, std::vector<InboundMessage>& a_in, std::vector<InboundMessage>& b_in) {
     u32 n = a.poll(a_in) + b.poll(b_in);
     a.tick();
     b.tick();
@@ -49,11 +47,14 @@ struct Xs32 {
 
 }  // namespace
 
-TEST_CASE("net: two in-process Hosts exchange bytes via loopback bus",
-          "[net][loopback][harness]") {
+TEST_CASE("net: two in-process Hosts exchange bytes via loopback bus", "[net][loopback][harness]") {
     LoopbackBus::Get().reset();
-    HostDesc da{}; da.port = 41001; da.max_peers = 4;
-    HostDesc db{}; db.port = 41002; db.max_peers = 4;
+    HostDesc da{};
+    da.port = 41001;
+    da.max_peers = 4;
+    HostDesc db{};
+    db.port = 41002;
+    db.max_peers = 4;
     HostImpl* a = make_test_host(da);
     HostImpl* b = make_test_host(db);
     REQUIRE(a != nullptr);
@@ -63,15 +64,14 @@ TEST_CASE("net: two in-process Hosts exchange bytes via loopback bus",
     REQUIRE(a_to_b.valid());
 
     const std::string msg = "ping";
-    a->send(a_to_b, std::span<const u8>(reinterpret_cast<const u8*>(msg.data()),
-                                        msg.size()),
+    a->send(a_to_b,
+            std::span<const u8>(reinterpret_cast<const u8*>(msg.data()), msg.size()),
             /*reliable=*/true);
 
     std::vector<InboundMessage> a_in, b_in;
     pump(*a, *b, a_in, b_in);
     REQUIRE(b_in.size() == 1);
-    std::string got(reinterpret_cast<const char*>(b_in[0].bytes.data()),
-                    b_in[0].bytes.size());
+    std::string got(reinterpret_cast<const char*>(b_in[0].bytes.data()), b_in[0].bytes.size());
     CHECK(got == msg);
 
     destroy_test_host(a);
@@ -86,13 +86,16 @@ TEST_CASE("net: reliable send delivers every message under 5% simulated drop",
     // 5% drop. We use a deterministic PRNG so the test is reproducible.
     Xs32 prng{0xBADC0DEu};
     LoopbackBus::Get().set_loss_policy(
-        [&prng](u16 /*src*/, u16 /*dst*/, std::span<const u8> /*bytes*/,
-                u32 /*attempt*/) {
+        [&prng](u16 /*src*/, u16 /*dst*/, std::span<const u8> /*bytes*/, u32 /*attempt*/) {
             return (prng.next() % 100) >= 5;  // deliver 95% of frames
         });
 
-    HostDesc da{}; da.port = 42001; da.max_peers = 4;
-    HostDesc db{}; db.port = 42002; db.max_peers = 4;
+    HostDesc da{};
+    da.port = 42001;
+    da.max_peers = 4;
+    HostDesc db{};
+    db.port = 42002;
+    db.max_peers = 4;
     HostImpl* a = make_test_host(da);
     HostImpl* b = make_test_host(db);
     REQUIRE(a);
@@ -135,8 +138,12 @@ TEST_CASE("net: ACK pipelining retires whole window after one round-trip",
           "[net][loopback][pipelining]") {
     LoopbackBus::Get().reset();
 
-    HostDesc da{}; da.port = 43001; da.max_peers = 4;
-    HostDesc db{}; db.port = 43002; db.max_peers = 4;
+    HostDesc da{};
+    da.port = 43001;
+    da.max_peers = 4;
+    HostDesc db{};
+    db.port = 43002;
+    db.max_peers = 4;
     HostImpl* a = make_test_host(da);
     HostImpl* b = make_test_host(db);
     REQUIRE(a);

@@ -17,9 +17,9 @@ TEST_CASE("net: AOI filter includes entities inside the sphere", "[net][aoi]") {
     PeerId p{1};
     f.set_peer(p, math::Vec3{0, 0, 0}, /*radius=*/100.f);
 
-    CHECK(f.visible(p, math::Vec3{ 50.f,  0.f, 0.f}));
-    CHECK(f.visible(p, math::Vec3{  0.f, 99.f, 0.f}));
-    CHECK(f.visible(p, math::Vec3{  0.f,  0.f, 0.f}));
+    CHECK(f.visible(p, math::Vec3{50.f, 0.f, 0.f}));
+    CHECK(f.visible(p, math::Vec3{0.f, 99.f, 0.f}));
+    CHECK(f.visible(p, math::Vec3{0.f, 0.f, 0.f}));
 }
 
 TEST_CASE("net: AOI filter excludes entities outside the sphere", "[net][aoi]") {
@@ -28,11 +28,10 @@ TEST_CASE("net: AOI filter excludes entities outside the sphere", "[net][aoi]") 
     f.set_peer(p, math::Vec3{0, 0, 0}, /*radius=*/100.f);
 
     CHECK_FALSE(f.visible(p, math::Vec3{101.f, 0.f, 0.f}));
-    CHECK_FALSE(f.visible(p, math::Vec3{ 0.f, 0.f, 1000.f}));
+    CHECK_FALSE(f.visible(p, math::Vec3{0.f, 0.f, 1000.f}));
 }
 
-TEST_CASE("net: AOI boundary is inclusive — entity exactly on radius",
-          "[net][aoi][boundary]") {
+TEST_CASE("net: AOI boundary is inclusive — entity exactly on radius", "[net][aoi][boundary]") {
     AoiFilter f;
     PeerId p{1};
     f.set_peer(p, math::Vec3{0, 0, 0}, /*radius=*/10.f);
@@ -49,8 +48,7 @@ TEST_CASE("net: AOI returns false for unknown peer", "[net][aoi]") {
     CHECK_FALSE(f.visible(unknown, math::Vec3{0, 0, 0}));
 }
 
-TEST_CASE("net: compose_for_peer drops entities outside AOI",
-          "[net][aoi][snapshot]") {
+TEST_CASE("net: compose_for_peer drops entities outside AOI", "[net][aoi][snapshot]") {
     AoiFilter f;
     PeerId p{7};
     f.set_peer(p, math::Vec3{0, 0, 0}, /*radius=*/50.f);
@@ -58,11 +56,11 @@ TEST_CASE("net: compose_for_peer drops entities outside AOI",
     SnapshotFrame world;
     world.tick = 100;
     world.entities = {
-        {1, math::Vec3{   0.f, 0.f, 0.f}, 0xAAu},  // inside
-        {2, math::Vec3{  10.f, 0.f, 0.f}, 0xBBu},  // inside
-        {3, math::Vec3{ 100.f, 0.f, 0.f}, 0xCCu},  // outside
-        {4, math::Vec3{   0.f,50.f, 0.f}, 0xDDu},  // on the boundary (inside)
-        {5, math::Vec3{ 100.f,100.f,0.f}, 0xEEu},  // far outside
+        {1, math::Vec3{0.f, 0.f, 0.f}, 0xAAu},      // inside
+        {2, math::Vec3{10.f, 0.f, 0.f}, 0xBBu},     // inside
+        {3, math::Vec3{100.f, 0.f, 0.f}, 0xCCu},    // outside
+        {4, math::Vec3{0.f, 50.f, 0.f}, 0xDDu},     // on the boundary (inside)
+        {5, math::Vec3{100.f, 100.f, 0.f}, 0xEEu},  // far outside
     };
 
     SnapshotFrame visible;
@@ -74,8 +72,7 @@ TEST_CASE("net: compose_for_peer drops entities outside AOI",
     CHECK(visible.entities[2].entity_id == 4);
 }
 
-TEST_CASE("net: snapshot encode/decode round-trips entity table",
-          "[net][snapshot]") {
+TEST_CASE("net: snapshot encode/decode round-trips entity table", "[net][snapshot]") {
     SnapshotFrame f;
     f.tick = 0xCAFEBABEu;
     f.entities = {
@@ -91,7 +88,7 @@ TEST_CASE("net: snapshot encode/decode round-trips entity table",
     CHECK(g.tick == f.tick);
     REQUIRE(g.entities.size() == f.entities.size());
     for (usize i = 0; i < f.entities.size(); ++i) {
-        CHECK(g.entities[i].entity_id  == f.entities[i].entity_id);
+        CHECK(g.entities[i].entity_id == f.entities[i].entity_id);
         CHECK(g.entities[i].position.x == f.entities[i].position.x);
         CHECK(g.entities[i].position.y == f.entities[i].position.y);
         CHECK(g.entities[i].position.z == f.entities[i].position.z);

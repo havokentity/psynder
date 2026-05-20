@@ -21,7 +21,7 @@ namespace {
 
 // IIDs we resolve at runtime. C++ binding gives nice IIDs at compile time via
 // __uuidof, but linking against mmdevapi.lib also provides them.
-constexpr REFERENCE_TIME kHnsPerMs    = 10000LL;
+constexpr REFERENCE_TIME kHnsPerMs = 10000LL;
 constexpr REFERENCE_TIME kBufferDurationHns = 30 * kHnsPerMs;  // 30 ms target
 
 // Zeroes a float buffer.
@@ -59,7 +59,7 @@ void audio_set_mixer(MixerCallback cb, void* user) {
 // `memcpy` per pull.
 struct WasapiBridge {
     std::atomic<psynder::audio::MixerCallback> cb{nullptr};
-    std::atomic<void*>                          user{nullptr};
+    std::atomic<void*> user{nullptr};
     // Stereo scratch — owned by the audio thread, sized once by start().
     // `std::vector` is used here only at start()-time; the hot path indexes
     // .data() and never reallocates because we reserve up-front.
@@ -72,14 +72,11 @@ WasapiBridge& bridge() {
 }
 
 // 5-arg Win32 callback that adapts to lane 12's 2-arg stereo callback.
-u32 bridge_adapter(f32*  out,
-                   u32   frames,
-                   u32   channels,
-                   u32   /*sample_rate*/,
-                   void* /*user*/) {
+u32 bridge_adapter(f32* out, u32 frames, u32 channels, u32 /*sample_rate*/, void* /*user*/) {
     auto& b = bridge();
-    auto  cb = b.cb.load(std::memory_order_acquire);
-    if (!cb) return 0u;  // leave the WASAPI-side silence in place
+    auto cb = b.cb.load(std::memory_order_acquire);
+    if (!cb)
+        return 0u;  // leave the WASAPI-side silence in place
 
     const usize stereo_floats = static_cast<usize>(frames) * 2u;
     // Grow once if the device handed us a larger block than start() saw.
@@ -115,21 +112,27 @@ void Win32Audio::set_mixer(MixerCallback cb, void* user) {
 }
 
 bool Win32Audio::start(u32 /*prefer_sample_rate*/, u32 /*prefer_channels*/) {
-    if (running_.load()) return true;
+    if (running_.load())
+        return true;
 
-    HRESULT hr = ::CoCreateInstance(
-        __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_INPROC_SERVER,
-        __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(enumerator_.GetAddressOf()));
-    if (!psy_hr_ok(hr, "CoCreateInstance(MMDeviceEnumerator)")) return false;
+    HRESULT hr = ::CoCreateInstance(__uuidof(MMDeviceEnumerator),
+                                    nullptr,
+                                    CLSCTX_INPROC_SERVER,
+                                    __uuidof(IMMDeviceEnumerator),
+                                    reinterpret_cast<void**>(enumerator_.GetAddressOf()));
+    if (!psy_hr_ok(hr, "CoCreateInstance(MMDeviceEnumerator)"))
+        return false;
 
-    if (!psy_hr_ok(enumerator_->GetDefaultAudioEndpoint(
-            eRender, eConsole, device_.GetAddressOf()),
-            "GetDefaultAudioEndpoint")) return false;
+    if (!psy_hr_ok(enumerator_->GetDefaultAudioEndpoint(eRender, eConsole, device_.GetAddressOf()),
+                   "GetDefaultAudioEndpoint"))
+        return false;
 
-    if (!psy_hr_ok(device_->Activate(
-            __uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-            reinterpret_cast<void**>(client_.GetAddressOf())),
-            "IMMDevice::Activate(IAudioClient)")) return false;
+    if (!psy_hr_ok(device_->Activate(__uuidof(IAudioClient),
+                                     CLSCTX_ALL,
+                                     nullptr,
+                                     reinterpret_cast<void**>(client_.GetAddressOf())),
+                   "IMMDevice::Activate(IAudioClient)"))
+        return false;
 
     // Pull the device's mix format — we render in float32 native format.
     WAVEFORMATEX* mix_fmt = nullptr;
@@ -139,25 +142,28 @@ bool Win32Audio::start(u32 /*prefer_sample_rate*/, u32 /*prefer_channels*/) {
     // Hold a deleter for mix_fmt — Windows owns the memory until CoTaskMemFree.
     struct FmtGuard {
         WAVEFORMATEX* p;
-        ~FmtGuard() { if (p) ::CoTaskMemFree(p); }
+        ~FmtGuard() {
+            if (p)
+                ::CoTaskMemFree(p);
+        }
     } guard{mix_fmt};
 
     sample_rate_ = mix_fmt->nSamplesPerSec;
-    channels_    = mix_fmt->nChannels;
+    channels_ = mix_fmt->nChannels;
 
     // Initialize the audio client in shared mode, event-driven.
-    hr = client_->Initialize(
-        AUDCLNT_SHAREMODE_SHARED,
-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-        kBufferDurationHns,
-        0,
-        mix_fmt,
-        nullptr);
-    if (!psy_hr_ok(hr, "IAudioClient::Initialize")) return false;
+    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                             AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                             kBufferDurationHns,
+                             0,
+                             mix_fmt,
+                             nullptr);
+    if (!psy_hr_ok(hr, "IAudioClient::Initialize"))
+        return false;
 
     UINT32 frames = 0;
-    if (!psy_hr_ok(client_->GetBufferSize(&frames),
-                   "IAudioClient::GetBufferSize")) return false;
+    if (!psy_hr_ok(client_->GetBufferSize(&frames), "IAudioClient::GetBufferSize"))
+        return false;
     buffer_frames_ = static_cast<u32>(frames);
 
     event_ = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -165,17 +171,15 @@ bool Win32Audio::start(u32 /*prefer_sample_rate*/, u32 /*prefer_channels*/) {
         PSY_LOG_ERROR("[win32] CreateEventW for WASAPI failed");
         return false;
     }
-    if (!psy_hr_ok(client_->SetEventHandle(event_),
-                   "IAudioClient::SetEventHandle")) {
+    if (!psy_hr_ok(client_->SetEventHandle(event_), "IAudioClient::SetEventHandle")) {
         ::CloseHandle(event_);
         event_ = nullptr;
         return false;
     }
 
-    if (!psy_hr_ok(client_->GetService(
-            __uuidof(IAudioRenderClient),
-            reinterpret_cast<void**>(render_.GetAddressOf())),
-            "IAudioClient::GetService(IAudioRenderClient)")) {
+    if (!psy_hr_ok(client_->GetService(__uuidof(IAudioRenderClient),
+                                       reinterpret_cast<void**>(render_.GetAddressOf())),
+                   "IAudioClient::GetService(IAudioRenderClient)")) {
         return false;
     }
 
@@ -186,7 +190,8 @@ bool Win32Audio::start(u32 /*prefer_sample_rate*/, u32 /*prefer_channels*/) {
         render_->ReleaseBuffer(buffer_frames_, 0);
     }
 
-    if (!psy_hr_ok(client_->Start(), "IAudioClient::Start")) return false;
+    if (!psy_hr_ok(client_->Start(), "IAudioClient::Start"))
+        return false;
 
     running_.store(true);
     stop_flag_.store(false);
@@ -195,12 +200,16 @@ bool Win32Audio::start(u32 /*prefer_sample_rate*/, u32 /*prefer_channels*/) {
 }
 
 void Win32Audio::stop() {
-    if (!running_.load()) return;
+    if (!running_.load())
+        return;
     stop_flag_.store(true);
-    if (event_) ::SetEvent(event_);
-    if (thread_.joinable()) thread_.join();
+    if (event_)
+        ::SetEvent(event_);
+    if (thread_.joinable())
+        thread_.join();
 
-    if (client_) client_->Stop();
+    if (client_)
+        client_->Stop();
     render_.Reset();
     if (event_) {
         ::CloseHandle(event_);
@@ -219,16 +228,21 @@ void Win32Audio::thread_main() {
 
     while (!stop_flag_.load(std::memory_order_acquire)) {
         const DWORD wait = ::WaitForSingleObject(event_, 200);
-        if (wait != WAIT_OBJECT_0) continue;
-        if (stop_flag_.load(std::memory_order_acquire)) break;
+        if (wait != WAIT_OBJECT_0)
+            continue;
+        if (stop_flag_.load(std::memory_order_acquire))
+            break;
 
         UINT32 padding = 0;
-        if (FAILED(client_->GetCurrentPadding(&padding))) continue;
+        if (FAILED(client_->GetCurrentPadding(&padding)))
+            continue;
         const u32 frames_avail = buffer_frames_ - padding;
-        if (frames_avail == 0) continue;
+        if (frames_avail == 0)
+            continue;
 
         BYTE* raw = nullptr;
-        if (FAILED(render_->GetBuffer(frames_avail, &raw))) continue;
+        if (FAILED(render_->GetBuffer(frames_avail, &raw)))
+            continue;
         auto* out = reinterpret_cast<f32*>(raw);
 
         // Always start with silence — if the mixer under-delivers or there
@@ -254,7 +268,7 @@ namespace psynder::audio {
 
 bool backend_init_wasapi(const DeviceDesc& desc, MixerCallback cb, void* user) noexcept {
     auto& b = psynder::platform::win32::bridge();
-    b.cb.store(cb,   std::memory_order_release);
+    b.cb.store(cb, std::memory_order_release);
     b.user.store(user, std::memory_order_release);
     // Reserve enough stereo scratch up-front so the audio thread's first
     // pull doesn't allocate. `buffer_frames` is the WASAPI period in lane
@@ -271,7 +285,7 @@ bool backend_init_wasapi(const DeviceDesc& desc, MixerCallback cb, void* user) n
         // engine code starts audio without a window (e.g. headless tests
         // on a real Windows box), start it here too.
         if (!audio.start(desc.sample_rate ? desc.sample_rate : 48000u,
-                         desc.channels    ? desc.channels    : 2u)) {
+                         desc.channels ? desc.channels : 2u)) {
             PSY_LOG_WARN("[audio] WASAPI start failed inside backend_init_wasapi");
             return false;
         }
@@ -281,7 +295,7 @@ bool backend_init_wasapi(const DeviceDesc& desc, MixerCallback cb, void* user) n
 
 void backend_shutdown_wasapi() noexcept {
     auto& b = psynder::platform::win32::bridge();
-    b.cb.store(nullptr,  std::memory_order_release);
+    b.cb.store(nullptr, std::memory_order_release);
     b.user.store(nullptr, std::memory_order_release);
     // Detach from the singleton so the audio thread stops calling the
     // bridge adapter; we don't tear the device down here — that happens

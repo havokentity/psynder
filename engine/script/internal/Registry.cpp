@@ -4,14 +4,14 @@
 #include "Registry.h"
 
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic push
-#  pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 extern "C" {
 #include "lauxlib.h"
 }
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 #endif
 
 #include <string>
@@ -37,8 +37,7 @@ scene::ComponentId ScriptRegistry::register_or_get(std::string_view name) {
         // Reserve slot 0 so a 0 id is reliably "invalid".
         names_by_id_.emplace_back();
     }
-    scene::ComponentId id = kScriptIdBase
-                          + static_cast<scene::ComponentId>(names_by_id_.size());
+    scene::ComponentId id = kScriptIdBase + static_cast<scene::ComponentId>(names_by_id_.size());
     names_.emplace(key, id);
     names_by_id_.push_back(std::move(key));
     return id;

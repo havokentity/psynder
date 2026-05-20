@@ -18,7 +18,7 @@
 #include <cstdlib>
 
 #if defined(_WIN32)
-  #include <malloc.h>     // _aligned_malloc / _aligned_free
+#include <malloc.h>  // _aligned_malloc / _aligned_free
 #endif
 
 namespace psynder::jobs::detail {
@@ -34,7 +34,8 @@ inline void* aligned_xalloc(std::size_t align, std::size_t bytes) noexcept {
 }
 
 inline void aligned_xfree(void* p) noexcept {
-    if (!p) return;
+    if (!p)
+        return;
 #if defined(_WIN32)
     _aligned_free(p);
 #else

@@ -25,16 +25,16 @@ namespace {
 struct Image {
     std::vector<u32> pixels;
     std::vector<u32> depth;
-    Framebuffer      fb{};
+    Framebuffer fb{};
     explicit Image(u32 w, u32 h)
-        : pixels(static_cast<std::size_t>(w) * h, 0xFF000000u),
-          depth(static_cast<std::size_t>(w) * h, 0) {
-        fb.width  = w;
+        : pixels(static_cast<std::size_t>(w) * h, 0xFF000000u)
+        , depth(static_cast<std::size_t>(w) * h, 0) {
+        fb.width = w;
         fb.height = h;
-        fb.pitch  = w * 4;
+        fb.pitch = w * 4;
         fb.format = PixelFormat::RGBA8;
         fb.pixels = reinterpret_cast<u8*>(pixels.data());
-        fb.depth  = depth.data();
+        fb.depth = depth.data();
     }
 };
 
@@ -45,21 +45,22 @@ f64 bench_one(Image& img, u32 tile_size, u32 iters) {
     auto mesh = test_mesh::fullscreen_quad();
 
     ViewState v{};
-    v.view       = math::look_at_rh(math::Vec3{0,0,2}, math::Vec3{0,0,0}, math::Vec3{0,1,0});
-    v.projection = math::perspective_rh(60.0f * math::kDegToRad,
-                                        static_cast<f32>(img.fb.width) /
-                                        static_cast<f32>(img.fb.height),
-                                        0.1f, 100.0f);
-    v.target     = img.fb;
-    v.tile_w     = tile_size;
-    v.tile_h     = tile_size;
+    v.view = math::look_at_rh(math::Vec3{0, 0, 2}, math::Vec3{0, 0, 0}, math::Vec3{0, 1, 0});
+    v.projection =
+        math::perspective_rh(60.0f * math::kDegToRad,
+                             static_cast<f32>(img.fb.width) / static_cast<f32>(img.fb.height),
+                             0.1f,
+                             100.0f);
+    v.target = img.fb;
+    v.tile_w = tile_size;
+    v.tile_h = tile_size;
 
     DrawItem d{};
-    d.vertices     = mesh.vertices;
+    d.vertices = mesh.vertices;
     d.vertex_count = mesh.vertex_count;
-    d.indices      = mesh.indices;
-    d.index_count  = mesh.index_count;
-    d.model        = math::identity4();
+    d.indices = mesh.indices;
+    d.index_count = mesh.index_count;
+    d.model = math::identity4();
 
     // Warm-up
     auto& r = Rasterizer::Get();
@@ -76,8 +77,7 @@ f64 bench_one(Image& img, u32 tile_size, u32 iters) {
         r.end_frame();
     }
     auto t1 = std::chrono::steady_clock::now();
-    return std::chrono::duration<f64, std::milli>(t1 - t0).count() /
-           static_cast<f64>(iters);
+    return std::chrono::duration<f64, std::milli>(t1 - t0).count() / static_cast<f64>(iters);
 }
 
 }  // namespace
@@ -85,7 +85,8 @@ f64 bench_one(Image& img, u32 tile_size, u32 iters) {
 int main(int argc, char** argv) {
     bool smoke = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--smoke") == 0) smoke = true;
+        if (std::strcmp(argv[i], "--smoke") == 0)
+            smoke = true;
     }
 
     constexpr u32 W = 640;
@@ -98,7 +99,8 @@ int main(int argc, char** argv) {
     for (u32 ts : {32u, 64u, 128u}) {
         const f64 ms = bench_one(img, ts, iters);
         std::printf("  tile=%3u: %.3f ms/frame  (%.2f Mpix/s)\n",
-                    ts, ms,
+                    ts,
+                    ms,
                     (static_cast<f64>(W) * H / (ms / 1000.0)) / 1.0e6);
     }
     return 0;

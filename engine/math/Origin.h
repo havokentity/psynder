@@ -36,7 +36,7 @@ namespace psynder::math {
 // values reduce recenter frequency at the cost of holding lower-precision
 // coordinates a little longer.
 struct OriginRecenterConfig {
-    f32 cell_size        = 1024.0f;
+    f32 cell_size = 1024.0f;
     f32 trigger_distance = 512.0f;
 };
 
@@ -57,7 +57,7 @@ inline bool origin_would_recenter(const Vec3& world_origin,
     f32 dx = camera.x - world_origin.x;
     f32 dy = camera.y - world_origin.y;
     f32 dz = camera.z - world_origin.z;
-    f32 d2 = dx*dx + dy*dy + dz*dz;
+    f32 d2 = dx * dx + dy * dy + dz * dz;
     return d2 > cfg.trigger_distance * cfg.trigger_distance;
 }
 

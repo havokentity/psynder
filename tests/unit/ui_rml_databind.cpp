@@ -20,9 +20,7 @@
 #include <vector>
 
 namespace psynder::ui::rml::test_only {
-bool inject_source(std::string_view name,
-                   std::string_view rml_src,
-                   std::string_view rcss_src);
+bool inject_source(std::string_view name, std::string_view rml_src, std::string_view rcss_src);
 const ::psynder::ui::rml::detail::Document* find_document(std::string_view name);
 void render_layout(std::string_view name,
                    ::psynder::math::Vec2 viewport,
@@ -51,23 +49,22 @@ constexpr std::string_view kHudRcss = R"RCSS(
     .pedal-fill   { width:  20; background-color: #30ff30; }
 )RCSS";
 
-const psynder::ui::rml::detail::Element*
-find_by_id(const psynder::ui::rml::detail::Element& root,
-           std::string_view id) {
-    if (root.id == id) return &root;
+const psynder::ui::rml::detail::Element* find_by_id(const psynder::ui::rml::detail::Element& root,
+                                                    std::string_view id) {
+    if (root.id == id)
+        return &root;
     for (const auto& child : root.children) {
-        if (const auto* hit = find_by_id(child, id)) return hit;
+        if (const auto* hit = find_by_id(child, id))
+            return hit;
     }
     return nullptr;
 }
 
 }  // namespace
 
-TEST_CASE("ui_rml: set_element_text updates DOM text + rendered output",
-          "[ui][rml][databind]") {
+TEST_CASE("ui_rml: set_element_text updates DOM text + rendered output", "[ui][rml][databind]") {
     REQUIRE(psynder::ui::rml::initialize());
-    REQUIRE(psynder::ui::rml::test_only::inject_source(
-                "hud", kHudRml, kHudRcss));
+    REQUIRE(psynder::ui::rml::test_only::inject_source("hud", kHudRml, kHudRcss));
 
     const auto* doc = psynder::ui::rml::test_only::find_document("hud");
     REQUIRE(doc != nullptr);
@@ -97,11 +94,9 @@ TEST_CASE("ui_rml: set_element_text updates DOM text + rendered output",
     psynder::ui::rml::shutdown();
 }
 
-TEST_CASE("ui_rml: set_element_attribute(style) re-cascades into layout",
-          "[ui][rml][databind]") {
+TEST_CASE("ui_rml: set_element_attribute(style) re-cascades into layout", "[ui][rml][databind]") {
     REQUIRE(psynder::ui::rml::initialize());
-    REQUIRE(psynder::ui::rml::test_only::inject_source(
-                "hud", kHudRml, kHudRcss));
+    REQUIRE(psynder::ui::rml::test_only::inject_source("hud", kHudRml, kHudRcss));
     psynder::ui::rml::show("hud");
 
     const auto* doc = psynder::ui::rml::test_only::find_document("hud");
@@ -116,46 +111,45 @@ TEST_CASE("ui_rml: set_element_attribute(style) re-cascades into layout",
 
     // Update the style — width should reflect the new value after the
     // setter triggers the cascade.
-    REQUIRE(psynder::ui::rml::set_element_attribute(
-                "hud", "rpm-fill", "style", "width:240"));
+    REQUIRE(psynder::ui::rml::set_element_attribute("hud", "rpm-fill", "style", "width:240"));
     REQUIRE(rpm->computed_style.width == 240.f);
     REQUIRE(rpm->attributes.at("style") == "width:240");
 
     // The new width must reach layout: rpm-fill is sized 240×12 (height
     // from the .bar-fill RCSS rule), so it emits a 240-wide box.
     std::vector<psynder::ui::rml::detail::LayoutBox> boxes;
-    psynder::ui::rml::test_only::render_layout(
-        "hud", psynder::math::Vec2{1280.f, 720.f}, boxes);
+    psynder::ui::rml::test_only::render_layout("hud", psynder::math::Vec2{1280.f, 720.f}, boxes);
     bool found_box = false;
     for (const auto& b : boxes) {
-        if (b.size.x == 240.f && b.size.y == 12.f) { found_box = true; break; }
+        if (b.size.x == 240.f && b.size.y == 12.f) {
+            found_box = true;
+            break;
+        }
     }
     REQUIRE(found_box);
 
     // Switch the style to a two-property declaration — the parser must
     // overwrite the old inline_style cleanly so values that disappeared
     // from the new declaration don't leak through.
-    REQUIRE(psynder::ui::rml::set_element_attribute(
-                "hud", "thr-fill", "style", "top:30; height:170"));
+    REQUIRE(
+        psynder::ui::rml::set_element_attribute("hud", "thr-fill", "style", "top:30; height:170"));
     const auto* thr = find_by_id(doc->root, "thr-fill");
     REQUIRE(thr != nullptr);
-    REQUIRE(thr->computed_style.top    == 30.f);
+    REQUIRE(thr->computed_style.top == 30.f);
     REQUIRE(thr->computed_style.height == 170.f);
 
     // Clearing the style attribute (empty value) drops both the
     // attribute and the inline-style override; the RCSS `.bar-fill`
     // rule has no width so computed_style.width falls back to the
     // sentinel NaN ("inherit / unset").
-    REQUIRE(psynder::ui::rml::set_element_attribute(
-                "hud", "rpm-fill", "style", ""));
+    REQUIRE(psynder::ui::rml::set_element_attribute("hud", "rpm-fill", "style", ""));
     REQUIRE(std::isnan(rpm->computed_style.width));
     REQUIRE(rpm->attributes.find("style") == rpm->attributes.end());
 
     psynder::ui::rml::shutdown();
 }
 
-TEST_CASE("ui_rml: set_element_attribute(class) re-cascades inheritance",
-          "[ui][rml][databind]") {
+TEST_CASE("ui_rml: set_element_attribute(class) re-cascades inheritance", "[ui][rml][databind]") {
     constexpr std::string_view kRml = R"RML(<rml><body>
         <div id="box"></div>
     </body></rml>)RML";
@@ -176,11 +170,11 @@ TEST_CASE("ui_rml: set_element_attribute(class) re-cascades inheritance",
     REQUIRE(std::isnan(box->computed_style.width));
 
     REQUIRE(psynder::ui::rml::set_element_attribute("doc", "box", "class", "small"));
-    REQUIRE(box->computed_style.width  == 40.f);
+    REQUIRE(box->computed_style.width == 40.f);
     REQUIRE(box->computed_style.height == 40.f);
 
     REQUIRE(psynder::ui::rml::set_element_attribute("doc", "box", "class", "big"));
-    REQUIRE(box->computed_style.width  == 200.f);
+    REQUIRE(box->computed_style.width == 200.f);
     REQUIRE(box->computed_style.height == 80.f);
 
     psynder::ui::rml::shutdown();
@@ -197,8 +191,7 @@ TEST_CASE("ui_rml: set_element_attribute stores arbitrary attribute verbatim",
     const auto* doc = psynder::ui::rml::test_only::find_document("doc");
     REQUIRE(doc != nullptr);
 
-    REQUIRE(psynder::ui::rml::set_element_attribute(
-                "doc", "link", "href", "lua:nav.next()"));
+    REQUIRE(psynder::ui::rml::set_element_attribute("doc", "link", "href", "lua:nav.next()"));
     const auto* el = find_by_id(doc->root, "link");
     REQUIRE(el != nullptr);
     REQUIRE(el->attributes.at("href") == "lua:nav.next()");

@@ -38,18 +38,18 @@
 
 namespace psynder::tools::mapimport {
 
-inline constexpr u32 kPsyLevelMagic   = 0x4C56534Du;  // 'MSVL'
+inline constexpr u32 kPsyLevelMagic = 0x4C56534Du;  // 'MSVL'
 inline constexpr u32 kPsyLevelVersion = 1u;
 
 enum class ChunkKind : u32 {
-    kEntities  = 0x01,    // text payload: classname + kv per entity (NUL-separated records)
-    kBrushes   = 0x02,    // binary: world brushes (plane lists)
-    kPsyBsp    = 0x03,    // binary: embedded compiled .psybsp bytes
+    kEntities = 0x01,  // text payload: classname + kv per entity (NUL-separated records)
+    kBrushes = 0x02,   // binary: world brushes (plane lists)
+    kPsyBsp = 0x03,    // binary: embedded compiled .psybsp bytes
 };
 
 struct LevelChunk {
-    ChunkKind        kind = ChunkKind::kEntities;
-    std::vector<u8>  bytes;
+    ChunkKind kind = ChunkKind::kEntities;
+    std::vector<u8> bytes;
 };
 
 struct LevelFile {
@@ -57,8 +57,8 @@ struct LevelFile {
 };
 
 struct ImportOptions {
-    bool compile_bsp = false;        // emit kPsyBsp chunk too
-    bool expand_curve_brushes = true;   // Wave-B: tessellate @cylinder / @sphere
+    bool compile_bsp = false;          // emit kPsyBsp chunk too
+    bool expand_curve_brushes = true;  // Wave-B: tessellate @cylinder / @sphere
 };
 
 // ─── Curve-brush API (Wave-B) ────────────────────────────────────────────
@@ -73,17 +73,17 @@ struct ImportOptions {
 //
 // Standalone helpers are exposed for tests:
 struct CurveCylinder {
-    math::Vec3 origin{0,0,0};
-    math::Vec3 axis{0,0,1};
-    f32        radius   = 1.0f;
-    f32        height   = 1.0f;
-    u32        segments = 8;
+    math::Vec3 origin{0, 0, 0};
+    math::Vec3 axis{0, 0, 1};
+    f32 radius = 1.0f;
+    f32 height = 1.0f;
+    u32 segments = 8;
     std::string material = "WALL";
 };
 struct CurveSphere {
-    math::Vec3 origin{0,0,0};
-    f32        radius = 1.0f;
-    u32        subdivisions = 1;  // 0 = icosahedron, +1 each subdivision
+    math::Vec3 origin{0, 0, 0};
+    f32 radius = 1.0f;
+    u32 subdivisions = 1;  // 0 = icosahedron, +1 each subdivision
     std::string material = "WALL";
 };
 
@@ -99,22 +99,20 @@ std::string tessellate_sphere(const CurveSphere& s);
 std::string expand_curve_brushes(std::string_view text);
 
 struct ImportResult {
-    bool        ok = false;
-    u32         entity_count = 0;
-    u32         brush_count = 0;
+    bool ok = false;
+    u32 entity_count = 0;
+    u32 brush_count = 0;
     std::string error;
 };
 
 // Convert .map text to a LevelFile in memory; tests use this entrypoint.
-ImportResult import_map(std::string_view map_text,
-                        LevelFile& out,
-                        const ImportOptions& opt = {});
+ImportResult import_map(std::string_view map_text, LevelFile& out, const ImportOptions& opt = {});
 
 // Read / write .psylevel from / to bytes.
 void write_level(const LevelFile& level, std::vector<u8>& out);
 bool read_level(std::span<const u8> bytes, LevelFile& out, std::string* err = nullptr);
 
-int  cli_main(int argc, char** argv);
+int cli_main(int argc, char** argv);
 void print_help();
 
 }  // namespace psynder::tools::mapimport

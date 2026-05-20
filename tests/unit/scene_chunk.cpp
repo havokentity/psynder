@@ -18,18 +18,24 @@ using namespace psynder::scene;
 using namespace psynder::scene::detail;
 
 TEST_CASE("scene: chunk is exactly 16 KiB", "[scene][chunk][layout]") {
-    STATIC_REQUIRE(sizeof(Chunk)        == 16u * 1024u);
-    STATIC_REQUIRE(alignof(Chunk)       == kCacheLine);
-    STATIC_REQUIRE(sizeof(ChunkHeader)  == kCacheLine);
+    STATIC_REQUIRE(sizeof(Chunk) == 16u * 1024u);
+    STATIC_REQUIRE(alignof(Chunk) == kCacheLine);
+    STATIC_REQUIRE(sizeof(ChunkHeader) == kCacheLine);
     STATIC_REQUIRE(alignof(ChunkHeader) == kCacheLine);
-    STATIC_REQUIRE(kChunkBytes          == 16u * 1024u);
-    STATIC_REQUIRE(kColumnAlign         == kCacheLine);
+    STATIC_REQUIRE(kChunkBytes == 16u * 1024u);
+    STATIC_REQUIRE(kColumnAlign == kCacheLine);
 }
 
 namespace chunk_test {
-PSYNDER_COMPONENT(Vec3i)   { psynder::i32 x = 0, y = 0, z = 0; };
-PSYNDER_COMPONENT(Mat3x3i) { psynder::i32 m[9]{}; };
-PSYNDER_COMPONENT(SingleU) { psynder::u32 v = 0; };
+PSYNDER_COMPONENT(Vec3i) {
+    psynder::i32 x = 0, y = 0, z = 0;
+};
+PSYNDER_COMPONENT(Mat3x3i) {
+    psynder::i32 m[9]{};
+};
+PSYNDER_COMPONENT(SingleU) {
+    psynder::u32 v = 0;
+};
 }  // namespace chunk_test
 
 TEST_CASE("scene: archetype column offsets are 64-byte aligned", "[scene][chunk][layout]") {
@@ -39,14 +45,14 @@ TEST_CASE("scene: archetype column offsets are 64-byte aligned", "[scene][chunk]
 
     // Use heterogenous components to spread different sized columns.
     Entity e = w.create();
-    w.add<Vec3i>(e,   Vec3i{1, 2, 3});
+    w.add<Vec3i>(e, Vec3i{1, 2, 3});
     w.add<Mat3x3i>(e, Mat3x3i{{0, 1, 2, 3, 4, 5, 6, 7, 8}});
     w.add<SingleU>(e, SingleU{0xDEADBEEFu});
 
     // Components round-trip with values intact.
-    Vec3i*    v  = w.get<Vec3i>(e);
-    Mat3x3i*  m  = w.get<Mat3x3i>(e);
-    SingleU*  s  = w.get<SingleU>(e);
+    Vec3i* v = w.get<Vec3i>(e);
+    Mat3x3i* m = w.get<Mat3x3i>(e);
+    SingleU* s = w.get<SingleU>(e);
     REQUIRE(v != nullptr);
     REQUIRE(v->x == 1);
     REQUIRE(v->y == 2);
@@ -79,10 +85,10 @@ TEST_CASE("scene: chunk header version stamps bump on writes", "[scene][chunk][v
 
     // Querying with writes<Vec3i> should bump the version stamp. We can
     // observe it via the chunk-header struct directly (internal).
-    w.query<reads<Vec3i>, writes<Vec3i>>(
-        [](std::span<const Vec3i>, std::span<Vec3i> out) {
-            for (auto& r : out) r.x = 42;
-        });
+    w.query<reads<Vec3i>, writes<Vec3i>>([](std::span<const Vec3i>, std::span<Vec3i> out) {
+        for (auto& r : out)
+            r.x = 42;
+    });
 
     Vec3i* v = w.get<Vec3i>(e);
     REQUIRE(v != nullptr);

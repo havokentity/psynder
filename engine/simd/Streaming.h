@@ -31,7 +31,7 @@
 #include "core/Types.h"
 
 #if defined(_MSC_VER) && !defined(__clang__) && defined(_M_ARM64)
-#   include <intrin.h>
+#include <intrin.h>
 #endif
 
 #include <atomic>
@@ -51,7 +51,8 @@ PSY_FORCEINLINE void stream_store_f32x4(psynder::f32* dst, f32x4 v) noexcept {
     // care still want stream_fence() to make the write globally visible.
     vst1q_f32(dst, v.v);
 #else
-    for (int i = 0; i < 4; ++i) dst[i] = v.v[i];
+    for (int i = 0; i < 4; ++i)
+        dst[i] = v.v[i];
 #endif
 }
 
@@ -61,11 +62,11 @@ PSY_FORCEINLINE void stream_fence() noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
     _mm_sfence();
 #elif defined(__aarch64__) || defined(_M_ARM64)
-#   if defined(_MSC_VER) && !defined(__clang__)
+#if defined(_MSC_VER) && !defined(__clang__)
     __dmb(_ARM64_BARRIER_ISHST);
-#   else
+#else
     __asm__ __volatile__("dmb ishst" ::: "memory");
-#   endif
+#endif
 #else
     std::atomic_thread_fence(std::memory_order_release);
 #endif

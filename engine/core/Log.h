@@ -35,6 +35,6 @@ inline void error(fmt::format_string<Args...> f, Args&&... args) {
 
 }  // namespace psynder::log
 
-#define PSY_LOG_INFO(...)  ::psynder::log::info(__VA_ARGS__)
-#define PSY_LOG_WARN(...)  ::psynder::log::warn(__VA_ARGS__)
+#define PSY_LOG_INFO(...) ::psynder::log::info(__VA_ARGS__)
+#define PSY_LOG_WARN(...) ::psynder::log::warn(__VA_ARGS__)
 #define PSY_LOG_ERROR(...) ::psynder::log::error(__VA_ARGS__)

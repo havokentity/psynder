@@ -24,10 +24,10 @@ namespace psynder::scene {
 using ComponentId = u32;
 
 struct ComponentTypeInfo {
-    ComponentId  id;
-    u32          size;
-    u32          align;
-    const char*  name;
+    ComponentId id;
+    u32 size;
+    u32 align;
+    const char* name;
 };
 
 ComponentId register_component(const ComponentTypeInfo& info);
@@ -36,26 +36,26 @@ template <class T>
 ComponentId component_id() {
     static_assert(std::is_trivially_copyable_v<T>,
                   "Psynder components must be trivially copyable POD");
-    static const ComponentId id = register_component(
-        ComponentTypeInfo{ 0, sizeof(T), alignof(T), "" });
+    static const ComponentId id =
+        register_component(ComponentTypeInfo{0, sizeof(T), alignof(T), ""});
     return id;
 }
 
 #define PSYNDER_COMPONENT(Name) \
-    struct Name; \
+    struct Name;                \
     /* clang-format off */ \
-    inline auto Psynder_Register_##Name = ::psynder::scene::component_id<Name>(); \
-    /* clang-format on */ \
+    inline auto Psynder_Register_##Name = ::psynder::scene::component_id<Name>();    \
+    /* clang-format on */       \
     struct Name
 
 // ─── World ───────────────────────────────────────────────────────────────
 class World {
-public:
+   public:
     static World& Get();
 
     Entity create();
-    void   destroy(Entity e);
-    bool   alive(Entity e) const noexcept;
+    void destroy(Entity e);
+    bool alive(Entity e) const noexcept;
 
     template <class T>
     void add(Entity e, const T& component);
@@ -84,8 +84,10 @@ public:
 };
 
 // ─── Tag traits for read/write declarations ──────────────────────────────
-template <class... Ts> struct reads  {};
-template <class... Ts> struct writes {};
+template <class... Ts>
+struct reads {};
+template <class... Ts>
+struct writes {};
 
 }  // namespace psynder::scene
 

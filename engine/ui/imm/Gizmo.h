@@ -32,13 +32,12 @@ namespace gizmo_detail {
 // Assumes `screen_size` is the framebuffer extent in pixels. Returns
 // (NaN, NaN) when the point lies behind the camera or w ≈ 0, which the
 // hit-test logic interprets as "no hit".
-inline math::Vec2 project_to_screen(math::Vec3      world,
+inline math::Vec2 project_to_screen(math::Vec3 world,
                                     const math::Mat4& view_proj,
-                                    math::Vec2      screen_size) noexcept {
-    const math::Vec4 clip = math::mul(view_proj,
-                                      math::Vec4{ world.x, world.y, world.z, 1.0f });
+                                    math::Vec2 screen_size) noexcept {
+    const math::Vec4 clip = math::mul(view_proj, math::Vec4{world.x, world.y, world.z, 1.0f});
     if (clip.w <= 0.0001f) {
-        return { std::nanf(""), std::nanf("") };
+        return {std::nanf(""), std::nanf("")};
     }
     const f32 ndc_x = clip.x / clip.w;
     const f32 ndc_y = clip.y / clip.w;
@@ -63,8 +62,10 @@ inline f32 dist_point_to_segment(math::Vec2 p, math::Vec2 a, math::Vec2 b) noexc
         return std::sqrt(apx * apx + apy * apy);
     }
     f32 t = (apx * abx + apy * aby) / ab_len2;
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
+    if (t < 0.0f)
+        t = 0.0f;
+    if (t > 1.0f)
+        t = 1.0f;
     const f32 cx = a.x + abx * t - p.x;
     const f32 cy = a.y + aby * t - p.y;
     return std::sqrt(cx * cx + cy * cy);
@@ -74,21 +75,22 @@ inline f32 dist_point_to_segment(math::Vec2 p, math::Vec2 a, math::Vec2 b) noexc
 // distance; Wave B keeps it constant so the visuals stay readable in
 // every level.
 inline constexpr f32 kArmLengthPx = 64.0f;
-inline constexpr f32 kHitDistPx   = 8.0f;
+inline constexpr f32 kHitDistPx = 8.0f;
 
 // Default screen size used when the caller passes (0,0): callers that
 // don't know their framebuffer extent get a "headless" projection that
 // keeps NDC-clip space arithmetic well-defined.
 inline math::Vec2 default_screen(math::Vec2 s) noexcept {
-    if (s.x <= 0.0f || s.y <= 0.0f) return { 1024.0f, 768.0f };
+    if (s.x <= 0.0f || s.y <= 0.0f)
+        return {1024.0f, 768.0f};
     return s;
 }
 
 // Colour wheel for the three axes. Source-literal RGBA8.
-inline constexpr u32 kColourX = 0xFF3050FFu;  // red
-inline constexpr u32 kColourY = 0x30FF50FFu;  // green
-inline constexpr u32 kColourZ = 0x3050FFFFu;  // blue
-inline constexpr u32 kColourHot = 0xFFFF40FFu; // yellow when grabbed
+inline constexpr u32 kColourX = 0xFF3050FFu;    // red
+inline constexpr u32 kColourY = 0x30FF50FFu;    // green
+inline constexpr u32 kColourZ = 0x3050FFFFu;    // blue
+inline constexpr u32 kColourHot = 0xFFFF40FFu;  // yellow when grabbed
 
 }  // namespace gizmo_detail
 
@@ -105,17 +107,18 @@ inline constexpr u32 kColourHot = 0xFFFF40FFu; // yellow when grabbed
 inline bool gizmo_translate(math::Vec3& pos,
                             const math::Mat4& view_proj,
                             math::Vec2 mouse_screen,
-                            bool       mouse_down,
-                            math::Vec2 screen_size = { 0.0f, 0.0f }) noexcept {
+                            bool mouse_down,
+                            math::Vec2 screen_size = {0.0f, 0.0f}) noexcept {
     namespace gd = gizmo_detail;
     const math::Vec2 ss = gd::default_screen(screen_size);
 
-    const math::Vec2 o   = gd::project_to_screen(pos, view_proj, ss);
-    if (std::isnan(o.x) || std::isnan(o.y)) return false;
+    const math::Vec2 o = gd::project_to_screen(pos, view_proj, ss);
+    if (std::isnan(o.x) || std::isnan(o.y))
+        return false;
 
-    const math::Vec3 px = { pos.x + 1.0f, pos.y,        pos.z        };
-    const math::Vec3 py = { pos.x,        pos.y + 1.0f, pos.z        };
-    const math::Vec3 pz = { pos.x,        pos.y,        pos.z + 1.0f };
+    const math::Vec3 px = {pos.x + 1.0f, pos.y, pos.z};
+    const math::Vec3 py = {pos.x, pos.y + 1.0f, pos.z};
+    const math::Vec3 pz = {pos.x, pos.y, pos.z + 1.0f};
     math::Vec2 sx = gd::project_to_screen(px, view_proj, ss);
     math::Vec2 sy = gd::project_to_screen(py, view_proj, ss);
     math::Vec2 sz = gd::project_to_screen(pz, view_proj, ss);
@@ -123,13 +126,15 @@ inline bool gizmo_translate(math::Vec3& pos,
     // Re-normalize axis vectors to a fixed on-screen length so the gizmo
     // stays readable at any camera distance.
     auto unit_arm = [&](math::Vec2 a, math::Vec2 origin) -> math::Vec2 {
-        if (std::isnan(a.x) || std::isnan(a.y)) return origin;
+        if (std::isnan(a.x) || std::isnan(a.y))
+            return origin;
         const f32 dx = a.x - origin.x;
         const f32 dy = a.y - origin.y;
         const f32 len = std::sqrt(dx * dx + dy * dy);
-        if (len <= 0.0001f) return { origin.x + gd::kArmLengthPx, origin.y };
+        if (len <= 0.0001f)
+            return {origin.x + gd::kArmLengthPx, origin.y};
         const f32 s = gd::kArmLengthPx / len;
-        return { origin.x + dx * s, origin.y + dy * s };
+        return {origin.x + dx * s, origin.y + dy * s};
     };
     const math::Vec2 tip_x = unit_arm(sx, o);
     const math::Vec2 tip_y = unit_arm(sy, o);
@@ -141,9 +146,18 @@ inline bool gizmo_translate(math::Vec3& pos,
     const f32 dz_arm = gd::dist_point_to_segment(mouse_screen, o, tip_z);
     f32 best = gd::kHitDistPx;
     i32 picked = -1;
-    if (dx_arm < best) { best = dx_arm; picked = 0; }
-    if (dy_arm < best) { best = dy_arm; picked = 1; }
-    if (dz_arm < best) { best = dz_arm; picked = 2; }
+    if (dx_arm < best) {
+        best = dx_arm;
+        picked = 0;
+    }
+    if (dy_arm < best) {
+        best = dy_arm;
+        picked = 1;
+    }
+    if (dz_arm < best) {
+        best = dz_arm;
+        picked = 2;
+    }
 
     const u32 col_x = (picked == 0) ? gd::kColourHot : gd::kColourX;
     const u32 col_y = (picked == 1) ? gd::kColourHot : gd::kColourY;
@@ -172,23 +186,23 @@ inline bool gizmo_rotate(math::Vec3& /*pos*/,
                          const math::Mat4& view_proj,
                          math::Vec3 anchor,
                          math::Vec2 mouse_screen,
-                         bool       mouse_down,
-                         math::Vec2 screen_size = { 0.0f, 0.0f }) noexcept {
+                         bool mouse_down,
+                         math::Vec2 screen_size = {0.0f, 0.0f}) noexcept {
     namespace gd = gizmo_detail;
     const math::Vec2 ss = gd::default_screen(screen_size);
-    const math::Vec2 o  = gd::project_to_screen(anchor, view_proj, ss);
-    if (std::isnan(o.x) || std::isnan(o.y)) return false;
+    const math::Vec2 o = gd::project_to_screen(anchor, view_proj, ss);
+    if (std::isnan(o.x) || std::isnan(o.y))
+        return false;
 
     // Approximate the Y-axis rotation ring as a screen-space circle of
     // radius kArmLengthPx. Wave B keeps the math flat; Lane 18 will swap
     // in a proper ellipse projection when full XYZ rings land.
     constexpr u32 kSegments = 24;
-    f32 best   = gd::kHitDistPx;
+    f32 best = gd::kHitDistPx;
     bool hit_ring = false;
     math::Vec2 prev{};
     for (u32 i = 0; i <= kSegments; ++i) {
-        const f32 theta = math::kTwoPi * static_cast<f32>(i)
-                        / static_cast<f32>(kSegments);
+        const f32 theta = math::kTwoPi * static_cast<f32>(i) / static_cast<f32>(kSegments);
         const math::Vec2 p = {
             o.x + gd::kArmLengthPx * std::cos(theta),
             o.y + gd::kArmLengthPx * std::sin(theta),
@@ -196,7 +210,10 @@ inline bool gizmo_rotate(math::Vec3& /*pos*/,
         if (i > 0) {
             imm::line(prev, p, gd::kColourY);
             const f32 d = gd::dist_point_to_segment(mouse_screen, prev, p);
-            if (d < best) { best = d; hit_ring = true; }
+            if (d < best) {
+                best = d;
+                hit_ring = true;
+            }
         }
         prev = p;
     }
@@ -212,30 +229,39 @@ inline bool gizmo_scale(math::Vec3& /*scale*/,
                         const math::Mat4& view_proj,
                         math::Vec3 anchor,
                         math::Vec2 mouse_screen,
-                        bool       mouse_down,
-                        math::Vec2 screen_size = { 0.0f, 0.0f }) noexcept {
+                        bool mouse_down,
+                        math::Vec2 screen_size = {0.0f, 0.0f}) noexcept {
     namespace gd = gizmo_detail;
     const math::Vec2 ss = gd::default_screen(screen_size);
-    const math::Vec2 o  = gd::project_to_screen(anchor, view_proj, ss);
-    if (std::isnan(o.x) || std::isnan(o.y)) return false;
+    const math::Vec2 o = gd::project_to_screen(anchor, view_proj, ss);
+    if (std::isnan(o.x) || std::isnan(o.y))
+        return false;
 
     // Three flat axis arms in screen space (X right, Y up, Z = 45° diag).
     // Wave B keeps the arm directions camera-locked so the visualisation
     // is stable in tests; the world-aligned variant lands with the
     // editor wiring.
-    const math::Vec2 tip_x = { o.x + gd::kArmLengthPx, o.y };
-    const math::Vec2 tip_y = { o.x,                    o.y - gd::kArmLengthPx };
-    const math::Vec2 tip_z = { o.x + gd::kArmLengthPx * 0.7071f,
-                               o.y + gd::kArmLengthPx * 0.7071f };
+    const math::Vec2 tip_x = {o.x + gd::kArmLengthPx, o.y};
+    const math::Vec2 tip_y = {o.x, o.y - gd::kArmLengthPx};
+    const math::Vec2 tip_z = {o.x + gd::kArmLengthPx * 0.7071f, o.y + gd::kArmLengthPx * 0.7071f};
 
     const f32 dx_arm = gd::dist_point_to_segment(mouse_screen, o, tip_x);
     const f32 dy_arm = gd::dist_point_to_segment(mouse_screen, o, tip_y);
     const f32 dz_arm = gd::dist_point_to_segment(mouse_screen, o, tip_z);
     f32 best = gd::kHitDistPx;
     i32 picked = -1;
-    if (dx_arm < best) { best = dx_arm; picked = 0; }
-    if (dy_arm < best) { best = dy_arm; picked = 1; }
-    if (dz_arm < best) { best = dz_arm; picked = 2; }
+    if (dx_arm < best) {
+        best = dx_arm;
+        picked = 0;
+    }
+    if (dy_arm < best) {
+        best = dy_arm;
+        picked = 1;
+    }
+    if (dz_arm < best) {
+        best = dz_arm;
+        picked = 2;
+    }
 
     const u32 col_x = (picked == 0) ? gd::kColourHot : gd::kColourX;
     const u32 col_y = (picked == 1) ? gd::kColourHot : gd::kColourY;
@@ -246,10 +272,10 @@ inline bool gizmo_scale(math::Vec3& /*scale*/,
     // Small terminator boxes (4 lines each).
     const f32 hw = 4.0f;
     auto draw_box = [&](math::Vec2 c, u32 colour) {
-        const math::Vec2 tl{ c.x - hw, c.y - hw };
-        const math::Vec2 tr{ c.x + hw, c.y - hw };
-        const math::Vec2 br{ c.x + hw, c.y + hw };
-        const math::Vec2 bl{ c.x - hw, c.y + hw };
+        const math::Vec2 tl{c.x - hw, c.y - hw};
+        const math::Vec2 tr{c.x + hw, c.y - hw};
+        const math::Vec2 br{c.x + hw, c.y + hw};
+        const math::Vec2 bl{c.x - hw, c.y + hw};
         imm::line(tl, tr, colour);
         imm::line(tr, br, colour);
         imm::line(br, bl, colour);

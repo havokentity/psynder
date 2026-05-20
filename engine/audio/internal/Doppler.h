@@ -54,16 +54,14 @@ inline f32 doppler_ratio(math::Vec3 listener_pos,
                          math::Vec3 listener_vel,
                          math::Vec3 source_pos,
                          math::Vec3 source_vel,
-                         f32        speed_of_sound = 343.0f) noexcept {
-    const math::Vec3 to_listener_v{
-        listener_pos.x - source_pos.x,
-        listener_pos.y - source_pos.y,
-        listener_pos.z - source_pos.z
-    };
-    const f32 len_sq = to_listener_v.x * to_listener_v.x +
-                       to_listener_v.y * to_listener_v.y +
+                         f32 speed_of_sound = 343.0f) noexcept {
+    const math::Vec3 to_listener_v{listener_pos.x - source_pos.x,
+                                   listener_pos.y - source_pos.y,
+                                   listener_pos.z - source_pos.z};
+    const f32 len_sq = to_listener_v.x * to_listener_v.x + to_listener_v.y * to_listener_v.y +
                        to_listener_v.z * to_listener_v.z;
-    if (len_sq < 1e-8f) return 1.0f;
+    if (len_sq < 1e-8f)
+        return 1.0f;
     const f32 inv_len = 1.0f / std::sqrt(len_sq);
     // Unit vector from source toward listener.
     const f32 sx = to_listener_v.x * inv_len;
@@ -81,17 +79,15 @@ inline f32 doppler_ratio(math::Vec3 listener_pos,
     //   f_obs = f_src * (c + v_listener_toward_source) /
     //                   (c - v_source_toward_listener)
     // Both "toward" terms shrink the gap → both raise the observed pitch.
-    const f32 v_listener_toward_source = -(listener_vel.x * sx +
-                                           listener_vel.y * sy +
-                                           listener_vel.z * sz);
-    const f32 v_source_toward_listener =  (source_vel.x   * sx +
-                                           source_vel.y   * sy +
-                                           source_vel.z   * sz);
+    const f32 v_listener_toward_source =
+        -(listener_vel.x * sx + listener_vel.y * sy + listener_vel.z * sz);
+    const f32 v_source_toward_listener = (source_vel.x * sx + source_vel.y * sy + source_vel.z * sz);
 
     const f32 num = speed_of_sound + v_listener_toward_source;
     const f32 den = speed_of_sound - v_source_toward_listener;
     // Guard against transonic denominators (source closing at near-Mach speed).
-    if (den <= 1.0f) return kDopplerMaxRatio;
+    if (den <= 1.0f)
+        return kDopplerMaxRatio;
     const f32 ratio = num / den;
     return std::clamp(ratio, kDopplerMinRatio, kDopplerMaxRatio);
 }
@@ -104,26 +100,26 @@ inline f32 doppler_ratio(math::Vec3 listener_pos,
 // sine-table voice and a real clip PCM stream (when wave-B PCM streaming
 // lands).
 template <typename SampleSource>
-PSY_FORCEINLINE f32 doppler_sample(const SampleSource& src,
-                                   f64 cursor) noexcept {
+PSY_FORCEINLINE f32 doppler_sample(const SampleSource& src, f64 cursor) noexcept {
     const i64 i0 = static_cast<i64>(std::floor(cursor));
     const f64 frac = cursor - static_cast<f64>(i0);
     const f32 a = src(static_cast<u32>(i0));
     const f32 b = src(static_cast<u32>(i0 + 1));
-    return static_cast<f32>(static_cast<f64>(a) * (1.0 - frac) +
-                            static_cast<f64>(b) * frac);
+    return static_cast<f32>(static_cast<f64>(a) * (1.0 - frac) + static_cast<f64>(b) * frac);
 }
 
 // Convenience: emit `frames` samples of a sine source at `base_freq` shifted
 // by `ratio`, written to a mono output buffer. Used by the unit test to
 // verify both the ratio computation and the linear-interp resampler in one
 // shot.
-inline void doppler_render_sine(f32 base_freq, f32 ratio, u32 sample_rate,
-                                u32 frames, f32* out_mono,
+inline void doppler_render_sine(f32 base_freq,
+                                f32 ratio,
+                                u32 sample_rate,
+                                u32 frames,
+                                f32* out_mono,
                                 f64 start_cursor = 0.0) noexcept {
-    const f64 phase_step = static_cast<f64>(ratio) *
-                           static_cast<f64>(base_freq) /
-                           static_cast<f64>(sample_rate);
+    const f64 phase_step =
+        static_cast<f64>(ratio) * static_cast<f64>(base_freq) / static_cast<f64>(sample_rate);
     f64 cursor = start_cursor;
     const f64 two_pi = static_cast<f64>(math::kTwoPi);
     for (u32 i = 0; i < frames; ++i) {

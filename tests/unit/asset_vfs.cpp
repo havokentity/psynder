@@ -44,12 +44,13 @@ void write_file(const fs::path& p, std::string_view bytes) {
 }
 
 std::string blob_string(Blob b) {
-    if (!b.data) return {};
+    if (!b.data)
+        return {};
     return std::string(reinterpret_cast<const char*>(b.data), b.bytes);
 }
 
 struct ResetGuard {
-    ResetGuard()  { psynder::asset::internal::reset_for_tests(); }
+    ResetGuard() { psynder::asset::internal::reset_for_tests(); }
     ~ResetGuard() { psynder::asset::internal::reset_for_tests(); }
 };
 
@@ -94,12 +95,11 @@ TEST_CASE("asset/vfs: case + backslash normalization on read", "[asset][vfs]") {
     // For loose dirs the OS is case-sensitive on Linux, so the test
     // verifies an exact-case path; backslash normalization is tested
     // via the FNV-1a-64 path-hash equality regardless of slash style.
-    REQUIRE(asset::lmpak::fnv1a_path("foo/bar.png", 11)
-            == asset::lmpak::fnv1a_path("FOO\\BAR.PNG", 11));
+    REQUIRE(asset::lmpak::fnv1a_path("foo/bar.png", 11) ==
+            asset::lmpak::fnv1a_path("FOO\\BAR.PNG", 11));
 }
 
-TEST_CASE("asset/vfs: .lmpak synthetic archive round-trip (uncompressed)",
-          "[asset][vfs][lmpak]") {
+TEST_CASE("asset/vfs: .lmpak synthetic archive round-trip (uncompressed)", "[asset][vfs][lmpak]") {
     ResetGuard rg;
     auto dir = make_scratch_dir("pak_uncompressed");
     auto pak_path = dir / "test.lmpak";
@@ -111,12 +111,9 @@ TEST_CASE("asset/vfs: .lmpak synthetic archive round-trip (uncompressed)",
 
     {
         asset::lmpak::Writer w;
-        w.add_raw("textures/alpha.lmt",
-                  std::vector<u8>(a.begin(), a.end()));
-        w.add_raw("meshes/beta.lmm",
-                  std::vector<u8>(b.begin(), b.end()));
-        w.add_raw("audio/gamma.lma",
-                  std::vector<u8>(c.begin(), c.end()));
+        w.add_raw("textures/alpha.lmt", std::vector<u8>(a.begin(), a.end()));
+        w.add_raw("meshes/beta.lmm", std::vector<u8>(b.begin(), b.end()));
+        w.add_raw("audio/gamma.lma", std::vector<u8>(c.begin(), c.end()));
         REQUIRE(w.write(pak_path.string().c_str()));
     }
 
@@ -141,8 +138,7 @@ TEST_CASE("asset/vfs: .lmpak synthetic archive round-trip (uncompressed)",
     }
 }
 
-TEST_CASE("asset/vfs: .lmpak synthetic archive round-trip (zstd)",
-          "[asset][vfs][lmpak][zstd]") {
+TEST_CASE("asset/vfs: .lmpak synthetic archive round-trip (zstd)", "[asset][vfs][lmpak][zstd]") {
     if (!asset::lmpak::zstd_available()) {
         SUCCEED("zstd not built into psynder_asset; compressed-path test skipped");
         return;
@@ -176,16 +172,14 @@ TEST_CASE("asset/vfs: .lmpak synthetic archive round-trip (zstd)",
     REQUIRE(std::memcmp(b.data, big.data(), big.size()) == 0);
 }
 
-TEST_CASE("asset/vfs: directory shadows pak (developer overlay pattern)",
-          "[asset][vfs]") {
+TEST_CASE("asset/vfs: directory shadows pak (developer overlay pattern)", "[asset][vfs]") {
     ResetGuard rg;
     auto pak_dir = make_scratch_dir("overlay_pak");
     auto pak_path = pak_dir / "ship.lmpak";
     {
         asset::lmpak::Writer w;
         std::string shipped = "shipped-by-the-pak";
-        w.add_raw("ui/title.txt",
-                  std::vector<u8>(shipped.begin(), shipped.end()));
+        w.add_raw("ui/title.txt", std::vector<u8>(shipped.begin(), shipped.end()));
         REQUIRE(w.write(pak_path.string().c_str()));
     }
 
@@ -200,15 +194,14 @@ TEST_CASE("asset/vfs: directory shadows pak (developer overlay pattern)",
     REQUIRE(blob_string(Vfs::Get().read("ui/title.txt")) == "DEV-OVERRIDE");
 }
 
-TEST_CASE("asset/vfs: async read fires callback with the same bytes",
-          "[asset][vfs][async]") {
+TEST_CASE("asset/vfs: async read fires callback with the same bytes", "[asset][vfs][async]") {
     ResetGuard rg;
     auto dir = make_scratch_dir("async_read");
     write_file(dir / "msg.txt", "async-roundtrip");
     REQUIRE(Vfs::Get().mount_directory(dir.string()));
 
     struct State {
-        bool        fired = false;
+        bool fired = false;
         std::string seen;
     } st;
 
@@ -233,8 +226,7 @@ TEST_CASE("asset/vfs: async read fires callback with the same bytes",
     REQUIRE(st.seen == "async-roundtrip");
 }
 
-TEST_CASE("asset/vfs: hot-reload watcher fires on mtime change",
-          "[asset][vfs][watch]") {
+TEST_CASE("asset/vfs: hot-reload watcher fires on mtime change", "[asset][vfs][watch]") {
     ResetGuard rg;
     auto dir = make_scratch_dir("watch");
     auto file = dir / "config.txt";
@@ -242,7 +234,7 @@ TEST_CASE("asset/vfs: hot-reload watcher fires on mtime change",
     REQUIRE(Vfs::Get().mount_directory(dir.string()));
 
     struct State {
-        int        fires = 0;
+        int fires = 0;
         std::string last_path;
     } st;
 

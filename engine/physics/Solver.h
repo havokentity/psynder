@@ -24,10 +24,10 @@
 namespace psynder::physics::detail {
 
 struct Island {
-    u32 first_contact = 0;   // index into solver's contact vector
+    u32 first_contact = 0;  // index into solver's contact vector
     u32 contact_count = 0;
-    u32 first_body    = 0;   // index into solver's body-id vector
-    u32 body_count    = 0;
+    u32 first_body = 0;  // index into solver's body-id vector
+    u32 body_count = 0;
 };
 
 // Union-find over the contact graph; populates `islands` and partitions the
@@ -43,10 +43,10 @@ void detect_islands(std::vector<Contact>& contacts,
 struct SolverParams {
     u32 velocity_iterations = 8;
     u32 position_iterations = 3;
-    f32 gravity_y           = -9.81f;   // m/s^2
-    f32 baumgarte           = 0.20f;    // position-correction blend [0..1]
-    f32 slop                = 0.005f;   // 5 mm penetration tolerance
-    f32 restitution_threshold = 1.0f;   // m/s — below this, restitution=0
+    f32 gravity_y = -9.81f;            // m/s^2
+    f32 baumgarte = 0.20f;             // position-correction blend [0..1]
+    f32 slop = 0.005f;                 // 5 mm penetration tolerance
+    f32 restitution_threshold = 1.0f;  // m/s — below this, restitution=0
 };
 
 // Solve one island in place. Reads body velocities, writes corrected

@@ -40,7 +40,7 @@ TEST_CASE("LinearArena bumps from base and resets cleanly", "[core][alloc]") {
     REQUIRE(a.used() == 0);
 
     void* p3 = a.alloc(128, 8);
-    REQUIRE(p3 == p1);   // reset reuses the same base
+    REQUIRE(p3 == p1);  // reset reuses the same base
 }
 
 TEST_CASE("LinearArena returns nullptr on overflow", "[core][alloc]") {
@@ -76,8 +76,8 @@ TEST_CASE("PageAllocator handles hugepage requests gracefully", "[core][alloc][p
     mem::PageBlock pb = mem::page_alloc(psynder::kHugePage, /*prefer_hugepage=*/true);
     REQUIRE(pb.ptr != nullptr);
     REQUIRE(pb.bytes >= psynder::kHugePage);
-    *static_cast<std::uint64_t*>(pb.ptr)                  = 0xDEADBEEF;
-    *(static_cast<std::uint64_t*>(pb.ptr) + 65536)        = 0xCAFEBABE;
+    *static_cast<std::uint64_t*>(pb.ptr) = 0xDEADBEEF;
+    *(static_cast<std::uint64_t*>(pb.ptr) + 65536) = 0xCAFEBABE;
     mem::page_free(pb);
 }
 
@@ -87,8 +87,7 @@ TEST_CASE("TypedPool acquires, releases, and reuses slots", "[core][alloc][pool]
         std::uint32_t tag;
     };
     constexpr usize kCap = 64;
-    alignas(alignof(Body)) std::uint8_t backing[
-        sizeof(Body) * kCap + sizeof(u32) * kCap + 16];
+    alignas(alignof(Body)) std::uint8_t backing[sizeof(Body) * kCap + sizeof(u32) * kCap + 16];
 
     mem::TypedPool<Body> pool;
     pool.init(backing, kCap);
@@ -125,15 +124,14 @@ TEST_CASE("TypedPool acquires, releases, and reuses slots", "[core][alloc][pool]
 
 TEST_CASE("TypedPool refuses to overflow capacity", "[core][alloc][pool]") {
     constexpr usize kCap = 4;
-    alignas(8) std::uint8_t backing[sizeof(std::uint64_t) * kCap +
-                                    sizeof(u32) * kCap + 8];
+    alignas(8) std::uint8_t backing[sizeof(std::uint64_t) * kCap + sizeof(u32) * kCap + 8];
     mem::TypedPool<std::uint64_t> pool;
     pool.init(backing, kCap);
 
     for (usize i = 0; i < kCap; ++i) {
         REQUIRE(pool.acquire() != nullptr);
     }
-    REQUIRE(pool.acquire() == nullptr);   // full
+    REQUIRE(pool.acquire() == nullptr);  // full
 }
 
 TEST_CASE("Worker scratch arena is valid and resettable", "[core][alloc][scratch]") {
@@ -154,7 +152,7 @@ TEST_CASE("Per-tag budgets and counters round-trip", "[core][alloc][budget]") {
     mem::set_budget(mem::Tag::Render, 16 * 1024 * 1024);
     // Round-trip through current_usage / peak_usage so we exercise the
     // public accessors.
-    [[maybe_unused]] usize cur  = mem::current_usage(mem::Tag::Render);
+    [[maybe_unused]] usize cur = mem::current_usage(mem::Tag::Render);
     [[maybe_unused]] usize peak = mem::peak_usage(mem::Tag::Render);
     REQUIRE(peak >= cur);
 }

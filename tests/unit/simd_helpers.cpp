@@ -30,8 +30,7 @@
 
 using namespace psynder;
 
-TEST_CASE("prefetch helpers do not crash on null or empty inputs",
-          "[simd][prefetch]") {
+TEST_CASE("prefetch helpers do not crash on null or empty inputs", "[simd][prefetch]") {
     // All four hint tiers should be safe to call on a null pointer —
     // x86 / aarch64 specs treat the address as a hint, not a load.
     simd::prefetch_t0(nullptr);
@@ -52,35 +51,34 @@ TEST_CASE("prefetch helpers do not crash on null or empty inputs",
     // cache line on the way past. (We can't observe the prefetch from
     // user space; we just confirm the call returns.)
     simd::prefetch_range(buf.data(), buf.size());
-    simd::prefetch_range(buf.data(), buf.size(), 32);   // sub-line stride
-    REQUIRE(true);                                       // reached the end
+    simd::prefetch_range(buf.data(), buf.size(), 32);  // sub-line stride
+    REQUIRE(true);                                     // reached the end
 }
 
-TEST_CASE("stream_store_f32x4 produces the same bytes as store_unaligned4",
-          "[simd][stream]") {
+TEST_CASE("stream_store_f32x4 produces the same bytes as store_unaligned4", "[simd][stream]") {
     // 16-byte alignment is mandatory for _mm_stream_ps on x86; the same
     // alignment is harmless on NEON. Match the contract here.
     alignas(16) std::array<f32, 4> stream_dst{};
     alignas(16) std::array<f32, 4> cached_dst{};
 
     const std::array<f32, 4> src{1.25f, -2.5f, 4.0f, 0.0f};
-    const auto               v = simd::load_unaligned4(src.data());
+    const auto v = simd::load_unaligned4(src.data());
 
     simd::stream_store_f32x4(stream_dst.data(), v);
-    simd::stream_fence();                                // make NT store visible
+    simd::stream_fence();  // make NT store visible
 
     simd::store_unaligned4(cached_dst.data(), v);
 
     // Byte-identical: NT and temporal stores of the same vector must
     // write the same value pattern.
-    REQUIRE(std::memcmp(stream_dst.data(), cached_dst.data(),
-                        sizeof(stream_dst)) == 0);
-    for (size_t i = 0; i < 4; ++i) REQUIRE(stream_dst[i] == src[i]);
+    REQUIRE(std::memcmp(stream_dst.data(), cached_dst.data(), sizeof(stream_dst)) == 0);
+    for (size_t i = 0; i < 4; ++i)
+        REQUIRE(stream_dst[i] == src[i]);
 }
 
 TEST_CASE("has_avx512f returns a sensible bool", "[simd][avx512]") {
     const bool reported = simd::has_avx512f();
-    const auto& cpu     = hardware::detect();
+    const auto& cpu = hardware::detect();
 
 #if defined(__x86_64__) || defined(_M_X64)
     // On x86 the probe must echo the detector exactly.

@@ -21,22 +21,22 @@
 
 using psynder::audio::detail::doppler_ratio;
 using psynder::audio::detail::doppler_render_sine;
-using psynder::audio::detail::kDopplerMinRatio;
 using psynder::audio::detail::kDopplerMaxRatio;
+using psynder::audio::detail::kDopplerMinRatio;
 using psynder::math::Vec3;
 
 TEST_CASE("audio: Doppler at rest is unity", "[audio][doppler]") {
     const psynder::f32 r = doppler_ratio(/*listener pos*/ Vec3{0, 0, 0},
                                          /*listener vel*/ Vec3{0, 0, 0},
-                                         /*source pos*/   Vec3{0, 0, 10.0f},
-                                         /*source vel*/   Vec3{0, 0, 0});
+                                         /*source pos*/ Vec3{0, 0, 10.0f},
+                                         /*source vel*/ Vec3{0, 0, 0});
     REQUIRE(std::fabs(r - 1.0f) < 1e-6f);
 }
 
 TEST_CASE("audio: Doppler source approaching listener raises pitch", "[audio][doppler]") {
     // source at +Z = 10 m, moving in -Z at 34.3 m/s ≈ 10% of c.
-    const psynder::f32 r = doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, 0},
-                                         Vec3{0, 0, 10.0f}, Vec3{0, 0, -34.3f});
+    const psynder::f32 r =
+        doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, 0}, Vec3{0, 0, 10.0f}, Vec3{0, 0, -34.3f});
     INFO("approach ratio: " << r);
     REQUIRE(r > 1.0f);
     // 343 / (343 - 34.3) ≈ 1.111
@@ -44,8 +44,8 @@ TEST_CASE("audio: Doppler source approaching listener raises pitch", "[audio][do
 }
 
 TEST_CASE("audio: Doppler source receding lowers pitch", "[audio][doppler]") {
-    const psynder::f32 r = doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, 0},
-                                         Vec3{0, 0, 10.0f}, Vec3{0, 0, +34.3f});
+    const psynder::f32 r =
+        doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, 0}, Vec3{0, 0, 10.0f}, Vec3{0, 0, +34.3f});
     INFO("recede ratio: " << r);
     REQUIRE(r < 1.0f);
     // 343 / (343 + 34.3) ≈ 0.909
@@ -54,8 +54,8 @@ TEST_CASE("audio: Doppler source receding lowers pitch", "[audio][doppler]") {
 
 TEST_CASE("audio: Doppler listener moving toward source raises pitch", "[audio][doppler]") {
     // listener moving in +Z at 34.3 m/s; source at rest at +Z = 10 m.
-    const psynder::f32 r = doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, +34.3f},
-                                         Vec3{0, 0, 10.0f}, Vec3{0, 0, 0});
+    const psynder::f32 r =
+        doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, +34.3f}, Vec3{0, 0, 10.0f}, Vec3{0, 0, 0});
     INFO("listener-toward ratio: " << r);
     REQUIRE(r > 1.0f);
     // (343 + 34.3) / 343 ≈ 1.100
@@ -63,30 +63,29 @@ TEST_CASE("audio: Doppler listener moving toward source raises pitch", "[audio][
 }
 
 TEST_CASE("audio: Doppler coincident source/listener returns unity", "[audio][doppler]") {
-    const psynder::f32 r = doppler_ratio(Vec3{1, 2, 3}, Vec3{5, 0, 0},
-                                         Vec3{1, 2, 3}, Vec3{0, 5, 0});
+    const psynder::f32 r = doppler_ratio(Vec3{1, 2, 3}, Vec3{5, 0, 0}, Vec3{1, 2, 3}, Vec3{0, 5, 0});
     REQUIRE(std::fabs(r - 1.0f) < 1e-6f);
 }
 
 TEST_CASE("audio: Doppler is clamped to [0.5, 1.5]", "[audio][doppler]") {
     // very fast approach (source toward listener at 300 m/s)
-    const psynder::f32 r_fast = doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, 0},
-                                              Vec3{0, 0, 10.0f}, Vec3{0, 0, -300.0f});
+    const psynder::f32 r_fast =
+        doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, 0}, Vec3{0, 0, 10.0f}, Vec3{0, 0, -300.0f});
     INFO("fast approach: " << r_fast);
     REQUIRE(r_fast <= kDopplerMaxRatio + 1e-6f);
 
     // very fast recede
-    const psynder::f32 r_slow = doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, 0},
-                                              Vec3{0, 0, 10.0f}, Vec3{0, 0, +300.0f});
+    const psynder::f32 r_slow =
+        doppler_ratio(Vec3{0, 0, 0}, Vec3{0, 0, 0}, Vec3{0, 0, 10.0f}, Vec3{0, 0, +300.0f});
     INFO("fast recede: " << r_slow);
     REQUIRE(r_slow >= kDopplerMinRatio - 1e-6f);
 }
 
 TEST_CASE("audio: Doppler sine renderer reflects pitch ratio", "[audio][doppler]") {
-    constexpr psynder::u32 kSr     = 48000;
-    constexpr psynder::u32 kFrames = 4800;     // 100 ms
+    constexpr psynder::u32 kSr = 48000;
+    constexpr psynder::u32 kFrames = 4800;  // 100 ms
     constexpr psynder::f32 kBaseHz = 1000.0f;
-    constexpr psynder::f32 kRatio  = 1.2f;
+    constexpr psynder::f32 kRatio = 1.2f;
     std::vector<psynder::f32> buf(kFrames, 0.0f);
     doppler_render_sine(kBaseHz, kRatio, kSr, kFrames, buf.data());
 
@@ -94,7 +93,8 @@ TEST_CASE("audio: Doppler sine renderer reflects pitch ratio", "[audio][doppler]
     // 1000 * 1.2 * 0.1 = 120.
     psynder::u32 zc = 0;
     for (psynder::u32 i = 1; i < kFrames; ++i) {
-        if (buf[i - 1] < 0.0f && buf[i] >= 0.0f) ++zc;
+        if (buf[i - 1] < 0.0f && buf[i] >= 0.0f)
+            ++zc;
     }
     INFO("zero crossings (rising): " << zc);
     // tolerate ±5 crossings for boundary effects.
@@ -103,7 +103,7 @@ TEST_CASE("audio: Doppler sine renderer reflects pitch ratio", "[audio][doppler]
 }
 
 TEST_CASE("audio: Doppler sine renderer at ratio=1 matches base frequency", "[audio][doppler]") {
-    constexpr psynder::u32 kSr     = 48000;
+    constexpr psynder::u32 kSr = 48000;
     constexpr psynder::u32 kFrames = 4800;
     constexpr psynder::f32 kBaseHz = 800.0f;
     std::vector<psynder::f32> buf(kFrames, 0.0f);
@@ -111,7 +111,8 @@ TEST_CASE("audio: Doppler sine renderer at ratio=1 matches base frequency", "[au
 
     psynder::u32 zc = 0;
     for (psynder::u32 i = 1; i < kFrames; ++i) {
-        if (buf[i - 1] < 0.0f && buf[i] >= 0.0f) ++zc;
+        if (buf[i - 1] < 0.0f && buf[i] >= 0.0f)
+            ++zc;
     }
     // 800 Hz × 100 ms = 80 zero crossings
     REQUIRE(zc >= 77u);

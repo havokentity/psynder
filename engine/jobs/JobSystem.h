@@ -15,20 +15,20 @@ namespace psynder::jobs {
 using JobFn = void (*)(void* user) noexcept;
 
 struct JobHandle {
-    u32 id  = 0;
+    u32 id = 0;
     u32 gen = 0;
     constexpr bool valid() const noexcept { return id != 0; }
 };
 
 struct JobDesc {
-    JobFn       fn       = nullptr;
-    void*       user     = nullptr;
-    const char* name     = "job";
-    u32         priority = 0;   // 0 = normal, higher = sooner
+    JobFn fn = nullptr;
+    void* user = nullptr;
+    const char* name = "job";
+    u32 priority = 0;  // 0 = normal, higher = sooner
 };
 
 class JobSystem {
-public:
+   public:
     static JobSystem& Get();
 
     // Lifecycle
@@ -43,13 +43,12 @@ public:
 
     // Parallel-for: split [begin, end) into chunks and run on the pool.
     // Synchronous: returns after all chunks complete.
-    void parallel_for(usize begin, usize end, usize grain,
-                      const std::function<void(usize, usize)>& body);
+    void parallel_for(usize begin, usize end, usize grain, const std::function<void(usize, usize)>& body);
 
-    u32  worker_count() const noexcept;
-    u32  current_worker() const noexcept;  // 0..worker_count()-1; main = ~0u
+    u32 worker_count() const noexcept;
+    u32 current_worker() const noexcept;  // 0..worker_count()-1; main = ~0u
 
-private:
+   private:
     JobSystem() = default;
 };
 

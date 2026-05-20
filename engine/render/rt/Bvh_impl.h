@@ -20,38 +20,38 @@ namespace psynder::render::rt::detail {
 
 // ─── BLAS state ──────────────────────────────────────────────────────────
 struct Bvh8State {
-    std::vector<Triangle>   triangles;
-    std::vector<u32>        prim_indices;     // permuted leaf order
-    std::vector<BinaryNode> binary_nodes;     // build-time tree, kept for refit
-    std::vector<Bvh8Node>   wide_nodes;       // 8-wide runtime tree
-    f32                     as_built_cost = 0.0f;
-    f32                     refit_cost    = 0.0f;
+    std::vector<Triangle> triangles;
+    std::vector<u32> prim_indices;         // permuted leaf order
+    std::vector<BinaryNode> binary_nodes;  // build-time tree, kept for refit
+    std::vector<Bvh8Node> wide_nodes;      // 8-wide runtime tree
+    f32 as_built_cost = 0.0f;
+    f32 refit_cost = 0.0f;
 };
 
 // ─── TLAS state ──────────────────────────────────────────────────────────
 struct TlasState {
     std::vector<Tlas::InstanceDesc> instances;
-    std::vector<Aabb>               world_bounds;    // per-instance world AABB
-    std::vector<math::Mat4>         inv_transform;   // for object-space ray xform
-    std::vector<u32>                prim_indices;
-    std::vector<BinaryNode>         binary_nodes;
-    std::vector<Bvh8Node>           wide_nodes;
-    f32                             as_built_cost = 0.0f;
-    f32                             refit_cost    = 0.0f;
+    std::vector<Aabb> world_bounds;         // per-instance world AABB
+    std::vector<math::Mat4> inv_transform;  // for object-space ray xform
+    std::vector<u32> prim_indices;
+    std::vector<BinaryNode> binary_nodes;
+    std::vector<Bvh8Node> wide_nodes;
+    f32 as_built_cost = 0.0f;
+    f32 refit_cost = 0.0f;
 };
 
 // Defined in Bvh.cpp. Looks up (or lazily creates) state keyed by `this`.
-Bvh8State&        state_of(Bvh8& b)        noexcept;
-const Bvh8State&  state_of(const Bvh8& b)  noexcept;
-TlasState&        state_of(Tlas& t)        noexcept;
-const TlasState&  state_of(const Tlas& t)  noexcept;
+Bvh8State& state_of(Bvh8& b) noexcept;
+const Bvh8State& state_of(const Bvh8& b) noexcept;
+TlasState& state_of(Tlas& t) noexcept;
+const TlasState& state_of(const Tlas& t) noexcept;
 
 // Heuristic: refit_cost > 1.3× as_built_cost → kick async rebuild (§9.4).
-bool bvh_should_async_rebuild(const Bvh8State& s)  noexcept;
+bool bvh_should_async_rebuild(const Bvh8State& s) noexcept;
 bool tlas_should_async_rebuild(const TlasState& s) noexcept;
 
 // ─── Helpers exposed for Tlas world-space xform of BLAS bounds ──────────
-Aabb       transform_aabb(const Aabb& b, const math::Mat4& m) noexcept;
+Aabb transform_aabb(const Aabb& b, const math::Mat4& m) noexcept;
 math::Mat4 affine_inverse(const math::Mat4& m) noexcept;
 
 // ─── Scalar intersect kernel for one ray vs a Bvh8State ─────────────────
@@ -59,11 +59,11 @@ math::Mat4 affine_inverse(const math::Mat4& m) noexcept;
 // scalar (correctness first); Intersect.cpp adds the AVX2 packet driver.
 struct LocalHit {
     bool hit = false;
-    f32  t   = 0.0f;
-    math::Vec3 normal{0,0,0};
-    u32  primitive = 0;
+    f32 t = 0.0f;
+    math::Vec3 normal{0, 0, 0};
+    u32 primitive = 0;
 };
 LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray) noexcept;
-bool     occluded_scalar(const Bvh8State& s, const Ray& ray) noexcept;
+bool occluded_scalar(const Bvh8State& s, const Ray& ray) noexcept;
 
 }  // namespace psynder::render::rt::detail

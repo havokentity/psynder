@@ -37,22 +37,22 @@
 #include <new>
 
 #if defined(_WIN32)
-#   ifndef WIN32_LEAN_AND_MEAN
-#       define WIN32_LEAN_AND_MEAN
-#   endif
-#   ifndef NOMINMAX
-#       define NOMINMAX
-#   endif
-#   include <windows.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #elif defined(__APPLE__)
-#   include <mach/mach.h>
-#   include <mach/mach_vm.h>
-#   include <mach/vm_statistics.h>
-#   include <sys/mman.h>
-#   include <unistd.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach/vm_statistics.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #else
-#   include <sys/mman.h>
-#   include <unistd.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 namespace psynder::mem {
@@ -73,19 +73,19 @@ Counters g_counters[static_cast<usize>(Tag::Count)];
 
 PSY_FORCEINLINE void account_add(Tag tag, usize bytes) {
     auto idx = static_cast<usize>(tag);
-    if (idx >= static_cast<usize>(Tag::Count)) return;
+    if (idx >= static_cast<usize>(Tag::Count))
+        return;
     usize cur = g_counters[idx].current.fetch_add(bytes, std::memory_order_relaxed) + bytes;
     // Bump the peak if we just crossed it (best-effort, racy by design).
     usize peak = g_counters[idx].peak.load(std::memory_order_relaxed);
     while (cur > peak &&
-           !g_counters[idx].peak.compare_exchange_weak(peak, cur,
-                                                       std::memory_order_relaxed)) {
-    }
+           !g_counters[idx].peak.compare_exchange_weak(peak, cur, std::memory_order_relaxed)) {}
 }
 
 PSY_FORCEINLINE void account_sub(Tag tag, usize bytes) {
     auto idx = static_cast<usize>(tag);
-    if (idx >= static_cast<usize>(Tag::Count)) return;
+    if (idx >= static_cast<usize>(Tag::Count))
+        return;
     g_counters[idx].current.fetch_sub(bytes, std::memory_order_relaxed);
 }
 
@@ -101,11 +101,11 @@ PSY_FORCEINLINE usize round_up(usize value, usize align) {
 // from a higher scope) is responsible for keeping the region alive longer
 // than this arena.
 LinearArena::LinearArena(void* base, usize bytes, Tag tag) noexcept
-    : base_(static_cast<u8*>(base)),
-      head_(static_cast<u8*>(base)),
-      cap_(bytes),
-      tag_(tag),
-      owns_(false) {}
+    : base_(static_cast<u8*>(base))
+    , head_(static_cast<u8*>(base))
+    , cap_(bytes)
+    , tag_(tag)
+    , owns_(false) {}
 
 LinearArena::~LinearArena() {
     // owns_ is reserved for a future owning-construct path; the current
@@ -122,7 +122,7 @@ LinearArena::LinearArena(LinearArena&& o) noexcept
     : base_(o.base_), head_(o.head_), cap_(o.cap_), tag_(o.tag_), owns_(o.owns_) {
     o.base_ = nullptr;
     o.head_ = nullptr;
-    o.cap_  = 0;
+    o.cap_ = 0;
     o.owns_ = false;
 }
 
@@ -134,12 +134,12 @@ LinearArena& LinearArena::operator=(LinearArena&& o) noexcept {
         }
         base_ = o.base_;
         head_ = o.head_;
-        cap_  = o.cap_;
-        tag_  = o.tag_;
+        cap_ = o.cap_;
+        tag_ = o.tag_;
         owns_ = o.owns_;
         o.base_ = nullptr;
         o.head_ = nullptr;
-        o.cap_  = 0;
+        o.cap_ = 0;
         o.owns_ = false;
     }
     return *this;
@@ -147,14 +147,16 @@ LinearArena& LinearArena::operator=(LinearArena&& o) noexcept {
 
 void* LinearArena::alloc(usize bytes, usize align) noexcept {
     PSY_TRACE_ZONE_COLOR("mem.LinearArena.alloc", 0x4E9A06u);
-    if (!base_ || bytes == 0) return nullptr;
+    if (!base_ || bytes == 0)
+        return nullptr;
     // Power-of-two alignment is a precondition; arenas don't try to handle
     // weird alignments. The bump is unconditional, so misaligned input
     // would silently over-allocate.
-    auto cur     = reinterpret_cast<std::uintptr_t>(head_);
+    auto cur = reinterpret_cast<std::uintptr_t>(head_);
     auto aligned = (cur + align - 1) & ~static_cast<std::uintptr_t>(align - 1);
-    auto next    = aligned + bytes;
-    if (next > reinterpret_cast<std::uintptr_t>(base_) + cap_) return nullptr;
+    auto next = aligned + bytes;
+    if (next > reinterpret_cast<std::uintptr_t>(base_) + cap_)
+        return nullptr;
     head_ = reinterpret_cast<u8*>(next);
     // Account the actual consumed-from-arena bytes (alignment hole included),
     // and feed the flight recorder. Both are advisory and lock-free.
@@ -165,7 +167,7 @@ void* LinearArena::alloc(usize bytes, usize align) noexcept {
     return reinterpret_cast<void*>(aligned);
 }
 
-void  LinearArena::reset() noexcept   {
+void LinearArena::reset() noexcept {
     // Return the arena's used bytes back to the per-tag counters so the
     // heatmap reflects "outstanding from this arena" rather than "ever
     // bumped through this arena". The lifetime peak is untouched on
@@ -175,8 +177,12 @@ void  LinearArena::reset() noexcept   {
     }
     head_ = base_;
 }
-usize LinearArena::used() const noexcept     { return static_cast<usize>(head_ - base_); }
-usize LinearArena::capacity() const noexcept { return cap_; }
+usize LinearArena::used() const noexcept {
+    return static_cast<usize>(head_ - base_);
+}
+usize LinearArena::capacity() const noexcept {
+    return cap_;
+}
 
 // ─── PageAllocator ───────────────────────────────────────────────────────
 // Implements the OS-mediated page-aligned reservations the rest of the
@@ -190,7 +196,8 @@ usize LinearArena::capacity() const noexcept { return cap_; }
 // page granularity) so callers can pass the same byte count to page_free.
 PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
     PSY_TRACE_ZONE_COLOR("mem.page_alloc", 0xC4A000u);
-    if (bytes == 0) return {};
+    if (bytes == 0)
+        return {};
     // Record the request up front. The flight recorder tracks request
     // sizes; the asymmetric page_free path records the actual returned
     // bytes (post-rounding), which is what we care about for leak
@@ -202,7 +209,7 @@ PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
     // succeed; the regular-page path also rounds up so munmap/free can
     // unmap the full reservation cleanly.
     const usize page_size = prefer_hugepage ? kHugePage : kPage;
-    const usize aligned   = round_up(bytes, page_size);
+    const usize aligned = round_up(bytes, page_size);
 
 #if defined(_WIN32)
     // Windows: VirtualAlloc with MEM_LARGE_PAGES requires the
@@ -213,15 +220,17 @@ PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
         SIZE_T large = GetLargePageMinimum();
         if (large > 0) {
             const usize large_aligned = round_up(bytes, large);
-            void* p = VirtualAlloc(nullptr, large_aligned,
+            void* p = VirtualAlloc(nullptr,
+                                   large_aligned,
                                    MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES,
                                    PAGE_READWRITE);
-            if (p) return {p, large_aligned};
+            if (p)
+                return {p, large_aligned};
         }
     }
-    void* p = VirtualAlloc(nullptr, aligned, MEM_COMMIT | MEM_RESERVE,
-                           PAGE_READWRITE);
-    if (!p) return {};
+    void* p = VirtualAlloc(nullptr, aligned, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!p)
+        return {};
     // VirtualAlloc zero-fills committed pages on Windows; no memset needed.
     return {p, aligned};
 
@@ -240,20 +249,19 @@ PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
     if (prefer_hugepage && aligned >= kHugePage) {
         mach_vm_address_t addr = 0;
         int flags = VM_FLAGS_ANYWHERE;
-#       if defined(VM_FLAGS_SUPERPAGE_SIZE_2MB)
+#if defined(VM_FLAGS_SUPERPAGE_SIZE_2MB)
         flags |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
-#       endif
-        kern_return_t kr = mach_vm_allocate(mach_task_self(), &addr,
-                                            aligned, flags);
+#endif
+        kern_return_t kr = mach_vm_allocate(mach_task_self(), &addr, aligned, flags);
         if (kr == KERN_SUCCESS) {
             // mach_vm_allocate zero-fills.
             return {reinterpret_cast<void*>(addr), aligned};
         }
         // Fall through to mmap on superpage refusal.
     }
-    void* p = mmap(nullptr, aligned, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (p == MAP_FAILED) return {};
+    void* p = mmap(nullptr, aligned, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (p == MAP_FAILED)
+        return {};
     return {p, aligned};
 
 #else
@@ -261,29 +269,28 @@ PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
     // and the kernel has transparent-hugepages on. madvise failure is
     // ignored -- the mapping still works, the kernel just won't try to
     // back it with hugepages.
-    void* p = mmap(nullptr, aligned, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (p == MAP_FAILED) return {};
-#   if defined(MADV_HUGEPAGE)
+    void* p = mmap(nullptr, aligned, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (p == MAP_FAILED)
+        return {};
+#if defined(MADV_HUGEPAGE)
     if (prefer_hugepage && aligned >= kHugePage) {
         (void)madvise(p, aligned, MADV_HUGEPAGE);
     }
-#   endif
+#endif
     return {p, aligned};
 #endif
 }
 
 void page_free(PageBlock block) {
     PSY_TRACE_ZONE_COLOR("mem.page_free", 0xC4A000u);
-    if (!block.ptr || block.bytes == 0) return;
+    if (!block.ptr || block.bytes == 0)
+        return;
     PSY_FLIGHT_RECORD(-1, block.bytes, Tag::Misc);
     PSY_ZONE_FREE(block.ptr);
 #if defined(_WIN32)
     VirtualFree(block.ptr, 0, MEM_RELEASE);
 #elif defined(__APPLE__)
-    mach_vm_deallocate(mach_task_self(),
-                       reinterpret_cast<mach_vm_address_t>(block.ptr),
-                       block.bytes);
+    mach_vm_deallocate(mach_task_self(), reinterpret_cast<mach_vm_address_t>(block.ptr), block.bytes);
 #else
     munmap(block.ptr, block.bytes);
 #endif
@@ -310,7 +317,7 @@ constexpr usize kBuddyMaxOrder = 32;  // 4 GiB upper bound -- plenty of headroom
 
 inline usize order_for(usize bytes) {
     usize order = kBuddyMinOrder;
-    usize size  = 1ULL << order;
+    usize size = 1ULL << order;
     while (size < bytes && order < kBuddyMaxOrder) {
         ++order;
         size <<= 1;
@@ -321,7 +328,7 @@ inline usize order_for(usize bytes) {
 }  // namespace
 
 class BuddyAllocator {
-public:
+   public:
     void init(void* base, usize bytes) noexcept {
         std::memset(free_heads_, 0, sizeof(free_heads_));
         base_ = static_cast<u8*>(base);
@@ -330,22 +337,28 @@ public:
         // typically passes a page_alloc()-shaped reservation so this is a
         // no-op (page_alloc already rounds up to kPage / kHugePage).
         usize size = 1;
-        while ((size << 1) <= bytes) size <<= 1;
-        cap_   = size;
+        while ((size << 1) <= bytes)
+            size <<= 1;
+        cap_ = size;
         order_ = 0;
-        while ((1ULL << order_) < cap_) ++order_;
+        while ((1ULL << order_) < cap_)
+            ++order_;
         // Seed: the whole region is one free block at the top order.
         push_free(order_, base_);
     }
 
     void* alloc(usize bytes) noexcept {
-        if (!base_ || bytes == 0) return nullptr;
+        if (!base_ || bytes == 0)
+            return nullptr;
         const usize want = order_for(bytes);
-        if (want > order_) return nullptr;
+        if (want > order_)
+            return nullptr;
         // Walk up to find a non-empty bucket, then split down.
         usize have = want;
-        while (have <= order_ && free_heads_[have] == nullptr) ++have;
-        if (have > order_) return nullptr;
+        while (have <= order_ && free_heads_[have] == nullptr)
+            ++have;
+        if (have > order_)
+            return nullptr;
         u8* block = pop_free(have);
         while (have > want) {
             --have;
@@ -357,7 +370,8 @@ public:
     }
 
     void free(void* p, usize bytes) noexcept {
-        if (!p || bytes == 0) return;
+        if (!p || bytes == 0)
+            return;
         usize have = order_for(bytes);
         u8* block = static_cast<u8*>(p);
         // Try to merge with our buddy. Stop when the buddy isn't on the
@@ -366,17 +380,21 @@ public:
             const std::uintptr_t off = static_cast<std::uintptr_t>(block - base_);
             const std::uintptr_t buddy_off = off ^ (1ULL << have);
             u8* buddy = base_ + buddy_off;
-            if (!remove_free(have, buddy)) break;
+            if (!remove_free(have, buddy))
+                break;
             // Merge: the lower of the two addresses becomes the merged
             // block one order up.
-            if (buddy < block) block = buddy;
+            if (buddy < block)
+                block = buddy;
             ++have;
         }
         push_free(have, block);
     }
 
-private:
-    struct Node { Node* next; };
+   private:
+    struct Node {
+        Node* next;
+    };
 
     void push_free(usize order, u8* p) noexcept {
         auto* n = reinterpret_cast<Node*>(p);
@@ -402,10 +420,10 @@ private:
         return false;
     }
 
-    u8*    base_   = nullptr;
-    usize  cap_    = 0;
-    usize  order_  = 0;
-    Node*  free_heads_[kBuddyMaxOrder + 1] = {nullptr};
+    u8* base_ = nullptr;
+    usize cap_ = 0;
+    usize order_ = 0;
+    Node* free_heads_[kBuddyMaxOrder + 1] = {nullptr};
 };
 
 // C-style facade for the buddy allocator -- the existing public header
@@ -421,9 +439,15 @@ BuddyAllocator& buddy_test_singleton() {
     return b;
 }
 
-void  buddy_init(void* base, usize bytes) noexcept { buddy_test_singleton().init(base, bytes); }
-void* buddy_alloc(usize bytes) noexcept            { return buddy_test_singleton().alloc(bytes); }
-void  buddy_free(void* p, usize bytes) noexcept    { buddy_test_singleton().free(p, bytes); }
+void buddy_init(void* base, usize bytes) noexcept {
+    buddy_test_singleton().init(base, bytes);
+}
+void* buddy_alloc(usize bytes) noexcept {
+    return buddy_test_singleton().alloc(bytes);
+}
+void buddy_free(void* p, usize bytes) noexcept {
+    buddy_test_singleton().free(p, bytes);
+}
 
 }  // namespace detail
 
@@ -443,14 +467,15 @@ namespace {
 
 struct LazyArena {
     LinearArena arena;
-    PageBlock   block;
-    bool        ready = false;
+    PageBlock block;
+    bool ready = false;
 };
 
 struct LazyArenaDeleter {
     PageBlock block;
     ~LazyArenaDeleter() {
-        if (block.ptr) page_free(block);
+        if (block.ptr)
+            page_free(block);
     }
 };
 
@@ -461,16 +486,18 @@ struct LazyArenaDeleter {
 thread_local LazyArena tls_worker_scratch;
 thread_local LazyArenaDeleter tls_worker_scratch_deleter;
 
-constexpr usize kWorkerScratchBytes = 1ULL << 20;   // 1 MiB
-constexpr usize kFrameScratchBytes  = 4ULL << 20;   // 4 MiB
+constexpr usize kWorkerScratchBytes = 1ULL << 20;  // 1 MiB
+constexpr usize kFrameScratchBytes = 4ULL << 20;   // 4 MiB
 
 void ensure_worker(LazyArena& la, LazyArenaDeleter& deleter) {
-    if (la.ready) return;
+    if (la.ready)
+        return;
     la.block = page_alloc(kWorkerScratchBytes, /*prefer_hugepage=*/false);
-    if (!la.block.ptr) return;  // page allocator failed -- arena stays empty
+    if (!la.block.ptr)
+        return;  // page allocator failed -- arena stays empty
     la.arena = LinearArena(la.block.ptr, la.block.bytes, Tag::Misc);
     la.ready = true;
-    deleter.block = la.block;     // hand-off so thread-exit returns pages
+    deleter.block = la.block;  // hand-off so thread-exit returns pages
     account_add(Tag::Misc, la.block.bytes);
 }
 
@@ -503,19 +530,22 @@ LinearArena& frame_scratch() {
 // ─── Budgets / usage tracking ────────────────────────────────────────────
 void set_budget(Tag tag, usize bytes) {
     auto idx = static_cast<usize>(tag);
-    if (idx >= static_cast<usize>(Tag::Count)) return;
+    if (idx >= static_cast<usize>(Tag::Count))
+        return;
     g_counters[idx].budget.store(bytes, std::memory_order_relaxed);
 }
 
 usize current_usage(Tag tag) noexcept {
     auto idx = static_cast<usize>(tag);
-    if (idx >= static_cast<usize>(Tag::Count)) return 0;
+    if (idx >= static_cast<usize>(Tag::Count))
+        return 0;
     return g_counters[idx].current.load(std::memory_order_relaxed);
 }
 
 usize peak_usage(Tag tag) noexcept {
     auto idx = static_cast<usize>(tag);
-    if (idx >= static_cast<usize>(Tag::Count)) return 0;
+    if (idx >= static_cast<usize>(Tag::Count))
+        return 0;
     return g_counters[idx].peak.load(std::memory_order_relaxed);
 }
 
@@ -530,10 +560,11 @@ TagStat tag_stat(Tag tag) noexcept {
     TagStat s;
     s.tag = tag;
     auto idx = static_cast<usize>(tag);
-    if (idx >= static_cast<usize>(Tag::Count)) return s;
+    if (idx >= static_cast<usize>(Tag::Count))
+        return s;
     s.current = g_counters[idx].current.load(std::memory_order_relaxed);
-    s.peak    = g_counters[idx].peak.load(std::memory_order_relaxed);
-    s.budget  = g_counters[idx].budget.load(std::memory_order_relaxed);
+    s.peak = g_counters[idx].peak.load(std::memory_order_relaxed);
+    s.budget = g_counters[idx].budget.load(std::memory_order_relaxed);
     return s;
 }
 
@@ -547,7 +578,8 @@ std::array<TagStat, static_cast<usize>(Tag::Count)> tag_stats() noexcept {
 
 void reset_peak(Tag tag) noexcept {
     auto idx = static_cast<usize>(tag);
-    if (idx >= static_cast<usize>(Tag::Count)) return;
+    if (idx >= static_cast<usize>(Tag::Count))
+        return;
     // Clamp peak down to the current value. The slight race between the
     // current load and the peak store is fine: a peak slightly below the
     // true watermark just means the next bump from account_add() will
@@ -573,13 +605,13 @@ void reset_peak_all() noexcept {
 namespace {
 
 constexpr usize kFlightDefaultCap = 1024;
-constexpr usize kFlightMaxCap     = 1 << 16;   // 64K entries upper bound
+constexpr usize kFlightMaxCap = 1 << 16;  // 64K entries upper bound
 
 struct FlightRing {
-    FlightEntry*       buf      = nullptr;
-    std::atomic<u64>   serial{0};
-    usize              capacity = 0;
-    usize              mask     = 0;
+    FlightEntry* buf = nullptr;
+    std::atomic<u64> serial{0};
+    usize capacity = 0;
+    usize mask = 0;
 };
 
 FlightRing& flight_ring() {
@@ -593,26 +625,31 @@ std::mutex& flight_init_mutex() {
 }
 
 usize round_down_pow2(usize v) {
-    if (v == 0) return 0;
+    if (v == 0)
+        return 0;
     usize r = 1;
-    while ((r << 1) <= v && (r << 1) != 0) r <<= 1;
+    while ((r << 1) <= v && (r << 1) != 0)
+        r <<= 1;
     return r;
 }
 
 void flight_init_locked(usize capacity) {
     auto& r = flight_ring();
-    if (r.buf) return;                                  // already initialised
-    if (capacity == 0)            capacity = kFlightDefaultCap;
-    if (capacity > kFlightMaxCap) capacity = kFlightMaxCap;
+    if (r.buf)
+        return;  // already initialised
+    if (capacity == 0)
+        capacity = kFlightDefaultCap;
+    if (capacity > kFlightMaxCap)
+        capacity = kFlightMaxCap;
     capacity = round_down_pow2(capacity);
-    if (capacity == 0) capacity = kFlightDefaultCap;
+    if (capacity == 0)
+        capacity = kFlightDefaultCap;
     // PageAllocator is overkill for a 32 KiB buffer; std::malloc is fine
     // here because the recorder is *outside* the engine's hot frame loop
     // (init-time only, debug-only consumer).
-    r.buf      = static_cast<FlightEntry*>(
-        std::calloc(capacity, sizeof(FlightEntry)));
+    r.buf = static_cast<FlightEntry*>(std::calloc(capacity, sizeof(FlightEntry)));
     r.capacity = capacity;
-    r.mask     = capacity - 1;
+    r.mask = capacity - 1;
     r.serial.store(0, std::memory_order_relaxed);
 }
 
@@ -623,9 +660,9 @@ void flight_recorder_init(usize capacity) noexcept {
     auto& r = flight_ring();
     if (r.buf) {
         std::free(r.buf);
-        r.buf      = nullptr;
+        r.buf = nullptr;
         r.capacity = 0;
-        r.mask     = 0;
+        r.mask = 0;
     }
     flight_init_locked(capacity);
 }
@@ -646,10 +683,10 @@ void flight_recorder_record(u32 site, i32 op, u32 size, Tag tag) noexcept {
     const usize slot = static_cast<usize>(serial) & r.mask;
     FlightEntry e;
     e.serial = serial;
-    e.site   = site;
-    e.op     = op;
-    e.size   = size;
-    e.tag    = tag;
+    e.site = site;
+    e.op = op;
+    e.size = size;
+    e.tag = tag;
     r.buf[slot] = e;
 }
 
@@ -671,15 +708,18 @@ void flight_recorder_clear() noexcept {
 }
 
 usize flight_recorder_dump(const char* path) noexcept {
-    if (!path) return 0;
+    if (!path)
+        return 0;
     auto& r = flight_ring();
-    if (!r.buf || r.capacity == 0) return 0;
+    if (!r.buf || r.capacity == 0)
+        return 0;
     std::FILE* f = std::fopen(path, "w");
-    if (!f) return 0;
-    const u64   total     = r.serial.load(std::memory_order_relaxed);
-    const u64   start     = (total > r.capacity) ? (total - r.capacity) : 0;
-    const u64   start_idx = start & r.mask;
-    usize       written   = 0;
+    if (!f)
+        return 0;
+    const u64 total = r.serial.load(std::memory_order_relaxed);
+    const u64 start = (total > r.capacity) ? (total - r.capacity) : 0;
+    const u64 start_idx = start & r.mask;
+    usize written = 0;
     std::fprintf(f, "# psynder flight recorder dump\n");
     std::fprintf(f, "# serial,site,op,size,tag\n");
     for (u64 s = start; s < total; ++s) {
@@ -688,10 +728,14 @@ usize flight_recorder_dump(const char* path) noexcept {
         // Defensive: only emit entries whose serial actually matches.
         // If we raced with a writer mid-record this filters out stale
         // half-overwritten slots from earlier wraps.
-        if (e.serial != s) continue;
-        std::fprintf(f, "%llu,%u,%d,%u,%u\n",
+        if (e.serial != s)
+            continue;
+        std::fprintf(f,
+                     "%llu,%u,%d,%u,%u\n",
                      static_cast<unsigned long long>(e.serial),
-                     e.site, e.op, e.size,
+                     e.site,
+                     e.op,
+                     e.size,
                      static_cast<unsigned>(e.tag));
         ++written;
     }

@@ -40,13 +40,14 @@ math::Vec3 side_plane_normal(math::Vec3 eye, math::Vec3 v0, math::Vec3 v1) {
 // Reject a portal polygon against a single plane. Returns true if at least
 // one vertex is on the inside (we keep the portal); false if every vertex is
 // strictly outside (we can drop this portal entirely).
-bool portal_intersects_plane(const BspPortal&                  portal,
-                             const std::vector<math::Vec3>&    verts,
-                             math::Vec3                        plane_normal,
-                             f32                               plane_d) {
+bool portal_intersects_plane(const BspPortal& portal,
+                             const std::vector<math::Vec3>& verts,
+                             math::Vec3 plane_normal,
+                             f32 plane_d) {
     for (u32 i = 0; i < portal.vertex_count; ++i) {
         const u32 vi = portal.first_vertex + i;
-        if (vi >= verts.size()) continue;
+        if (vi >= verts.size())
+            continue;
         if (math::dot(plane_normal, verts[vi]) >= plane_d) {
             return true;
         }
@@ -59,9 +60,9 @@ bool portal_intersects_plane(const BspPortal&                  portal,
 // at least one vertex is inside each plane individually (a strict-inside
 // test would require full Sutherland–Hodgman; we use the looser per-plane
 // test, which over-approximates visibility — safe).
-bool portal_intersects_frustum(const PortalFrustum&            f,
-                               const BspPortal&                portal,
-                               const std::vector<math::Vec3>&  verts) {
+bool portal_intersects_frustum(const PortalFrustum& f,
+                               const BspPortal& portal,
+                               const std::vector<math::Vec3>& verts) {
     for (u32 i = 0; i < f.plane_count; ++i) {
         if (!portal_intersects_plane(portal, verts, f.normals[i], f.d[i])) {
             return false;  // every vertex strictly outside plane i → reject
@@ -92,11 +93,11 @@ bool portal_visible_from_eye(const BspPortal& portal, math::Vec3 eye) {
     return math::dot(portal.plane_normal, eye) <= portal.plane_d;
 }
 
-bool clip_frustum_by_portal(const PortalFrustum&             in,
-                            const BspPortal&                 portal,
-                            const std::vector<math::Vec3>&   verts,
-                            math::Vec3                       eye,
-                            PortalFrustum&                   out) {
+bool clip_frustum_by_portal(const PortalFrustum& in,
+                            const BspPortal& portal,
+                            const std::vector<math::Vec3>& verts,
+                            math::Vec3 eye,
+                            PortalFrustum& out) {
     // 1. Quick reject: portal polygon entirely outside the incoming frustum.
     if (!portal_intersects_frustum(in, portal, verts)) {
         return false;
@@ -107,7 +108,7 @@ bool clip_frustum_by_portal(const PortalFrustum&             in,
     const u32 carry = std::min<u32>(in.plane_count, kMaxFrustumPlanes);
     for (u32 i = 0; i < carry; ++i) {
         out.normals[i] = in.normals[i];
-        out.d[i]       = in.d[i];
+        out.d[i] = in.d[i];
     }
     out.plane_count = carry;
 
@@ -119,18 +120,21 @@ bool clip_frustum_by_portal(const PortalFrustum&             in,
         return true;
     }
     for (u32 i = 0; i < portal.vertex_count; ++i) {
-        if (out.plane_count >= kMaxFrustumPlanes) break;
+        if (out.plane_count >= kMaxFrustumPlanes)
+            break;
         const u32 i0 = portal.first_vertex + i;
         const u32 i1 = portal.first_vertex + ((i + 1) % portal.vertex_count);
-        if (i0 >= verts.size() || i1 >= verts.size()) continue;
+        if (i0 >= verts.size() || i1 >= verts.size())
+            continue;
         const math::Vec3 v0 = verts[i0];
         const math::Vec3 v1 = verts[i1];
-        const math::Vec3 n  = side_plane_normal(eye, v0, v1);
+        const math::Vec3 n = side_plane_normal(eye, v0, v1);
         // Filter out zero-area edges (collinear with eye — no side plane).
-        if (math::dot(n, n) <= 1e-12f) continue;
+        if (math::dot(n, n) <= 1e-12f)
+            continue;
         const math::Vec3 nn = math::normalize(n);
         out.normals[out.plane_count] = nn;
-        out.d[out.plane_count]       = math::dot(nn, eye);
+        out.d[out.plane_count] = math::dot(nn, eye);
         out.plane_count++;
     }
     return true;
@@ -148,15 +152,14 @@ bool clip_frustum_by_portal(const PortalFrustum&             in,
 //     incoming frustum by the portal polygon's side planes; if the clipped
 //     frustum is non-empty, enqueue (back_leaf, clipped) for visit.
 // Each leaf is visited at most once per walk.
-void walk_portal_visible_leaves(const BspMap&         map,
-                                const BspPortalSet&   portals,
-                                math::Vec3            eye,
-                                const PortalFrustum&  initial,
-                                void (*emit)(const BspLeaf&,
-                                             const PortalFrustum&,
-                                             void* user),
-                                void*                 user) {
-    if (emit == nullptr || map.leaves.empty()) return;
+void walk_portal_visible_leaves(const BspMap& map,
+                                const BspPortalSet& portals,
+                                math::Vec3 eye,
+                                const PortalFrustum& initial,
+                                void (*emit)(const BspLeaf&, const PortalFrustum&, void* user),
+                                void* user) {
+    if (emit == nullptr || map.leaves.empty())
+        return;
 
     // No portal data → fall back to PVS-only with the unclipped frustum.
     if (portals.portals.empty()) {
@@ -165,7 +168,7 @@ void walk_portal_visible_leaves(const BspMap&         map,
             void* user;
             const PortalFrustum* frustum;
         };
-        Ctx ctx{ emit, user, &initial };
+        Ctx ctx{emit, user, &initial};
         auto bridge = +[](const BspLeaf& leaf, void* u) {
             Ctx& c = *static_cast<Ctx*>(u);
             c.cb(leaf, *c.frustum, c.user);
@@ -179,9 +182,11 @@ void walk_portal_visible_leaves(const BspMap&         map,
     // index directly instead of a value copy.
     auto locate_leaf_index = [&](math::Vec3 p) -> i32 {
         const usize leaves = map.leaves.size();
-        if (leaves == 0) return -1;
-        if (map.nodes.empty()) return 0;
-        i32 node_index   = 0;
+        if (leaves == 0)
+            return -1;
+        if (map.nodes.empty())
+            return 0;
+        i32 node_index = 0;
         const i32 max_depth = static_cast<i32>(leaves) * 2 + 64;
         for (i32 step = 0; step < max_depth; ++step) {
             const BspNode& n = map.nodes[static_cast<usize>(node_index)];
@@ -196,7 +201,8 @@ void walk_portal_visible_leaves(const BspMap&         map,
     };
 
     const i32 root_idx = locate_leaf_index(eye);
-    if (root_idx < 0 || static_cast<usize>(root_idx) >= map.leaves.size()) return;
+    if (root_idx < 0 || static_cast<usize>(root_idx) >= map.leaves.size())
+        return;
     if (map.leaves[static_cast<usize>(root_idx)].cluster < 0) {
         // Eye inside solid geometry — nothing to draw.
         return;
@@ -206,10 +212,13 @@ void walk_portal_visible_leaves(const BspMap&         map,
     std::vector<u8> visited(leaf_count, 0u);
 
     // BFS frontier: small static-ish ring buffer is overkill — use a vector.
-    struct Frame { i32 leaf; PortalFrustum frustum; };
+    struct Frame {
+        i32 leaf;
+        PortalFrustum frustum;
+    };
     std::vector<Frame> queue;
     queue.reserve(leaf_count);
-    queue.push_back(Frame{ root_idx, initial });
+    queue.push_back(Frame{root_idx, initial});
     visited[static_cast<usize>(root_idx)] = 1u;
 
     // Emit the eye leaf first (renderer assumes the eye leaf is always drawn).
@@ -220,23 +229,24 @@ void walk_portal_visible_leaves(const BspMap&         map,
         const Frame frame = queue[head++];
         // Iterate every portal whose front_leaf == frame.leaf.
         for (const BspPortal& portal : portals.portals) {
-            if (portal.front_leaf != frame.leaf) continue;
-            if (!portal_visible_from_eye(portal, eye))         continue;
-            if (portal.back_leaf < 0 ||
-                static_cast<usize>(portal.back_leaf) >= leaf_count) continue;
-            if (visited[static_cast<usize>(portal.back_leaf)])  continue;
+            if (portal.front_leaf != frame.leaf)
+                continue;
+            if (!portal_visible_from_eye(portal, eye))
+                continue;
+            if (portal.back_leaf < 0 || static_cast<usize>(portal.back_leaf) >= leaf_count)
+                continue;
+            if (visited[static_cast<usize>(portal.back_leaf)])
+                continue;
 
             PortalFrustum clipped{};
-            if (!clip_frustum_by_portal(frame.frustum, portal,
-                                        portals.vertices, eye, clipped)) {
+            if (!clip_frustum_by_portal(frame.frustum, portal, portals.vertices, eye, clipped)) {
                 continue;  // portal fully occluded
             }
 
             visited[static_cast<usize>(portal.back_leaf)] = 1u;
-            const BspLeaf& neighbour =
-                map.leaves[static_cast<usize>(portal.back_leaf)];
+            const BspLeaf& neighbour = map.leaves[static_cast<usize>(portal.back_leaf)];
             emit(neighbour, clipped, user);
-            queue.push_back(Frame{ portal.back_leaf, clipped });
+            queue.push_back(Frame{portal.back_leaf, clipped});
         }
     }
 }

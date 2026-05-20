@@ -17,12 +17,12 @@ enum class Mode : u8 { Lockstep, ClientServer };
 
 struct HostDesc {
     Mode mode = Mode::ClientServer;
-    u16  port = 7878;
-    u16  max_peers = 32;
+    u16 port = 7878;
+    u16 max_peers = 32;
 };
 
 class Host {
-public:
+   public:
     static Host& Get();
     bool start(const HostDesc& desc);
     void stop();
@@ -32,8 +32,7 @@ public:
     // Send / receive raw bytes; reliability and ordering handled by the
     // transport.
     void send(PeerId peer, std::span<const u8> bytes, bool reliable);
-    void poll(void (*on_message)(PeerId, std::span<const u8>, void*) noexcept,
-              void* user);
+    void poll(void (*on_message)(PeerId, std::span<const u8>, void*) noexcept, void* user);
 };
 
 }  // namespace psynder::net

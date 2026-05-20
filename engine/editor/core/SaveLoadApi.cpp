@@ -21,10 +21,10 @@
 #include <vector>
 
 #if __has_include(<zstd.h>)
-#   include <zstd.h>
-#   define PSYNDER_EDITOR_HAS_ZSTD 1
+#include <zstd.h>
+#define PSYNDER_EDITOR_HAS_ZSTD 1
 #else
-#   define PSYNDER_EDITOR_HAS_ZSTD 0
+#define PSYNDER_EDITOR_HAS_ZSTD 0
 #endif
 
 namespace psynder::editor {
@@ -35,18 +35,20 @@ struct DiskHeader {
     u32 magic;
     u16 version;
     u16 flags;
-    u32 payload_size;     // uncompressed body size
-    u32 body_size;        // on-disk body size
+    u32 payload_size;  // uncompressed body size
+    u32 body_size;     // on-disk body size
 };
 static_assert(sizeof(DiskHeader) == 16, "psylevel header must stay 16 bytes");
 
-PSY_FORCEINLINE std::string to_string(std::string_view v) { return std::string(v); }
+PSY_FORCEINLINE std::string to_string(std::string_view v) {
+    return std::string(v);
+}
 
 bool write_file_bytes(std::string_view path, const std::vector<u8>& bytes) {
     std::ofstream f(to_string(path), std::ios::binary | std::ios::trunc);
-    if (!f) return false;
-    f.write(reinterpret_cast<const char*>(bytes.data()),
-            static_cast<std::streamsize>(bytes.size()));
+    if (!f)
+        return false;
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     return f.good();
 }
 
@@ -61,9 +63,11 @@ bool read_file_bytes(std::string_view path, std::vector<u8>& out) {
         return true;
     }
     std::ifstream f(to_string(path), std::ios::binary | std::ios::ate);
-    if (!f) return false;
+    if (!f)
+        return false;
     const std::streamsize n = f.tellg();
-    if (n <= 0) return false;
+    if (n <= 0)
+        return false;
     f.seekg(0);
     out.resize(static_cast<usize>(n));
     f.read(reinterpret_cast<char*>(out.data()), n);
@@ -74,10 +78,9 @@ bool read_file_bytes(std::string_view path, std::vector<u8>& out) {
 bool compress_body(const std::vector<u8>& in, std::vector<u8>& out, u16& flags_out) {
     const usize bound = ZSTD_compressBound(in.size());
     out.resize(bound);
-    const usize n = ZSTD_compress(out.data(), out.size(),
-                                  in.data(),  in.size(),
-                                  ZSTD_CLEVEL_DEFAULT);
-    if (ZSTD_isError(n)) return false;
+    const usize n = ZSTD_compress(out.data(), out.size(), in.data(), in.size(), ZSTD_CLEVEL_DEFAULT);
+    if (ZSTD_isError(n))
+        return false;
     out.resize(n);
     flags_out |= serial::kFlagZstd;
     return true;
@@ -86,7 +89,8 @@ bool compress_body(const std::vector<u8>& in, std::vector<u8>& out, u16& flags_o
 bool decompress_body(const u8* src, usize src_size, usize payload_size, std::vector<u8>& out) {
     out.resize(payload_size);
     const usize n = ZSTD_decompress(out.data(), out.size(), src, src_size);
-    if (ZSTD_isError(n)) return false;
+    if (ZSTD_isError(n))
+        return false;
     out.resize(n);
     return true;
 }
@@ -105,18 +109,18 @@ bool save_blob(std::string_view path, u32 magic, bool with_terrain) {
 #if PSYNDER_EDITOR_HAS_ZSTD
     if (!compress_body(body, on_disk, flags)) {
         on_disk = body;
-        flags   = 0;
+        flags = 0;
     }
 #else
     on_disk = body;
 #endif
 
     DiskHeader hdr{};
-    hdr.magic        = magic;
-    hdr.version      = serial::kFormatVersion;
-    hdr.flags        = flags;
+    hdr.magic = magic;
+    hdr.version = serial::kFormatVersion;
+    hdr.flags = flags;
     hdr.payload_size = static_cast<u32>(body.size());
-    hdr.body_size    = static_cast<u32>(on_disk.size());
+    hdr.body_size = static_cast<u32>(on_disk.size());
 
     std::vector<u8> file;
     file.reserve(sizeof(hdr) + on_disk.size());
@@ -129,21 +133,27 @@ bool save_blob(std::string_view path, u32 magic, bool with_terrain) {
 
 bool load_blob(std::string_view path, u32 expected_magic, bool with_terrain) {
     std::vector<u8> file;
-    if (!read_file_bytes(path, file)) return false;
-    if (file.size() < sizeof(DiskHeader)) return false;
+    if (!read_file_bytes(path, file))
+        return false;
+    if (file.size() < sizeof(DiskHeader))
+        return false;
 
     DiskHeader hdr{};
     std::memcpy(&hdr, file.data(), sizeof(hdr));
-    if (hdr.magic != expected_magic)             return false;
-    if (hdr.version > serial::kFormatVersion)    return false;
-    if (file.size() < sizeof(hdr) + hdr.body_size) return false;
+    if (hdr.magic != expected_magic)
+        return false;
+    if (hdr.version > serial::kFormatVersion)
+        return false;
+    if (file.size() < sizeof(hdr) + hdr.body_size)
+        return false;
 
     const u8* body_src = file.data() + sizeof(hdr);
     std::vector<u8> body;
 
     if (hdr.flags & serial::kFlagZstd) {
 #if PSYNDER_EDITOR_HAS_ZSTD
-        if (!decompress_body(body_src, hdr.body_size, hdr.payload_size, body)) return false;
+        if (!decompress_body(body_src, hdr.body_size, hdr.payload_size, body))
+            return false;
 #else
         // File claims zstd but we weren't built with it; refuse so the
         // user gets a clear error rather than garbage data.

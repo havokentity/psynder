@@ -22,13 +22,13 @@ struct FlatHm {
     Heightmap hm;
     explicit FlatHm(u32 w, u32 h, f32 y, f32 cell = 1.0f) {
         data.assign(static_cast<size_t>(w) * h, y);
-        hm.y_data    = data.data();
-        hm.width     = w;
-        hm.height    = h;
-        hm.origin_xz = { 0.0f, 0.0f };
+        hm.y_data = data.data();
+        hm.width = w;
+        hm.height = h;
+        hm.origin_xz = {0.0f, 0.0f};
         hm.cell_size = cell;
-        hm.y_min     = y;
-        hm.y_max     = y;
+        hm.y_min = y;
+        hm.y_max = y;
     }
 };
 
@@ -50,22 +50,22 @@ struct RampHm {
                 ymax = std::max(ymax, y);
             }
         }
-        hm.y_data    = data.data();
-        hm.width     = w;
-        hm.height    = h;
-        hm.origin_xz = { 0.0f, 0.0f };
+        hm.y_data = data.data();
+        hm.width = w;
+        hm.height = h;
+        hm.origin_xz = {0.0f, 0.0f};
         hm.cell_size = cell;
-        hm.y_min     = ymin;
-        hm.y_max     = ymax;
+        hm.y_min = ymin;
+        hm.y_max = ymax;
     }
 };
 
 Ray make_ray(math::Vec3 o, math::Vec3 d, f32 t_max = 1e30f) {
     Ray r;
-    r.origin    = o;
+    r.origin = o;
     r.direction = d;
-    r.t_min     = 1e-4f;
-    r.t_max     = t_max;
+    r.t_min = 1e-4f;
+    r.t_max = t_max;
     return r;
 }
 
@@ -85,16 +85,14 @@ TEST_CASE("Heightmap shadow flat: ray dipping into surface — hit",
           "[render_rt][heightmap_shadow][flat]") {
     FlatHm fx(16, 16, /*y=*/2.0f);
     // Ray starts above (y=5) and points down +X +Y_neg into the plane.
-    Ray r = make_ray({0.5f, 5.0f, 8.0f},
-                     math::normalize(math::Vec3{1.0f, -1.0f, 0.0f}));
+    Ray r = make_ray({0.5f, 5.0f, 8.0f}, math::normalize(math::Vec3{1.0f, -1.0f, 0.0f}));
     REQUIRE(trace_heightmap_shadow(fx.hm, r));
 }
 
 TEST_CASE("Heightmap shadow flat: ray pointing up away from surface — miss",
           "[render_rt][heightmap_shadow][flat]") {
     FlatHm fx(16, 16, /*y=*/2.0f);
-    Ray r = make_ray({0.5f, 5.0f, 8.0f},
-                     math::normalize(math::Vec3{1.0f, 1.0f, 0.0f}));
+    Ray r = make_ray({0.5f, 5.0f, 8.0f}, math::normalize(math::Vec3{1.0f, 1.0f, 0.0f}));
     REQUIRE_FALSE(trace_heightmap_shadow(fx.hm, r));
 }
 
@@ -144,8 +142,7 @@ TEST_CASE("Heightmap shadow ramp: ray parallel to the ramp slope — miss",
     // (dy/dx = 1) just above the surface should miss.
     RampHm rx(16, 16, /*base=*/0.0f, /*slope_x=*/1.0f, /*slope_z=*/0.0f);
     // Start at (x=1, y=1.5) — surface at x=1 is y=1, so we're 0.5 above.
-    Ray r = make_ray({1.0f, 1.5f, 8.0f},
-                     math::normalize(math::Vec3{1.0f, 1.0f, 0.0f}));
+    Ray r = make_ray({1.0f, 1.5f, 8.0f}, math::normalize(math::Vec3{1.0f, 1.0f, 0.0f}));
     REQUIRE_FALSE(trace_heightmap_shadow(rx.hm, r));
 }
 
@@ -154,8 +151,7 @@ TEST_CASE("Heightmap shadow ramp: ray descending into ramp — hit",
     RampHm rx(16, 16, /*base=*/0.0f, /*slope_x=*/0.0f, /*slope_z=*/1.0f);
     // Surface rises along +Z. Ray starts at y=10 moving in +Z and slightly
     // -Y so it eventually drops below the ramp surface.
-    Ray r = make_ray({4.0f, 10.0f, 0.5f},
-                     math::normalize(math::Vec3{0.0f, -0.5f, 1.0f}));
+    Ray r = make_ray({4.0f, 10.0f, 0.5f}, math::normalize(math::Vec3{0.0f, -0.5f, 1.0f}));
     REQUIRE(trace_heightmap_shadow(rx.hm, r));
 }
 

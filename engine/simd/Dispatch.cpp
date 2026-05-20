@@ -22,9 +22,12 @@ Tier pick_tier(const psynder::hardware::CpuFeatures& f) noexcept {
     (void)f;
     return Tier::Neon;
 #elif defined(__x86_64__) || defined(_M_X64)
-    if (f.avx512f) return Tier::Avx512;
-    if (f.avx2 && f.fma) return Tier::Avx2;
-    if (f.sse42) return Tier::Sse42;
+    if (f.avx512f)
+        return Tier::Avx512;
+    if (f.avx2 && f.fma)
+        return Tier::Avx2;
+    if (f.sse42)
+        return Tier::Sse42;
     return Tier::Scalar;
 #else
     (void)f;
@@ -34,24 +37,31 @@ Tier pick_tier(const psynder::hardware::CpuFeatures& f) noexcept {
 }  // namespace
 
 void dispatch_init() noexcept {
-    if (g_init.load(std::memory_order_acquire)) return;
+    if (g_init.load(std::memory_order_acquire))
+        return;
     const auto& f = psynder::hardware::detect();
     g_tier.store(pick_tier(f), std::memory_order_release);
     g_init.store(true, std::memory_order_release);
 }
 
 Tier current_tier() noexcept {
-    if (!g_init.load(std::memory_order_acquire)) dispatch_init();
+    if (!g_init.load(std::memory_order_acquire))
+        dispatch_init();
     return g_tier.load(std::memory_order_acquire);
 }
 
 const char* tier_name(Tier t) noexcept {
     switch (t) {
-        case Tier::Scalar: return "scalar";
-        case Tier::Sse42:  return "sse4.2";
-        case Tier::Avx2:   return "avx2+fma";
-        case Tier::Avx512: return "avx-512";
-        case Tier::Neon:   return "neon";
+        case Tier::Scalar:
+            return "scalar";
+        case Tier::Sse42:
+            return "sse4.2";
+        case Tier::Avx2:
+            return "avx2+fma";
+        case Tier::Avx512:
+            return "avx-512";
+        case Tier::Neon:
+            return "neon";
     }
     return "?";
 }
@@ -67,61 +77,64 @@ const char* tier_name(Tier t) noexcept {
 
 psynder::f32 reduce_add(const psynder::f32* p, psynder::usize n) noexcept {
     psynder::usize i = 0;
-    psynder::f32   acc = 0.0f;
+    psynder::f32 acc = 0.0f;
 
 #if defined(__AVX__)
     if (current_tier() == Tier::Avx512 || current_tier() == Tier::Avx2) {
         f32x8 v_acc = broadcast8(0.0f);
-        for (; i + 8 <= n; i += 8) v_acc = add8(v_acc, load_unaligned8(p + i));
+        for (; i + 8 <= n; i += 8)
+            v_acc = add8(v_acc, load_unaligned8(p + i));
         acc += reduce_add8(v_acc);
     }
 #endif
     {
         f32x4 v_acc = broadcast4(0.0f);
-        for (; i + 4 <= n; i += 4) v_acc = add4(v_acc, load_unaligned4(p + i));
+        for (; i + 4 <= n; i += 4)
+            v_acc = add4(v_acc, load_unaligned4(p + i));
         acc += reduce_add4(v_acc);
     }
-    for (; i < n; ++i) acc += p[i];
+    for (; i < n; ++i)
+        acc += p[i];
     return acc;
 }
 
-void add_buffer(const psynder::f32* a, const psynder::f32* b,
-                psynder::f32* y, psynder::usize n) noexcept {
+void add_buffer(const psynder::f32* a, const psynder::f32* b, psynder::f32* y, psynder::usize n) noexcept {
     psynder::usize i = 0;
 #if defined(__AVX__)
     if (current_tier() == Tier::Avx512 || current_tier() == Tier::Avx2) {
         for (; i + 8 <= n; i += 8) {
-            store_unaligned8(y + i, add8(load_unaligned8(a + i),
-                                         load_unaligned8(b + i)));
+            store_unaligned8(y + i, add8(load_unaligned8(a + i), load_unaligned8(b + i)));
         }
     }
 #endif
     for (; i + 4 <= n; i += 4) {
-        store_unaligned4(y + i, add4(load_unaligned4(a + i),
-                                     load_unaligned4(b + i)));
+        store_unaligned4(y + i, add4(load_unaligned4(a + i), load_unaligned4(b + i)));
     }
-    for (; i < n; ++i) y[i] = a[i] + b[i];
+    for (; i < n; ++i)
+        y[i] = a[i] + b[i];
 }
 
-void fma_buffer(const psynder::f32* a, const psynder::f32* b,
-                const psynder::f32* c, psynder::f32* y,
+void fma_buffer(const psynder::f32* a,
+                const psynder::f32* b,
+                const psynder::f32* c,
+                psynder::f32* y,
                 psynder::usize n) noexcept {
     psynder::usize i = 0;
 #if defined(__AVX__)
     if (current_tier() == Tier::Avx512 || current_tier() == Tier::Avx2) {
         for (; i + 8 <= n; i += 8) {
-            store_unaligned8(y + i, fma8(load_unaligned8(a + i),
-                                         load_unaligned8(b + i),
-                                         load_unaligned8(c + i)));
+            store_unaligned8(
+                y + i,
+                fma8(load_unaligned8(a + i), load_unaligned8(b + i), load_unaligned8(c + i)));
         }
     }
 #endif
     for (; i + 4 <= n; i += 4) {
-        store_unaligned4(y + i, fma4(load_unaligned4(a + i),
-                                     load_unaligned4(b + i),
-                                     load_unaligned4(c + i)));
+        store_unaligned4(y + i,
+                         fma4(load_unaligned4(a + i), load_unaligned4(b + i), load_unaligned4(c + i)));
     }
-    for (; i < n; ++i) y[i] = a[i] * b[i] + c[i];
+    for (; i < n; ++i)
+        y[i] = a[i] * b[i] + c[i];
 }
 
 // ─── Static initialiser ──────────────────────────────────────────────────
@@ -130,7 +143,9 @@ void fma_buffer(const psynder::f32* a, const psynder::f32* b,
 // not needed yet because Psynder uses Clang on every supported platform.
 namespace {
 #if defined(__GNUC__) || defined(__clang__)
-__attribute__((constructor)) void simd_dispatch_ctor() { dispatch_init(); }
+__attribute__((constructor)) void simd_dispatch_ctor() {
+    dispatch_init();
+}
 #endif
 }  // namespace
 

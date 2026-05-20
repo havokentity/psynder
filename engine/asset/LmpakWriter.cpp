@@ -7,10 +7,10 @@
 #include "LmpakWriter.h"
 
 #if __has_include(<zstd.h>)
-#   include <zstd.h>
-#   define PSYNDER_ASSET_HAS_ZSTD 1
+#include <zstd.h>
+#define PSYNDER_ASSET_HAS_ZSTD 1
 #else
-#   define PSYNDER_ASSET_HAS_ZSTD 0
+#define PSYNDER_ASSET_HAS_ZSTD 0
 #endif
 
 #include <vector>

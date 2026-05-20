@@ -56,9 +56,9 @@ void Host::send(PeerId peer, std::span<const u8> bytes, bool reliable) {
     default_impl().send(peer, bytes, reliable, kChannelDefault);
 }
 
-void Host::poll(void (*on_message)(PeerId, std::span<const u8>, void*) noexcept,
-                void* user) {
-    if (!on_message) return;
+void Host::poll(void (*on_message)(PeerId, std::span<const u8>, void*) noexcept, void* user) {
+    if (!on_message)
+        return;
     auto& scratch = poll_scratch().buf;
     scratch.clear();
     default_impl().poll(scratch);

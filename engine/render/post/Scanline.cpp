@@ -60,13 +60,16 @@ void apply_scanline_rgba8(Framebuffer& fb, f32 strength) noexcept {
 }  // namespace
 
 void apply_scanline(Framebuffer& fb, const ScanlineParams& params) {
-    if (!params.enabled) return;
-    if (!fb.pixels || fb.width == 0 || fb.height == 0) return;
+    if (!params.enabled)
+        return;
+    if (!fb.pixels || fb.width == 0 || fb.height == 0)
+        return;
 
     // strength clamped — at strength=1.0 odd rows go black and even rows
     // double; >1 would invert. The cvar is clamped in Cvars.cpp on change.
     const f32 strength = std::clamp(params.strength, 0.0f, 1.0f);
-    if (strength == 0.0f) return;
+    if (strength == 0.0f)
+        return;
 
     // Lane convention: an HDR framebuffer uses the same `Framebuffer` struct
     // but with `pitch >= width * 16` (4 floats per pixel). LDR uses `pitch
@@ -74,7 +77,7 @@ void apply_scanline(Framebuffer& fb, const ScanlineParams& params) {
     // explicit LDR formats; anything else with a pitch big enough for HDR
     // is treated as HDR.
     const usize row_bytes_hdr = static_cast<usize>(fb.width) * sizeof(detail::HdrPixel);
-    const bool  is_hdr = fb.pitch >= row_bytes_hdr;
+    const bool is_hdr = fb.pitch >= row_bytes_hdr;
 
     if (is_hdr) {
         apply_scanline_hdr(fb, strength);

@@ -21,33 +21,28 @@
 
 namespace pli = psynder::platform::linux_impl;
 
-TEST_CASE("platform_linux: audio backend ranking prefers PipeWire then ALSA, "
-          "and the route-sentinel symbol resolves on every host",
-          "[platform-linux][audio]") {
+TEST_CASE(
+    "platform_linux: audio backend ranking prefers PipeWire then ALSA, "
+    "and the route-sentinel symbol resolves on every host",
+    "[platform-linux][audio]") {
     // ─── Ranking ────────────────────────────────────────────────────────
     // DESIGN.md §11.2 — PipeWire first, ALSA fallback, None last.
-    STATIC_REQUIRE(pli::backend_preferred_over(pli::AudioBackend::PipeWire,
-                                               pli::AudioBackend::ALSA));
-    STATIC_REQUIRE(pli::backend_preferred_over(pli::AudioBackend::ALSA,
-                                               pli::AudioBackend::None));
-    STATIC_REQUIRE_FALSE(pli::backend_preferred_over(pli::AudioBackend::ALSA,
-                                                    pli::AudioBackend::PipeWire));
+    STATIC_REQUIRE(pli::backend_preferred_over(pli::AudioBackend::PipeWire, pli::AudioBackend::ALSA));
+    STATIC_REQUIRE(pli::backend_preferred_over(pli::AudioBackend::ALSA, pli::AudioBackend::None));
+    STATIC_REQUIRE_FALSE(
+        pli::backend_preferred_over(pli::AudioBackend::ALSA, pli::AudioBackend::PipeWire));
 
     // prefer() folds the ordering — pairwise checks for each combination.
-    STATIC_REQUIRE(pli::prefer(pli::AudioBackend::PipeWire,
-                               pli::AudioBackend::ALSA) ==
+    STATIC_REQUIRE(pli::prefer(pli::AudioBackend::PipeWire, pli::AudioBackend::ALSA) ==
                    pli::AudioBackend::PipeWire);
-    STATIC_REQUIRE(pli::prefer(pli::AudioBackend::ALSA,
-                               pli::AudioBackend::PipeWire) ==
+    STATIC_REQUIRE(pli::prefer(pli::AudioBackend::ALSA, pli::AudioBackend::PipeWire) ==
                    pli::AudioBackend::PipeWire);
-    STATIC_REQUIRE(pli::prefer(pli::AudioBackend::None,
-                               pli::AudioBackend::ALSA) ==
+    STATIC_REQUIRE(pli::prefer(pli::AudioBackend::None, pli::AudioBackend::ALSA) ==
                    pli::AudioBackend::ALSA);
 
     // Runtime checks too, so the assertion message shows up in test output
     // when somebody flips the enum order without re-reading DESIGN.md.
-    REQUIRE(pli::prefer(pli::AudioBackend::PipeWire,
-                        pli::AudioBackend::ALSA) ==
+    REQUIRE(pli::prefer(pli::AudioBackend::PipeWire, pli::AudioBackend::ALSA) ==
             pli::AudioBackend::PipeWire);
 
     // ─── Sentinel ───────────────────────────────────────────────────────

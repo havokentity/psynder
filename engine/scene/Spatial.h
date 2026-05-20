@@ -31,7 +31,7 @@ enum class SpatialBackend : u8 {
 };
 
 struct SpatialKey {
-    u32 raw = 0;    // backend-defined opaque handle
+    u32 raw = 0;  // backend-defined opaque handle
     constexpr bool valid() const noexcept { return raw != 0; }
 };
 
@@ -48,11 +48,11 @@ struct SpatialKey {
 // A region may opt into a non-default backend via `set_region_override`.
 
 enum class QueryKind : u8 {
-    Raycast,            // BVH
-    FrustumCull,        // BVH
-    Broadphase,         // SAP (or HashedGrid)
-    NearestNeighbour,   // HashedGrid
-    AabbOverlap,        // BVH (general spatial overlap test)
+    Raycast,           // BVH
+    FrustumCull,       // BVH
+    Broadphase,        // SAP (or HashedGrid)
+    NearestNeighbour,  // HashedGrid
+    AabbOverlap,       // BVH (general spatial overlap test)
 };
 
 // Region identifier — opaque u32 chosen by the world (per indoor cell /
@@ -67,8 +67,7 @@ SpatialBackend route_query(QueryKind kind, RegionId region = kGlobalRegion) noex
 // Override the default routing for a single region. `backend == None`
 // clears the override (falls back to the table for `kind`). Pass `region
 // == kGlobalRegion` to override the global default for that kind.
-void set_region_override(QueryKind kind, RegionId region,
-                         SpatialBackend backend) noexcept;
+void set_region_override(QueryKind kind, RegionId region, SpatialBackend backend) noexcept;
 
 // Clear every override. Used by tests and the world reset path.
 void clear_region_overrides() noexcept;
@@ -82,13 +81,12 @@ namespace detail {
 struct ISpatialIndex {
     virtual ~ISpatialIndex() = default;
     virtual SpatialKey insert(u32 entity_index, const math::Aabb& bounds) = 0;
-    virtual void       update(SpatialKey key, const math::Aabb& bounds)   = 0;
-    virtual void       remove(SpatialKey key)                              = 0;
+    virtual void update(SpatialKey key, const math::Aabb& bounds) = 0;
+    virtual void remove(SpatialKey key) = 0;
     // Hot path — NOT virtual. Backends provide a non-virtual templated
     // walk that the ECS calls directly through CRTP at the lane-07 raster
     // submission step. This virtual surface is for editor / debug only.
-    virtual void       query_aabb(const math::Aabb& q,
-                                  std::span<u32>  out_entities) const     = 0;
+    virtual void query_aabb(const math::Aabb& q, std::span<u32> out_entities) const = 0;
 };
 
 // Wave-B backends. Each returns a non-null singleton for its lifetime.
@@ -110,15 +108,18 @@ ISpatialIndex* resolve(SpatialBackend backend) noexcept;
 // BVH — measure refit SAH cost vs as-built and recommend async rebuild
 // when ratio > 1.3 (DESIGN.md §9.4).
 struct BvhRefitStats {
-    f32  sah_cost           = 0.0f;
-    f32  sah_cost_as_built  = 0.0f;
+    f32 sah_cost = 0.0f;
+    f32 sah_cost_as_built = 0.0f;
     bool should_async_rebuild = false;
 };
 BvhRefitStats bvh_refit() noexcept;
 
 // SAP — drain the most recent overlap-pair list. Each entry is a pair of
 // entity indices (lower index first). Cleared on next `sap_step()`.
-struct SapPair { u32 a; u32 b; };
+struct SapPair {
+    u32 a;
+    u32 b;
+};
 std::span<const SapPair> sap_overlap_pairs() noexcept;
 // Walk endpoint arrays + emit overlap pairs. O(n + k) per axis where k is
 // the number of swaps from the previous step.
@@ -126,8 +127,7 @@ void sap_step() noexcept;
 
 // Hashed grid — radius query around `center`, writes up to `out.size()`
 // entity indices, returns how many were written.
-u32 grid_radius_query(math::Vec3 center, f32 radius,
-                      std::span<u32> out) noexcept;
+u32 grid_radius_query(math::Vec3 center, f32 radius, std::span<u32> out) noexcept;
 
 }  // namespace detail
 

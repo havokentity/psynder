@@ -51,9 +51,9 @@ TEST_CASE("submit(desc, dep) enforces dependency order", "[jobs][graph]") {
     js.start();
 
     OrderState st;
-    JobDesc da{ task_a, &st, "a", 0 };
-    JobDesc db{ task_b, &st, "b", 0 };
-    JobDesc dc{ task_c, &st, "c", 0 };
+    JobDesc da{task_a, &st, "a", 0};
+    JobDesc db{task_b, &st, "b", 0};
+    JobDesc dc{task_c, &st, "c", 0};
 
     JobHandle ha = js.submit(da);
     JobHandle hb = js.submit(db, ha);
@@ -68,8 +68,7 @@ TEST_CASE("submit(desc, dep) enforces dependency order", "[jobs][graph]") {
     js.stop();
 }
 
-TEST_CASE("fan-out: many children of one parent all wait correctly",
-          "[jobs][graph]") {
+TEST_CASE("fan-out: many children of one parent all wait correctly", "[jobs][graph]") {
     auto& js = JobSystem::Get();
     js.start();
 
@@ -77,12 +76,20 @@ TEST_CASE("fan-out: many children of one parent all wait correctly",
     std::atomic<int> children_seeing_parent_done{0};
     constexpr int kFan = 32;
 
-    struct ParentCtx { std::atomic<int>* d; };
-    struct ChildCtx  { std::atomic<int>* d; std::atomic<int>* c; };
+    struct ParentCtx {
+        std::atomic<int>* d;
+    };
+    struct ChildCtx {
+        std::atomic<int>* d;
+        std::atomic<int>* c;
+    };
 
-    ParentCtx pctx{ &parent_done };
+    ParentCtx pctx{&parent_done};
     std::vector<ChildCtx> cctxs(kFan);
-    for (auto& c : cctxs) { c.d = &parent_done; c.c = &children_seeing_parent_done; }
+    for (auto& c : cctxs) {
+        c.d = &parent_done;
+        c.c = &children_seeing_parent_done;
+    }
 
     auto parent_fn = +[](void* u) noexcept {
         auto* p = static_cast<ParentCtx*>(u);
@@ -96,29 +103,29 @@ TEST_CASE("fan-out: many children of one parent all wait correctly",
         }
     };
 
-    JobDesc pd{ parent_fn, &pctx, "parent", 0 };
+    JobDesc pd{parent_fn, &pctx, "parent", 0};
     JobHandle hp = js.submit(pd);
     std::vector<JobHandle> hc(kFan);
     for (int i = 0; i < kFan; ++i) {
-        JobDesc cd{ child_fn, &cctxs[static_cast<size_t>(i)], "child", 0 };
+        JobDesc cd{child_fn, &cctxs[static_cast<size_t>(i)], "child", 0};
         hc[static_cast<size_t>(i)] = js.submit(cd, hp);
     }
-    for (auto h : hc) js.wait(h);
+    for (auto h : hc)
+        js.wait(h);
 
     REQUIRE(children_seeing_parent_done.load() == kFan);
 
     js.stop();
 }
 
-TEST_CASE("repeated submit/wait does not leak slots across frames",
-          "[jobs][graph][leak]") {
+TEST_CASE("repeated submit/wait does not leak slots across frames", "[jobs][graph][leak]") {
     auto& js = JobSystem::Get();
     js.start();
 
     // Submit far more jobs in total than the pool can hold simultaneously
     // (kPoolCapacity is 64k internal). If slots leaked we'd run out quickly.
-    constexpr int kFrames        = 64;
-    constexpr int kJobsPerFrame  = 4096;
+    constexpr int kFrames = 64;
+    constexpr int kJobsPerFrame = 4096;
 
     std::atomic<int> counter{0};
     auto bump = +[](void* u) noexcept {
@@ -129,10 +136,11 @@ TEST_CASE("repeated submit/wait does not leak slots across frames",
         std::vector<JobHandle> handles;
         handles.reserve(static_cast<size_t>(kJobsPerFrame));
         for (int i = 0; i < kJobsPerFrame; ++i) {
-            JobDesc d{ bump, &counter, "leaky", 0 };
+            JobDesc d{bump, &counter, "leaky", 0};
             handles.push_back(js.submit(d));
         }
-        for (auto h : handles) js.wait(h);
+        for (auto h : handles)
+            js.wait(h);
         // Per-frame barrier — every submitted job must have run exactly once
         // before its handle's wait() returns. This catches both "lost a job"
         // and "ran twice" regressions immediately rather than at the final
@@ -145,8 +153,7 @@ TEST_CASE("repeated submit/wait does not leak slots across frames",
     js.stop();
 }
 
-TEST_CASE("dep on already-completed handle still dispatches the child",
-          "[jobs][graph][race]") {
+TEST_CASE("dep on already-completed handle still dispatches the child", "[jobs][graph][race]") {
     auto& js = JobSystem::Get();
     js.start();
 
@@ -155,11 +162,11 @@ TEST_CASE("dep on already-completed handle still dispatches the child",
         static_cast<std::atomic<int>*>(u)->fetch_add(1, std::memory_order_relaxed);
     };
 
-    JobDesc parent{ fn, &ran, "p", 0 };
+    JobDesc parent{fn, &ran, "p", 0};
     JobHandle hp = js.submit(parent);
     js.wait(hp);  // parent definitely done now
 
-    JobDesc child{ fn, &ran, "c", 0 };
+    JobDesc child{fn, &ran, "c", 0};
     JobHandle hc = js.submit(child, hp);
     js.wait(hc);
 

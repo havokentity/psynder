@@ -52,12 +52,12 @@ void write_file(const fs::path& p, std::string_view bytes) {
 }
 
 struct ResetGuard {
-    ResetGuard()  { psynder::asset::internal::reset_for_tests(); }
+    ResetGuard() { psynder::asset::internal::reset_for_tests(); }
     ~ResetGuard() { psynder::asset::internal::reset_for_tests(); }
 };
 
 struct WatchState {
-    int         fires = 0;
+    int fires = 0;
     std::string last_path;
 };
 
@@ -69,8 +69,7 @@ auto watch_cb = +[](std::string_view path, void* user) noexcept {
 
 }  // namespace
 
-TEST_CASE("asset/watch: watcher fires on file rename away from vpath",
-          "[asset][vfs][watch]") {
+TEST_CASE("asset/watch: watcher fires on file rename away from vpath", "[asset][vfs][watch]") {
     ResetGuard rg;
     auto dir = make_scratch_dir("rename_away");
     auto src = dir / "doc.txt";
@@ -99,8 +98,7 @@ TEST_CASE("asset/watch: watcher fires on file rename away from vpath",
     REQUIRE(st.fires == after_first);
 }
 
-TEST_CASE("asset/watch: watcher fires on file delete",
-          "[asset][vfs][watch]") {
+TEST_CASE("asset/watch: watcher fires on file delete", "[asset][vfs][watch]") {
     ResetGuard rg;
     auto dir = make_scratch_dir("delete");
     auto file = dir / "config.json";
@@ -122,8 +120,7 @@ TEST_CASE("asset/watch: watcher fires on file delete",
     REQUIRE(st.fires == after_delete);  // idempotent
 }
 
-TEST_CASE("asset/watch: watcher fires when a deleted file is recreated",
-          "[asset][vfs][watch]") {
+TEST_CASE("asset/watch: watcher fires when a deleted file is recreated", "[asset][vfs][watch]") {
     ResetGuard rg;
     auto dir = make_scratch_dir("recreate");
     auto file = dir / "shader.txt";
@@ -155,7 +152,7 @@ TEST_CASE("asset/watch: rename-into-place fires when a new file lands at the vpa
     ResetGuard rg;
     auto dir = make_scratch_dir("rename_into");
     auto vpath_file = dir / "target.txt";
-    auto staging   = dir / "target.txt.new";
+    auto staging = dir / "target.txt.new";
     write_file(vpath_file, "old-bytes");
     REQUIRE(Vfs::Get().mount_directory(dir.string()));
 

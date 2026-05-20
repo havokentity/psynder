@@ -46,7 +46,7 @@ struct Connection {
 };
 
 class Server {
-public:
+   public:
     static Server& Get();
 
     bool start(const char* bind_host, ::psynder::u16 port, bool require_session_token);
@@ -63,8 +63,7 @@ public:
     // that have not subscribed to `slice_name` see no traffic — this is the
     // mechanism by which the React panels under engine/editor/web/ multiplex
     // their independent panel updates across one socket.
-    void push_scene_delta(std::string_view slice_name,
-                          std::span<const ::psynder::u8> msgpack_payload);
+    void push_scene_delta(std::string_view slice_name, std::span<const ::psynder::u8> msgpack_payload);
 
     // Wave-B: install the script REPL evaluator as the console-panel backend.
     // Called automatically from `start()` so ConsoleFrame messages route
@@ -92,15 +91,19 @@ public:
         std::weak_ptr<Connection> conn;
     };
 
-private:
+   private:
     void accept_loop();
     void client_loop(std::shared_ptr<Connection> conn);
 
-    bool handle_http_upgrade(Connection& conn, const std::string& path,
+    bool handle_http_upgrade(Connection& conn,
+                             const std::string& path,
                              const std::string& sec_ws_key,
                              const std::string& sec_ws_protocol);
-    void send_http(Connection& conn, int status, std::string_view reason,
-                   std::string_view content_type, std::string_view body);
+    void send_http(Connection& conn,
+                   int status,
+                   std::string_view reason,
+                   std::string_view content_type,
+                   std::string_view body);
     void serve_static(Connection& conn, const std::string& path);
     void enqueue(Connection& conn, std::vector<::psynder::u8> frame);
 
@@ -110,25 +113,25 @@ private:
     // both for robustness.
     static std::string extract_token(std::string_view path);
 
-private:
-    std::atomic<bool>  running_{false};
-    int                listen_sock_ = -1;
-    std::thread        accept_thread_;
-    bool               require_token_ = true;
-    ::psynder::u16     port_ = 0;
-    std::string        bind_host_;
-    std::string        session_token_;
+   private:
+    std::atomic<bool> running_{false};
+    int listen_sock_ = -1;
+    std::thread accept_thread_;
+    bool require_token_ = true;
+    ::psynder::u16 port_ = 0;
+    std::string bind_host_;
+    std::string session_token_;
 
-    std::mutex                                  conns_mu_;
-    std::vector<std::shared_ptr<Connection>>    conns_;
+    std::mutex conns_mu_;
+    std::vector<std::shared_ptr<Connection>> conns_;
 
-    std::mutex                                  inbound_mu_;
-    std::deque<InboundCmd>                      inbound_;
+    std::mutex inbound_mu_;
+    std::deque<InboundCmd> inbound_;
 
     // Wave-B: set by `install_repl_backend()`. When false, `pump()` falls
     // back to the legacy Wave-A path (log-only). When true, `pump()` calls
     // `script::dispatch_repl` and ships back a ConsoleReply frame.
-    std::atomic<bool>                           repl_installed_{false};
+    std::atomic<bool> repl_installed_{false};
 };
 
 }  // namespace psynder::editor::ipc::internal

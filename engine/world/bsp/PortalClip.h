@@ -45,11 +45,11 @@ namespace psynder::world::bsp {
 // edges than fit, we keep the first kMaxFrustumPlanes - in.plane_count side
 // planes (the dropped edges are conservatively visible — over-emit is correct,
 // under-emit is the bug we never want).
-bool clip_frustum_by_portal(const PortalFrustum&        in,
-                            const BspPortal&            portal,
+bool clip_frustum_by_portal(const PortalFrustum& in,
+                            const BspPortal& portal,
                             const std::vector<math::Vec3>& vertices,
-                            math::Vec3                  eye,
-                            PortalFrustum&              out);
+                            math::Vec3 eye,
+                            PortalFrustum& out);
 
 // True if `eye` is on the front (PVS-visible) side of `portal`. CCW winding
 // from `front_leaf` toward `back_leaf` means the polygon normal points

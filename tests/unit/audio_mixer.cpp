@@ -33,10 +33,10 @@ TEST_CASE("audio: mixer doesn't clip with 32 quiet sine voices", "[audio][mixer]
         std::fill(voice_buf.begin(), voice_buf.end(), 0.0f);
         const f32 phase = static_cast<f32>(v) * 0.123f;
         for (u32 i = 0; i < kFrames; ++i) {
-            const f32 s = std::sin(2.0f * psynder::math::kPi *
-                                   (static_cast<f32>(i) / static_cast<f32>(kFrames)) + phase);
-            voice_buf[2*i + 0] = s * per_voice_amp;
-            voice_buf[2*i + 1] = s * per_voice_amp;
+            const f32 s = std::sin(
+                2.0f * psynder::math::kPi * (static_cast<f32>(i) / static_cast<f32>(kFrames)) + phase);
+            voice_buf[2 * i + 0] = s * per_voice_amp;
+            voice_buf[2 * i + 1] = s * per_voice_amp;
         }
         // SIMD-merge into master.
         simd_mix_into(master.data(), voice_buf.data(), 1.0f, stereo_floats);
@@ -52,7 +52,7 @@ TEST_CASE("audio: mixer doesn't clip with 32 quiet sine voices", "[audio][mixer]
     REQUIRE(peak <= 1.0f);
     // Sanity: with random phases the mixed peak shouldn't approach the
     // per-voice peak (1/N * N = 1) — the random phase should reduce it.
-    REQUIRE(peak >  0.0f);
+    REQUIRE(peak > 0.0f);
 }
 
 TEST_CASE("audio: simd_mix_into matches scalar reference", "[audio][mixer][simd]") {
@@ -63,10 +63,12 @@ TEST_CASE("audio: simd_mix_into matches scalar reference", "[audio][mixer][simd]
     std::array<f32, n> dst_simd{};
     std::array<f32, n> dst_ref{};
     std::array<f32, n> src{};
-    for (u32 i = 0; i < n; ++i) src[i] = static_cast<f32>(i) * 0.1f;
+    for (u32 i = 0; i < n; ++i)
+        src[i] = static_cast<f32>(i) * 0.1f;
 
     simd_mix_into(dst_simd.data(), src.data(), 2.0f, n);
-    for (u32 i = 0; i < n; ++i) dst_ref[i] = src[i] * 2.0f;
+    for (u32 i = 0; i < n; ++i)
+        dst_ref[i] = src[i] * 2.0f;
 
     for (u32 i = 0; i < n; ++i) {
         INFO("i=" << i << " simd=" << dst_simd[i] << " ref=" << dst_ref[i]);
