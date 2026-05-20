@@ -21,9 +21,9 @@ namespace {
 // Pimpl-style state owned by the singleton Vm. Hidden in this TU so the
 // public header stays a thin contract (frozen — see Script.h).
 struct VmImpl {
-    detail::LuaState        lua;
-    detail::ScriptRegistry  registry;
-    bool                    started = false;
+    detail::LuaState lua;
+    detail::ScriptRegistry registry;
+    bool started = false;
 };
 
 VmImpl& vm_impl() {
@@ -96,8 +96,7 @@ bool Vm::start() {
     // it can extend rather than replace the existing methods.
     detail::register_spawn_binding(impl.lua.handle());
     impl.started = true;
-    PSY_LOG_INFO("script: Vm started (Lua {}.{})", LUA_VERSION_MAJOR,
-                 LUA_VERSION_MINOR);
+    PSY_LOG_INFO("script: Vm started (Lua {}.{})", LUA_VERSION_MAJOR, LUA_VERSION_MINOR);
     return true;
 }
 
@@ -119,8 +118,7 @@ bool Vm::execute_string(std::string_view source, std::string_view name) {
     }
     lua_State* L = impl.lua.handle();
     std::string chunk_name{name.empty() ? "<string>" : name};
-    if (luaL_loadbuffer(L, source.data(), source.size(),
-                        chunk_name.c_str()) != LUA_OK) {
+    if (luaL_loadbuffer(L, source.data(), source.size(), chunk_name.c_str()) != LUA_OK) {
         const char* msg = lua_tostring(L, -1);
         PSY_LOG_ERROR("script: load failed: {}", msg ? msg : "?");
         lua_pop(L, 1);
@@ -149,8 +147,7 @@ bool Vm::execute_file(std::string_view virtual_path) {
     std::string path{virtual_path};
     if (luaL_loadfile(L, path.c_str()) != LUA_OK) {
         const char* msg = lua_tostring(L, -1);
-        PSY_LOG_ERROR("script: loadfile '{}' failed: {}",
-                      path, msg ? msg : "?");
+        PSY_LOG_ERROR("script: loadfile '{}' failed: {}", path, msg ? msg : "?");
         lua_pop(L, 1);
         return false;
     }
@@ -180,14 +177,12 @@ bool Vm::execute_repl(std::string_view line, std::string& out) {
     wrapped.append(line);
 
     bool loaded = false;
-    if (luaL_loadbuffer(L, wrapped.data(), wrapped.size(),
-                        "=repl") == LUA_OK) {
+    if (luaL_loadbuffer(L, wrapped.data(), wrapped.size(), "=repl") == LUA_OK) {
         loaded = true;
     } else {
         // Discard the error from the expression attempt; try as statement.
         lua_pop(L, 1);
-        if (luaL_loadbuffer(L, line.data(), line.size(),
-                            "=repl") == LUA_OK) {
+        if (luaL_loadbuffer(L, line.data(), line.size(), "=repl") == LUA_OK) {
             loaded = true;
         } else {
             const char* msg = lua_tostring(L, -1);
@@ -209,7 +204,8 @@ bool Vm::execute_repl(std::string_view line, std::string& out) {
 
     const int n_results = lua_gettop(L) - top_before;
     for (int i = 1; i <= n_results; ++i) {
-        if (i > 1) out += '\t';
+        if (i > 1)
+            out += '\t';
         format_value(L, top_before + i, out);
     }
     if (n_results > 0) {

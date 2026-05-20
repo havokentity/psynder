@@ -42,7 +42,6 @@ namespace psynder::log {
 // other engine file.
 using ::psynder::usize;
 
-
 namespace {
 
 // ─── Sink registry (RCU-style) ──────────────────────────────────────────
@@ -79,7 +78,8 @@ SinkEpoch& sink_epoch() {
 }
 
 void retire_sink_list(SinkList* old) {
-    if (!old) return;
+    if (!old)
+        return;
     auto& e = sink_epoch();
     std::lock_guard<std::mutex> lk(e.mu);
     SinkList* evicted = e.retired[e.head];
@@ -96,7 +96,7 @@ void retire_sink_list(SinkList* old) {
 constexpr usize kRingDepth = 256;
 
 struct LineEntry {
-    Level       level = Level::Info;
+    Level level = Level::Info;
     std::string text;
 };
 
@@ -111,16 +111,20 @@ thread_local Ring tls_ring;
 void push_ring(Level level, std::string&& line) {
     auto& r = tls_ring;
     r.entries[r.head].level = level;
-    r.entries[r.head].text  = std::move(line);
+    r.entries[r.head].text = std::move(line);
     r.head = (r.head + 1) % kRingDepth;
-    if (r.count < kRingDepth) ++r.count;
+    if (r.count < kRingDepth)
+        ++r.count;
 }
 
 const char* level_prefix(Level l) noexcept {
     switch (l) {
-        case Level::Info:  return "info";
-        case Level::Warn:  return "warn";
-        case Level::Error: return "error";
+        case Level::Info:
+            return "info";
+        case Level::Warn:
+            return "warn";
+        case Level::Error:
+            return "error";
     }
     return "?";
 }
@@ -150,7 +154,8 @@ void emit(Level level, fmt::string_view fmt_str, fmt::format_args args) {
     std::fputs("] ", dst);
     std::fwrite(line.data(), 1, line.size(), dst);
     std::fputc('\n', dst);
-    if (level == Level::Error) std::fflush(dst);
+    if (level == Level::Error)
+        std::fflush(dst);
 
     // Lock-free sink fan-out. Load the snapshot pointer once; the list
     // is immutable so iteration is safe even if a writer swaps a new
@@ -159,25 +164,27 @@ void emit(Level level, fmt::string_view fmt_str, fmt::format_args args) {
     SinkList* snap = g_sinks.load(std::memory_order_acquire);
     if (snap) {
         for (auto s : snap->sinks) {
-            if (s) s(level, line);
+            if (s)
+                s(level, line);
         }
     }
 }
 
 void add_sink(Sink sink) {
-    if (!sink) return;
+    if (!sink)
+        return;
     // Construct a new immutable list = current + new sink, then swap.
     SinkList* old = g_sinks.load(std::memory_order_acquire);
     auto* fresh = new SinkList;
-    if (old) fresh->sinks = old->sinks;
+    if (old)
+        fresh->sinks = old->sinks;
     fresh->sinks.push_back(sink);
 
-    while (!g_sinks.compare_exchange_weak(old, fresh,
-                                          std::memory_order_acq_rel,
-                                          std::memory_order_acquire)) {
+    while (!g_sinks.compare_exchange_weak(old, fresh, std::memory_order_acq_rel, std::memory_order_acquire)) {
         // Someone raced us; rebuild from the new old.
         fresh->sinks.clear();
-        if (old) fresh->sinks = old->sinks;
+        if (old)
+            fresh->sinks = old->sinks;
         fresh->sinks.push_back(sink);
     }
     retire_sink_list(old);

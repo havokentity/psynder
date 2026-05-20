@@ -29,9 +29,13 @@ AllowShortLoopsOnASingleLine: false
 AllowShortFunctionsOnASingleLine: Inline
 AllowShortCaseLabelsOnASingleLine: false
 
-# Includes
-IncludeBlocks: Regroup
-SortIncludes: true
+# Includes — do NOT reorder. Several platform TUs depend on include order
+# (e.g. engine/platform/linux/X11Window.cpp must pull LinuxKeymap.h before
+# <X11/keysym.h>, which #defines XK_* macros that would otherwise clobber
+# the xkb:: constants). Auto-sorting silently breaks the Linux/Windows
+# builds, which we can't catch on the Mac dev box, so keep it off.
+IncludeBlocks: Preserve
+SortIncludes: false
 
 # Constructors
 ConstructorInitializerIndentWidth: 4

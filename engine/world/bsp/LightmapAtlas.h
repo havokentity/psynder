@@ -33,15 +33,14 @@ namespace psynder::world::bsp {
 // atlas packs surfaces into fixed-size tiles; 128×128 RGB16F is a reasonable
 // default page that matches the rasterizer's lightmap sampler stride and
 // keeps a single page at exactly 96 KiB (128 * 128 * 3 * 2 bytes per pixel).
-inline constexpr u32 kLightmapPageWidth   = 128u;
-inline constexpr u32 kLightmapPageHeight  = 128u;
+inline constexpr u32 kLightmapPageWidth = 128u;
+inline constexpr u32 kLightmapPageHeight = 128u;
 // Half-float RGB → 6 bytes per texel. Stored as plain bytes; lane 12 raster
 // reinterpret-casts to `u16[3]` for sampling.
-inline constexpr u32 kLightmapPageBytes   =
-    kLightmapPageWidth * kLightmapPageHeight * 6u;
+inline constexpr u32 kLightmapPageBytes = kLightmapPageWidth * kLightmapPageHeight * 6u;
 
 // LRU resident-set cap. ~256 pages × 96 KiB ≈ 24 MiB upper bound on atlas RAM.
-inline constexpr u32 kLightmapMaxPages    = 256u;
+inline constexpr u32 kLightmapMaxPages = 256u;
 
 // A single resident page. `pixels` points into the slab; null means the page
 // has been evicted and a later `atlas_page_for_surface` will need to reload
@@ -49,20 +48,20 @@ inline constexpr u32 kLightmapMaxPages    = 256u;
 // memcpy from disk — Wave B keeps the bytes zero-filled and lets the
 // rasterizer fall back to its untextured path).
 struct LightmapPage {
-    u32 page_id      = 0u;   // BspFace::lightmap value
-    u32 width        = 0u;
-    u32 height       = 0u;
-    u32 byte_stride  = 0u;   // bytes per row
-    u8* pixels       = nullptr;
+    u32 page_id = 0u;  // BspFace::lightmap value
+    u32 width = 0u;
+    u32 height = 0u;
+    u32 byte_stride = 0u;  // bytes per row
+    u8* pixels = nullptr;
 };
 
 // The atlas itself. One per BspMap.
 class LightmapAtlas {
-public:
+   public:
     LightmapAtlas() = default;
     ~LightmapAtlas() = default;
 
-    LightmapAtlas(const LightmapAtlas&)            = delete;
+    LightmapAtlas(const LightmapAtlas&) = delete;
     LightmapAtlas& operator=(const LightmapAtlas&) = delete;
 
     // Bind a backing arena. The arena MUST outlive the atlas. `init` may be
@@ -89,11 +88,11 @@ public:
     // Total bytes allocated from the bound arena (sum of resident page sizes).
     usize allocated_bytes() const noexcept { return allocated_bytes_; }
 
-private:
+   private:
     struct Entry {
-        u32           page_id;
-        u32           lru_clock;
-        LightmapPage  page;
+        u32 page_id;
+        u32 lru_clock;
+        LightmapPage page;
     };
 
     // Find a resident entry by page id, returning a pointer to the slot or
@@ -107,9 +106,9 @@ private:
     // because the resident set is bounded; the slab is sized for the cap.
     void evict_lru() noexcept;
 
-    mem::LinearArena*  arena_           = nullptr;
-    u32                lru_tick_        = 0u;
-    usize              allocated_bytes_ = 0u;
+    mem::LinearArena* arena_ = nullptr;
+    u32 lru_tick_ = 0u;
+    usize allocated_bytes_ = 0u;
     std::vector<Entry> entries_;
 };
 

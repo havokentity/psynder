@@ -34,32 +34,32 @@ namespace psynder::tools::cook {
 //   ── submesh array (submesh_count × Submesh) ──
 //   ── material-name pool (UTF-8) ──
 
-inline constexpr u32 kLmmMagic   = 0x314D4D4Cu;  // 'LMM1'
+inline constexpr u32 kLmmMagic = 0x314D4D4Cu;  // 'LMM1'
 inline constexpr u32 kLmmVersion = 1u;
 
 struct LmmVertex {
-    f32 px, py, pz;     // position
-    f32 nx, ny, nz;     // normal
-    f32 u, v;           // texcoord 0
-    f32 tx, ty, tz, tw; // tangent (xyz + bitangent sign)
+    f32 px, py, pz;      // position
+    f32 nx, ny, nz;      // normal
+    f32 u, v;            // texcoord 0
+    f32 tx, ty, tz, tw;  // tangent (xyz + bitangent sign)
 };
 
 struct LmmSubmesh {
     u32 first_index;
     u32 index_count;
-    u32 material_index;     // index into the per-mesh material name table
+    u32 material_index;  // index into the per-mesh material name table
     u32 reserved;
 };
 
 struct LmmMesh {
-    std::vector<LmmVertex>   vertices;
-    std::vector<u32>         indices;
-    std::vector<LmmSubmesh>  submeshes;
+    std::vector<LmmVertex> vertices;
+    std::vector<u32> indices;
+    std::vector<LmmSubmesh> submeshes;
     std::vector<std::string> materials;
 };
 
-void  write_lmm(const LmmMesh& mesh, std::vector<u8>& out);
-bool  read_lmm(std::span<const u8> bytes, LmmMesh& out, std::string* err = nullptr);
+void write_lmm(const LmmMesh& mesh, std::vector<u8>& out);
+bool read_lmm(std::span<const u8> bytes, LmmMesh& out, std::string* err = nullptr);
 
 // ─── .lmt — textures with mipchain ───────────────────────────────────────
 //
@@ -73,34 +73,34 @@ bool  read_lmm(std::span<const u8> bytes, LmmMesh& out, std::string* err = nullp
 //   ── per-mip table (mip_count × MipDesc) ──
 //   ── pixel payload (each mip's bytes packed back-to-back) ──
 
-inline constexpr u32 kLmtMagic   = 0x31544D4Cu;  // 'LMT1'
+inline constexpr u32 kLmtMagic = 0x31544D4Cu;  // 'LMT1'
 inline constexpr u32 kLmtVersion = 1u;
 
 enum class CookTexFormat : u32 {
     kRgba8 = 1,
-    kRgb8  = 2,
-    kR8    = 3,
+    kRgb8 = 2,
+    kR8 = 3,
 };
 
 struct LmtMipDesc {
     u32 width;
     u32 height;
-    u32 offset;     // bytes from start of pixel payload
+    u32 offset;  // bytes from start of pixel payload
     u32 bytes;
 };
 
 struct LmtTexture {
-    CookTexFormat            format = CookTexFormat::kRgba8;
-    u32                      width  = 0;
-    u32                      height = 0;
-    std::vector<LmtMipDesc>  mips;
-    std::vector<u8>          pixels;     // contiguous, indexed by MipDesc.offset
+    CookTexFormat format = CookTexFormat::kRgba8;
+    u32 width = 0;
+    u32 height = 0;
+    std::vector<LmtMipDesc> mips;
+    std::vector<u8> pixels;  // contiguous, indexed by MipDesc.offset
 };
 
 // Build mipchain (box-filter downsample) from a base-level RGBA8 image.
 LmtTexture build_mipchain_rgba8(const u8* base_pixels, u32 width, u32 height);
-void       write_lmt(const LmtTexture& tex, std::vector<u8>& out);
-bool       read_lmt(std::span<const u8> bytes, LmtTexture& out, std::string* err = nullptr);
+void write_lmt(const LmtTexture& tex, std::vector<u8>& out);
+bool read_lmt(std::span<const u8> bytes, LmtTexture& out, std::string* err = nullptr);
 
 // ─── .lma — audio ────────────────────────────────────────────────────────
 //
@@ -113,16 +113,16 @@ bool       read_lmt(std::span<const u8> bytes, LmtTexture& out, std::string* err
 //   u32   flags       (bit0 = float samples)
 //   ── interleaved samples ──
 
-inline constexpr u32 kLmaMagic   = 0x31414D4Cu;  // 'LMA1'
+inline constexpr u32 kLmaMagic = 0x31414D4Cu;  // 'LMA1'
 inline constexpr u32 kLmaVersion = 1u;
 
 struct LmaAudio {
-    u32             channels        = 1;
-    u32             sample_rate     = 48000;
-    u32             sample_count    = 0;
-    u32             bits_per_sample = 16;
-    bool            is_float        = false;
-    std::vector<u8> samples;            // interleaved, channel-major within one frame
+    u32 channels = 1;
+    u32 sample_rate = 48000;
+    u32 sample_count = 0;
+    u32 bits_per_sample = 16;
+    bool is_float = false;
+    std::vector<u8> samples;  // interleaved, channel-major within one frame
 };
 
 void write_lma(const LmaAudio& audio, std::vector<u8>& out);

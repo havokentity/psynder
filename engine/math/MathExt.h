@@ -23,21 +23,47 @@
 namespace psynder::math {
 
 // ─── Vec2 / Vec4 free-function ops ───────────────────────────────────────
-constexpr Vec2 add(Vec2 a, Vec2 b) noexcept { return {a.x+b.x, a.y+b.y}; }
-constexpr Vec2 sub(Vec2 a, Vec2 b) noexcept { return {a.x-b.x, a.y-b.y}; }
-constexpr Vec2 mul(Vec2 a, f32 s)  noexcept { return {a.x*s, a.y*s}; }
-constexpr f32  dot(Vec2 a, Vec2 b) noexcept { return a.x*b.x + a.y*b.y; }
+constexpr Vec2 add(Vec2 a, Vec2 b) noexcept {
+    return {a.x + b.x, a.y + b.y};
+}
+constexpr Vec2 sub(Vec2 a, Vec2 b) noexcept {
+    return {a.x - b.x, a.y - b.y};
+}
+constexpr Vec2 mul(Vec2 a, f32 s) noexcept {
+    return {a.x * s, a.y * s};
+}
+constexpr f32 dot(Vec2 a, Vec2 b) noexcept {
+    return a.x * b.x + a.y * b.y;
+}
 
-constexpr Vec4 add(Vec4 a, Vec4 b) noexcept { return {a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w}; }
-constexpr Vec4 sub(Vec4 a, Vec4 b) noexcept { return {a.x-b.x, a.y-b.y, a.z-b.z, a.w-b.w}; }
-constexpr Vec4 mul(Vec4 a, f32 s)  noexcept { return {a.x*s, a.y*s, a.z*s, a.w*s}; }
-constexpr f32  dot(Vec4 a, Vec4 b) noexcept { return a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w; }
+constexpr Vec4 add(Vec4 a, Vec4 b) noexcept {
+    return {a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w};
+}
+constexpr Vec4 sub(Vec4 a, Vec4 b) noexcept {
+    return {a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w};
+}
+constexpr Vec4 mul(Vec4 a, f32 s) noexcept {
+    return {a.x * s, a.y * s, a.z * s, a.w * s};
+}
+constexpr f32 dot(Vec4 a, Vec4 b) noexcept {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
 
-inline f32  length(Vec2 v)    noexcept { return std::sqrt(dot(v, v)); }
-inline Vec2 normalize(Vec2 v) noexcept { f32 l = length(v); return l > 0.0f ? mul(v, 1.0f/l) : v; }
+inline f32 length(Vec2 v) noexcept {
+    return std::sqrt(dot(v, v));
+}
+inline Vec2 normalize(Vec2 v) noexcept {
+    f32 l = length(v);
+    return l > 0.0f ? mul(v, 1.0f / l) : v;
+}
 
-inline f32  length(Vec4 v)    noexcept { return std::sqrt(dot(v, v)); }
-inline Vec4 normalize(Vec4 v) noexcept { f32 l = length(v); return l > 0.0f ? mul(v, 1.0f/l) : v; }
+inline f32 length(Vec4 v) noexcept {
+    return std::sqrt(dot(v, v));
+}
+inline Vec4 normalize(Vec4 v) noexcept {
+    f32 l = length(v);
+    return l > 0.0f ? mul(v, 1.0f / l) : v;
+}
 
 // ─── Generic helpers ─────────────────────────────────────────────────────
 template <class T>
@@ -45,16 +71,20 @@ constexpr T clamp(T v, T lo, T hi) noexcept {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-constexpr f32 lerp(f32 a, f32 b, f32 t) noexcept { return a + (b - a) * t; }
+constexpr f32 lerp(f32 a, f32 b, f32 t) noexcept {
+    return a + (b - a) * t;
+}
 constexpr Vec3 lerp(Vec3 a, Vec3 b, f32 t) noexcept {
-    return { lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t) };
+    return {lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t)};
 }
 
 constexpr Vec3 reflect(Vec3 v, Vec3 n) noexcept {
     return sub(v, mul(n, 2.0f * dot(v, n)));
 }
 
-inline f32 distance(Vec3 a, Vec3 b) noexcept { return length(sub(a, b)); }
+inline f32 distance(Vec3 a, Vec3 b) noexcept {
+    return length(sub(a, b));
+}
 constexpr f32 distance2(Vec3 a, Vec3 b) noexcept {
     Vec3 d = sub(a, b);
     return dot(d, d);
@@ -65,14 +95,14 @@ constexpr f32 distance2(Vec3 a, Vec3 b) noexcept {
 // the 3×3 linear part used for normal transforms and bone bases.
 
 inline Mat3 identity3() noexcept {
-    return {{ 1,0,0,  0,1,0,  0,0,1 }};
+    return {{1, 0, 0, 0, 1, 0, 0, 0, 1}};
 }
 
 Mat3 mat3_from_mat4(const Mat4& m) noexcept;
 Mat3 mul(const Mat3& a, const Mat3& b) noexcept;
 Vec3 mul(const Mat3& m, Vec3 v) noexcept;
 Mat3 transpose(const Mat3& m) noexcept;
-f32  determinant(const Mat3& m) noexcept;
+f32 determinant(const Mat3& m) noexcept;
 Mat3 inverse(const Mat3& m) noexcept;
 
 // The classic "normal matrix" — `transpose(inverse(mat3))`. Free function so
@@ -82,7 +112,7 @@ Mat3 normal_matrix(const Mat3& m) noexcept;
 
 // ─── Mat4 extensions ─────────────────────────────────────────────────────
 Mat4 transpose(const Mat4& m) noexcept;
-f32  determinant(const Mat4& m) noexcept;
+f32 determinant(const Mat4& m) noexcept;
 Mat4 inverse(const Mat4& m) noexcept;
 
 // Quick affine inverse for the common case where the upper-left 3×3 is
@@ -98,9 +128,11 @@ Mat4 look_at_lh(Vec3 eye, Vec3 target, Vec3 up) noexcept;
 Mat4 ortho_rh(f32 left, f32 right, f32 bottom, f32 top, f32 near_z, f32 far_z) noexcept;
 
 // ─── Quaternion extensions ───────────────────────────────────────────────
-inline constexpr Quat quat_identity() noexcept { return {0,0,0,1}; }
+inline constexpr Quat quat_identity() noexcept {
+    return {0, 0, 0, 1};
+}
 
-f32  quat_dot(Quat a, Quat b) noexcept;
+f32 quat_dot(Quat a, Quat b) noexcept;
 Quat quat_conjugate(Quat q) noexcept;
 Vec3 quat_rotate(Quat q, Vec3 v) noexcept;
 

@@ -19,13 +19,15 @@ namespace {
 // that undo of a single move restores the pre-move position. The real
 // editor uses EditorState::EntityRec.
 struct MiniEntity {
-    u32        id       = 0;
-    math::Vec3 position{0,0,0};
+    u32 id = 0;
+    math::Vec3 position{0, 0, 0};
 };
 
 void apply_move_delta(MiniEntity& e, const undo::Delta& d, bool reverse) noexcept {
-    if (d.op != undo::Op::EntityMove) return;
-    if (d.target_id != e.id)          return;
+    if (d.op != undo::Op::EntityMove)
+        return;
+    if (d.target_id != e.id)
+        return;
     e.position = reverse ? d.before : d.after;
 }
 }  // namespace
@@ -37,7 +39,7 @@ TEST_CASE("undo: single move restores the pre-move position", "[editor][undo]") 
 
     undo::Stack stack;
     const math::Vec3 before = e.position;
-    const math::Vec3 after  = math::Vec3{10.0f, 20.0f, 30.0f};
+    const math::Vec3 after = math::Vec3{10.0f, 20.0f, 30.0f};
 
     // Perform the move + record the delta.
     e.position = after;
@@ -64,12 +66,12 @@ TEST_CASE("undo: single move restores the pre-move position", "[editor][undo]") 
 TEST_CASE("undo: redo replays the previously-undone move", "[editor][undo]") {
     MiniEntity e;
     e.id = 7;
-    e.position = math::Vec3{0,0,0};
+    e.position = math::Vec3{0, 0, 0};
 
     undo::Stack stack;
     const math::Vec3 after = math::Vec3{5.0f, 0.0f, -5.0f};
     e.position = after;
-    stack.push(undo::make_move(e.id, math::Vec3{0,0,0}, after));
+    stack.push(undo::make_move(e.id, math::Vec3{0, 0, 0}, after));
 
     undo::Delta d;
     REQUIRE(stack.undo(d));
@@ -87,8 +89,8 @@ TEST_CASE("undo: redo replays the previously-undone move", "[editor][undo]") {
 TEST_CASE("undo: pushing a new delta clears the redo stack", "[editor][undo]") {
     undo::Stack stack;
 
-    stack.push(undo::make_move(1, math::Vec3{0,0,0}, math::Vec3{1,0,0}));
-    stack.push(undo::make_move(1, math::Vec3{1,0,0}, math::Vec3{2,0,0}));
+    stack.push(undo::make_move(1, math::Vec3{0, 0, 0}, math::Vec3{1, 0, 0}));
+    stack.push(undo::make_move(1, math::Vec3{1, 0, 0}, math::Vec3{2, 0, 0}));
     REQUIRE(stack.size() == 2);
 
     undo::Delta d;
@@ -97,7 +99,7 @@ TEST_CASE("undo: pushing a new delta clears the redo stack", "[editor][undo]") {
     REQUIRE(stack.redo_size() == 1);
 
     // New action discards the available redo.
-    stack.push(undo::make_move(1, math::Vec3{1,0,0}, math::Vec3{9,0,0}));
+    stack.push(undo::make_move(1, math::Vec3{1, 0, 0}, math::Vec3{9, 0, 0}));
     REQUIRE(stack.size() == 2);
     REQUIRE(stack.redo_size() == 0);
 

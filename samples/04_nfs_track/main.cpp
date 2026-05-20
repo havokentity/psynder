@@ -72,14 +72,15 @@ namespace {
 
 // ─── CLI ─────────────────────────────────────────────────────────────────
 struct Args {
-    u32         smoke_frames = 0;
+    u32 smoke_frames = 0;
     std::string capture_out;
 };
 
 u32 parse_uint(std::string_view v) noexcept {
     u32 out = 0;
     for (char c : v) {
-        if (c < '0' || c > '9') return 0;
+        if (c < '0' || c > '9')
+            return 0;
         out = out * 10u + static_cast<u32>(c - '0');
     }
     return out;
@@ -87,10 +88,10 @@ u32 parse_uint(std::string_view v) noexcept {
 
 Args parse_args(int argc, char** argv) {
     Args a{};
-    constexpr std::string_view kSmoke   = "--smoke-frames=";
+    constexpr std::string_view kSmoke = "--smoke-frames=";
     constexpr std::string_view kSmokeSp = "--smoke-frames";
-    constexpr std::string_view kCapEq   = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp   = "--smoke-capture-out";
+    constexpr std::string_view kCapEq = "--smoke-capture-out=";
+    constexpr std::string_view kCapSp = "--smoke-capture-out";
     for (int i = 1; i < argc; ++i) {
         std::string_view s{argv[i]};
         if (s.starts_with(kSmoke)) {
@@ -108,58 +109,55 @@ Args parse_args(int argc, char** argv) {
 
 // ─── Math helpers ────────────────────────────────────────────────────────
 constexpr u32 pack_rgba(u8 r, u8 g, u8 b, u8 a = 255) noexcept {
-    return static_cast<u32>(r)
-         | (static_cast<u32>(g) << 8)
-         | (static_cast<u32>(b) << 16)
-         | (static_cast<u32>(a) << 24);
+    return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
+           (static_cast<u32>(a) << 24);
 }
 
-inline math::Vec3 v3(f32 x, f32 y, f32 z) noexcept { return {x, y, z}; }
+inline math::Vec3 v3(f32 x, f32 y, f32 z) noexcept {
+    return {x, y, z};
+}
 
 inline math::Vec3 lerp_v3(math::Vec3 a, math::Vec3 b, f32 t) noexcept {
-    return v3(a.x + (b.x - a.x) * t,
-              a.y + (b.y - a.y) * t,
-              a.z + (b.z - a.z) * t);
+    return v3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t);
 }
 
 // Cubic Bezier evaluation. p0..p3 are the segment's control points; t∈[0,1].
-inline math::Vec3 bezier_eval(const world::outdoor::SplineRoadSegment& s,
-                              f32 t) noexcept {
-    const f32 u  = 1.0f - t;
+inline math::Vec3 bezier_eval(const world::outdoor::SplineRoadSegment& s, f32 t) noexcept {
+    const f32 u = 1.0f - t;
     const f32 b0 = u * u * u;
     const f32 b1 = 3.0f * u * u * t;
     const f32 b2 = 3.0f * u * t * t;
     const f32 b3 = t * t * t;
-    return v3(b0*s.p0.x + b1*s.p1.x + b2*s.p2.x + b3*s.p3.x,
-              b0*s.p0.y + b1*s.p1.y + b2*s.p2.y + b3*s.p3.y,
-              b0*s.p0.z + b1*s.p1.z + b2*s.p2.z + b3*s.p3.z);
+    return v3(b0 * s.p0.x + b1 * s.p1.x + b2 * s.p2.x + b3 * s.p3.x,
+              b0 * s.p0.y + b1 * s.p1.y + b2 * s.p2.y + b3 * s.p3.y,
+              b0 * s.p0.z + b1 * s.p1.z + b2 * s.p2.z + b3 * s.p3.z);
 }
 
 // Derivative wrt t — unnormalised tangent.
-inline math::Vec3 bezier_tangent(const world::outdoor::SplineRoadSegment& s,
-                                 f32 t) noexcept {
+inline math::Vec3 bezier_tangent(const world::outdoor::SplineRoadSegment& s, f32 t) noexcept {
     const f32 u = 1.0f - t;
     const f32 a = 3.0f * u * u;
     const f32 b = 6.0f * u * t;
     const f32 c = 3.0f * t * t;
-    return v3(a*(s.p1.x - s.p0.x) + b*(s.p2.x - s.p1.x) + c*(s.p3.x - s.p2.x),
-              a*(s.p1.y - s.p0.y) + b*(s.p2.y - s.p1.y) + c*(s.p3.y - s.p2.y),
-              a*(s.p1.z - s.p0.z) + b*(s.p2.z - s.p1.z) + c*(s.p3.z - s.p2.z));
+    return v3(a * (s.p1.x - s.p0.x) + b * (s.p2.x - s.p1.x) + c * (s.p3.x - s.p2.x),
+              a * (s.p1.y - s.p0.y) + b * (s.p2.y - s.p1.y) + c * (s.p3.y - s.p2.y),
+              a * (s.p1.z - s.p0.z) + b * (s.p2.z - s.p1.z) + c * (s.p3.z - s.p2.z));
 }
 
 // Frenet-ish frame in the XZ-driving plane. Right is the tangent rotated -90°
 // about +Y; up is +Y rotated about the tangent by `banking_rad`.
-inline void frame_at(const world::outdoor::SplineRoadSegment& seg, f32 t,
-                     math::Vec3& right_out, math::Vec3& up_out) noexcept {
+inline void frame_at(const world::outdoor::SplineRoadSegment& seg,
+                     f32 t,
+                     math::Vec3& right_out,
+                     math::Vec3& up_out) noexcept {
     const math::Vec3 tan = math::normalize(bezier_tangent(seg, t));
     math::Vec3 right = math::normalize(v3(tan.z, 0.0f, -tan.x));
-    math::Vec3 up    = v3(0.0f, 1.0f, 0.0f);
+    math::Vec3 up = v3(0.0f, 1.0f, 0.0f);
     const f32 cs = std::cos(seg.banking_rad);
     const f32 sn = std::sin(seg.banking_rad);
-    right_out = math::normalize(v3(cs * right.x + sn * up.x,
-                                   cs * right.y + sn * up.y,
-                                   cs * right.z + sn * up.z));
-    up_out    = math::normalize(math::cross(right_out, tan));
+    right_out = math::normalize(
+        v3(cs * right.x + sn * up.x, cs * right.y + sn * up.y, cs * right.z + sn * up.z));
+    up_out = math::normalize(math::cross(right_out, tan));
 }
 
 // ─── Track ───────────────────────────────────────────────────────────────
@@ -177,17 +175,18 @@ std::vector<world::outdoor::SplineRoadSegment> build_oval_track() {
     // Geometry parameters — keep the loop compact so the car laps quickly in
     // smoke-run modes (we want a few segment transitions in a handful of
     // seconds at the auto-driver's target speed).
-    constexpr f32 sx = 50.0f;     // straight half-length on X
-    constexpr f32 sz = 25.0f;     // curve half-depth on Z
-    constexpr f32 bank = 0.10f;   // ~6° outward banking on the turns
+    constexpr f32 sx = 50.0f;    // straight half-length on X
+    constexpr f32 sz = 25.0f;    // curve half-depth on Z
+    constexpr f32 bank = 0.10f;  // ~6° outward banking on the turns
 
     // Segment 0: straight, +X direction along z = -sz.
     out.push_back({
         v3(-sx, 0.0f, -sz),
         v3(-sx * 0.33f, 0.0f, -sz),
-        v3( sx * 0.33f, 0.0f, -sz),
-        v3( sx, 0.0f, -sz),
-        kTrackHalfWidth, 0.0f,
+        v3(sx * 0.33f, 0.0f, -sz),
+        v3(sx, 0.0f, -sz),
+        kTrackHalfWidth,
+        0.0f,
     });
 
     // Segment 1: U-turn at +X. p1 keeps the +X tangent from seg0; p2 sets up
@@ -195,29 +194,32 @@ std::vector<world::outdoor::SplineRoadSegment> build_oval_track() {
     // a half-circle.
     const f32 cz = sz * 1.8f;
     out.push_back({
-        v3( sx,        0.0f, -sz),
-        v3( sx + cz,   0.0f, -sz),
-        v3( sx + cz,   0.0f,  sz),
-        v3( sx,        0.0f,  sz),
-        kTrackHalfWidth, bank,
+        v3(sx, 0.0f, -sz),
+        v3(sx + cz, 0.0f, -sz),
+        v3(sx + cz, 0.0f, sz),
+        v3(sx, 0.0f, sz),
+        kTrackHalfWidth,
+        bank,
     });
 
     // Segment 2: straight, -X direction along z = +sz.
     out.push_back({
-        v3( sx, 0.0f, sz),
-        v3( sx * 0.33f, 0.0f, sz),
+        v3(sx, 0.0f, sz),
+        v3(sx * 0.33f, 0.0f, sz),
         v3(-sx * 0.33f, 0.0f, sz),
         v3(-sx, 0.0f, sz),
-        kTrackHalfWidth, 0.0f,
+        kTrackHalfWidth,
+        0.0f,
     });
 
     // Segment 3: U-turn at -X.
     out.push_back({
-        v3(-sx,        0.0f,  sz),
-        v3(-sx - cz,   0.0f,  sz),
-        v3(-sx - cz,   0.0f, -sz),
-        v3(-sx,        0.0f, -sz),
-        kTrackHalfWidth, bank,
+        v3(-sx, 0.0f, sz),
+        v3(-sx - cz, 0.0f, sz),
+        v3(-sx - cz, 0.0f, -sz),
+        v3(-sx, 0.0f, -sz),
+        kTrackHalfWidth,
+        bank,
     });
 
     return out;
@@ -228,7 +230,7 @@ std::vector<world::outdoor::SplineRoadSegment> build_oval_track() {
 // and two triangles per spline interval.
 struct TrackMesh {
     std::vector<render::raster::Vertex> verts;
-    std::vector<u32>                    indices;
+    std::vector<u32> indices;
 };
 
 TrackMesh tessellate_track(const std::vector<world::outdoor::SplineRoadSegment>& segs) {
@@ -241,10 +243,10 @@ TrackMesh tessellate_track(const std::vector<world::outdoor::SplineRoadSegment>&
     // Tarmac shade alternates per segment between two near-blacks to give the
     // viewer a "section change" cue across the oval.
     const std::array<u32, 2> kTarmac = {
-        pack_rgba(64, 64, 70, 255),     // base asphalt
-        pack_rgba(80, 80, 86, 255),     // slightly lighter band
+        pack_rgba(64, 64, 70, 255),  // base asphalt
+        pack_rgba(80, 80, 86, 255),  // slightly lighter band
     };
-    const u32 kLine = pack_rgba(210, 200, 90, 255);   // racing line (kerb)
+    const u32 kLine = pack_rgba(210, 200, 90, 255);  // racing line (kerb)
 
     for (usize si = 0; si < segs.size(); ++si) {
         const auto& seg = segs[si];
@@ -254,7 +256,7 @@ TrackMesh tessellate_track(const std::vector<world::outdoor::SplineRoadSegment>&
             math::Vec3 right, up;
             frame_at(seg, t, right, up);
 
-            const math::Vec3 left_pos  = math::sub(p, math::mul(right, seg.half_width));
+            const math::Vec3 left_pos = math::sub(p, math::mul(right, seg.half_width));
             const math::Vec3 right_pos = math::add(p, math::mul(right, seg.half_width));
 
             // Vertex colour: kerb stripe on the outer edge every few samples
@@ -264,16 +266,16 @@ TrackMesh tessellate_track(const std::vector<world::outdoor::SplineRoadSegment>&
 
             render::raster::Vertex vL{};
             vL.position = left_pos;
-            vL.normal   = up;
-            vL.uv       = math::Vec2{0.0f, static_cast<f32>(i)};
-            vL.color    = col;
+            vL.normal = up;
+            vL.uv = math::Vec2{0.0f, static_cast<f32>(i)};
+            vL.color = col;
             m.verts.push_back(vL);
 
             render::raster::Vertex vR{};
             vR.position = right_pos;
-            vR.normal   = up;
-            vR.uv       = math::Vec2{1.0f, static_cast<f32>(i)};
-            vR.color    = col;
+            vR.normal = up;
+            vR.uv = math::Vec2{1.0f, static_cast<f32>(i)};
+            vR.color = col;
             m.verts.push_back(vR);
         }
     }
@@ -285,13 +287,17 @@ TrackMesh tessellate_track(const std::vector<world::outdoor::SplineRoadSegment>&
     // to the very first (closed loop).
     const u32 n_pairs = static_cast<u32>(m.verts.size() / 2u);
     for (u32 i = 0; i < n_pairs; ++i) {
-        const u32 j = (i + 1u) % n_pairs;       // next pair, wraps at end
-        const u32 a = i * 2u + 0u;              // left  this
-        const u32 b = i * 2u + 1u;              // right this
-        const u32 c = j * 2u + 0u;              // left  next
-        const u32 d = j * 2u + 1u;              // right next
-        m.indices.push_back(a); m.indices.push_back(c); m.indices.push_back(d);
-        m.indices.push_back(a); m.indices.push_back(d); m.indices.push_back(b);
+        const u32 j = (i + 1u) % n_pairs;  // next pair, wraps at end
+        const u32 a = i * 2u + 0u;         // left  this
+        const u32 b = i * 2u + 1u;         // right this
+        const u32 c = j * 2u + 0u;         // left  next
+        const u32 d = j * 2u + 1u;         // right next
+        m.indices.push_back(a);
+        m.indices.push_back(c);
+        m.indices.push_back(d);
+        m.indices.push_back(a);
+        m.indices.push_back(d);
+        m.indices.push_back(b);
     }
     return m;
 }
@@ -305,15 +311,19 @@ TrackMesh tessellate_track(const std::vector<world::outdoor::SplineRoadSegment>&
 // on a target speed.
 struct Driver {
     f32 target_speed_mps = 20.0f;
-    f32 look_ahead_m     = 14.0f;
-    f32 steer_gain       = 1.4f;     // rad/rad heading error
-    f32 throttle_kp      = 0.25f;
+    f32 look_ahead_m = 14.0f;
+    f32 steer_gain = 1.4f;  // rad/rad heading error
+    f32 throttle_kp = 0.25f;
 };
 
 // Find the segment index + t closest to a world-space query point. We scan a
 // small window forward from the previous best to keep this O(N) per tick;
 // the loop is short (4 segments × 24 samples) so a full scan is also fine.
-struct TrackPos { u32 seg; f32 t; math::Vec3 p; };
+struct TrackPos {
+    u32 seg;
+    f32 t;
+    math::Vec3 p;
+};
 
 TrackPos closest_on_track(const std::vector<world::outdoor::SplineRoadSegment>& segs,
                           math::Vec3 q) noexcept {
@@ -337,7 +347,9 @@ TrackPos closest_on_track(const std::vector<world::outdoor::SplineRoadSegment>& 
 
 // Advance a (segment, t, distance) lookahead point along the closed loop.
 TrackPos advance_along(const std::vector<world::outdoor::SplineRoadSegment>& segs,
-                       u32 seg, f32 t, f32 advance_m) noexcept {
+                       u32 seg,
+                       f32 t,
+                       f32 advance_m) noexcept {
     // Walk forward in small parameter increments until we have covered
     // `advance_m` of arc. Crude but cheap and good enough for steering.
     constexpr f32 dt = 1.0f / 64.0f;
@@ -345,7 +357,10 @@ TrackPos advance_along(const std::vector<world::outdoor::SplineRoadSegment>& seg
     math::Vec3 prev = bezier_eval(segs[seg], t);
     while (covered < advance_m) {
         t += dt;
-        while (t > 1.0f) { t -= 1.0f; seg = (seg + 1u) % segs.size(); }
+        while (t > 1.0f) {
+            t -= 1.0f;
+            seg = (seg + 1u) % segs.size();
+        }
         const math::Vec3 here = bezier_eval(segs[seg], t);
         covered += math::length(math::sub(here, prev));
         prev = here;
@@ -354,51 +369,47 @@ TrackPos advance_along(const std::vector<world::outdoor::SplineRoadSegment>& seg
 }
 
 // ─── Simple primitives for the car ───────────────────────────────────────
-constexpr u32 kColChassis = pack_rgba(190, 50, 50);    // red body
-constexpr u32 kColTop     = pack_rgba(150, 35, 35);    // darker roof
-constexpr u32 kColWheel   = pack_rgba(30, 30, 32);     // tyre black
+constexpr u32 kColChassis = pack_rgba(190, 50, 50);  // red body
+constexpr u32 kColTop = pack_rgba(150, 35, 35);      // darker roof
+constexpr u32 kColWheel = pack_rgba(30, 30, 32);     // tyre black
 
 // Unit cube (per-face colour). Identical to sample 02's layout — kept local
 // so this sample stays self-contained.
 const std::array<render::raster::Vertex, 24> kCubeVerts{{
-    { { 0.5f,-0.5f,-0.5f}, { 1,0,0}, {0,1}, {0,0}, kColChassis },
-    { { 0.5f, 0.5f,-0.5f}, { 1,0,0}, {0,0}, {0,0}, kColChassis },
-    { { 0.5f, 0.5f, 0.5f}, { 1,0,0}, {1,0}, {0,0}, kColChassis },
-    { { 0.5f,-0.5f, 0.5f}, { 1,0,0}, {1,1}, {0,0}, kColChassis },
+    {{0.5f, -0.5f, -0.5f}, {1, 0, 0}, {0, 1}, {0, 0}, kColChassis},
+    {{0.5f, 0.5f, -0.5f}, {1, 0, 0}, {0, 0}, {0, 0}, kColChassis},
+    {{0.5f, 0.5f, 0.5f}, {1, 0, 0}, {1, 0}, {0, 0}, kColChassis},
+    {{0.5f, -0.5f, 0.5f}, {1, 0, 0}, {1, 1}, {0, 0}, kColChassis},
 
-    { {-0.5f,-0.5f, 0.5f}, {-1,0,0}, {0,1}, {0,0}, kColChassis },
-    { {-0.5f, 0.5f, 0.5f}, {-1,0,0}, {0,0}, {0,0}, kColChassis },
-    { {-0.5f, 0.5f,-0.5f}, {-1,0,0}, {1,0}, {0,0}, kColChassis },
-    { {-0.5f,-0.5f,-0.5f}, {-1,0,0}, {1,1}, {0,0}, kColChassis },
+    {{-0.5f, -0.5f, 0.5f}, {-1, 0, 0}, {0, 1}, {0, 0}, kColChassis},
+    {{-0.5f, 0.5f, 0.5f}, {-1, 0, 0}, {0, 0}, {0, 0}, kColChassis},
+    {{-0.5f, 0.5f, -0.5f}, {-1, 0, 0}, {1, 0}, {0, 0}, kColChassis},
+    {{-0.5f, -0.5f, -0.5f}, {-1, 0, 0}, {1, 1}, {0, 0}, kColChassis},
 
-    { {-0.5f, 0.5f,-0.5f}, {0, 1,0}, {0,1}, {0,0}, kColTop },
-    { {-0.5f, 0.5f, 0.5f}, {0, 1,0}, {0,0}, {0,0}, kColTop },
-    { { 0.5f, 0.5f, 0.5f}, {0, 1,0}, {1,0}, {0,0}, kColTop },
-    { { 0.5f, 0.5f,-0.5f}, {0, 1,0}, {1,1}, {0,0}, kColTop },
+    {{-0.5f, 0.5f, -0.5f}, {0, 1, 0}, {0, 1}, {0, 0}, kColTop},
+    {{-0.5f, 0.5f, 0.5f}, {0, 1, 0}, {0, 0}, {0, 0}, kColTop},
+    {{0.5f, 0.5f, 0.5f}, {0, 1, 0}, {1, 0}, {0, 0}, kColTop},
+    {{0.5f, 0.5f, -0.5f}, {0, 1, 0}, {1, 1}, {0, 0}, kColTop},
 
-    { {-0.5f,-0.5f, 0.5f}, {0,-1,0}, {0,1}, {0,0}, kColChassis },
-    { {-0.5f,-0.5f,-0.5f}, {0,-1,0}, {0,0}, {0,0}, kColChassis },
-    { { 0.5f,-0.5f,-0.5f}, {0,-1,0}, {1,0}, {0,0}, kColChassis },
-    { { 0.5f,-0.5f, 0.5f}, {0,-1,0}, {1,1}, {0,0}, kColChassis },
+    {{-0.5f, -0.5f, 0.5f}, {0, -1, 0}, {0, 1}, {0, 0}, kColChassis},
+    {{-0.5f, -0.5f, -0.5f}, {0, -1, 0}, {0, 0}, {0, 0}, kColChassis},
+    {{0.5f, -0.5f, -0.5f}, {0, -1, 0}, {1, 0}, {0, 0}, kColChassis},
+    {{0.5f, -0.5f, 0.5f}, {0, -1, 0}, {1, 1}, {0, 0}, kColChassis},
 
-    { {-0.5f,-0.5f, 0.5f}, {0,0, 1}, {0,1}, {0,0}, kColChassis },
-    { { 0.5f,-0.5f, 0.5f}, {0,0, 1}, {1,1}, {0,0}, kColChassis },
-    { { 0.5f, 0.5f, 0.5f}, {0,0, 1}, {1,0}, {0,0}, kColChassis },
-    { {-0.5f, 0.5f, 0.5f}, {0,0, 1}, {0,0}, {0,0}, kColChassis },
+    {{-0.5f, -0.5f, 0.5f}, {0, 0, 1}, {0, 1}, {0, 0}, kColChassis},
+    {{0.5f, -0.5f, 0.5f}, {0, 0, 1}, {1, 1}, {0, 0}, kColChassis},
+    {{0.5f, 0.5f, 0.5f}, {0, 0, 1}, {1, 0}, {0, 0}, kColChassis},
+    {{-0.5f, 0.5f, 0.5f}, {0, 0, 1}, {0, 0}, {0, 0}, kColChassis},
 
-    { { 0.5f,-0.5f,-0.5f}, {0,0,-1}, {0,1}, {0,0}, kColChassis },
-    { {-0.5f,-0.5f,-0.5f}, {0,0,-1}, {1,1}, {0,0}, kColChassis },
-    { {-0.5f, 0.5f,-0.5f}, {0,0,-1}, {1,0}, {0,0}, kColChassis },
-    { { 0.5f, 0.5f,-0.5f}, {0,0,-1}, {0,0}, {0,0}, kColChassis },
+    {{0.5f, -0.5f, -0.5f}, {0, 0, -1}, {0, 1}, {0, 0}, kColChassis},
+    {{-0.5f, -0.5f, -0.5f}, {0, 0, -1}, {1, 1}, {0, 0}, kColChassis},
+    {{-0.5f, 0.5f, -0.5f}, {0, 0, -1}, {1, 0}, {0, 0}, kColChassis},
+    {{0.5f, 0.5f, -0.5f}, {0, 0, -1}, {0, 0}, {0, 0}, kColChassis},
 }};
 
 constexpr std::array<u32, 36> kCubeIndices{
-     0, 1, 2,  0, 2, 3,
-     4, 5, 6,  4, 6, 7,
-     8, 9,10,  8,10,11,
-    12,13,14, 12,14,15,
-    16,17,18, 16,18,19,
-    20,21,22, 20,22,23,
+    0,  1,  2,  0,  2,  3,  4,  5,  6,  4,  6,  7,  8,  9,  10, 8,  10, 11,
+    12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
 };
 
 // Low-poly cylinder for wheels. Built once at startup; oriented so its
@@ -406,7 +417,7 @@ constexpr std::array<u32, 36> kCubeIndices{
 // chassis local X after a 90° model rotation).
 struct CylinderMesh {
     std::vector<render::raster::Vertex> verts;
-    std::vector<u32>                    indices;
+    std::vector<u32> indices;
 };
 
 CylinderMesh build_cylinder(f32 radius, f32 half_height, u32 sides = 12) {
@@ -419,47 +430,57 @@ CylinderMesh build_cylinder(f32 radius, f32 half_height, u32 sides = 12) {
         const f32 cs = std::cos(a);
         const f32 sn = std::sin(a);
         render::raster::Vertex vt{};
-        vt.position = v3(radius * cs,  half_height, radius * sn);
-        vt.normal   = v3(cs, 0.0f, sn);
-        vt.uv       = math::Vec2{ static_cast<f32>(i) / static_cast<f32>(sides), 1.0f };
-        vt.color    = kColWheel;
+        vt.position = v3(radius * cs, half_height, radius * sn);
+        vt.normal = v3(cs, 0.0f, sn);
+        vt.uv = math::Vec2{static_cast<f32>(i) / static_cast<f32>(sides), 1.0f};
+        vt.color = kColWheel;
         c.verts.push_back(vt);
 
         render::raster::Vertex vb = vt;
         vb.position = v3(radius * cs, -half_height, radius * sn);
-        vb.uv       = math::Vec2{ static_cast<f32>(i) / static_cast<f32>(sides), 0.0f };
+        vb.uv = math::Vec2{static_cast<f32>(i) / static_cast<f32>(sides), 0.0f};
         c.verts.push_back(vb);
     }
     // Endcaps: top & bottom hub vertices.
     const u32 hub_top = static_cast<u32>(c.verts.size());
-    c.verts.push_back({ v3(0,  half_height, 0), v3(0, 1, 0), {0.5f, 0.5f}, {0,0}, kColWheel });
+    c.verts.push_back({v3(0, half_height, 0), v3(0, 1, 0), {0.5f, 0.5f}, {0, 0}, kColWheel});
     const u32 hub_bot = static_cast<u32>(c.verts.size());
-    c.verts.push_back({ v3(0, -half_height, 0), v3(0,-1, 0), {0.5f, 0.5f}, {0,0}, kColWheel });
+    c.verts.push_back({v3(0, -half_height, 0), v3(0, -1, 0), {0.5f, 0.5f}, {0, 0}, kColWheel});
 
     for (u32 i = 0; i < sides; ++i) {
         const u32 j = (i + 1u) % sides;
         const u32 t0 = i * 2u + 0u, b0 = i * 2u + 1u;
         const u32 t1 = j * 2u + 0u, b1 = j * 2u + 1u;
         // Side quad (two triangles)
-        c.indices.push_back(t0); c.indices.push_back(t1); c.indices.push_back(b1);
-        c.indices.push_back(t0); c.indices.push_back(b1); c.indices.push_back(b0);
+        c.indices.push_back(t0);
+        c.indices.push_back(t1);
+        c.indices.push_back(b1);
+        c.indices.push_back(t0);
+        c.indices.push_back(b1);
+        c.indices.push_back(b0);
         // Top cap fan
-        c.indices.push_back(hub_top); c.indices.push_back(t1); c.indices.push_back(t0);
+        c.indices.push_back(hub_top);
+        c.indices.push_back(t1);
+        c.indices.push_back(t0);
         // Bottom cap fan
-        c.indices.push_back(hub_bot); c.indices.push_back(b0); c.indices.push_back(b1);
+        c.indices.push_back(hub_bot);
+        c.indices.push_back(b0);
+        c.indices.push_back(b1);
     }
     return c;
 }
 
 // ─── Camera + framebuffer helpers ────────────────────────────────────────
 void clear_depth_far(render::Framebuffer& fb) noexcept {
-    if (!fb.depth) return;
+    if (!fb.depth)
+        return;
     u32 packed = 0;
     const f32 one = 1.0f;
     std::memcpy(&packed, &one, sizeof(packed));
     packed &= 0xFFFFFF00u;
     const usize n = static_cast<usize>(fb.width) * fb.height;
-    for (usize i = 0; i < n; ++i) fb.depth[i] = packed;
+    for (usize i = 0; i < n; ++i)
+        fb.depth[i] = packed;
 }
 
 // ─── HUD live-binding helpers ────────────────────────────────────────────
@@ -473,23 +494,26 @@ void clear_depth_far(render::Framebuffer& fb) noexcept {
 // physically exact — the M7 milestone is the *binding wiring*, not a
 // dyno-accurate cluster.
 struct HudTelemetry {
-    f32  speed_mps   = 0.0f;
-    f32  throttle    = 0.0f;     // 0..1
-    f32  brake       = 0.0f;     // 0..1
-    f32  steer       = 0.0f;     // rad (unused for visuals, logged)
-    f32  wheel_radius= 0.35f;    // m
+    f32 speed_mps = 0.0f;
+    f32 throttle = 0.0f;       // 0..1
+    f32 brake = 0.0f;          // 0..1
+    f32 steer = 0.0f;          // rad (unused for visuals, logged)
+    f32 wheel_radius = 0.35f;  // m
 };
 
 // Derive an engine-RPM estimate from forward speed.  Picks a sensible gear
 // from the current speed (1st ~0-12 m/s, 2nd ~12-20, 3rd ~20-30, ...) so
 // the readout climbs and resets across shifts the way a real cluster does.
 // Returns (rpm, gear_index_1to6) — gear_index 0 is neutral (idle), -1 reverse.
-struct EngineEstimate { f32 rpm; i32 gear; };
+struct EngineEstimate {
+    f32 rpm;
+    i32 gear;
+};
 
 EngineEstimate estimate_engine(f32 speed_mps, f32 throttle, f32 wheel_radius) noexcept {
-    constexpr f32 kIdle      = 800.0f;
-    constexpr f32 kRedline   = 7000.0f;
-    constexpr f32 kFinal     = 3.7f;
+    constexpr f32 kIdle = 800.0f;
+    constexpr f32 kRedline = 7000.0f;
+    constexpr f32 kFinal = 3.7f;
     // Gear ratios: gentle slope, 6-speed pattern.
     constexpr std::array<f32, 6> kGearRatio = {3.5f, 2.4f, 1.8f, 1.4f, 1.1f, 0.9f};
 
@@ -501,18 +525,26 @@ EngineEstimate estimate_engine(f32 speed_mps, f32 throttle, f32 wheel_radius) no
     // Pick gear by speed band so each gear holds ~3000-rpm window before a
     // visual shift up.  Bands chosen so 6th is reached above ~50 m/s.
     i32 gear = 1;
-    if      (speed_mps > 50.0f) gear = 6;
-    else if (speed_mps > 38.0f) gear = 5;
-    else if (speed_mps > 28.0f) gear = 4;
-    else if (speed_mps > 19.0f) gear = 3;
-    else if (speed_mps > 11.0f) gear = 2;
-    else                        gear = 1;
+    if (speed_mps > 50.0f)
+        gear = 6;
+    else if (speed_mps > 38.0f)
+        gear = 5;
+    else if (speed_mps > 28.0f)
+        gear = 4;
+    else if (speed_mps > 19.0f)
+        gear = 3;
+    else if (speed_mps > 11.0f)
+        gear = 2;
+    else
+        gear = 1;
 
-    const f32 wheel_omega = speed_mps / wheel_radius;                 // rad/s
+    const f32 wheel_omega = speed_mps / wheel_radius;  // rad/s
     const f32 engine_omega = wheel_omega * kGearRatio[gear - 1] * kFinal;
     f32 rpm = engine_omega * 60.0f / math::kTwoPi;
-    if (rpm < kIdle)    rpm = kIdle;
-    if (rpm > kRedline) rpm = kRedline;
+    if (rpm < kIdle)
+        rpm = kIdle;
+    if (rpm > kRedline)
+        rpm = kRedline;
     return EngineEstimate{rpm, gear};
 }
 
@@ -523,35 +555,39 @@ EngineEstimate estimate_engine(f32 speed_mps, f32 throttle, f32 wheel_radius) no
 // gear elements, and the `style="..."` attribute on the bars whose
 // height/width represent the value.  No per-frame source rebuild,
 // no test-layer hooks.
-void push_hud_telemetry(f32 speed_mps, f32 rpm, i32 gear,
-                        f32 throttle, f32 brake) {
-    const u32 speed_kmh   = static_cast<u32>(std::round(speed_mps * 3.6f));
+void push_hud_telemetry(f32 speed_mps, f32 rpm, i32 gear, f32 throttle, f32 brake) {
+    const u32 speed_kmh = static_cast<u32>(std::round(speed_mps * 3.6f));
     // RPM bar: scale 800..7000 → 0..340 px (matches width in hud.rcss).
-    constexpr f32 kIdle    = 800.0f;
+    constexpr f32 kIdle = 800.0f;
     constexpr f32 kRedline = 7000.0f;
-    constexpr u32 kBarW    = 340u;
+    constexpr u32 kBarW = 340u;
     f32 rpm_norm = (rpm - kIdle) / (kRedline - kIdle);
-    if (rpm_norm < 0.0f) rpm_norm = 0.0f;
-    if (rpm_norm > 1.0f) rpm_norm = 1.0f;
+    if (rpm_norm < 0.0f)
+        rpm_norm = 0.0f;
+    if (rpm_norm > 1.0f)
+        rpm_norm = 1.0f;
     const u32 rpm_fill_px = static_cast<u32>(rpm_norm * static_cast<f32>(kBarW));
 
     constexpr u32 kPedalH = 170u;
     const u32 thr_fill_px = static_cast<u32>(std::min(1.0f, throttle) * static_cast<f32>(kPedalH));
-    const u32 brk_fill_px = static_cast<u32>(std::min(1.0f, brake)    * static_cast<f32>(kPedalH));
+    const u32 brk_fill_px = static_cast<u32>(std::min(1.0f, brake) * static_cast<f32>(kPedalH));
     // Throttle/brake bars grow from the bottom: anchor top = 30 + (H - fill).
     const u32 thr_top = 30u + (kPedalH - thr_fill_px);
     const u32 brk_top = 30u + (kPedalH - brk_fill_px);
 
     char gear_ch = 'N';
-    if      (gear == -1) gear_ch = 'R';
-    else if (gear ==  0) gear_ch = 'N';
-    else if (gear >= 1 && gear <= 6) gear_ch = static_cast<char>('0' + gear);
+    if (gear == -1)
+        gear_ch = 'R';
+    else if (gear == 0)
+        gear_ch = 'N';
+    else if (gear >= 1 && gear <= 6)
+        gear_ch = static_cast<char>('0' + gear);
 
     // Format the numeric readouts into small stack buffers so we don't
     // allocate on the hot path.  `set_element_text` copies the bytes.
     char speed_buf[16];
     std::snprintf(speed_buf, sizeof(speed_buf), "%u", speed_kmh);
-    const char gear_str[2] = { gear_ch, '\0' };
+    const char gear_str[2] = {gear_ch, '\0'};
 
     psynder::ui::rml::set_element_text("hud", "speed-value", speed_buf);
     psynder::ui::rml::set_element_text("hud", "gear-letter", gear_str);
@@ -565,13 +601,11 @@ void push_hud_telemetry(f32 speed_mps, f32 rpm, i32 gear,
     psynder::ui::rml::set_element_attribute("hud", "rpm-fill", "style", rpm_style);
 
     char thr_style[48];
-    std::snprintf(thr_style, sizeof(thr_style), "top:%u; height:%u",
-                  thr_top, thr_fill_px);
+    std::snprintf(thr_style, sizeof(thr_style), "top:%u; height:%u", thr_top, thr_fill_px);
     psynder::ui::rml::set_element_attribute("hud", "thr-fill", "style", thr_style);
 
     char brk_style[48];
-    std::snprintf(brk_style, sizeof(brk_style), "top:%u; height:%u",
-                  brk_top, brk_fill_px);
+    std::snprintf(brk_style, sizeof(brk_style), "top:%u; height:%u", brk_top, brk_fill_px);
     psynder::ui::rml::set_element_attribute("hud", "brk-fill", "style", brk_style);
 }
 
@@ -593,12 +627,12 @@ int main(int argc, char** argv) {
 
     // ─── Platform / framebuffer ─────────────────────────────────────────
     platform::WindowDesc desc{};
-    desc.title         = "Psynder — sample 04 (NFS track lap)";
-    desc.window_width  = 1280;
+    desc.title = "Psynder — sample 04 (NFS track lap)";
+    desc.window_width = 1280;
     desc.window_height = 720;
-    desc.render_width  = 640;
+    desc.render_width = 640;
     desc.render_height = 360;
-    desc.scale_mode    = platform::ScaleMode::Integer;
+    desc.scale_mode = platform::ScaleMode::Integer;
 
     auto* window = platform::create_window(desc);
     if (!window) {
@@ -607,15 +641,15 @@ int main(int argc, char** argv) {
     }
 
     std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    std::vector<u32> depth (static_cast<usize>(desc.render_width) * desc.render_height, 0);
+    std::vector<u32> depth(static_cast<usize>(desc.render_width) * desc.render_height, 0);
 
     render::Framebuffer fb{};
-    fb.width  = desc.render_width;
+    fb.width = desc.render_width;
     fb.height = desc.render_height;
-    fb.pitch  = desc.render_width * 4;
+    fb.pitch = desc.render_width * 4;
     fb.format = render::PixelFormat::RGBA8;
     fb.pixels = reinterpret_cast<u8*>(pixels.data());
-    fb.depth  = depth.data();
+    fb.depth = depth.data();
 
     auto& rasterizer = render::raster::Rasterizer::Get();
 
@@ -632,11 +666,11 @@ int main(int argc, char** argv) {
     const math::Vec3 start_p = bezier_eval(track_segs[0], start_t);
 
     physics::BodyDesc chassis_desc{};
-    chassis_desc.shape       = physics::Shape::Box;
-    chassis_desc.mass        = 1500.0f;
-    chassis_desc.position    = v3(start_p.x, start_p.y + 0.6f, start_p.z);
-    chassis_desc.half_extent = v3(2.1f, 0.55f, 0.9f);     // length × height × width
-    chassis_desc.friction    = 0.5f;
+    chassis_desc.shape = physics::Shape::Box;
+    chassis_desc.mass = 1500.0f;
+    chassis_desc.position = v3(start_p.x, start_p.y + 0.6f, start_p.z);
+    chassis_desc.half_extent = v3(2.1f, 0.55f, 0.9f);  // length × height × width
+    chassis_desc.friction = 0.5f;
     const physics::BodyId chassis = world.create_body(chassis_desc);
 
     // Four wheels — locations are in chassis-local space. Front wheels are
@@ -645,21 +679,21 @@ int main(int argc, char** argv) {
     // for the drive flag (rear-wheel drive).
     std::array<physics::vehicle::WheelDesc, 4> wheels{};
     const f32 wx = 1.45f, wz = 0.85f, wy = -0.35f;
-    wheels[0].local_position = v3(-wx, wy,  wz);   // front-left
-    wheels[1].local_position = v3(-wx, wy, -wz);   // front-right
-    wheels[2].local_position = v3( wx, wy,  wz);   // rear-left
-    wheels[3].local_position = v3( wx, wy, -wz);   // rear-right
+    wheels[0].local_position = v3(-wx, wy, wz);   // front-left
+    wheels[1].local_position = v3(-wx, wy, -wz);  // front-right
+    wheels[2].local_position = v3(wx, wy, wz);    // rear-left
+    wheels[3].local_position = v3(wx, wy, -wz);   // rear-right
     for (auto& w : wheels) {
-        w.radius     = 0.35f;
+        w.radius = 0.35f;
         w.suspension = 0.30f;
-        w.stiffness  = 40000.0f;
-        w.damping    = 4800.0f;
+        w.stiffness = 40000.0f;
+        w.damping = 4800.0f;
     }
     physics::vehicle::VehicleDesc vd{};
-    vd.chassis           = chassis;
-    vd.wheels            = std::span<const physics::vehicle::WheelDesc>(wheels.data(), wheels.size());
+    vd.chassis = chassis;
+    vd.wheels = std::span<const physics::vehicle::WheelDesc>(wheels.data(), wheels.size());
     vd.engine_max_torque = 450.0f;
-    vd.drag_coefficient  = 0.30f;
+    vd.drag_coefficient = 0.30f;
     const physics::vehicle::VehicleId veh = physics::vehicle::create(vd);
 
     // ─── Wheel mesh ─────────────────────────────────────────────────────
@@ -668,16 +702,16 @@ int main(int argc, char** argv) {
     // ─── Sim state for interp ───────────────────────────────────────────
     math::Vec3 prev_pos = chassis_desc.position;
     math::Quat prev_rot = chassis_desc.rotation;
-    math::Vec3 cur_pos  = prev_pos;
-    math::Quat cur_rot  = prev_rot;
-    math::Vec3 car_fwd  = v3(1.0f, 0.0f, 0.0f);   // initial heading: +X
-    f32        car_speed = 0.0f;
+    math::Vec3 cur_pos = prev_pos;
+    math::Quat cur_rot = prev_rot;
+    math::Vec3 car_fwd = v3(1.0f, 0.0f, 0.0f);  // initial heading: +X
+    f32 car_speed = 0.0f;
     // Last-tick driver outputs — surfaced to the HUD so the pedal indicators
     // reflect what the auto-driver is asking for, not the noisy chassis
     // accelerations.
-    f32        hud_throttle = 0.0f;
-    f32        hud_brake    = 0.0f;
-    f32        hud_steer    = 0.0f;
+    f32 hud_throttle = 0.0f;
+    f32 hud_brake = 0.0f;
+    f32 hud_steer = 0.0f;
 
     Driver driver{};
 
@@ -700,17 +734,17 @@ int main(int argc, char** argv) {
             hud_active = true;
             PSY_LOG_INFO("sample_04: HUD loaded (hud.rml + hud.rcss)");
         } else {
-            PSY_LOG_WARN("sample_04: RmlUi load_document(\"hud.rml\") failed; "
-                         "HUD disabled");
+            PSY_LOG_WARN(
+                "sample_04: RmlUi load_document(\"hud.rml\") failed; "
+                "HUD disabled");
         }
     } else {
         PSY_LOG_WARN("sample_04: RmlUi initialize() failed; HUD disabled");
     }
 
     PSY_LOG_INFO("Psynder sample 04 running{}",
-                 args.smoke_frames > 0
-                     ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
-                     : std::string{});
+                 args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
+                                       : std::string{});
 
     // ─── Fixed timestep ─────────────────────────────────────────────────
     constexpr f32 kSimHz = 120.0f;
@@ -725,8 +759,7 @@ int main(int argc, char** argv) {
         window->poll_events();
 
         // Quit on ESC outside smoke mode.
-        if (args.smoke_frames == 0 &&
-            platform::input() != nullptr &&
+        if (args.smoke_frames == 0 && platform::input() != nullptr &&
             platform::input()->key_down(platform::KeyCode::Escape)) {
             break;
         }
@@ -739,21 +772,22 @@ int main(int argc, char** argv) {
             const u64 now = platform::Clock::ticks_now();
             dt = static_cast<f32>(platform::Clock::seconds(now - last_ticks));
             last_ticks = now;
-            if (dt > 0.10f) dt = 0.10f;   // clamp on hitch
+            if (dt > 0.10f)
+                dt = 0.10f;  // clamp on hitch
         }
 
         // ── Physics fixed-step ─────────────────────────────────────────
         accumulator += dt;
         // Cap so a paused window can't burn an unbounded number of steps.
-        if (accumulator > 0.5f) accumulator = 0.5f;
+        if (accumulator > 0.5f)
+            accumulator = 0.5f;
         while (accumulator >= kSimDt) {
             prev_pos = cur_pos;
             prev_rot = cur_rot;
 
             // ── Auto-driver: aim ahead, hold target speed ─────────────
-            const TrackPos here  = closest_on_track(track_segs, cur_pos);
-            const TrackPos ahead = advance_along(track_segs, here.seg, here.t,
-                                                 driver.look_ahead_m);
+            const TrackPos here = closest_on_track(track_segs, cur_pos);
+            const TrackPos ahead = advance_along(track_segs, here.seg, here.t, driver.look_ahead_m);
 
             // Heading error: angle between current forward and (ahead - pos),
             // signed so positive means "steer right" in world XZ.
@@ -763,45 +797,48 @@ int main(int argc, char** argv) {
             if (to_aim_len > 0.001f) {
                 to_aim = math::mul(to_aim, 1.0f / to_aim_len);
                 // Signed angle between car_fwd (XZ) and to_aim (XZ).
-                math::Vec3 fwd_xz = car_fwd; fwd_xz.y = 0.0f;
+                math::Vec3 fwd_xz = car_fwd;
+                fwd_xz.y = 0.0f;
                 fwd_xz = math::normalize(fwd_xz);
                 const f32 dotv = math::dot(fwd_xz, to_aim);
                 // cross.y carries the sign (right-handed, +Y up).
                 const f32 crossy = fwd_xz.z * to_aim.x - fwd_xz.x * to_aim.z;
-                const f32 ang = std::atan2(crossy,
-                                           std::max(-1.0f, std::min(1.0f, dotv)));
+                const f32 ang = std::atan2(crossy, std::max(-1.0f, std::min(1.0f, dotv)));
                 f32 steer = driver.steer_gain * ang;
                 // Clamp to ~30° physical steering range.
                 const f32 kSteerMax = 0.55f;
-                if (steer >  kSteerMax) steer =  kSteerMax;
-                if (steer < -kSteerMax) steer = -kSteerMax;
+                if (steer > kSteerMax)
+                    steer = kSteerMax;
+                if (steer < -kSteerMax)
+                    steer = -kSteerMax;
                 physics::vehicle::set_steer(veh, steer);
             }
 
             // Throttle PI on speed error.
             const f32 speed_err = driver.target_speed_mps - car_speed;
             f32 throttle = driver.throttle_kp * speed_err;
-            f32 brake    = 0.0f;
+            f32 brake = 0.0f;
             if (throttle < 0.0f) {
-                brake    = std::min(1.0f, -throttle);
+                brake = std::min(1.0f, -throttle);
                 throttle = 0.0f;
             }
-            if (throttle > 1.0f) throttle = 1.0f;
+            if (throttle > 1.0f)
+                throttle = 1.0f;
             physics::vehicle::set_throttle(veh, throttle);
             physics::vehicle::set_brake(veh, brake);
             // Capture for the HUD — the last driver decision per render
             // frame is the one the dashboard reflects (matches a real car's
             // pedal throw, smoothed by the sim's 120 Hz under-sampling).
             hud_throttle = throttle;
-            hud_brake    = brake;
+            hud_brake = brake;
 
             // ── Step ──────────────────────────────────────────────────
             world.step(kSimDt);
 
             const math::Vec3 new_pos = world.get_position(chassis);
             const math::Quat new_rot = world.get_rotation(chassis);
-            const math::Vec3 dp      = math::sub(new_pos, cur_pos);
-            const f32 step_dist      = math::length(v3(dp.x, 0.0f, dp.z));
+            const math::Vec3 dp = math::sub(new_pos, cur_pos);
+            const f32 step_dist = math::length(v3(dp.x, 0.0f, dp.z));
             car_speed = step_dist / kSimDt;
             if (step_dist > 0.001f) {
                 car_fwd = math::normalize(v3(dp.x, 0.0f, dp.z));
@@ -819,25 +856,23 @@ int main(int argc, char** argv) {
         // ── Camera: chase ────────────────────────────────────────────
         // Eye sits ~5m behind the car along -car_fwd, raised 2m. We push the
         // target ahead of the car so the camera tilts into oncoming track.
-        const math::Vec3 eye = math::add(render_pos,
-                                  math::add(math::mul(car_fwd, -5.5f),
-                                            v3(0.0f, 2.2f, 0.0f)));
-        const math::Vec3 tgt = math::add(render_pos,
-                                  math::add(math::mul(car_fwd,  6.0f),
-                                            v3(0.0f, 0.8f, 0.0f)));
+        const math::Vec3 eye =
+            math::add(render_pos, math::add(math::mul(car_fwd, -5.5f), v3(0.0f, 2.2f, 0.0f)));
+        const math::Vec3 tgt =
+            math::add(render_pos, math::add(math::mul(car_fwd, 6.0f), v3(0.0f, 0.8f, 0.0f)));
 
         // ── Clear + frame setup ──────────────────────────────────────
-        render::raster::clear_framebuffer(fb, 0xFF8FA7C8u);   // dusk sky
+        render::raster::clear_framebuffer(fb, 0xFF8FA7C8u);  // dusk sky
         clear_depth_far(fb);
 
         render::raster::ViewState view{};
-        view.target     = fb;
-        view.view       = math::look_at_rh(eye, tgt, v3(0.0f, 1.0f, 0.0f));
-        view.projection = math::perspective_rh(
-                              60.0f * math::kDegToRad,
-                              static_cast<f32>(desc.render_width) /
-                              static_cast<f32>(desc.render_height),
-                              0.2f, 400.0f);
+        view.target = fb;
+        view.view = math::look_at_rh(eye, tgt, v3(0.0f, 1.0f, 0.0f));
+        view.projection = math::perspective_rh(60.0f * math::kDegToRad,
+                                               static_cast<f32>(desc.render_width) /
+                                                   static_cast<f32>(desc.render_height),
+                                               0.2f,
+                                               400.0f);
         view.tile_w = 64;
         view.tile_h = 64;
         rasterizer.begin_frame(view);
@@ -845,11 +880,11 @@ int main(int argc, char** argv) {
         // ── Track submit ────────────────────────────────────────────
         {
             render::raster::DrawItem item{};
-            item.vertices     = track_mesh.verts.data();
+            item.vertices = track_mesh.verts.data();
             item.vertex_count = static_cast<u32>(track_mesh.verts.size());
-            item.indices      = track_mesh.indices.data();
-            item.index_count  = static_cast<u32>(track_mesh.indices.size());
-            item.model        = math::identity4();
+            item.indices = track_mesh.indices.data();
+            item.index_count = static_cast<u32>(track_mesh.indices.size());
+            item.model = math::identity4();
             rasterizer.submit(item);
         }
 
@@ -858,14 +893,13 @@ int main(int argc, char** argv) {
         {
             // Scale the unit cube to chassis dimensions, raise to wheel hub.
             const math::Mat4 scl = math::scale(v3(4.2f, 1.1f, 1.8f));
-            const math::Mat4 trs = math::translate(
-                v3(render_pos.x, render_pos.y, render_pos.z));
+            const math::Mat4 trs = math::translate(v3(render_pos.x, render_pos.y, render_pos.z));
             render::raster::DrawItem item{};
-            item.vertices     = kCubeVerts.data();
+            item.vertices = kCubeVerts.data();
             item.vertex_count = static_cast<u32>(kCubeVerts.size());
-            item.indices      = kCubeIndices.data();
-            item.index_count  = static_cast<u32>(kCubeIndices.size());
-            item.model        = math::mul(trs, math::mul(yaw_mat, scl));
+            item.indices = kCubeIndices.data();
+            item.index_count = static_cast<u32>(kCubeIndices.size());
+            item.model = math::mul(trs, math::mul(yaw_mat, scl));
             rasterizer.submit(item);
         }
 
@@ -875,13 +909,13 @@ int main(int argc, char** argv) {
         {
             // Rotate cylinder local Y → chassis local Z (so cylinder caps
             // become the wheel disc faces). That's a 90° rotation about +X.
-            const math::Mat4 axis_align = math::rotate_quat(
-                math::quat_from_axis_angle(v3(1, 0, 0), math::kHalfPi));
+            const math::Mat4 axis_align =
+                math::rotate_quat(math::quat_from_axis_angle(v3(1, 0, 0), math::kHalfPi));
             const std::array<math::Vec3, 4> wheel_local = {
-                v3(-wx, 0.0f,  wz),
+                v3(-wx, 0.0f, wz),
                 v3(-wx, 0.0f, -wz),
-                v3( wx, 0.0f,  wz),
-                v3( wx, 0.0f, -wz),
+                v3(wx, 0.0f, wz),
+                v3(wx, 0.0f, -wz),
             };
             for (const auto& wl : wheel_local) {
                 // Express chassis-local offset in world via yaw_mat.
@@ -892,11 +926,11 @@ int main(int argc, char** argv) {
                                          render_pos.z + worldoff.z);
                 const math::Mat4 trs = math::translate(wp);
                 render::raster::DrawItem item{};
-                item.vertices     = wheel_mesh.verts.data();
+                item.vertices = wheel_mesh.verts.data();
                 item.vertex_count = static_cast<u32>(wheel_mesh.verts.size());
-                item.indices      = wheel_mesh.indices.data();
-                item.index_count  = static_cast<u32>(wheel_mesh.indices.size());
-                item.model        = math::mul(trs, math::mul(yaw_mat, axis_align));
+                item.indices = wheel_mesh.indices.data();
+                item.index_count = static_cast<u32>(wheel_mesh.indices.size());
+                item.model = math::mul(trs, math::mul(yaw_mat, axis_align));
                 rasterizer.submit(item);
             }
         }
@@ -921,21 +955,21 @@ int main(int argc, char** argv) {
 
         ++frame;
         if (args.smoke_frames > 0 && frame >= args.smoke_frames) {
-            PSY_LOG_INFO("sample_04: smoke target reached ({}); exiting",
-                         args.smoke_frames);
+            PSY_LOG_INFO("sample_04: smoke target reached ({}); exiting", args.smoke_frames);
             break;
         }
     }
 
     // ─── Capture ────────────────────────────────────────────────────────
     if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(
-            args.capture_out.c_str(), pixels.data(),
-            fb.width, fb.height);
+        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
+                                                             pixels.data(),
+                                                             fb.width,
+                                                             fb.height);
         if (!ok) {
-            PSY_LOG_ERROR("sample_04: failed to write capture to {}",
-                          args.capture_out);
-            if (hud_active) psynder::ui::rml::hide("hud");
+            PSY_LOG_ERROR("sample_04: failed to write capture to {}", args.capture_out);
+            if (hud_active)
+                psynder::ui::rml::hide("hud");
             psynder::ui::rml::shutdown();
             physics::vehicle::destroy(veh);
             world.destroy_body(chassis);

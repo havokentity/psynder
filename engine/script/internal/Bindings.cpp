@@ -12,8 +12,8 @@
 #include "Registry.h"
 
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic push
-#  pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 extern "C" {
 #include "lua.h"
@@ -21,7 +21,7 @@ extern "C" {
 #include "lauxlib.h"
 }
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 #endif
 
 #include "core/Log.h"
@@ -38,9 +38,9 @@ namespace psynder::script::detail {
 namespace {
 
 // ─── Per-VM state stashed on the Lua registry ────────────────────────────
-constexpr const char* kRegistryKey      = "psynder.script.registry";
+constexpr const char* kRegistryKey = "psynder.script.registry";
 constexpr const char* kComponentStorage = "psynder.script.components";
-constexpr const char* kEntityCounter    = "psynder.script.next_entity";
+constexpr const char* kEntityCounter = "psynder.script.next_entity";
 
 ScriptRegistry* fetch_registry(lua_State* L) {
     lua_getfield(L, LUA_REGISTRYINDEX, kRegistryKey);
@@ -69,17 +69,17 @@ void push_component_storage(lua_State* L) {
 
 // Per-component table accessor: storage[component_id] -> array of {entity=,data=}
 void push_component_array(lua_State* L, scene::ComponentId id) {
-    push_component_storage(L);          // storage
+    push_component_storage(L);  // storage
     lua_pushinteger(L, lua_Integer(id));
-    lua_gettable(L, -2);                // storage, arr_or_nil
+    lua_gettable(L, -2);  // storage, arr_or_nil
     if (lua_isnil(L, -1)) {
-        lua_pop(L, 1);                  // storage
-        lua_newtable(L);                // storage, new_arr
+        lua_pop(L, 1);    // storage
+        lua_newtable(L);  // storage, new_arr
         lua_pushinteger(L, lua_Integer(id));
-        lua_pushvalue(L, -2);           // storage, new_arr, id, new_arr
-        lua_settable(L, -4);            // storage, new_arr
+        lua_pushvalue(L, -2);  // storage, new_arr, id, new_arr
+        lua_settable(L, -4);   // storage, new_arr
     }
-    lua_remove(L, -2);                  // arr
+    lua_remove(L, -2);  // arr
 }
 
 u64 next_entity_id(lua_State* L) {
@@ -95,10 +95,10 @@ u64 next_entity_id(lua_State* L) {
 // Helper: read the `reads` / `writes` list off a config table at index `t`.
 // Field is an array of string component names. Each string is registered
 // (idempotent) and the resulting ComponentId pushed into `out`.
-bool extract_id_list(lua_State*                       L,
-                     int                              t,
-                     const char*                      field,
-                     ScriptRegistry&                  reg,
+bool extract_id_list(lua_State* L,
+                     int t,
+                     const char* field,
+                     ScriptRegistry& reg,
                      std::vector<scene::ComponentId>& out) {
     lua_getfield(L, t, field);
     if (lua_isnil(L, -1)) {
@@ -107,8 +107,7 @@ bool extract_id_list(lua_State*                       L,
     }
     if (!lua_istable(L, -1)) {
         lua_pop(L, 1);
-        luaL_error(L, "register_system: '%s' must be a table of component names",
-                   field);
+        luaL_error(L, "register_system: '%s' must be a table of component names", field);
         return false;
     }
     lua_Integer n = luaL_len(L, -1);
@@ -117,12 +116,11 @@ bool extract_id_list(lua_State*                       L,
         lua_geti(L, -1, i);
         if (!lua_isstring(L, -1)) {
             lua_pop(L, 2);
-            luaL_error(L, "register_system: '%s'[%d] must be a string",
-                       field, int(i));
+            luaL_error(L, "register_system: '%s'[%d] must be a string", field, int(i));
             return false;
         }
         std::size_t len = 0;
-        const char* s   = lua_tolstring(L, -1, &len);
+        const char* s = lua_tolstring(L, -1, &len);
         out.push_back(reg.register_or_get(std::string_view(s, len)));
         lua_pop(L, 1);
     }
@@ -165,8 +163,12 @@ int l_world_register_system(lua_State* L) {
     }
     lua_pop(L, 1);
 
-    if (!extract_id_list(L, 2, "reads",  *reg, sys.reads))  { return 0; }
-    if (!extract_id_list(L, 2, "writes", *reg, sys.writes)) { return 0; }
+    if (!extract_id_list(L, 2, "reads", *reg, sys.reads)) {
+        return 0;
+    }
+    if (!extract_id_list(L, 2, "writes", *reg, sys.writes)) {
+        return 0;
+    }
 
     // Take a registry reference to the function (top of stack at index 3).
     lua_pushvalue(L, 3);
@@ -180,8 +182,8 @@ int l_world_register_system(lua_State* L) {
 // world:create_entity(table_of_components) -> integer entity id
 // table_of_components: { Position = {x=,y=,z=}, Velocity = {...}, ... }
 int l_world_create_entity(lua_State* L) {
-    luaL_checktype(L, 1, LUA_TTABLE);   // self
-    luaL_checktype(L, 2, LUA_TTABLE);   // components
+    luaL_checktype(L, 1, LUA_TTABLE);  // self
+    luaL_checktype(L, 2, LUA_TTABLE);  // components
 
     ScriptRegistry* reg = fetch_registry(L);
     if (!reg) {
@@ -192,29 +194,27 @@ int l_world_create_entity(lua_State* L) {
 
     // For each k,v in the components table: register the component name and
     // append {entity=entity_id, data=v} to the per-component array.
-    lua_pushnil(L);   // first key
+    lua_pushnil(L);  // first key
     while (lua_next(L, 2) != 0) {
         // -2: key (component name), -1: value (component data table)
         if (!lua_isstring(L, -2) || !lua_istable(L, -1)) {
             lua_pop(L, 2);
-            return luaL_error(L,
-                "create_entity: components must be {Name = {field=val}, ...}");
+            return luaL_error(L, "create_entity: components must be {Name = {field=val}, ...}");
         }
         std::size_t len = 0;
         const char* name = lua_tolstring(L, -2, &len);
-        scene::ComponentId cid = reg->register_or_get(
-            std::string_view(name, len));
+        scene::ComponentId cid = reg->register_or_get(std::string_view(name, len));
 
-        push_component_array(L, cid);   // ..., key, value, arr
+        push_component_array(L, cid);  // ..., key, value, arr
         // Build entry: {entity=entity_id, data=value (deep copied via ref)}
-        lua_newtable(L);                // ..., key, value, arr, entry
+        lua_newtable(L);  // ..., key, value, arr, entry
         lua_pushinteger(L, lua_Integer(entity_id));
         lua_setfield(L, -2, "entity");
-        lua_pushvalue(L, -3);           // copy value to top
+        lua_pushvalue(L, -3);  // copy value to top
         lua_setfield(L, -2, "data");
         lua_Integer n = luaL_len(L, -2);
-        lua_seti(L, -2, n + 1);         // arr[n+1] = entry
-        lua_pop(L, 1);                  // pop arr
+        lua_seti(L, -2, n + 1);  // arr[n+1] = entry
+        lua_pop(L, 1);           // pop arr
         // Pop value, leave key for next iteration.
         lua_pop(L, 1);
     }
@@ -249,14 +249,12 @@ int l_world_system_count(lua_State* L) {
     return 1;
 }
 
-const luaL_Reg kWorldMethods[] = {
-    { "component",       l_world_component       },
-    { "register_system", l_world_register_system },
-    { "create_entity",   l_world_create_entity   },
-    { "run_systems",     l_world_run_systems     },
-    { "system_count",    l_world_system_count    },
-    { nullptr, nullptr }
-};
+const luaL_Reg kWorldMethods[] = {{"component", l_world_component},
+                                  {"register_system", l_world_register_system},
+                                  {"create_entity", l_world_create_entity},
+                                  {"run_systems", l_world_run_systems},
+                                  {"system_count", l_world_system_count},
+                                  {nullptr, nullptr}};
 
 }  // namespace
 
@@ -281,10 +279,7 @@ void install_world_api(lua_State* L, ScriptRegistry* registry) {
     // primarily by the absence of entity-shaped APIs above.
 }
 
-bool run_registered_systems(lua_State*       L,
-                            ScriptRegistry&  registry,
-                            f64              dt,
-                            std::string&     err_out) {
+bool run_registered_systems(lua_State* L, ScriptRegistry& registry, f64 dt, std::string& err_out) {
     auto systems = registry.systems();
     for (LuaSystem& sys : systems) {
         if (sys.fn_ref == LUA_NOREF || sys.fn_ref == LUA_REFNIL) {

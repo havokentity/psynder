@@ -17,7 +17,8 @@ State& get_state() noexcept {
 EntityRec* find_entity(u32 id) noexcept {
     State& s = get_state();
     for (auto& e : s.entities) {
-        if (e.id == id) return &e;
+        if (e.id == id)
+            return &e;
     }
     return nullptr;
 }
@@ -25,7 +26,8 @@ EntityRec* find_entity(u32 id) noexcept {
 BodyRec* find_body(u32 id) noexcept {
     State& s = get_state();
     for (auto& b : s.bodies) {
-        if (b.id == id) return &b;
+        if (b.id == id)
+            return &b;
     }
     return nullptr;
 }
@@ -33,7 +35,8 @@ BodyRec* find_body(u32 id) noexcept {
 brush::Brush* find_brush(u32 id) noexcept {
     State& s = get_state();
     for (auto& b : s.brushes) {
-        if (b.id == id) return &b;
+        if (b.id == id)
+            return &b;
     }
     return nullptr;
 }
@@ -50,7 +53,7 @@ void apply_delta(const undo::Delta& d, bool reverse) noexcept {
         }
         case Op::EntitySpawn: {
             if (auto* e = find_entity(d.target_id)) {
-                e->alive    = !reverse;
+                e->alive = !reverse;
                 e->position = d.after;
             }
             break;
@@ -58,7 +61,7 @@ void apply_delta(const undo::Delta& d, bool reverse) noexcept {
         case Op::EntityDelete: {
             if (auto* e = find_entity(d.target_id)) {
                 // Reverse-of-delete = respawn at the before-position.
-                e->alive    = reverse;
+                e->alive = reverse;
                 e->position = reverse ? d.before : e->position;
             }
             break;
@@ -68,20 +71,26 @@ void apply_delta(const undo::Delta& d, bool reverse) noexcept {
             // Add toggles the brush list membership; undo erases, redo re-adds.
             if (reverse) {
                 for (auto it = s.brushes.begin(); it != s.brushes.end(); ++it) {
-                    if (it->id == d.target_id) { s.brushes.erase(it); break; }
+                    if (it->id == d.target_id) {
+                        s.brushes.erase(it);
+                        break;
+                    }
                 }
             } else {
                 // Redo path: ensure brush exists. (For an undo-of-add we don't
                 // try to reconstruct extents — Wave-A scope: deletion-only.)
                 bool present = false;
                 for (const auto& b : s.brushes) {
-                    if (b.id == d.target_id) { present = true; break; }
+                    if (b.id == d.target_id) {
+                        present = true;
+                        break;
+                    }
                 }
                 if (!present) {
                     brush::Brush b;
-                    b.id     = d.target_id;
+                    b.id = d.target_id;
                     b.origin = d.after;
-                    b.op     = (d.op == Op::BrushSub) ? brush::Op::Subtract : brush::Op::Add;
+                    b.op = (d.op == Op::BrushSub) ? brush::Op::Subtract : brush::Op::Add;
                     s.brushes.push_back(b);
                 }
             }
@@ -92,17 +101,23 @@ void apply_delta(const undo::Delta& d, bool reverse) noexcept {
             if (reverse) {
                 bool present = false;
                 for (const auto& b : s.brushes) {
-                    if (b.id == d.target_id) { present = true; break; }
+                    if (b.id == d.target_id) {
+                        present = true;
+                        break;
+                    }
                 }
                 if (!present) {
                     brush::Brush b;
-                    b.id     = d.target_id;
+                    b.id = d.target_id;
                     b.origin = d.before;
                     s.brushes.push_back(b);
                 }
             } else {
                 for (auto it = s.brushes.begin(); it != s.brushes.end(); ++it) {
-                    if (it->id == d.target_id) { s.brushes.erase(it); break; }
+                    if (it->id == d.target_id) {
+                        s.brushes.erase(it);
+                        break;
+                    }
                 }
             }
             break;

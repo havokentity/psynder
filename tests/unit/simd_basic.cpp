@@ -40,8 +40,7 @@ TEST_CASE("simd dispatcher reports a sensible tier", "[simd][dispatch]") {
 #if defined(__aarch64__) || defined(_M_ARM64)
     REQUIRE(t == simd::Tier::Neon);
 #elif defined(__x86_64__) || defined(_M_X64)
-    REQUIRE((t == simd::Tier::Sse42 || t == simd::Tier::Avx2 ||
-             t == simd::Tier::Avx512));
+    REQUIRE((t == simd::Tier::Sse42 || t == simd::Tier::Avx2 || t == simd::Tier::Avx512));
 #endif
     INFO("tier=" << simd::tier_name(t));
     REQUIRE(t != simd::Tier::Scalar);
@@ -54,7 +53,8 @@ TEST_CASE("f32x4 load_unaligned/store_unaligned round-trip", "[simd][load]") {
     std::array<f32, 4> out{};
     simd::store_unaligned4(out.data(), v);
 
-    for (size_t i = 0; i < 4; ++i) REQUIRE(out[i] == in[i]);
+    for (size_t i = 0; i < 4; ++i)
+        REQUIRE(out[i] == in[i]);
 }
 
 TEST_CASE("f32x4 load_aligned/store_aligned round-trip", "[simd][load]") {
@@ -64,7 +64,8 @@ TEST_CASE("f32x4 load_aligned/store_aligned round-trip", "[simd][load]") {
     alignas(16) std::array<f32, 4> out{};
     simd::store_aligned4(out.data(), v);
 
-    for (size_t i = 0; i < 4; ++i) REQUIRE(out[i] == in[i]);
+    for (size_t i = 0; i < 4; ++i)
+        REQUIRE(out[i] == in[i]);
 }
 
 TEST_CASE("f32x4 frozen-public load/store round-trip", "[simd][load]") {
@@ -76,7 +77,8 @@ TEST_CASE("f32x4 frozen-public load/store round-trip", "[simd][load]") {
     std::array<f32, 4> out{};
     simd::store(out.data(), v);
 
-    for (size_t i = 0; i < 4; ++i) REQUIRE(out[i] == in[i]);
+    for (size_t i = 0; i < 4; ++i)
+        REQUIRE(out[i] == in[i]);
 }
 
 TEST_CASE("f32x8 load/store round-trip both alignments", "[simd][load]") {
@@ -85,7 +87,7 @@ TEST_CASE("f32x8 load/store round-trip both alignments", "[simd][load]") {
     auto v_u = simd::load_unaligned8(in.data());
 
     alignas(32) std::array<f32, 8> out_a{};
-    std::array<f32, 8>             out_u{};
+    std::array<f32, 8> out_u{};
     simd::store_aligned8(out_a.data(), v_a);
     simd::store_unaligned8(out_u.data(), v_u);
 
@@ -99,16 +101,18 @@ TEST_CASE("broadcast splats a scalar across every lane", "[simd][broadcast]") {
     auto v4 = simd::broadcast4(7.25f);
     std::array<f32, 4> out4{};
     simd::store_unaligned4(out4.data(), v4);
-    for (auto x : out4) REQUIRE(x == 7.25f);
+    for (auto x : out4)
+        REQUIRE(x == 7.25f);
 
     auto v8 = simd::broadcast8(-3.5f);
     std::array<f32, 8> out8{};
     simd::store_unaligned8(out8.data(), v8);
-    for (auto x : out8) REQUIRE(x == -3.5f);
+    for (auto x : out8)
+        REQUIRE(x == -3.5f);
 }
 
 TEST_CASE("FMA matches scalar reference within tolerance", "[simd][fma]") {
-    std::mt19937 rng(0xDEADBEEFu);   // fixed seed for determinism
+    std::mt19937 rng(0xDEADBEEFu);  // fixed seed for determinism
     std::uniform_real_distribution<f32> dist(-1000.0f, 1000.0f);
 
     for (int trial = 0; trial < 256; ++trial) {
@@ -159,8 +163,8 @@ TEST_CASE("cmp_lt + blend picks the smaller value per lane", "[simd][blend]") {
 
     auto va = simd::load_aligned4(a.data());
     auto vb = simd::load_aligned4(b.data());
-    auto m  = simd::cmp_lt4(vb, va);             // true where b < a
-    auto v  = simd::blend4(va, vb, m);           // pick b where b<a, else a
+    auto m = simd::cmp_lt4(vb, va);    // true where b < a
+    auto v = simd::blend4(va, vb, m);  // pick b where b<a, else a
 
     alignas(16) std::array<f32, 4> out{};
     simd::store_aligned4(out.data(), v);
@@ -177,11 +181,9 @@ TEST_CASE("min/max match scalar fmin/fmax", "[simd][minmax]") {
 
     alignas(16) std::array<f32, 4> mn{}, mx{};
     simd::store_aligned4(mn.data(),
-                         simd::min4(simd::load_aligned4(a.data()),
-                                    simd::load_aligned4(b.data())));
+                         simd::min4(simd::load_aligned4(a.data()), simd::load_aligned4(b.data())));
     simd::store_aligned4(mx.data(),
-                         simd::max4(simd::load_aligned4(a.data()),
-                                    simd::load_aligned4(b.data())));
+                         simd::max4(simd::load_aligned4(a.data()), simd::load_aligned4(b.data())));
     for (size_t i = 0; i < 4; ++i) {
         REQUIRE(mn[i] == std::min(a[i], b[i]));
         REQUIRE(mx[i] == std::max(a[i], b[i]));
@@ -240,9 +242,8 @@ TEST_CASE("reduce_min/max match std::min/max over the lanes", "[simd][reduce]") 
 
 TEST_CASE("mask_to_int packs lane signs into the bottom bits", "[simd][mask]") {
     alignas(16) std::array<f32, 4> a{1.0f, 2.0f, 3.0f, 4.0f};
-    alignas(16) std::array<f32, 4> b{0.0f, 5.0f, 0.0f, 5.0f};   // <a, >a, <a, >a
-    auto m = simd::cmp_lt4(simd::load_aligned4(b.data()),
-                           simd::load_aligned4(a.data()));
+    alignas(16) std::array<f32, 4> b{0.0f, 5.0f, 0.0f, 5.0f};  // <a, >a, <a, >a
+    auto m = simd::cmp_lt4(simd::load_aligned4(b.data()), simd::load_aligned4(a.data()));
     // lanes 0 and 2 are set → 0b0101 = 5
     REQUIRE(simd::mask_to_int4(m) == 0b0101);
     REQUIRE(simd::any_of(m));
@@ -253,10 +254,8 @@ TEST_CASE("mask_to_int packs lane signs into the bottom bits", "[simd][mask]") {
 TEST_CASE("mask logical ops compose", "[simd][mask]") {
     alignas(16) std::array<f32, 4> a{1.0f, 2.0f, 3.0f, 4.0f};
     alignas(16) std::array<f32, 4> b{1.0f, 1.0f, 3.0f, 5.0f};
-    auto eq = simd::cmp_eq4(simd::load_aligned4(a.data()),
-                            simd::load_aligned4(b.data()));
-    auto lt = simd::cmp_lt4(simd::load_aligned4(a.data()),
-                            simd::load_aligned4(b.data()));
+    auto eq = simd::cmp_eq4(simd::load_aligned4(a.data()), simd::load_aligned4(b.data()));
+    auto lt = simd::cmp_lt4(simd::load_aligned4(a.data()), simd::load_aligned4(b.data()));
 
     // eq lanes: 0, 2  → bits 0b0101
     REQUIRE(simd::mask_to_int4(eq) == 0b0101);
@@ -266,16 +265,17 @@ TEST_CASE("mask logical ops compose", "[simd][mask]") {
     auto either = simd::mask_or(eq, lt);
     REQUIRE(simd::mask_to_int4(either) == 0b1101);
 
-    auto both   = simd::mask_and(eq, lt);
+    auto both = simd::mask_and(eq, lt);
     REQUIRE(simd::mask_to_int4(both) == 0);
 
-    auto inv    = simd::mask_not(eq);
+    auto inv = simd::mask_not(eq);
     REQUIRE(simd::mask_to_int4(inv) == (0b1111 & ~0b0101));
 }
 
 TEST_CASE("gather pulls scattered indices", "[simd][gather]") {
     std::array<f32, 16> base{};
-    for (size_t i = 0; i < 16; ++i) base[i] = static_cast<f32>(i * 10);
+    for (size_t i = 0; i < 16; ++i)
+        base[i] = static_cast<f32>(i * 10);
 
     alignas(16) std::array<i32, 4> idx{5, 1, 0, 12};
     auto v = simd::gather4(base.data(), simd::load_i32x4(idx.data()));
@@ -284,13 +284,13 @@ TEST_CASE("gather pulls scattered indices", "[simd][gather]") {
     simd::store_aligned4(out.data(), v);
     REQUIRE(out[0] == 50.0f);
     REQUIRE(out[1] == 10.0f);
-    REQUIRE(out[2] ==  0.0f);
+    REQUIRE(out[2] == 0.0f);
     REQUIRE(out[3] == 120.0f);
 }
 
 TEST_CASE("add/sub/mul/div match scalar across a small grid", "[simd][arith]") {
     alignas(16) std::array<f32, 4> a{1.5f, -2.0f, 4.0f, 0.5f};
-    alignas(16) std::array<f32, 4> b{2.0f,  3.0f, 0.5f, 1.0f};
+    alignas(16) std::array<f32, 4> b{2.0f, 3.0f, 0.5f, 1.0f};
 
     auto va = simd::load_aligned4(a.data());
     auto vb = simd::load_aligned4(b.data());
@@ -311,11 +311,11 @@ TEST_CASE("add/sub/mul/div match scalar across a small grid", "[simd][arith]") {
 
 TEST_CASE("dispatch.reduce_add matches a scalar sum", "[simd][dispatch]") {
     std::vector<f32> buf(1024);
-    f32              ref = 0.0f;
-    std::mt19937     rng(0x12345u);
+    f32 ref = 0.0f;
+    std::mt19937 rng(0x12345u);
     std::uniform_real_distribution<f32> dist(-1.0f, 1.0f);
     for (auto& x : buf) {
-        x   = dist(rng);
+        x = dist(rng);
         ref += x;
     }
     f32 simd_sum = simd::reduce_add(buf.data(), buf.size());
@@ -324,14 +324,19 @@ TEST_CASE("dispatch.reduce_add matches a scalar sum", "[simd][dispatch]") {
 }
 
 TEST_CASE("dispatch.add_buffer + fma_buffer match scalar refs", "[simd][dispatch]") {
-    const usize  n = 1031;   // deliberately not a multiple of 8 or 4
+    const usize n = 1031;  // deliberately not a multiple of 8 or 4
     std::vector<f32> a(n), b(n), c(n), y(n), ref(n);
-    std::mt19937     rng(0x99u);
+    std::mt19937 rng(0x99u);
     std::uniform_real_distribution<f32> dist(-1.0f, 1.0f);
-    for (usize i = 0; i < n; ++i) { a[i] = dist(rng); b[i] = dist(rng); c[i] = dist(rng); }
+    for (usize i = 0; i < n; ++i) {
+        a[i] = dist(rng);
+        b[i] = dist(rng);
+        c[i] = dist(rng);
+    }
 
     simd::add_buffer(a.data(), b.data(), y.data(), n);
-    for (usize i = 0; i < n; ++i) REQUIRE(y[i] == a[i] + b[i]);
+    for (usize i = 0; i < n; ++i)
+        REQUIRE(y[i] == a[i] + b[i]);
 
     simd::fma_buffer(a.data(), b.data(), c.data(), y.data(), n);
     for (usize i = 0; i < n; ++i) {

@@ -27,8 +27,7 @@ u32 pack_z(f32 z) noexcept {
 
 }  // namespace
 
-TEST_CASE("HiZ tile clears to 1.0 (far plane)",
-          "[raster][hiz][adr-002]") {
+TEST_CASE("HiZ tile clears to 1.0 (far plane)", "[raster][hiz][adr-002]") {
     HiZTile<64, 64> h;
     h.clear();
     for (u32 i = 0; i < h.kCells; ++i) {
@@ -38,24 +37,22 @@ TEST_CASE("HiZ tile clears to 1.0 (far plane)",
     REQUIRE(h.kRows == 8);
 }
 
-TEST_CASE("HiZ tile dimensions match ADR-002 / DESIGN.md §7.3",
-          "[raster][hiz][adr-002]") {
-    REQUIRE(HiZTile< 32,  32>::kCols ==  4);
-    REQUIRE(HiZTile< 32,  32>::kRows ==  4);
-    REQUIRE(HiZTile< 64,  64>::kCols ==  8);
-    REQUIRE(HiZTile< 64,  64>::kRows ==  8);
+TEST_CASE("HiZ tile dimensions match ADR-002 / DESIGN.md §7.3", "[raster][hiz][adr-002]") {
+    REQUIRE(HiZTile<32, 32>::kCols == 4);
+    REQUIRE(HiZTile<32, 32>::kRows == 4);
+    REQUIRE(HiZTile<64, 64>::kCols == 8);
+    REQUIRE(HiZTile<64, 64>::kRows == 8);
     REQUIRE(HiZTile<128, 128>::kCols == 16);
     REQUIRE(HiZTile<128, 128>::kRows == 16);
 }
 
-TEST_CASE("HiZ rebuild_from_fb reads the depth slice",
-          "[raster][hiz]") {
+TEST_CASE("HiZ rebuild_from_fb reads the depth slice", "[raster][hiz]") {
     constexpr u32 W = 64, H = 64;
     std::vector<u32> depth(W * H, pack_z(1.0f));
     Framebuffer fb{};
-    fb.width  = W;
+    fb.width = W;
     fb.height = H;
-    fb.depth  = depth.data();
+    fb.depth = depth.data();
 
     // Carve a foreground patch (z = 0.25) covering rows 0..7, cols 0..7
     // — exactly one HiZ cell.
@@ -79,12 +76,12 @@ TEST_CASE("HiZ rebuild_from_fb reads the depth slice",
     }
 }
 
-TEST_CASE("HiZ any_cell_passes: a test_z behind every cell is rejected",
-          "[raster][hiz][reject]") {
+TEST_CASE("HiZ any_cell_passes: a test_z behind every cell is rejected", "[raster][hiz][reject]") {
     HiZTile<64, 64> h;
     h.clear();
     // Set every cell to z = 0.4.
-    for (u32 i = 0; i < h.kCells; ++i) h.max_z[i] = 0.4f;
+    for (u32 i = 0; i < h.kCells; ++i)
+        h.max_z[i] = 0.4f;
 
     // A triangle with min-z = 0.5 is behind every cell — reject.
     REQUIRE_FALSE(h.any_cell_passes(0, 0, 64, 64, 0.5f));
@@ -92,8 +89,7 @@ TEST_CASE("HiZ any_cell_passes: a test_z behind every cell is rejected",
     REQUIRE(h.any_cell_passes(0, 0, 64, 64, 0.3f));
 }
 
-TEST_CASE("HiZ any_cell_passes: partial bbox tests only its cells",
-          "[raster][hiz][reject]") {
+TEST_CASE("HiZ any_cell_passes: partial bbox tests only its cells", "[raster][hiz][reject]") {
     HiZTile<64, 64> h;
     h.clear();
     // First cell only — push to 0.1; every other cell stays at 1.0.
@@ -109,8 +105,7 @@ TEST_CASE("HiZ any_cell_passes: partial bbox tests only its cells",
     REQUIRE(h.any_cell_passes(0, 0, 16, 8, 0.2f));
 }
 
-TEST_CASE("HiZ update_cell only tightens (max-z monotonically decreases)",
-          "[raster][hiz]") {
+TEST_CASE("HiZ update_cell only tightens (max-z monotonically decreases)", "[raster][hiz]") {
     HiZTile<64, 64> h;
     h.clear();
     h.update_cell(0, 0.5f);

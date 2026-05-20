@@ -21,8 +21,8 @@ namespace psynder::math {
 
 struct FxQ24_8 {
     static constexpr i32 kShift = 8;
-    static constexpr i32 kOne   = 1 << kShift;          // 256
-    static constexpr f32 kInv   = 1.0f / static_cast<f32>(kOne);
+    static constexpr i32 kOne = 1 << kShift;  // 256
+    static constexpr f32 kInv = 1.0f / static_cast<f32>(kOne);
 
     i32 raw = 0;
 
@@ -35,9 +35,7 @@ struct FxQ24_8 {
         return q;
     }
 
-    static constexpr FxQ24_8 from_int(i32 v) noexcept {
-        return from_raw(v * kOne);
-    }
+    static constexpr FxQ24_8 from_int(i32 v) noexcept { return from_raw(v * kOne); }
 
     // Truncating f32 → Q24.8 conversion. Round-to-nearest variant is
     // available as `from_f32_round`. Truncation is the rasterizer default
@@ -49,7 +47,7 @@ struct FxQ24_8 {
     static constexpr FxQ24_8 from_f32_round(f32 v) noexcept {
         // Branchless round-to-nearest, half-away-from-zero.
         f32 scaled = v * static_cast<f32>(kOne);
-        f32 bias   = scaled >= 0.0f ? 0.5f : -0.5f;
+        f32 bias = scaled >= 0.0f ? 0.5f : -0.5f;
         return from_raw(static_cast<i32>(scaled + bias));
     }
 
@@ -60,7 +58,7 @@ struct FxQ24_8 {
     // ─── Arithmetic ──────────────────────────────────────────────────────
     constexpr FxQ24_8 operator+(FxQ24_8 o) const noexcept { return from_raw(raw + o.raw); }
     constexpr FxQ24_8 operator-(FxQ24_8 o) const noexcept { return from_raw(raw - o.raw); }
-    constexpr FxQ24_8 operator-() const noexcept         { return from_raw(-raw); }
+    constexpr FxQ24_8 operator-() const noexcept { return from_raw(-raw); }
 
     // Multiplication widens to i64 to avoid the intermediate overflow that
     // would silently corrupt the result for any non-trivial pair (the
@@ -75,22 +73,35 @@ struct FxQ24_8 {
     // sub-pixel precision. Returns 0 on divide-by-zero (rasterizer never
     // divides by an edge it already rejected, but defensive is cheap).
     constexpr FxQ24_8 operator/(FxQ24_8 o) const noexcept {
-        if (o.raw == 0) return from_raw(0);
+        if (o.raw == 0)
+            return from_raw(0);
         i64 wide = (static_cast<i64>(raw) << kShift) / static_cast<i64>(o.raw);
         return from_raw(static_cast<i32>(wide));
     }
 
-    constexpr FxQ24_8& operator+=(FxQ24_8 o) noexcept { raw += o.raw; return *this; }
-    constexpr FxQ24_8& operator-=(FxQ24_8 o) noexcept { raw -= o.raw; return *this; }
-    constexpr FxQ24_8& operator*=(FxQ24_8 o) noexcept { *this = *this * o; return *this; }
-    constexpr FxQ24_8& operator/=(FxQ24_8 o) noexcept { *this = *this / o; return *this; }
+    constexpr FxQ24_8& operator+=(FxQ24_8 o) noexcept {
+        raw += o.raw;
+        return *this;
+    }
+    constexpr FxQ24_8& operator-=(FxQ24_8 o) noexcept {
+        raw -= o.raw;
+        return *this;
+    }
+    constexpr FxQ24_8& operator*=(FxQ24_8 o) noexcept {
+        *this = *this * o;
+        return *this;
+    }
+    constexpr FxQ24_8& operator/=(FxQ24_8 o) noexcept {
+        *this = *this / o;
+        return *this;
+    }
 
     // ─── Comparison ──────────────────────────────────────────────────────
     constexpr bool operator==(FxQ24_8 o) const noexcept { return raw == o.raw; }
     constexpr bool operator!=(FxQ24_8 o) const noexcept { return raw != o.raw; }
-    constexpr bool operator< (FxQ24_8 o) const noexcept { return raw <  o.raw; }
+    constexpr bool operator<(FxQ24_8 o) const noexcept { return raw < o.raw; }
     constexpr bool operator<=(FxQ24_8 o) const noexcept { return raw <= o.raw; }
-    constexpr bool operator> (FxQ24_8 o) const noexcept { return raw >  o.raw; }
+    constexpr bool operator>(FxQ24_8 o) const noexcept { return raw > o.raw; }
     constexpr bool operator>=(FxQ24_8 o) const noexcept { return raw >= o.raw; }
 };
 
@@ -100,6 +111,8 @@ static_assert(sizeof(FxQ24_8) == 4, "Q24.8 is a thin wrapper over i32");
 // Free-function constexpr converter — sometimes nicer at call sites than
 // the static method (e.g. inside template metaprograms). Mirrors the
 // truncating semantics of `FxQ24_8::from_f32`.
-constexpr FxQ24_8 fx(f32 v) noexcept { return FxQ24_8::from_f32(v); }
+constexpr FxQ24_8 fx(f32 v) noexcept {
+    return FxQ24_8::from_f32(v);
+}
 
 }  // namespace psynder::math

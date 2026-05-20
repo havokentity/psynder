@@ -16,12 +16,12 @@ struct AssetTag {};
 using AssetId = Handle<AssetTag>;
 
 struct Blob {
-    const u8* data  = nullptr;
-    usize     bytes = 0;
+    const u8* data = nullptr;
+    usize bytes = 0;
 };
 
 class Vfs {
-public:
+   public:
     static Vfs& Get();
 
     // Mount a .lmpak archive or a loose directory. Multiple mounts are searched
@@ -45,7 +45,7 @@ public:
     // Diagnostics
     usize mount_count() const noexcept;
 
-private:
+   private:
     Vfs() = default;
 };
 

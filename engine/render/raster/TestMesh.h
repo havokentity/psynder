@@ -17,9 +17,9 @@ namespace psynder::render::raster::test_mesh {
 // rotating triangle in sample_01 transforms this with a Mat4 per frame.
 struct TriangleMesh {
     const Vertex* vertices;
-    u32           vertex_count;
-    const u32*    indices;
-    u32           index_count;
+    u32 vertex_count;
+    const u32* indices;
+    u32 index_count;
 };
 
 // Single colored triangle, vertices at (-0.6, -0.5), (0.6, -0.5), (0.0, 0.6).

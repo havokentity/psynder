@@ -34,11 +34,9 @@ namespace psynder::console {
 // ─── CVar coercion ───────────────────────────────────────────────────────
 int CVar::GetInt() const {
     int n = 0;
-    auto [_, ec] = std::from_chars(value.data(),
-                                   value.data() + value.size(), n);
+    auto [_, ec] = std::from_chars(value.data(), value.data() + value.size(), n);
     if (ec != std::errc()) {
-        std::from_chars(default_value.data(),
-                        default_value.data() + default_value.size(), n);
+        std::from_chars(default_value.data(), default_value.data() + default_value.size(), n);
     }
     return n;
 }
@@ -53,8 +51,10 @@ float CVar::GetFloat() const {
 }
 
 bool CVar::GetBool() const {
-    if (value == "1" || value == "true" || value == "on" || value == "yes") return true;
-    if (value == "0" || value == "false" || value == "off" || value == "no") return false;
+    if (value == "1" || value == "true" || value == "on" || value == "yes")
+        return true;
+    if (value == "0" || value == "false" || value == "off" || value == "no")
+        return false;
     return GetInt() != 0;
 }
 
@@ -62,21 +62,23 @@ bool CVar::GetBool() const {
 // Quote-aware, recognises `\n` / `\t` / `\"` / `\\` escapes inside
 // quotes, stops at `//` line-comment. Returns string_views into the
 // caller-provided `storage` buffer so callers control the lifetime.
-std::vector<std::string_view> tokenize_line(std::string_view line,
-                                            std::string& storage) {
+std::vector<std::string_view> tokenize_line(std::string_view line, std::string& storage) {
     storage.clear();
     storage.reserve(line.size());
     std::vector<std::pair<std::size_t, std::size_t>> spans;
 
     std::size_t i = 0;
     auto skip_ws = [&]() {
-        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
+            ++i;
     };
 
     while (i < line.size()) {
         skip_ws();
-        if (i >= line.size()) break;
-        if (i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') break;
+        if (i >= line.size())
+            break;
+        if (i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/')
+            break;
 
         std::size_t start = storage.size();
         if (line[i] == '"') {
@@ -85,18 +87,29 @@ std::vector<std::string_view> tokenize_line(std::string_view line,
                 if (line[i] == '\\' && i + 1 < line.size()) {
                     char c = line[i + 1];
                     switch (c) {
-                        case 'n':  storage.push_back('\n'); break;
-                        case 't':  storage.push_back('\t'); break;
-                        case '"':  storage.push_back('"');  break;
-                        case '\\': storage.push_back('\\'); break;
-                        default:   storage.push_back(c);    break;
+                        case 'n':
+                            storage.push_back('\n');
+                            break;
+                        case 't':
+                            storage.push_back('\t');
+                            break;
+                        case '"':
+                            storage.push_back('"');
+                            break;
+                        case '\\':
+                            storage.push_back('\\');
+                            break;
+                        default:
+                            storage.push_back(c);
+                            break;
                     }
                     i += 2;
                 } else {
                     storage.push_back(line[i++]);
                 }
             }
-            if (i < line.size()) ++i;  // consume closing quote
+            if (i < line.size())
+                ++i;  // consume closing quote
         } else {
             while (i < line.size() && line[i] != ' ' && line[i] != '\t') {
                 storage.push_back(line[i++]);
@@ -119,30 +132,31 @@ Console& Console::Get() {
     return instance;
 }
 
-CVar* Console::RegisterCVar(std::string name, std::string default_value,
-                            std::string description, u32 flags,
+CVar* Console::RegisterCVar(std::string name,
+                            std::string default_value,
+                            std::string description,
+                            u32 flags,
                             std::function<void(const CVar&)> on_change) {
     auto [it, inserted] = cvars_.try_emplace(name);
     auto& v = it->second;
     if (inserted) {
-        v.name          = std::move(name);
-        v.value         = default_value;
+        v.name = std::move(name);
+        v.value = default_value;
         v.default_value = default_value;
-        v.description   = std::move(description);
-        v.flags         = flags;
-        v.on_change     = std::move(on_change);
+        v.description = std::move(description);
+        v.flags = flags;
+        v.on_change = std::move(on_change);
     }
     return &v;
 }
 
-Command* Console::RegisterCommand(std::string name, std::string description,
-                                  CommandCallback callback) {
+Command* Console::RegisterCommand(std::string name, std::string description, CommandCallback callback) {
     auto [it, inserted] = commands_.try_emplace(name);
     auto& c = it->second;
     if (inserted) {
-        c.name        = std::move(name);
+        c.name = std::move(name);
         c.description = std::move(description);
-        c.callback    = std::move(callback);
+        c.callback = std::move(callback);
     }
     return &c;
 }
@@ -159,9 +173,11 @@ Command* Console::FindCommand(std::string_view name) {
 
 bool Console::SetCVarOverride(std::string_view name, std::string_view value) {
     auto* v = FindCVar(name);
-    if (v == nullptr) return false;
+    if (v == nullptr)
+        return false;
     v->value.assign(value);
-    if (v->on_change) v->on_change(*v);
+    if (v->on_change)
+        v->on_change(*v);
     return true;
 }
 
@@ -174,14 +190,20 @@ namespace {
 // across hosts.
 inline bool cvar_visible_on_this_platform(u32 flags) {
 #if defined(__APPLE__)
-    if ((flags & CVAR_PLATFORM_WIN) != 0)   return false;
-    if ((flags & CVAR_PLATFORM_LINUX) != 0) return false;
+    if ((flags & CVAR_PLATFORM_WIN) != 0)
+        return false;
+    if ((flags & CVAR_PLATFORM_LINUX) != 0)
+        return false;
 #elif defined(_WIN32)
-    if ((flags & CVAR_PLATFORM_MAC) != 0)   return false;
-    if ((flags & CVAR_PLATFORM_LINUX) != 0) return false;
+    if ((flags & CVAR_PLATFORM_MAC) != 0)
+        return false;
+    if ((flags & CVAR_PLATFORM_LINUX) != 0)
+        return false;
 #else
-    if ((flags & CVAR_PLATFORM_MAC) != 0)   return false;
-    if ((flags & CVAR_PLATFORM_WIN) != 0)   return false;
+    if ((flags & CVAR_PLATFORM_MAC) != 0)
+        return false;
+    if ((flags & CVAR_PLATFORM_WIN) != 0)
+        return false;
 #endif
     return true;
 }
@@ -193,11 +215,11 @@ inline bool cvar_visible_on_this_platform(u32 flags) {
 std::string allowed_values_for_current_platform_csv(const CVar& v) {
     std::string out;
     for (std::size_t i = 0; i < v.allowed_values.size(); ++i) {
-        u32 mask = (i < v.allowed_value_flags.size())
-                       ? v.allowed_value_flags[i]
-                       : 0u;
-        if (!cvar_value_allowed_on_this_platform(mask)) continue;
-        if (!out.empty()) out += ", ";
+        u32 mask = (i < v.allowed_value_flags.size()) ? v.allowed_value_flags[i] : 0u;
+        if (!cvar_value_allowed_on_this_platform(mask))
+            continue;
+        if (!out.empty())
+            out += ", ";
         out += v.allowed_values[i];
     }
     return out;
@@ -207,10 +229,9 @@ std::string allowed_values_for_current_platform_csv(const CVar& v) {
 // allowed set. Returns 0 (CVAR_VALUE_ANY) if the value isn't in the set.
 u32 value_flags_for(const CVar& v, std::string_view value) {
     for (std::size_t i = 0; i < v.allowed_values.size(); ++i) {
-        if (v.allowed_values[i] != value) continue;
-        return (i < v.allowed_value_flags.size())
-                   ? v.allowed_value_flags[i]
-                   : 0u;
+        if (v.allowed_values[i] != value)
+            continue;
+        return (i < v.allowed_value_flags.size()) ? v.allowed_value_flags[i] : 0u;
     }
     return 0u;
 }
@@ -220,12 +241,16 @@ u32 value_flags_for(const CVar& v, std::string_view value) {
 std::string platforms_from_mask(u32 mask) {
     std::string s;
     auto add = [&](const char* p) {
-        if (!s.empty()) s += "/";
+        if (!s.empty())
+            s += "/";
         s += p;
     };
-    if (mask & CVAR_VALUE_MAC)   add("macOS");
-    if (mask & CVAR_VALUE_WIN)   add("Windows");
-    if (mask & CVAR_VALUE_LINUX) add("Linux");
+    if (mask & CVAR_VALUE_MAC)
+        add("macOS");
+    if (mask & CVAR_VALUE_WIN)
+        add("Windows");
+    if (mask & CVAR_VALUE_LINUX)
+        add("Linux");
     return s;
 }
 
@@ -233,7 +258,8 @@ std::string platforms_from_mask(u32 mask) {
 
 // ─── Public free functions ───────────────────────────────────────────────
 bool cvar_value_allowed_on_this_platform(u32 value_flags) {
-    if (value_flags == 0u) return true;  // CVAR_VALUE_ANY
+    if (value_flags == 0u)
+        return true;  // CVAR_VALUE_ANY
 #if defined(__APPLE__)
     return (value_flags & CVAR_VALUE_MAC) != 0u;
 #elif defined(_WIN32)
@@ -260,7 +286,8 @@ const char* current_platform_name() {
 // scored so `deno` finds `r_denoiser`.
 Console::Resolution Console::ResolveCommand(std::string_view typed) {
     Resolution r;
-    if (typed.empty()) return r;
+    if (typed.empty())
+        return r;
 
     // Exact match wins immediately.
     if (auto it = cvars_.find(typed); it != cvars_.end()) {
@@ -281,47 +308,54 @@ Console::Resolution Console::ResolveCommand(std::string_view typed) {
         if (name.size() >= 2 && name[0] == 'r' && name[1] == '_') {
             const std::string_view body(name.data() + 2, name.size() - 2);
             const int s2 = ScoreMatch(body, typed, /*spans=*/nullptr);
-            if (s2 > s) s = s2;
+            if (s2 > s)
+                s = s2;
         }
         return s;
     };
 
     struct Scored {
-        int           score;
-        std::size_t   length;
-        std::string   name;
+        int score;
+        std::size_t length;
+        std::string name;
     };
     std::vector<Scored> cvar_hits;
     std::vector<Scored> cmd_hits;
     for (const auto& [_, v] : cvars_) {
-        if (!cvar_visible_on_this_platform(v.flags)) continue;
+        if (!cvar_visible_on_this_platform(v.flags))
+            continue;
         int s = score_name(v.name);
-        if (s > 0) cvar_hits.push_back({s, v.name.size(), v.name});
+        if (s > 0)
+            cvar_hits.push_back({s, v.name.size(), v.name});
     }
     for (const auto& [_, c] : commands_) {
         int s = score_name(c.name);
-        if (s > 0) cmd_hits.push_back({s, c.name.size(), c.name});
+        if (s > 0)
+            cmd_hits.push_back({s, c.name.size(), c.name});
     }
 
     auto cmp = [](const Scored& a, const Scored& b) {
-        if (a.score  != b.score)  return a.score  > b.score;
-        if (a.length != b.length) return a.length < b.length;
+        if (a.score != b.score)
+            return a.score > b.score;
+        if (a.length != b.length)
+            return a.length < b.length;
         return a.name < b.name;
     };
     std::stable_sort(cvar_hits.begin(), cvar_hits.end(), cmp);
-    std::stable_sort(cmd_hits.begin(),  cmd_hits.end(),  cmp);
+    std::stable_sort(cmd_hits.begin(), cmd_hits.end(), cmp);
 
     const std::size_t total = cvar_hits.size() + cmd_hits.size();
-    if (total == 0) return r;
+    if (total == 0)
+        return r;
 
     // Cvars > commands at equal score.
-    r.canonical_name = cvar_hits.empty()
-                           ? cmd_hits.front().name
-                           : cvar_hits.front().name;
+    r.canonical_name = cvar_hits.empty() ? cmd_hits.front().name : cvar_hits.front().name;
     if (total > 1) {
         r.ambiguous_matches.reserve(total);
-        for (auto& h : cvar_hits) r.ambiguous_matches.push_back(std::move(h.name));
-        for (auto& h : cmd_hits)  r.ambiguous_matches.push_back(std::move(h.name));
+        for (auto& h : cvar_hits)
+            r.ambiguous_matches.push_back(std::move(h.name));
+        for (auto& h : cmd_hits)
+            r.ambiguous_matches.push_back(std::move(h.name));
     }
     return r;
 }
@@ -335,37 +369,53 @@ ExecuteResult Console::Execute(std::string_view line) {
     while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
         line.remove_prefix(1);
     }
-    if (line.empty()) return result;
-    if (line.size() >= 2 && line[0] == '/' && line[1] == '/') return result;
+    if (line.empty())
+        return result;
+    if (line.size() >= 2 && line[0] == '/' && line[1] == '/')
+        return result;
 
     // Inline `#` comment stripping. Track quote state so a `#` inside a
     // quoted string is data, not a comment. Handle `\` escaping so
     // `\"` doesn't flip the quote state mid-string.
     {
         bool in_quote = false;
-        bool escape   = false;
+        bool escape = false;
         std::size_t cut = line.size();
         for (std::size_t i = 0; i < line.size(); ++i) {
             char c = line[i];
-            if (escape) { escape = false; continue; }
-            if (c == '\\') { escape = true; continue; }
-            if (c == '"')  { in_quote = !in_quote; continue; }
-            if (c == '#' && !in_quote) { cut = i; break; }
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (c == '\\') {
+                escape = true;
+                continue;
+            }
+            if (c == '"') {
+                in_quote = !in_quote;
+                continue;
+            }
+            if (c == '#' && !in_quote) {
+                cut = i;
+                break;
+            }
         }
-        if (cut < line.size()) line = line.substr(0, cut);
+        if (cut < line.size())
+            line = line.substr(0, cut);
     }
     // Trim trailing whitespace including '\r' so CRLF-terminated input
     // doesn't end up with the carriage return swallowed into the last
     // token.
-    while (!line.empty()
-           && (line.back() == ' ' || line.back() == '\t' || line.back() == '\r')) {
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\r')) {
         line.remove_suffix(1);
     }
-    if (line.empty()) return result;
+    if (line.empty())
+        return result;
 
     std::string storage;
     auto tokens = tokenize_line(line, storage);
-    if (tokens.empty()) return result;
+    if (tokens.empty())
+        return result;
 
     auto name = tokens[0];
 
@@ -373,12 +423,14 @@ ExecuteResult Console::Execute(std::string_view line) {
     // Resolves BEFORE smart-resolve so a fN token wins decisively. The
     // in_fav_dispatch_ guard prevents infinite recursion if a saved
     // favourite happens to be `fN` itself.
-    if (!in_fav_dispatch_ && !favorites_.empty() &&
-        name.size() >= 2 && name[0] == 'f') {
+    if (!in_fav_dispatch_ && !favorites_.empty() && name.size() >= 2 && name[0] == 'f') {
         bool all_digits = true;
         std::size_t idx = 0;
         for (std::size_t i = 1; i < name.size(); ++i) {
-            if (name[i] < '0' || name[i] > '9') { all_digits = false; break; }
+            if (name[i] < '0' || name[i] > '9') {
+                all_digits = false;
+                break;
+            }
             idx = idx * 10 + std::size_t(name[i] - '0');
         }
         if (all_digits && idx >= 1 && idx <= favorites_.size()) {
@@ -386,10 +438,10 @@ ExecuteResult Console::Execute(std::string_view line) {
             in_fav_dispatch_ = true;
             ExecuteResult sub = Execute(saved);
             in_fav_dispatch_ = false;
-            std::string log = fmt::format("[fav] f{} -> `{}`\n",
-                                          idx, saved);
+            std::string log = fmt::format("[fav] f{} -> `{}`\n", idx, saved);
             if (!sub.output.empty()) {
-                if (sub.output.back() != '\n') sub.output.push_back('\n');
+                if (sub.output.back() != '\n')
+                    sub.output.push_back('\n');
                 log += sub.output;
                 sub.output = std::move(log);
             } else {
@@ -418,21 +470,28 @@ ExecuteResult Console::Execute(std::string_view line) {
                 std::string alt;
                 std::size_t i = 0;
                 for (const auto& m : r.ambiguous_matches) {
-                    if (m == canonical_storage) continue;
-                    if (i >= kCap) { alt += ", ..."; break; }
-                    if (!alt.empty()) alt += ", ";
+                    if (m == canonical_storage)
+                        continue;
+                    if (i >= kCap) {
+                        alt += ", ...";
+                        break;
+                    }
+                    if (!alt.empty())
+                        alt += ", ";
                     alt += m;
                     ++i;
                 }
                 resolution_log = fmt::format(
                     "[console] resolved `{}` -> `{}` (top of {} matches; "
                     "alt: {})\n",
-                    std::string(name), canonical_storage,
-                    r.ambiguous_matches.size(), alt);
+                    std::string(name),
+                    canonical_storage,
+                    r.ambiguous_matches.size(),
+                    alt);
             } else {
-                resolution_log = fmt::format(
-                    "[console] resolved `{}` -> `{}` (top match)\n",
-                    std::string(name), canonical_storage);
+                resolution_log = fmt::format("[console] resolved `{}` -> `{}` (top match)\n",
+                                             std::string(name),
+                                             canonical_storage);
             }
             name = std::string_view(canonical_storage);
         }
@@ -464,9 +523,9 @@ ExecuteResult Console::Execute(std::string_view line) {
     // Then cvar: no argument = read; one or more = set.
     if (auto* v = FindCVar(name); v != nullptr) {
         if (tokens.size() == 1) {
-            result.output = resolution_log + fmt::format(
-                "{} = \"{}\"  (default \"{}\")",
-                v->name, v->value, v->default_value);
+            result.output =
+                resolution_log +
+                fmt::format("{} = \"{}\"  (default \"{}\")", v->name, v->value, v->default_value);
             return result;
         }
         if ((v->flags & CVAR_READONLY) != 0) {
@@ -478,8 +537,7 @@ ExecuteResult Console::Execute(std::string_view line) {
             auto* cheat = FindCVar("dev_cheats");
             if (cheat == nullptr || !cheat->GetBool()) {
                 result.ok = false;
-                result.error = fmt::format(
-                    "cvar '{}' requires dev_cheats 1", v->name);
+                result.error = fmt::format("cvar '{}' requires dev_cheats 1", v->name);
                 return result;
             }
         }
@@ -489,7 +547,8 @@ ExecuteResult Console::Execute(std::string_view line) {
         // quotes from the quoted form).
         std::string new_value;
         for (std::size_t i = 1; i < tokens.size(); ++i) {
-            if (i > 1) new_value.push_back(' ');
+            if (i > 1)
+                new_value.push_back(' ');
             new_value.append(tokens[i]);
         }
 
@@ -498,12 +557,16 @@ ExecuteResult Console::Execute(std::string_view line) {
         // accept "0" as that token.
         if (new_value == "0" && !v->allowed_values.empty()) {
             auto ieq = [](std::string_view a, std::string_view b) {
-                if (a.size() != b.size()) return false;
+                if (a.size() != b.size())
+                    return false;
                 for (std::size_t i = 0; i < a.size(); ++i) {
                     char ca = a[i], cb = b[i];
-                    if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
-                    if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
-                    if (ca != cb) return false;
+                    if (ca >= 'A' && ca <= 'Z')
+                        ca = static_cast<char>(ca - 'A' + 'a');
+                    if (cb >= 'A' && cb <= 'Z')
+                        cb = static_cast<char>(cb - 'A' + 'a');
+                    if (ca != cb)
+                        return false;
                 }
                 return true;
             };
@@ -519,18 +582,23 @@ ExecuteResult Console::Execute(std::string_view line) {
         if (!v->allowed_values.empty()) {
             bool ok2 = false;
             for (const auto& a : v->allowed_values) {
-                if (a == new_value) { ok2 = true; break; }
+                if (a == new_value) {
+                    ok2 = true;
+                    break;
+                }
             }
             if (!ok2) {
                 std::string allowed;
                 for (std::size_t i = 0; i < v->allowed_values.size(); ++i) {
-                    if (i) allowed += '|';
+                    if (i)
+                        allowed += '|';
                     allowed += v->allowed_values[i];
                 }
                 result.ok = false;
-                result.error = fmt::format(
-                    "{}: invalid value '{}' (expected one of: {})",
-                    v->name, new_value, allowed);
+                result.error = fmt::format("{}: invalid value '{}' (expected one of: {})",
+                                           v->name,
+                                           new_value,
+                                           allowed);
                 return result;
             }
         }
@@ -550,18 +618,24 @@ ExecuteResult Console::Execute(std::string_view line) {
                 result.error = fmt::format(
                     "{}={} is {}-only; not available on {}.\n"
                     "        Available on this platform: {}",
-                    v->name, new_value, platforms,
-                    current_platform_name(), available);
-                result.output = resolution_log + fmt::format(
-                    "{}: \"{}\" -> \"{}\" (inactive: platform-gated)",
-                    v->name, old_value, v->value);
+                    v->name,
+                    new_value,
+                    platforms,
+                    current_platform_name(),
+                    available);
+                result.output =
+                    resolution_log + fmt::format("{}: \"{}\" -> \"{}\" (inactive: platform-gated)",
+                                                 v->name,
+                                                 old_value,
+                                                 v->value);
                 return result;
             }
         }
 
         std::string old_value = v->value;
         v->value = std::move(new_value);
-        if (v->on_change) v->on_change(*v);
+        if (v->on_change)
+            v->on_change(*v);
 
         if (!is_fav_mgmt(name)) {
             last_executed_line_ = std::string(line);
@@ -570,13 +644,12 @@ ExecuteResult Console::Execute(std::string_view line) {
         // Cross-cvar dependency warning. Evaluated AFTER the value is
         // committed; never blocks the set.
         std::string warn_line;
-        if (!dep_warn_suppressed_ &&
-            v->requires_predicate && !v->requires_predicate()) {
+        if (!dep_warn_suppressed_ && v->requires_predicate && !v->requires_predicate()) {
             warn_line = fmt::format("[warn] {}", v->requires_hint);
         }
 
-        result.output = resolution_log + fmt::format(
-            "{}: \"{}\" -> \"{}\"", v->name, old_value, v->value);
+        result.output =
+            resolution_log + fmt::format("{}: \"{}\" -> \"{}\"", v->name, old_value, v->value);
         if (!warn_line.empty()) {
             result.output.push_back('\n');
             result.output.append(warn_line);
@@ -602,26 +675,53 @@ namespace {
 // leading whitespace), matching Execute()'s full-line `//` rule. Mid-
 // statement `//` is data -- preserves URL-shaped values.
 std::size_t scan_script_statement_end(std::string_view body, std::size_t i) {
-    bool in_quote      = false;
-    bool escape        = false;
-    bool in_comment    = false;
+    bool in_quote = false;
+    bool escape = false;
+    bool in_comment = false;
     bool at_stmt_start = true;
     std::size_t end = i;
     while (end < body.size()) {
         char c = body[end];
-        if (c == '\n') break;
-        if (in_comment) { ++end; continue; }
-        if (escape)     { escape = false;  ++end; at_stmt_start = false; continue; }
-        if (c == '\\')  { escape = true;   ++end; at_stmt_start = false; continue; }
-        if (c == '"')   { in_quote = !in_quote; ++end; at_stmt_start = false; continue; }
-        if (!in_quote) {
-            if (c == '#') { in_comment = true; ++end; continue; }
-            if (at_stmt_start && c == '/' && end + 1 < body.size() && body[end + 1] == '/') {
-                in_comment = true; end += 2; continue;
-            }
-            if (c == ';') break;
+        if (c == '\n')
+            break;
+        if (in_comment) {
+            ++end;
+            continue;
         }
-        if (c != ' ' && c != '\t') at_stmt_start = false;
+        if (escape) {
+            escape = false;
+            ++end;
+            at_stmt_start = false;
+            continue;
+        }
+        if (c == '\\') {
+            escape = true;
+            ++end;
+            at_stmt_start = false;
+            continue;
+        }
+        if (c == '"') {
+            in_quote = !in_quote;
+            ++end;
+            at_stmt_start = false;
+            continue;
+        }
+        if (!in_quote) {
+            if (c == '#') {
+                in_comment = true;
+                ++end;
+                continue;
+            }
+            if (at_stmt_start && c == '/' && end + 1 < body.size() && body[end + 1] == '/') {
+                in_comment = true;
+                end += 2;
+                continue;
+            }
+            if (c == ';')
+                break;
+        }
+        if (c != ' ' && c != '\t')
+            at_stmt_start = false;
         ++end;
     }
     return end;
@@ -643,9 +743,11 @@ ExecuteResult Console::ExecuteScript(std::string_view body) {
             std::size_t end = scan_script_statement_end(body, i);
             auto line = body.substr(i, end - i);
             std::size_t a = 0;
-            while (a < line.size() && (line[a] == ' ' || line[a] == '\t')) ++a;
+            while (a < line.size() && (line[a] == ' ' || line[a] == '\t'))
+                ++a;
             std::size_t b = a;
-            while (b < line.size() && line[b] != ' ' && line[b] != '\t') ++b;
+            while (b < line.size() && line[b] != ' ' && line[b] != '\t')
+                ++b;
             if (b > a) {
                 std::string_view name = line.substr(a, b - a);
                 auto it = cvars_.find(name);
@@ -664,7 +766,8 @@ ExecuteResult Console::ExecuteScript(std::string_view body) {
         auto r = Execute(line);
         if (!r.ok) {
             agg.ok = false;
-            if (!agg.error.empty()) agg.error.push_back('\n');
+            if (!agg.error.empty())
+                agg.error.push_back('\n');
             agg.error.append(r.error);
         }
         if (!r.output.empty()) {
@@ -688,7 +791,8 @@ ExecuteResult Console::ExecuteScript(std::string_view body) {
         }
         if (!diff.empty()) {
             undo_stack_.push_back(std::move(diff));
-            if (undo_stack_.size() > kMaxHistory) undo_stack_.pop_front();
+            if (undo_stack_.size() > kMaxHistory)
+                undo_stack_.pop_front();
             // Any new edit invalidates the redo branch.
             redo_stack_.clear();
         }
@@ -704,32 +808,38 @@ std::size_t Console::ResetAllCVarsToDefaults() {
             pre[name] = cv.value;
         }
     }
-    if (pre.empty()) return 0;
+    if (pre.empty())
+        return 0;
 
     in_undo_redo_ = true;
     for (auto& [name, cv] : cvars_) {
-        if (cv.value == cv.default_value) continue;
+        if (cv.value == cv.default_value)
+            continue;
         cv.value = cv.default_value;
-        if (cv.on_change) cv.on_change(cv);
+        if (cv.on_change)
+            cv.on_change(cv);
     }
     in_undo_redo_ = false;
 
     undo_stack_.push_back(pre);
-    if (undo_stack_.size() > kMaxHistory) undo_stack_.pop_front();
+    if (undo_stack_.size() > kMaxHistory)
+        undo_stack_.pop_front();
     redo_stack_.clear();
     return pre.size();
 }
 
 std::vector<Console::CvarChange> Console::Undo() {
     std::vector<CvarChange> changes;
-    if (undo_stack_.empty()) return changes;
+    if (undo_stack_.empty())
+        return changes;
     in_undo_redo_ = true;
     CvarSnapshot snap = std::move(undo_stack_.back());
     undo_stack_.pop_back();
     CvarSnapshot fwd;
     for (auto& [name, old] : snap) {
         auto it = cvars_.find(name);
-        if (it == cvars_.end()) continue;
+        if (it == cvars_.end())
+            continue;
         std::string current = it->second.value;
         fwd[name] = current;
         // Use Execute so any allowed_values check, on_change hook, and
@@ -739,21 +849,24 @@ std::vector<Console::CvarChange> Console::Undo() {
         changes.push_back({name, std::move(current), old});
     }
     redo_stack_.push_back(std::move(fwd));
-    if (redo_stack_.size() > kMaxHistory) redo_stack_.pop_front();
+    if (redo_stack_.size() > kMaxHistory)
+        redo_stack_.pop_front();
     in_undo_redo_ = false;
     return changes;
 }
 
 std::vector<Console::CvarChange> Console::Redo() {
     std::vector<CvarChange> changes;
-    if (redo_stack_.empty()) return changes;
+    if (redo_stack_.empty())
+        return changes;
     in_undo_redo_ = true;
     CvarSnapshot snap = std::move(redo_stack_.back());
     redo_stack_.pop_back();
     CvarSnapshot back;
     for (auto& [name, val] : snap) {
         auto it = cvars_.find(name);
-        if (it == cvars_.end()) continue;
+        if (it == cvars_.end())
+            continue;
         std::string current = it->second.value;
         back[name] = current;
         std::string line = name + " " + val;
@@ -761,7 +874,8 @@ std::vector<Console::CvarChange> Console::Redo() {
         changes.push_back({name, std::move(current), val});
     }
     undo_stack_.push_back(std::move(back));
-    if (undo_stack_.size() > kMaxHistory) undo_stack_.pop_front();
+    if (undo_stack_.size() > kMaxHistory)
+        undo_stack_.pop_front();
     in_undo_redo_ = false;
     return changes;
 }
@@ -771,15 +885,17 @@ void Console::AddFavorite(std::string line) {
     while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
         line.erase(line.begin());
     }
-    while (!line.empty() && (line.back()  == ' ' || line.back()  == '\t')) {
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) {
         line.pop_back();
     }
-    if (line.empty()) return;
+    if (line.empty())
+        return;
     favorites_.push_back(std::move(line));
 }
 
 void Console::RemoveFavorite(std::size_t one_based_index) {
-    if (one_based_index == 0 || one_based_index > favorites_.size()) return;
+    if (one_based_index == 0 || one_based_index > favorites_.size())
+        return;
     using diff_t = std::vector<std::string>::difference_type;
     favorites_.erase(favorites_.begin() + static_cast<diff_t>(one_based_index - 1));
 }
@@ -793,19 +909,20 @@ void Console::PushHistory(std::string line) {
     while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
         line.erase(line.begin());
     }
-    while (!line.empty() && (line.back()  == ' ' || line.back()  == '\t')) {
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) {
         line.pop_back();
     }
-    if (line.empty()) return;
+    if (line.empty())
+        return;
     // Bash-style HISTCONTROL=ignoredups: dedupe consecutive identical
     // submissions.
-    if (!history_.empty() && history_.back() == line) return;
+    if (!history_.empty() && history_.back() == line)
+        return;
     history_.push_back(std::move(line));
     if (history_.size() > kMaxHistoryDepth) {
         using diff_t = std::vector<std::string>::difference_type;
         history_.erase(history_.begin(),
-                       history_.begin()
-                           + static_cast<diff_t>(history_.size() - kMaxHistoryDepth));
+                       history_.begin() + static_cast<diff_t>(history_.size() - kMaxHistoryDepth));
     }
 }
 
@@ -818,8 +935,7 @@ void Console::SetHistory(std::vector<std::string> hist) {
     if (history_.size() > kMaxHistoryDepth) {
         using diff_t = std::vector<std::string>::difference_type;
         history_.erase(history_.begin(),
-                       history_.begin()
-                           + static_cast<diff_t>(history_.size() - kMaxHistoryDepth));
+                       history_.begin() + static_cast<diff_t>(history_.size() - kMaxHistoryDepth));
     }
 }
 
@@ -839,14 +955,12 @@ void Console::Drain() {
     for (auto& pe : local) {
         // Trim for `[` / `]` detection -- match the dmonte semantics.
         std::string_view trimmed = pe.line;
-        while (!trimmed.empty() &&
-               (trimmed.front() == ' ' || trimmed.front() == '\t' ||
-                trimmed.front() == '\r' || trimmed.front() == '\n')) {
+        while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t' ||
+                                    trimmed.front() == '\r' || trimmed.front() == '\n')) {
             trimmed.remove_prefix(1);
         }
-        while (!trimmed.empty() &&
-               (trimmed.back() == ' ' || trimmed.back() == '\t' ||
-                trimmed.back() == '\r' || trimmed.back() == '\n')) {
+        while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t' ||
+                                    trimmed.back() == '\r' || trimmed.back() == '\n')) {
             trimmed.remove_suffix(1);
         }
 
@@ -855,15 +969,18 @@ void Console::Drain() {
                 batch_active_ = true;
                 batch_buffer_.clear();
                 ExecuteResult r;
-                r.output = "batch: open  (send ']' on its own line to commit; "
-                           "the whole bundle is one undo step)";
-                if (pe.responder) pe.responder(r);
+                r.output =
+                    "batch: open  (send ']' on its own line to commit; "
+                    "the whole bundle is one undo step)";
+                if (pe.responder)
+                    pe.responder(r);
                 continue;
             }
             // Normal path: ExecuteScript splits on '\n' / ';' so multi-
             // line paste in one shot still works.
             auto result = ExecuteScript(pe.line);
-            if (pe.responder) pe.responder(result);
+            if (pe.responder)
+                pe.responder(result);
             continue;
         }
 
@@ -884,13 +1001,13 @@ void Console::Drain() {
                     result.output = header + "\n" + std::move(result.output);
                 }
             }
-            if (pe.responder) pe.responder(result);
+            if (pe.responder)
+                pe.responder(result);
         } else {
             // Cap the bundle so a misbehaving client that opens '[' but
             // never sends ']' can't grow the buffer without bound.
             constexpr std::size_t kBatchMaxBytes = 1u * 1024u * 1024u;
-            const std::size_t projected =
-                batch_buffer_.size() + pe.line.size() + 1u;
+            const std::size_t projected = batch_buffer_.size() + pe.line.size() + 1u;
             if (projected > kBatchMaxBytes) {
                 batch_active_ = false;
                 batch_buffer_.clear();
@@ -899,51 +1016,60 @@ void Console::Drain() {
                     "batch: aborted (would exceed {} byte cap; nothing committed). "
                     "Send '[' again to retry with a smaller bundle.",
                     kBatchMaxBytes);
-                if (pe.responder) pe.responder(r);
+                if (pe.responder)
+                    pe.responder(r);
                 continue;
             }
-            if (!batch_buffer_.empty()) batch_buffer_.push_back('\n');
+            if (!batch_buffer_.empty())
+                batch_buffer_.push_back('\n');
             batch_buffer_.append(pe.line);
             ExecuteResult r;
             r.output = fmt::format("batch: queued  ({} byte{} buffered, send ']' to commit)",
                                    batch_buffer_.size(),
                                    batch_buffer_.size() == 1 ? "" : "s");
-            if (pe.responder) pe.responder(r);
+            if (pe.responder)
+                pe.responder(r);
         }
     }
 }
 
 // ─── Enumeration / persistence ──────────────────────────────────────────
-void Console::EnumerateCVars(std::string_view prefix,
-                             const std::function<void(CVar&)>& visitor) {
+void Console::EnumerateCVars(std::string_view prefix, const std::function<void(CVar&)>& visitor) {
     for (auto& [_, v] : cvars_) {
-        if (!cvar_visible_on_this_platform(v.flags)) continue;
-        if (prefix.empty() || v.name.starts_with(prefix)) visitor(v);
+        if (!cvar_visible_on_this_platform(v.flags))
+            continue;
+        if (prefix.empty() || v.name.starts_with(prefix))
+            visitor(v);
     }
 }
 
-void Console::EnumerateCommands(std::string_view prefix,
-                                const std::function<void(Command&)>& visitor) {
+void Console::EnumerateCommands(std::string_view prefix, const std::function<void(Command&)>& visitor) {
     for (auto& [_, c] : commands_) {
-        if (prefix.empty() || c.name.starts_with(prefix)) visitor(c);
+        if (prefix.empty() || c.name.starts_with(prefix))
+            visitor(c);
     }
 }
 
 int Console::SaveArchivedCvars(const std::string& path) {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f.is_open()) return -1;
+    if (!f.is_open())
+        return -1;
 
     f << "// Psynder Engine -- archived cvars (auto-generated on quit)\n";
     f << "// Hand edits get overwritten on the next clean exit.\n\n";
 
     int n = 0;
     for (auto& [name, cv] : cvars_) {
-        if ((cv.flags & CVAR_ARCHIVE) == 0) continue;
-        if (cv.value == cv.default_value)   continue;
+        if ((cv.flags & CVAR_ARCHIVE) == 0)
+            continue;
+        if (cv.value == cv.default_value)
+            continue;
         const bool needs_quotes = (cv.value.find(' ') != std::string::npos);
         f << cv.name << ' ';
-        if (needs_quotes) f << '"' << cv.value << '"';
-        else              f << cv.value;
+        if (needs_quotes)
+            f << '"' << cv.value << '"';
+        else
+            f << cv.value;
         f << '\n';
         ++n;
     }

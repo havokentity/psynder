@@ -32,7 +32,8 @@ void append_f32(std::vector<u8>& out, f32 value) {
 
 template <class T>
 bool read_le(std::span<const u8> bytes, usize off, T& out) {
-    if (off + sizeof(T) > bytes.size()) return false;
+    if (off + sizeof(T) > bytes.size())
+        return false;
     using U = std::make_unsigned_t<T>;
     U u = 0;
     for (usize i = 0; i < sizeof(T); ++i) {
@@ -44,7 +45,8 @@ bool read_le(std::span<const u8> bytes, usize off, T& out) {
 
 bool read_f32(std::span<const u8> bytes, usize off, f32& out) {
     u32 bits = 0;
-    if (!read_le<u32>(bytes, off, bits)) return false;
+    if (!read_le<u32>(bytes, off, bits))
+        return false;
     std::memcpy(&out, &bits, sizeof(out));
     return true;
 }
@@ -81,10 +83,18 @@ void write_lmm(const LmmMesh& mesh, std::vector<u8>& out) {
 
     // Vertex array.
     for (const auto& v : mesh.vertices) {
-        append_f32(out, v.px); append_f32(out, v.py); append_f32(out, v.pz);
-        append_f32(out, v.nx); append_f32(out, v.ny); append_f32(out, v.nz);
-        append_f32(out, v.u);  append_f32(out, v.v);
-        append_f32(out, v.tx); append_f32(out, v.ty); append_f32(out, v.tz); append_f32(out, v.tw);
+        append_f32(out, v.px);
+        append_f32(out, v.py);
+        append_f32(out, v.pz);
+        append_f32(out, v.nx);
+        append_f32(out, v.ny);
+        append_f32(out, v.nz);
+        append_f32(out, v.u);
+        append_f32(out, v.v);
+        append_f32(out, v.tx);
+        append_f32(out, v.ty);
+        append_f32(out, v.tz);
+        append_f32(out, v.tw);
     }
     // Index array.
     for (u32 ix : mesh.indices) {
@@ -104,16 +114,25 @@ void write_lmm(const LmmMesh& mesh, std::vector<u8>& out) {
 }
 
 bool read_lmm(std::span<const u8> bytes, LmmMesh& out, std::string* err) {
-    auto fail = [&](const char* msg) { if (err) *err = msg; return false; };
+    auto fail = [&](const char* msg) {
+        if (err)
+            *err = msg;
+        return false;
+    };
 
-    if (bytes.size() < 8 * 4) return fail("lmm header truncated");
-    u32 magic = 0; read_le<u32>(bytes, 0, magic);
-    if (magic != kLmmMagic) return fail("lmm bad magic");
-    u32 version = 0; read_le<u32>(bytes, 4, version);
-    if (version != kLmmVersion) return fail("lmm unsupported version");
+    if (bytes.size() < 8 * 4)
+        return fail("lmm header truncated");
+    u32 magic = 0;
+    read_le<u32>(bytes, 0, magic);
+    if (magic != kLmmMagic)
+        return fail("lmm bad magic");
+    u32 version = 0;
+    read_le<u32>(bytes, 4, version);
+    if (version != kLmmVersion)
+        return fail("lmm unsupported version");
 
     u32 vcount = 0, icount = 0, scount = 0, mat_off = 0, mat_bytes = 0, flags = 0;
-    read_le<u32>(bytes,  8, vcount);
+    read_le<u32>(bytes, 8, vcount);
     read_le<u32>(bytes, 12, icount);
     read_le<u32>(bytes, 16, scount);
     read_le<u32>(bytes, 20, mat_off);
@@ -122,33 +141,48 @@ bool read_lmm(std::span<const u8> bytes, LmmMesh& out, std::string* err) {
     (void)flags;
 
     usize cursor = 32;
-    out.vertices.clear(); out.vertices.reserve(vcount);
+    out.vertices.clear();
+    out.vertices.reserve(vcount);
     constexpr usize kVtxBytes = 12 * 4;
-    if (cursor + vcount * kVtxBytes > bytes.size()) return fail("lmm vertices truncated");
+    if (cursor + vcount * kVtxBytes > bytes.size())
+        return fail("lmm vertices truncated");
     for (u32 i = 0; i < vcount; ++i) {
         LmmVertex v;
-        read_f32(bytes, cursor +  0, v.px); read_f32(bytes, cursor +  4, v.py); read_f32(bytes, cursor +  8, v.pz);
-        read_f32(bytes, cursor + 12, v.nx); read_f32(bytes, cursor + 16, v.ny); read_f32(bytes, cursor + 20, v.nz);
-        read_f32(bytes, cursor + 24, v.u);  read_f32(bytes, cursor + 28, v.v);
-        read_f32(bytes, cursor + 32, v.tx); read_f32(bytes, cursor + 36, v.ty); read_f32(bytes, cursor + 40, v.tz); read_f32(bytes, cursor + 44, v.tw);
+        read_f32(bytes, cursor + 0, v.px);
+        read_f32(bytes, cursor + 4, v.py);
+        read_f32(bytes, cursor + 8, v.pz);
+        read_f32(bytes, cursor + 12, v.nx);
+        read_f32(bytes, cursor + 16, v.ny);
+        read_f32(bytes, cursor + 20, v.nz);
+        read_f32(bytes, cursor + 24, v.u);
+        read_f32(bytes, cursor + 28, v.v);
+        read_f32(bytes, cursor + 32, v.tx);
+        read_f32(bytes, cursor + 36, v.ty);
+        read_f32(bytes, cursor + 40, v.tz);
+        read_f32(bytes, cursor + 44, v.tw);
         cursor += kVtxBytes;
         out.vertices.push_back(v);
     }
-    out.indices.clear(); out.indices.reserve(icount);
-    if (cursor + icount * 4 > bytes.size()) return fail("lmm indices truncated");
+    out.indices.clear();
+    out.indices.reserve(icount);
+    if (cursor + icount * 4 > bytes.size())
+        return fail("lmm indices truncated");
     for (u32 i = 0; i < icount; ++i) {
-        u32 ix = 0; read_le<u32>(bytes, cursor, ix);
+        u32 ix = 0;
+        read_le<u32>(bytes, cursor, ix);
         out.indices.push_back(ix);
         cursor += 4;
     }
-    out.submeshes.clear(); out.submeshes.reserve(scount);
+    out.submeshes.clear();
+    out.submeshes.reserve(scount);
     constexpr usize kSmBytes = 4 * 4;
-    if (cursor + scount * kSmBytes > bytes.size()) return fail("lmm submeshes truncated");
+    if (cursor + scount * kSmBytes > bytes.size())
+        return fail("lmm submeshes truncated");
     for (u32 i = 0; i < scount; ++i) {
         LmmSubmesh sm{};
-        read_le<u32>(bytes, cursor +  0, sm.first_index);
-        read_le<u32>(bytes, cursor +  4, sm.index_count);
-        read_le<u32>(bytes, cursor +  8, sm.material_index);
+        read_le<u32>(bytes, cursor + 0, sm.first_index);
+        read_le<u32>(bytes, cursor + 4, sm.index_count);
+        read_le<u32>(bytes, cursor + 8, sm.material_index);
         read_le<u32>(bytes, cursor + 12, sm.reserved);
         cursor += kSmBytes;
         out.submeshes.push_back(sm);
@@ -169,7 +203,8 @@ bool read_lmm(std::span<const u8> bytes, LmmMesh& out, std::string* err) {
                 current.push_back(c);
             }
         }
-        if (!current.empty()) out.materials.push_back(current);
+        if (!current.empty())
+            out.materials.push_back(current);
     }
     return true;
 }
@@ -181,7 +216,8 @@ LmtTexture build_mipchain_rgba8(const u8* base, u32 width, u32 height) {
     tex.format = CookTexFormat::kRgba8;
     tex.width = width;
     tex.height = height;
-    if (width == 0 || height == 0) return tex;
+    if (width == 0 || height == 0)
+        return tex;
 
     u32 mip_w = width;
     u32 mip_h = height;
@@ -189,14 +225,15 @@ LmtTexture build_mipchain_rgba8(const u8* base, u32 width, u32 height) {
 
     while (true) {
         LmtMipDesc md;
-        md.width  = mip_w;
+        md.width = mip_w;
         md.height = mip_h;
         md.offset = static_cast<u32>(tex.pixels.size());
-        md.bytes  = static_cast<u32>(current.size());
+        md.bytes = static_cast<u32>(current.size());
         tex.mips.push_back(md);
         tex.pixels.insert(tex.pixels.end(), current.begin(), current.end());
 
-        if (mip_w == 1 && mip_h == 1) break;
+        if (mip_w == 1 && mip_h == 1)
+            break;
         u32 nw = std::max(1u, mip_w / 2u);
         u32 nh = std::max(1u, mip_h / 2u);
         std::vector<u8> next(static_cast<usize>(nw) * nh * 4u);
@@ -210,10 +247,9 @@ LmtTexture build_mipchain_rgba8(const u8* base, u32 width, u32 height) {
                     return current[(py * mip_w + px) * 4u + ch];
                 };
                 for (int ch = 0; ch < 4; ++ch) {
-                    u32 sum = static_cast<u32>(fetch(sx, sy, ch))
-                            + static_cast<u32>(fetch(x1, sy, ch))
-                            + static_cast<u32>(fetch(sx, y1, ch))
-                            + static_cast<u32>(fetch(x1, y1, ch));
+                    u32 sum =
+                        static_cast<u32>(fetch(sx, sy, ch)) + static_cast<u32>(fetch(x1, sy, ch)) +
+                        static_cast<u32>(fetch(sx, y1, ch)) + static_cast<u32>(fetch(x1, y1, ch));
                     next[(y * nw + x) * 4u + ch] = static_cast<u8>((sum + 2u) / 4u);
                 }
             }
@@ -246,32 +282,46 @@ void write_lmt(const LmtTexture& tex, std::vector<u8>& out) {
 }
 
 bool read_lmt(std::span<const u8> bytes, LmtTexture& out, std::string* err) {
-    auto fail = [&](const char* msg) { if (err) *err = msg; return false; };
-    if (bytes.size() < 28) return fail("lmt header truncated");
-    u32 magic = 0; read_le<u32>(bytes, 0, magic);
-    if (magic != kLmtMagic) return fail("lmt bad magic");
-    u32 version = 0; read_le<u32>(bytes, 4, version);
-    if (version != kLmtVersion) return fail("lmt unsupported version");
-    u32 fmt = 0; read_le<u32>(bytes, 8, fmt);
+    auto fail = [&](const char* msg) {
+        if (err)
+            *err = msg;
+        return false;
+    };
+    if (bytes.size() < 28)
+        return fail("lmt header truncated");
+    u32 magic = 0;
+    read_le<u32>(bytes, 0, magic);
+    if (magic != kLmtMagic)
+        return fail("lmt bad magic");
+    u32 version = 0;
+    read_le<u32>(bytes, 4, version);
+    if (version != kLmtVersion)
+        return fail("lmt unsupported version");
+    u32 fmt = 0;
+    read_le<u32>(bytes, 8, fmt);
     out.format = static_cast<CookTexFormat>(fmt);
     read_le<u32>(bytes, 12, out.width);
     read_le<u32>(bytes, 16, out.height);
-    u32 mip_count = 0; read_le<u32>(bytes, 20, mip_count);
+    u32 mip_count = 0;
+    read_le<u32>(bytes, 20, mip_count);
     // flags @ 24
 
     usize cursor = 28;
-    out.mips.clear(); out.mips.reserve(mip_count);
-    if (cursor + mip_count * 16 > bytes.size()) return fail("lmt mip table truncated");
+    out.mips.clear();
+    out.mips.reserve(mip_count);
+    if (cursor + mip_count * 16 > bytes.size())
+        return fail("lmt mip table truncated");
     for (u32 i = 0; i < mip_count; ++i) {
         LmtMipDesc md;
-        read_le<u32>(bytes, cursor +  0, md.width);
-        read_le<u32>(bytes, cursor +  4, md.height);
-        read_le<u32>(bytes, cursor +  8, md.offset);
+        read_le<u32>(bytes, cursor + 0, md.width);
+        read_le<u32>(bytes, cursor + 4, md.height);
+        read_le<u32>(bytes, cursor + 8, md.offset);
         read_le<u32>(bytes, cursor + 12, md.bytes);
         out.mips.push_back(md);
         cursor += 16;
     }
-    if (cursor > bytes.size()) return fail("lmt payload truncated");
+    if (cursor > bytes.size())
+        return fail("lmt payload truncated");
     auto payload = bytes.subspan(cursor);
     out.pixels.assign(payload.begin(), payload.end());
     return true;
@@ -294,13 +344,22 @@ void write_lma(const LmaAudio& audio, std::vector<u8>& out) {
 }
 
 bool read_lma(std::span<const u8> bytes, LmaAudio& out, std::string* err) {
-    auto fail = [&](const char* msg) { if (err) *err = msg; return false; };
-    if (bytes.size() < 32) return fail("lma header truncated");
-    u32 magic = 0; read_le<u32>(bytes, 0, magic);
-    if (magic != kLmaMagic) return fail("lma bad magic");
-    u32 version = 0; read_le<u32>(bytes, 4, version);
-    if (version != kLmaVersion) return fail("lma unsupported version");
-    read_le<u32>(bytes,  8, out.channels);
+    auto fail = [&](const char* msg) {
+        if (err)
+            *err = msg;
+        return false;
+    };
+    if (bytes.size() < 32)
+        return fail("lma header truncated");
+    u32 magic = 0;
+    read_le<u32>(bytes, 0, magic);
+    if (magic != kLmaMagic)
+        return fail("lma bad magic");
+    u32 version = 0;
+    read_le<u32>(bytes, 4, version);
+    if (version != kLmaVersion)
+        return fail("lma unsupported version");
+    read_le<u32>(bytes, 8, out.channels);
     read_le<u32>(bytes, 12, out.sample_rate);
     read_le<u32>(bytes, 16, out.sample_count);
     read_le<u32>(bytes, 20, out.bits_per_sample);

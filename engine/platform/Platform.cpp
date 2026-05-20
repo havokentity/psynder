@@ -11,10 +11,14 @@ namespace psynder::platform {
 
 // Each platform lane provides this factory.
 Window* create_window_impl(const WindowDesc& desc);
-void    destroy_window_impl(Window* w);
+void destroy_window_impl(Window* w);
 
-Window* create_window(const WindowDesc& desc)  { return create_window_impl(desc); }
-void    destroy_window(Window* w)              { destroy_window_impl(w); }
+Window* create_window(const WindowDesc& desc) {
+    return create_window_impl(desc);
+}
+void destroy_window(Window* w) {
+    destroy_window_impl(w);
+}
 
 u64 Clock::ticks_now() {
     using clock = std::chrono::steady_clock;

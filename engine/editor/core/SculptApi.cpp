@@ -16,7 +16,7 @@ PSY_FORCEINLINE void ensure_heightfield() noexcept {
     auto& s = detail::get_state();
     if (s.heightfield.size_x == 0 || s.heightfield.size_z == 0) {
         s.heightfield.allocate(257, 257, 1.0f);
-        s.heightfield.origin = { -128.0f, 0.0f, -128.0f };
+        s.heightfield.origin = {-128.0f, 0.0f, -128.0f};
     }
     if (s.splat.size_x == 0 || s.splat.size_z == 0) {
         s.splat.allocate(s.heightfield.size_x, s.heightfield.size_z);

@@ -30,7 +30,7 @@ namespace {
 PSY_FORCEINLINE
 f32 gauss5(i32 d) noexcept {
     // 1/16, 4/16, 6/16, 4/16, 1/16 — discrete Gaussian.
-    constexpr f32 w[5] = { 1.0f/16.0f, 4.0f/16.0f, 6.0f/16.0f, 4.0f/16.0f, 1.0f/16.0f };
+    constexpr f32 w[5] = {1.0f / 16.0f, 4.0f / 16.0f, 6.0f / 16.0f, 4.0f / 16.0f, 1.0f / 16.0f};
     const i32 idx = std::clamp(d + 2, 0, 4);
     return w[idx];
 }
@@ -47,7 +47,7 @@ f32 depth_weight(f32 dz) noexcept {
 // give a tight lobe — sharp creases stop the filter.
 PSY_FORCEINLINE
 f32 normal_weight(const f32* n0, const f32* n1) noexcept {
-    const f32 d = n0[0]*n1[0] + n0[1]*n1[1] + n0[2]*n1[2];
+    const f32 d = n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2];
     const f32 c = std::clamp(d, 0.0f, 1.0f);
     return c * c * c * c;
 }
@@ -55,30 +55,30 @@ f32 normal_weight(const f32* n0, const f32* n1) noexcept {
 // One à-trous pass. `step` is the stride between samples in pixels — the
 // classic à-trous schedule doubles step each pass (1, 2, 4, …). With a
 // 5-tap base kernel this produces a 1+4*step radius per pass.
-void atrous_pass(const f32* in, f32* out,
-                 const f32* depth, const f32* normals,
-                 u32 width, u32 height, i32 step)
-{
+void atrous_pass(
+    const f32* in, f32* out, const f32* depth, const f32* normals, u32 width, u32 height, i32 step) {
     for (u32 y = 0; y < height; ++y) {
         for (u32 x = 0; x < width; ++x) {
             const u32 idx = y * width + x;
             const f32 d0 = depth[idx];
-            const f32 n0[3] = { normals[idx*3], normals[idx*3+1], normals[idx*3+2] };
+            const f32 n0[3] = {normals[idx * 3], normals[idx * 3 + 1], normals[idx * 3 + 2]};
             f32 sum_w = 0.0f;
             f32 sum_v = 0.0f;
             for (i32 dy = -2; dy <= 2; ++dy) {
                 for (i32 dx = -2; dx <= 2; ++dx) {
                     const i32 sx = static_cast<i32>(x) + dx * step;
                     const i32 sy = static_cast<i32>(y) + dy * step;
-                    if (sx < 0 || sx >= static_cast<i32>(width))  continue;
-                    if (sy < 0 || sy >= static_cast<i32>(height)) continue;
+                    if (sx < 0 || sx >= static_cast<i32>(width))
+                        continue;
+                    if (sy < 0 || sy >= static_cast<i32>(height))
+                        continue;
                     const u32 sidx = static_cast<u32>(sy) * width + static_cast<u32>(sx);
                     const f32 d1 = depth[sidx];
-                    const f32 n1[3] = { normals[sidx*3], normals[sidx*3+1], normals[sidx*3+2] };
-                    const f32 wd  = depth_weight(d1 - d0);
-                    const f32 wn  = normal_weight(n0, n1);
-                    const f32 wg  = gauss5(dx) * gauss5(dy);
-                    const f32 w   = wg * wd * wn;
+                    const f32 n1[3] = {normals[sidx * 3], normals[sidx * 3 + 1], normals[sidx * 3 + 2]};
+                    const f32 wd = depth_weight(d1 - d0);
+                    const f32 wn = normal_weight(n0, n1);
+                    const f32 wg = gauss5(dx) * gauss5(dy);
+                    const f32 w = wg * wd * wn;
                     sum_w += w;
                     sum_v += w * in[sidx];
                 }
@@ -95,17 +95,20 @@ void atrous_pass(const f32* in, f32* out,
 }  // namespace
 
 void denoise_shadows(const DenoiseInput& in, f32* output_visibility) {
-    if (!in.shadow_visibility || !in.depth || !in.normals || !output_visibility) return;
-    if (in.width == 0 || in.height == 0) return;
+    if (!in.shadow_visibility || !in.depth || !in.normals || !output_visibility)
+        return;
+    if (in.width == 0 || in.height == 0)
+        return;
 
     const usize n = static_cast<usize>(in.width) * in.height;
     // Two-pass à-trous: pass 1 step=1, pass 2 step=2 (classic schedule).
     // Use the output as a ping-pong target alongside a thread-local temp.
     static thread_local std::vector<f32> tmp;
-    if (tmp.size() < n) tmp.resize(n);
+    if (tmp.size() < n)
+        tmp.resize(n);
 
-    atrous_pass(in.shadow_visibility, tmp.data(),     in.depth, in.normals, in.width, in.height, 1);
-    atrous_pass(tmp.data(),           output_visibility, in.depth, in.normals, in.width, in.height, 2);
+    atrous_pass(in.shadow_visibility, tmp.data(), in.depth, in.normals, in.width, in.height, 1);
+    atrous_pass(tmp.data(), output_visibility, in.depth, in.normals, in.width, in.height, 2);
 }
 
 }  // namespace psynder::render::rt

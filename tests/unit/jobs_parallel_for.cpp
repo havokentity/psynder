@@ -35,7 +35,8 @@ TEST_CASE("parallel_for sums an array correctly", "[jobs][parallel_for]") {
         std::atomic<std::uint64_t> sum{0};
         js.parallel_for(0, N, 128, [&](usize lo, usize hi) {
             std::uint64_t local = 0;
-            for (usize i = lo; i < hi; ++i) local += v[i];
+            for (usize i = lo; i < hi; ++i)
+                local += v[i];
             sum.fetch_add(local, std::memory_order_relaxed);
         });
         REQUIRE(sum.load() == expected_sum(N));
@@ -46,7 +47,8 @@ TEST_CASE("parallel_for sums an array correctly", "[jobs][parallel_for]") {
         std::atomic<std::uint64_t> sum{0};
         js.parallel_for(0, N, 64, [&](usize lo, usize hi) {
             std::uint64_t local = 0;
-            for (usize i = lo; i < hi; ++i) local += static_cast<std::uint64_t>(i);
+            for (usize i = lo; i < hi; ++i)
+                local += static_cast<std::uint64_t>(i);
             sum.fetch_add(local, std::memory_order_relaxed);
         });
         REQUIRE(sum.load() == expected_sum(N));
@@ -57,7 +59,8 @@ TEST_CASE("parallel_for sums an array correctly", "[jobs][parallel_for]") {
         std::atomic<std::uint64_t> sum{0};
         js.parallel_for(0, N, 1024, [&](usize lo, usize hi) {
             std::uint64_t local = 0;
-            for (usize i = lo; i < hi; ++i) local += static_cast<std::uint64_t>(i);
+            for (usize i = lo; i < hi; ++i)
+                local += static_cast<std::uint64_t>(i);
             sum.fetch_add(local, std::memory_order_relaxed);
         });
         REQUIRE(sum.load() == expected_sum(N));
@@ -68,7 +71,8 @@ TEST_CASE("parallel_for sums an array correctly", "[jobs][parallel_for]") {
         std::atomic<std::uint64_t> sum{0};
         js.parallel_for(0, N, 77, [&](usize lo, usize hi) {
             std::uint64_t local = 0;
-            for (usize i = lo; i < hi; ++i) local += static_cast<std::uint64_t>(i);
+            for (usize i = lo; i < hi; ++i)
+                local += static_cast<std::uint64_t>(i);
             sum.fetch_add(local, std::memory_order_relaxed);
         });
         REQUIRE(sum.load() == expected_sum(N));
@@ -79,7 +83,8 @@ TEST_CASE("parallel_for sums an array correctly", "[jobs][parallel_for]") {
         std::atomic<std::uint64_t> sum{0};
         js.parallel_for(lo_n, hi_n, 128, [&](usize lo, usize hi) {
             std::uint64_t local = 0;
-            for (usize i = lo; i < hi; ++i) local += static_cast<std::uint64_t>(i);
+            for (usize i = lo; i < hi; ++i)
+                local += static_cast<std::uint64_t>(i);
             sum.fetch_add(local, std::memory_order_relaxed);
         });
         REQUIRE(sum.load() == expected_sum(hi_n) - expected_sum(lo_n));

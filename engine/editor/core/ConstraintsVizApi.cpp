@@ -20,7 +20,8 @@ namespace psynder::editor::viz {
 // composited with the rest of the in-viewport debug UI.
 void render_constraints(const Camera& cam) {
     auto& s = detail::get_state();
-    if (s.constraint_graph.size() == 0) return;
+    if (s.constraint_graph.size() == 0)
+        return;
 
     // Snapshot the body poses for the segment builder. Bodies are flat
     // and small (32-ish per Wave-B contraption); a one-frame copy is
@@ -28,9 +29,10 @@ void render_constraints(const Camera& cam) {
     std::vector<WorldBodyPose> poses;
     poses.reserve(s.bodies.size());
     for (const auto& b : s.bodies) {
-        if (!b.alive) continue;
+        if (!b.alive)
+            continue;
         WorldBodyPose p;
-        p.id       = b.id;
+        p.id = b.id;
         p.position = b.position;
         p.rotation = b.rotation;
         poses.push_back(p);

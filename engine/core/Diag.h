@@ -23,26 +23,23 @@ inline bool tier_enabled(int tier) noexcept {
 
 }  // namespace psynder::diag
 
-#define PSY_DIAG_TIER1(category, ...)                                          \
-    do {                                                                       \
-        if (::psynder::diag::tier_enabled(1)) {                                \
-            ::psynder::log::info("[{}] {}", (category),                        \
-                                 ::fmt::format(__VA_ARGS__));                  \
-        }                                                                      \
+#define PSY_DIAG_TIER1(category, ...)                                                \
+    do {                                                                             \
+        if (::psynder::diag::tier_enabled(1)) {                                      \
+            ::psynder::log::info("[{}] {}", (category), ::fmt::format(__VA_ARGS__)); \
+        }                                                                            \
     } while (0)
 
-#define PSY_DIAG_TIER2(category, ...)                                          \
-    do {                                                                       \
-        if (::psynder::diag::tier_enabled(2)) {                                \
-            ::psynder::log::info("[{}] {}", (category),                        \
-                                 ::fmt::format(__VA_ARGS__));                  \
-        }                                                                      \
+#define PSY_DIAG_TIER2(category, ...)                                                \
+    do {                                                                             \
+        if (::psynder::diag::tier_enabled(2)) {                                      \
+            ::psynder::log::info("[{}] {}", (category), ::fmt::format(__VA_ARGS__)); \
+        }                                                                            \
     } while (0)
 
-#define PSY_DIAG_TIER3(category, ...)                                          \
-    do {                                                                       \
-        if (::psynder::diag::tier_enabled(3)) {                                \
-            ::psynder::log::info("[{}] {}", (category),                        \
-                                 ::fmt::format(__VA_ARGS__));                  \
-        }                                                                      \
+#define PSY_DIAG_TIER3(category, ...)                                                \
+    do {                                                                             \
+        if (::psynder::diag::tier_enabled(3)) {                                      \
+            ::psynder::log::info("[{}] {}", (category), ::fmt::format(__VA_ARGS__)); \
+        }                                                                            \
     } while (0)

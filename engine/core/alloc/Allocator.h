@@ -13,7 +13,7 @@
 #include <cstddef>
 #include <new>
 #include <type_traits>
-#include <utility>   // std::forward — libc++ pulls it in transitively, libstdc++/MSVC do not
+#include <utility>  // std::forward — libc++ pulls it in transitively, libstdc++/MSVC do not
 
 namespace psynder::mem {
 
@@ -32,11 +32,11 @@ enum class Tag : u32 {
 
 // ─── LinearArena — bump-pointer, O(1) reset ──────────────────────────────
 class LinearArena {
-public:
+   public:
     LinearArena() = default;
     LinearArena(void* base, usize bytes, Tag tag = Tag::Misc) noexcept;
     ~LinearArena();
-    LinearArena(const LinearArena&)            = delete;
+    LinearArena(const LinearArena&) = delete;
     LinearArena& operator=(const LinearArena&) = delete;
     LinearArena(LinearArena&&) noexcept;
     LinearArena& operator=(LinearArena&&) noexcept;
@@ -51,16 +51,16 @@ public:
         return p ? new (p) T(std::forward<Args>(args)...) : nullptr;
     }
 
-    void  reset() noexcept;
+    void reset() noexcept;
     usize used() const noexcept;
     usize capacity() const noexcept;
 
-private:
-    u8*  base_     = nullptr;
-    u8*  head_     = nullptr;
-    usize cap_     = 0;
-    Tag  tag_      = Tag::Misc;
-    bool owns_     = false;
+   private:
+    u8* base_ = nullptr;
+    u8* head_ = nullptr;
+    usize cap_ = 0;
+    Tag tag_ = Tag::Misc;
+    bool owns_ = false;
 };
 
 // ─── TypedPool<T> — fixed-size free-list pool ───────────────────────────
@@ -79,7 +79,7 @@ private:
 // the free-list index table lives immediately after, naturally aligned.
 template <class T>
 class TypedPool {
-public:
+   public:
     static constexpr u32 kInvalidIndex = 0xFFFF'FFFFu;
 
     void init(void* base, usize element_count) noexcept {
@@ -89,17 +89,18 @@ public:
             reinterpret_cast<std::uintptr_t>(storage_) + sizeof(T) * element_count;
         std::uintptr_t aligned =
             (after_storage + alignof(u32) - 1) & ~static_cast<std::uintptr_t>(alignof(u32) - 1);
-        free_    = reinterpret_cast<u32*>(aligned);
-        cap_     = element_count;
-        next_    = 0;
-        live_    = 0;
+        free_ = reinterpret_cast<u32*>(aligned);
+        cap_ = element_count;
+        next_ = 0;
+        live_ = 0;
         // Lazy free-list seed: slots [0..cap_) get linked on demand inside
         // acquire() so init() stays O(1) regardless of capacity.
         first_free_ = kInvalidIndex;
     }
 
     T* acquire() noexcept {
-        if (live_ >= cap_) return nullptr;
+        if (live_ >= cap_)
+            return nullptr;
         u32 idx;
         if (first_free_ != kInvalidIndex) {
             idx = first_free_;
@@ -112,49 +113,52 @@ public:
     }
 
     void release(T* p) noexcept {
-        if (!p || !storage_) return;
+        if (!p || !storage_)
+            return;
         u32 idx = static_cast<u32>(p - storage_);
-        if (idx >= cap_) return;     // not from this pool; ignore.
-        free_[idx]   = first_free_;
-        first_free_  = idx;
-        if (live_ > 0) --live_;
+        if (idx >= cap_)
+            return;  // not from this pool; ignore.
+        free_[idx] = first_free_;
+        first_free_ = idx;
+        if (live_ > 0)
+            --live_;
     }
 
     void reset() noexcept {
-        next_       = 0;
-        live_       = 0;
+        next_ = 0;
+        live_ = 0;
         first_free_ = kInvalidIndex;
     }
 
-    usize live()     const noexcept { return live_; }
+    usize live() const noexcept { return live_; }
     usize capacity() const noexcept { return cap_; }
 
-private:
-    T*    storage_     = nullptr;
-    u32*  free_        = nullptr;
-    usize cap_         = 0;
-    usize next_        = 0;
-    usize live_        = 0;
-    u32   first_free_  = kInvalidIndex;
+   private:
+    T* storage_ = nullptr;
+    u32* free_ = nullptr;
+    usize cap_ = 0;
+    usize next_ = 0;
+    usize live_ = 0;
+    u32 first_free_ = kInvalidIndex;
 };
 
 // ─── PageAllocator — OS-mediated, hugepages where supported ──────────────
 struct PageBlock {
-    void* ptr   = nullptr;
+    void* ptr = nullptr;
     usize bytes = 0;
 };
 PageBlock page_alloc(usize bytes, bool prefer_hugepage = true);
-void      page_free(PageBlock block);
+void page_free(PageBlock block);
 
 // ─── Per-worker scratch — call after the job system inits ────────────────
-LinearArena& worker_scratch();    // current worker's per-job arena
+LinearArena& worker_scratch();  // current worker's per-job arena
 
 // ─── Per-frame scratch — reset each frame boundary by the engine ─────────
 LinearArena& frame_scratch();
 
 // ─── Budgets / tracking ──────────────────────────────────────────────────
-void   set_budget(Tag tag, usize bytes);
-usize  current_usage(Tag tag) noexcept;
-usize  peak_usage(Tag tag) noexcept;
+void set_budget(Tag tag, usize bytes);
+usize current_usage(Tag tag) noexcept;
+usize peak_usage(Tag tag) noexcept;
 
 }  // namespace psynder::mem

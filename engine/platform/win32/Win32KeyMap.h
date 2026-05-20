@@ -24,36 +24,54 @@ constexpr u32 kLParamExtendedKey = (1u << 24);
 inline KeyCode vk_to_keycode(u32 vk, u32 lparam_flags) noexcept {
     // Letters: VK_A..VK_Z map to ASCII 'A'..'Z' (0x41..0x5A).
     if (vk >= 'A' && vk <= 'Z') {
-        return static_cast<KeyCode>(
-            static_cast<u16>(KeyCode::A) + (vk - 'A'));
+        return static_cast<KeyCode>(static_cast<u16>(KeyCode::A) + (vk - 'A'));
     }
     // Function keys F1..F12.
     if (vk >= VK_F1 && vk <= VK_F12) {
-        return static_cast<KeyCode>(
-            static_cast<u16>(KeyCode::F1) + (vk - VK_F1));
+        return static_cast<KeyCode>(static_cast<u16>(KeyCode::F1) + (vk - VK_F1));
     }
     const bool extended = (lparam_flags & detail::kLParamExtendedKey) != 0;
     switch (vk) {
-        case VK_ESCAPE:   return KeyCode::Escape;
-        case VK_RETURN:   return KeyCode::Enter;
-        case VK_SPACE:    return KeyCode::Space;
-        case VK_TAB:      return KeyCode::Tab;
-        case VK_BACK:     return KeyCode::Backspace;
-        case VK_LEFT:     return KeyCode::Left;
-        case VK_RIGHT:    return KeyCode::Right;
-        case VK_UP:       return KeyCode::Up;
-        case VK_DOWN:     return KeyCode::Down;
-        case VK_OEM_3:    return KeyCode::Tilde;     // US `~` key
-        case VK_LSHIFT:   return KeyCode::LeftShift;
-        case VK_RSHIFT:   return KeyCode::RightShift;
-        case VK_SHIFT:    return KeyCode::LeftShift; // generic = treat as left
-        case VK_LCONTROL: return KeyCode::LeftCtrl;
-        case VK_RCONTROL: return KeyCode::RightCtrl;
-        case VK_CONTROL:  return extended ? KeyCode::RightCtrl : KeyCode::LeftCtrl;
-        case VK_LMENU:    return KeyCode::LeftAlt;
-        case VK_RMENU:    return KeyCode::RightAlt;
-        case VK_MENU:     return extended ? KeyCode::RightAlt : KeyCode::LeftAlt;
-        default:          return KeyCode::Unknown;
+        case VK_ESCAPE:
+            return KeyCode::Escape;
+        case VK_RETURN:
+            return KeyCode::Enter;
+        case VK_SPACE:
+            return KeyCode::Space;
+        case VK_TAB:
+            return KeyCode::Tab;
+        case VK_BACK:
+            return KeyCode::Backspace;
+        case VK_LEFT:
+            return KeyCode::Left;
+        case VK_RIGHT:
+            return KeyCode::Right;
+        case VK_UP:
+            return KeyCode::Up;
+        case VK_DOWN:
+            return KeyCode::Down;
+        case VK_OEM_3:
+            return KeyCode::Tilde;  // US `~` key
+        case VK_LSHIFT:
+            return KeyCode::LeftShift;
+        case VK_RSHIFT:
+            return KeyCode::RightShift;
+        case VK_SHIFT:
+            return KeyCode::LeftShift;  // generic = treat as left
+        case VK_LCONTROL:
+            return KeyCode::LeftCtrl;
+        case VK_RCONTROL:
+            return KeyCode::RightCtrl;
+        case VK_CONTROL:
+            return extended ? KeyCode::RightCtrl : KeyCode::LeftCtrl;
+        case VK_LMENU:
+            return KeyCode::LeftAlt;
+        case VK_RMENU:
+            return KeyCode::RightAlt;
+        case VK_MENU:
+            return extended ? KeyCode::RightAlt : KeyCode::LeftAlt;
+        default:
+            return KeyCode::Unknown;
     }
 }
 

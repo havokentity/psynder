@@ -31,7 +31,7 @@ namespace fs = std::filesystem;
 
 namespace psynder::ui::rml::test_only {
 const ::psynder::ui::rml::detail::Document* find_document(std::string_view name);
-::psynder::u64                      reload_generation(std::string_view name);
+::psynder::u64 reload_generation(std::string_view name);
 }  // namespace psynder::ui::rml::test_only
 
 namespace {
@@ -53,7 +53,7 @@ void write_file(const fs::path& p, std::string_view bytes) {
 }
 
 struct ScopedReset {
-    ScopedReset()  {
+    ScopedReset() {
         // Reset asset VFS + drop the watcher thread so prior tests'
         // mounts don't leak in.
         psynder::asset::internal::reset_for_tests();
@@ -66,8 +66,7 @@ struct ScopedReset {
 
 }  // namespace
 
-TEST_CASE("ui_rml: VFS watch -> update() reloads DOM end-to-end",
-          "[ui][rml][hotreload][vfs]") {
+TEST_CASE("ui_rml: VFS watch -> update() reloads DOM end-to-end", "[ui][rml][hotreload][vfs]") {
     ScopedReset reset;
 
     auto dir = make_scratch_dir("hotreload");
@@ -78,7 +77,7 @@ TEST_CASE("ui_rml: VFS watch -> update() reloads DOM end-to-end",
 
     constexpr std::string_view kRcssV1 = "* { color: #ffffff; }";
 
-    write_file(dir / "hud.rml",  kRmlV1);
+    write_file(dir / "hud.rml", kRmlV1);
     write_file(dir / "hud.rcss", kRcssV1);
     REQUIRE(psynder::asset::Vfs::Get().mount_directory(dir.string()));
 
@@ -93,8 +92,7 @@ TEST_CASE("ui_rml: VFS watch -> update() reloads DOM end-to-end",
     REQUIRE(doc != nullptr);
     REQUIRE(doc->root.children[0].children.size() == 1);
     REQUIRE(doc->root.children[0].children[0].id == "hp");
-    REQUIRE(doc->root.children[0].children[0].computed_style.background_color
-            == 0xFF0000FFu);
+    REQUIRE(doc->root.children[0].children[0].computed_style.background_color == 0xFF0000FFu);
 
     const auto gen0 = psynder::ui::rml::test_only::reload_generation("hud");
 
@@ -125,8 +123,7 @@ TEST_CASE("ui_rml: VFS watch -> update() reloads DOM end-to-end",
 
     REQUIRE(after->root.children[0].children.size() == 2);
     REQUIRE(after->root.children[0].children[0].id == "hp");
-    REQUIRE(after->root.children[0].children[0].computed_style.background_color
-            == 0x00FF00FFu);
+    REQUIRE(after->root.children[0].children[0].computed_style.background_color == 0x00FF00FFu);
     REQUIRE(after->root.children[0].children[1].id == "ammo");
 
     // Show/hide flag survived.
@@ -139,8 +136,7 @@ TEST_CASE("ui_rml: VFS watch -> update() reloads DOM end-to-end",
     // .rcss edits trip the watcher too — modify only the stylesheet and
     // confirm the cascade re-applies.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    write_file(dir / "hud.rcss",
-        "* { color: #ffffff; } #hp { background-color: #0000ff; }");
+    write_file(dir / "hud.rcss", "* { color: #ffffff; } #hp { background-color: #0000ff; }");
     psynder::asset::internal::poll_watchers_now();
     psynder::ui::rml::update(0.f);
 
@@ -154,15 +150,14 @@ TEST_CASE("ui_rml: VFS watch -> update() reloads DOM end-to-end",
     REQUIRE_FALSE(after->visible);
 }
 
-TEST_CASE("ui_rml: sample 03 HUD asset parses and lays out",
-          "[ui][rml][sample][vfs]") {
+TEST_CASE("ui_rml: sample 03 HUD asset parses and lays out", "[ui][rml][sample][vfs]") {
     // The shipped HUD lives under samples/03_quake_room/assets/.  We
     // resolve relative to the source dir so the test runs from any
     // build directory and on any host.
     ScopedReset reset;
 
-    const fs::path samples_dir = fs::path(PSYNDER_SOURCE_DIR)
-        / "samples" / "03_quake_room" / "assets";
+    const fs::path samples_dir =
+        fs::path(PSYNDER_SOURCE_DIR) / "samples" / "03_quake_room" / "assets";
     REQUIRE(fs::is_regular_file(samples_dir / "hud.rml"));
     REQUIRE(fs::is_regular_file(samples_dir / "hud.rcss"));
 
@@ -179,21 +174,25 @@ TEST_CASE("ui_rml: sample 03 HUD asset parses and lays out",
 
     // Walk to find the hud-root element by id (the parser uses
     // depth-first, so we scan the whole tree).
-    const psynder::ui::rml::detail::Element* root_div   = nullptr;
+    const psynder::ui::rml::detail::Element* root_div = nullptr;
     const psynder::ui::rml::detail::Element* pause_menu = nullptr;
-    const psynder::ui::rml::detail::Element* quit_btn   = nullptr;
-    std::vector<const psynder::ui::rml::detail::Element*> stack{ &doc->root };
+    const psynder::ui::rml::detail::Element* quit_btn = nullptr;
+    std::vector<const psynder::ui::rml::detail::Element*> stack{&doc->root};
     while (!stack.empty()) {
         const auto* el = stack.back();
         stack.pop_back();
-        if (el->id == "hud-root")   root_div   = el;
-        if (el->id == "pause-menu") pause_menu = el;
-        if (el->id == "quit")       quit_btn   = el;
-        for (const auto& c : el->children) stack.push_back(&c);
+        if (el->id == "hud-root")
+            root_div = el;
+        if (el->id == "pause-menu")
+            pause_menu = el;
+        if (el->id == "quit")
+            quit_btn = el;
+        for (const auto& c : el->children)
+            stack.push_back(&c);
     }
-    REQUIRE(root_div   != nullptr);
+    REQUIRE(root_div != nullptr);
     REQUIRE(pause_menu != nullptr);
-    REQUIRE(quit_btn   != nullptr);
+    REQUIRE(quit_btn != nullptr);
 
     // Pause menu carries `.hidden` so display:none cascades onto it.
     REQUIRE(pause_menu->computed_style.display_none);
@@ -207,42 +206,36 @@ TEST_CASE("ui_rml: sample 03 HUD asset parses and lays out",
     // box counts — the parser/layout subset evolves with vendoring —
     // but rendering must produce *some* boxes for the visible chrome.
     std::vector<psynder::ui::rml::detail::LayoutBox> boxes;
-    psynder::ui::rml::detail::layout(*doc,
-        psynder::math::Vec2{1280.f, 720.f}, boxes);
+    psynder::ui::rml::detail::layout(*doc, psynder::math::Vec2{1280.f, 720.f}, boxes);
     REQUIRE(!boxes.empty());
 }
 
-TEST_CASE("ui_rml: load_document watches both .rml and .rcss",
-          "[ui][rml][hotreload][vfs]") {
+TEST_CASE("ui_rml: load_document watches both .rml and .rcss", "[ui][rml][hotreload][vfs]") {
     ScopedReset reset;
 
     auto dir = make_scratch_dir("watch_pair");
-    write_file(dir / "panel.rml",
-        "<rml><body><div id=\"x\"></div></body></rml>");
-    write_file(dir / "panel.rcss",
-        "#x { width: 64; height: 64; background-color: #112233; }");
+    write_file(dir / "panel.rml", "<rml><body><div id=\"x\"></div></body></rml>");
+    write_file(dir / "panel.rcss", "#x { width: 64; height: 64; background-color: #112233; }");
     REQUIRE(psynder::asset::Vfs::Get().mount_directory(dir.string()));
 
     REQUIRE(psynder::ui::rml::initialize());
     REQUIRE(psynder::ui::rml::load_document("panel.rml", "panel"));
 
-    psynder::asset::internal::poll_watchers_now();   // baseline
+    psynder::asset::internal::poll_watchers_now();  // baseline
     const auto gen0 = psynder::ui::rml::test_only::reload_generation("panel");
 
     // Editing the .rcss only must still drive a reload — proves the
     // watch covers the companion stylesheet, not just the .rml.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    write_file(dir / "panel.rcss",
-        "#x { width: 128; height: 96; background-color: #445566; }");
+    write_file(dir / "panel.rcss", "#x { width: 128; height: 96; background-color: #445566; }");
     psynder::asset::internal::poll_watchers_now();
     psynder::ui::rml::update(0.f);
 
     const auto* doc = psynder::ui::rml::test_only::find_document("panel");
     REQUIRE(doc != nullptr);
-    REQUIRE(doc->root.children[0].children[0].computed_style.width  == 128.f);
+    REQUIRE(doc->root.children[0].children[0].computed_style.width == 128.f);
     REQUIRE(doc->root.children[0].children[0].computed_style.height == 96.f);
-    REQUIRE(doc->root.children[0].children[0].computed_style.background_color
-            == 0x445566FFu);
+    REQUIRE(doc->root.children[0].children[0].computed_style.background_color == 0x445566FFu);
 
     const auto gen1 = psynder::ui::rml::test_only::reload_generation("panel");
     REQUIRE(gen1 > gen0);

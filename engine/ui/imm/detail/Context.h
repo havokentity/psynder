@@ -26,10 +26,10 @@ inline constexpr u32 kPerfGraphSamples = 128;
 
 struct InputState {
     math::Vec2 mouse{0.0f, 0.0f};
-    bool       mouse_down      = false;
-    bool       mouse_down_prev = false;
+    bool mouse_down = false;
+    bool mouse_down_prev = false;
 
-    constexpr bool just_pressed()  const noexcept { return mouse_down && !mouse_down_prev; }
+    constexpr bool just_pressed() const noexcept { return mouse_down && !mouse_down_prev; }
     constexpr bool just_released() const noexcept { return !mouse_down && mouse_down_prev; }
 };
 
@@ -38,18 +38,18 @@ struct InputState {
 // as a function-local static.
 struct Context {
     render::Framebuffer* target = nullptr;
-    InputState           input{};
+    InputState input{};
 
     // Hot = under the cursor, active = pressed/dragging. Identifiers are
     // fingerprinted from widget position + label. We keep them as u64 for
     // headroom in case Lane 18 adds nested panels later.
-    u64 hot_id    = 0;
+    u64 hot_id = 0;
     u64 active_id = 0;
 
     // Ring buffer for the perf graph. Filled in by `graph()`.
     std::array<f32, kPerfGraphSamples> perf_samples{};
-    u32                                 perf_head    = 0;
-    u32                                 perf_count   = 0;
+    u32 perf_head = 0;
+    u32 perf_count = 0;
 
     bool frame_open = false;
 };
@@ -63,12 +63,9 @@ inline Context& context() noexcept {
 // so the hot/active tracking works correctly. We don't need cryptographic
 // strength — only collision avoidance among the handful of overlay
 // widgets a frame ever draws.
-inline u64 widget_id(math::Vec2 pos,
-                     math::Vec2 size,
-                     const char* label,
-                     usize label_len) noexcept {
+inline u64 widget_id(math::Vec2 pos, math::Vec2 size, const char* label, usize label_len) noexcept {
     constexpr u64 kFnvOffset = 0xCBF29CE484222325ULL;
-    constexpr u64 kFnvPrime  = 0x100000001B3ULL;
+    constexpr u64 kFnvPrime = 0x100000001B3ULL;
     u64 h = kFnvOffset;
     auto mix_f32 = [&h](f32 v) {
         std::uint32_t bits = 0;

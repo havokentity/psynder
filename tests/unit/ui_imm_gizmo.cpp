@@ -28,15 +28,15 @@
 #include <array>
 #include <cstdint>
 
+using psynder::f32;
 using psynder::i32;
 using psynder::u32;
 using psynder::u8;
 using psynder::usize;
-using psynder::f32;
+using psynder::math::Mat4;
 using psynder::math::Vec2;
 using psynder::math::Vec3;
 using psynder::math::Vec4;
-using psynder::math::Mat4;
 using psynder::render::Framebuffer;
 using psynder::render::PixelFormat;
 namespace imm = psynder::ui::imm;
@@ -48,20 +48,21 @@ constexpr u32 kH = 192;
 
 struct TestFb {
     std::array<u32, kW * kH> pixels{};
-    Framebuffer              fb{};
+    Framebuffer fb{};
 
     TestFb() {
-        fb.width  = kW;
+        fb.width = kW;
         fb.height = kH;
         fb.format = PixelFormat::RGBA8;
-        fb.pitch  = kW * 4U;
+        fb.pitch = kW * 4U;
         fb.pixels = reinterpret_cast<u8*>(pixels.data());
-        fb.depth  = nullptr;
+        fb.depth = nullptr;
         pixels.fill(0U);
     }
 
     u32 at(u32 x, u32 y) const {
-        if (x >= kW || y >= kH) return 0U;
+        if (x >= kW || y >= kH)
+            return 0U;
         return pixels[y * kW + x];
     }
 
@@ -72,9 +73,12 @@ struct TestFb {
             for (i32 dx = -r; dx <= r; ++dx) {
                 const i32 x = cx + dx;
                 const i32 y = cy + dy;
-                if (x < 0 || y < 0) continue;
-                if (static_cast<u32>(x) >= kW || static_cast<u32>(y) >= kH) continue;
-                if (pixels[static_cast<u32>(y) * kW + static_cast<u32>(x)] != 0U) ++n;
+                if (x < 0 || y < 0)
+                    continue;
+                if (static_cast<u32>(x) >= kW || static_cast<u32>(y) >= kH)
+                    continue;
+                if (pixels[static_cast<u32>(y) * kW + static_cast<u32>(x)] != 0U)
+                    ++n;
             }
         }
         return n;
@@ -82,7 +86,9 @@ struct TestFb {
 
     usize count_nonzero() const {
         usize n = 0;
-        for (u32 v : pixels) if (v != 0U) ++n;
+        for (u32 v : pixels)
+            if (v != 0U)
+                ++n;
         return n;
     }
 };
@@ -99,7 +105,7 @@ TEST_CASE("ui_imm/wave-b: gizmo_translate hits the X-axis arrow at projected tip
     // origin lands at the screen centre. A +X world step of 1.0 maps to
     // +X in NDC, which is +X (right) in screen pixels.
     const Mat4 vp = psynder::math::identity4();
-    const Vec2 ss{ static_cast<f32>(kW), static_cast<f32>(kH) };
+    const Vec2 ss{static_cast<f32>(kW), static_cast<f32>(kH)};
 
     // Screen-centre origin under identity vp + NDC mapping inside the
     // Gizmo.h projector: (0,0,0) → NDC (0,0,0) → screen
@@ -111,14 +117,14 @@ TEST_CASE("ui_imm/wave-b: gizmo_translate hits the X-axis arrow at projected tip
     // normalised to a fixed `kArmLengthPx` = 64. Identity projection
     // sends +X by ~(0.5*W) screen-pixels per world unit → direction is
     // pure +X. Tip lands at (cx + 64, cy). Mouse on the arm at half-arm.
-    Vec3 pos{ 0.0f, 0.0f, 0.0f };
-    const Vec2 mouse_on_x{ cx + 32.0f, cy };
+    Vec3 pos{0.0f, 0.0f, 0.0f};
+    const Vec2 mouse_on_x{cx + 32.0f, cy};
     const bool grabbed = imm::gizmo_translate(pos, vp, mouse_on_x, /*down=*/true, ss);
     REQUIRE(grabbed);
 
     // Off the arm — far above the gizmo, well past the hit radius.
-    Vec3 pos2{ 0.0f, 0.0f, 0.0f };
-    const Vec2 mouse_off{ cx + 32.0f, cy + 40.0f };
+    Vec3 pos2{0.0f, 0.0f, 0.0f};
+    const Vec2 mouse_off{cx + 32.0f, cy + 40.0f};
     const bool not_grabbed = imm::gizmo_translate(pos2, vp, mouse_off, /*down=*/true, ss);
     REQUIRE_FALSE(not_grabbed);
 
@@ -154,12 +160,8 @@ TEST_CASE("ui_imm/wave-b: brush_preview_box emits 12 cube-edge lines",
     // extent (the helper substitutes (1024, 768) when 0 is passed; pass
     // the real fb size so the corner math below matches kW/kH).
     const Mat4 vp = psynder::math::identity4();
-    const Vec2 ss{ W, H };
-    imm::brush_preview_box(Vec3{ 0.0f, 0.0f, 0.0f },
-                           Vec3{ 1.0f, 1.0f, 1.0f },
-                           kInk,
-                           vp,
-                           ss);
+    const Vec2 ss{W, H};
+    imm::brush_preview_box(Vec3{0.0f, 0.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, kInk, vp, ss);
 
     // Each cube corner is shared by 3 edges → all 8 distinct screen-
     // corner positions (there are only 4 distinct (x,y) pairs under the
@@ -169,10 +171,10 @@ TEST_CASE("ui_imm/wave-b: brush_preview_box emits 12 cube-edge lines",
     // screen (cx - dx, cy + dy). We verify ink lands at all 4 distinct
     // screen positions.
     const std::array<Vec2, 4> kCorners = {
-        Vec2{ cx - dx, cy + dy },  // world (-x,-y) → screen (left, bottom)
-        Vec2{ cx + dx, cy + dy },  // world (+x,-y) → screen (right, bottom)
-        Vec2{ cx + dx, cy - dy },  // world (+x,+y) → screen (right, top)
-        Vec2{ cx - dx, cy - dy },  // world (-x,+y) → screen (left, top)
+        Vec2{cx - dx, cy + dy},  // world (-x,-y) → screen (left, bottom)
+        Vec2{cx + dx, cy + dy},  // world (+x,-y) → screen (right, bottom)
+        Vec2{cx + dx, cy - dy},  // world (+x,+y) → screen (right, top)
+        Vec2{cx - dx, cy - dy},  // world (-x,+y) → screen (left, top)
     };
     for (const Vec2& c : kCorners) {
         const i32 ix = static_cast<i32>(c.x + 0.5f);
@@ -201,8 +203,7 @@ TEST_CASE("ui_imm/wave-b: alloc_heatmap does not crash with empty stats",
     // atomics regardless of whether any allocator is currently in
     // flight. Drawing the heatmap with the default (often-zero) budget
     // values must not abort.
-    const u32 rows = imm::alloc_heatmap(Vec2{ 10.0f, 10.0f },
-                                        Vec2{ 120.0f, 80.0f });
+    const u32 rows = imm::alloc_heatmap(Vec2{10.0f, 10.0f}, Vec2{120.0f, 80.0f});
     // tag_stats returns one row per Tag (excluding Count sentinel).
     REQUIRE(rows > 0U);
 
@@ -211,8 +212,7 @@ TEST_CASE("ui_imm/wave-b: alloc_heatmap does not crash with empty stats",
 
     // Degenerate sizes are a no-op (return 0) and must not touch
     // anything beyond the framebuffer bounds.
-    const u32 zero_rows = imm::alloc_heatmap(Vec2{ 0.0f, 0.0f },
-                                             Vec2{ 0.0f, 0.0f });
+    const u32 zero_rows = imm::alloc_heatmap(Vec2{0.0f, 0.0f}, Vec2{0.0f, 0.0f});
     REQUIRE(zero_rows == 0U);
 
     imm::end_frame();

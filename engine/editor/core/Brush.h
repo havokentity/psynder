@@ -25,8 +25,8 @@ namespace psynder::editor::brush {
 
 // ─── CSG operations ──────────────────────────────────────────────────────
 enum class Op : u8 {
-    Add,        // additive (carve out solid space)
-    Subtract,   // subtractive (carve out air space)
+    Add,       // additive (carve out solid space)
+    Subtract,  // subtractive (carve out air space)
 };
 
 // ─── Brush descriptor ─────────────────────────────────────────────────────
@@ -36,41 +36,43 @@ enum class Op : u8 {
 // in Editor.h, compiled via lane 24's lm_qbsp tool when present, or via
 // the deterministic fallback in this file).
 struct Brush {
-    u32         id        = 0;          // stable user-facing handle
-    u8          shape     = 0;          // BrushShape (see Editor.h)
-    Op          op        = Op::Add;
-    math::Vec3  origin{0,0,0};
-    math::Vec3  extents{0.5f,0.5f,0.5f};
-    f32         grid_size = 0.0f;       // 0 = snap disabled
-    u8          sides     = 8;          // for cylinder / prism
+    u32 id = 0;    // stable user-facing handle
+    u8 shape = 0;  // BrushShape (see Editor.h)
+    Op op = Op::Add;
+    math::Vec3 origin{0, 0, 0};
+    math::Vec3 extents{0.5f, 0.5f, 0.5f};
+    f32 grid_size = 0.0f;  // 0 = snap disabled
+    u8 sides = 8;          // for cylinder / prism
 
     bool operator==(const Brush& o) const noexcept {
-        return id == o.id && shape == o.shape && op == o.op
-            && origin.x == o.origin.x && origin.y == o.origin.y && origin.z == o.origin.z
-            && extents.x == o.extents.x && extents.y == o.extents.y && extents.z == o.extents.z
-            && grid_size == o.grid_size && sides == o.sides;
+        return id == o.id && shape == o.shape && op == o.op && origin.x == o.origin.x &&
+               origin.y == o.origin.y && origin.z == o.origin.z && extents.x == o.extents.x &&
+               extents.y == o.extents.y && extents.z == o.extents.z && grid_size == o.grid_size &&
+               sides == o.sides;
     }
 };
 
 // ─── Snap helpers ─────────────────────────────────────────────────────────
 PSY_FORCEINLINE f32 snap_scalar(f32 v, f32 step) noexcept {
-    if (step <= 0.0f) return v;
+    if (step <= 0.0f)
+        return v;
     return std::round(v / step) * step;
 }
 
 PSY_FORCEINLINE math::Vec3 snap_vec3(math::Vec3 v, f32 step) noexcept {
-    if (step <= 0.0f) return v;
-    return { snap_scalar(v.x, step), snap_scalar(v.y, step), snap_scalar(v.z, step) };
+    if (step <= 0.0f)
+        return v;
+    return {snap_scalar(v.x, step), snap_scalar(v.y, step), snap_scalar(v.z, step)};
 }
 
 // ─── Plane (Hessian normal form: dot(n, p) = d) ───────────────────────────
 struct Plane {
-    math::Vec3 n{0,1,0};
-    f32        d  = 0.0f;
+    math::Vec3 n{0, 1, 0};
+    f32 d = 0.0f;
 };
 
 PSY_FORCEINLINE Plane make_plane(math::Vec3 n, math::Vec3 p) noexcept {
-    return Plane{ n, n.x*p.x + n.y*p.y + n.z*p.z };
+    return Plane{n, n.x * p.x + n.y * p.y + n.z * p.z};
 }
 
 // ─── Convex polytope (face = plane) ───────────────────────────────────────
@@ -79,7 +81,7 @@ PSY_FORCEINLINE Plane make_plane(math::Vec3 n, math::Vec3 p) noexcept {
 // boolean tests.
 struct ConvexPolytope {
     std::vector<Plane> planes;
-    math::Aabb         bounds{};       // axis-aligned bounding box
+    math::Aabb bounds{};  // axis-aligned bounding box
 };
 
 // ─── Primitive builders ───────────────────────────────────────────────────
@@ -87,14 +89,14 @@ struct ConvexPolytope {
 inline ConvexPolytope build_box(math::Vec3 origin, math::Vec3 extents) {
     ConvexPolytope p;
     p.planes.reserve(6);
-    p.planes.push_back(make_plane({ 1, 0, 0}, { origin.x + extents.x, origin.y, origin.z }));
-    p.planes.push_back(make_plane({-1, 0, 0}, { origin.x - extents.x, origin.y, origin.z }));
-    p.planes.push_back(make_plane({ 0, 1, 0}, { origin.x, origin.y + extents.y, origin.z }));
-    p.planes.push_back(make_plane({ 0,-1, 0}, { origin.x, origin.y - extents.y, origin.z }));
-    p.planes.push_back(make_plane({ 0, 0, 1}, { origin.x, origin.y, origin.z + extents.z }));
-    p.planes.push_back(make_plane({ 0, 0,-1}, { origin.x, origin.y, origin.z - extents.z }));
-    p.bounds.min = { origin.x - extents.x, origin.y - extents.y, origin.z - extents.z };
-    p.bounds.max = { origin.x + extents.x, origin.y + extents.y, origin.z + extents.z };
+    p.planes.push_back(make_plane({1, 0, 0}, {origin.x + extents.x, origin.y, origin.z}));
+    p.planes.push_back(make_plane({-1, 0, 0}, {origin.x - extents.x, origin.y, origin.z}));
+    p.planes.push_back(make_plane({0, 1, 0}, {origin.x, origin.y + extents.y, origin.z}));
+    p.planes.push_back(make_plane({0, -1, 0}, {origin.x, origin.y - extents.y, origin.z}));
+    p.planes.push_back(make_plane({0, 0, 1}, {origin.x, origin.y, origin.z + extents.z}));
+    p.planes.push_back(make_plane({0, 0, -1}, {origin.x, origin.y, origin.z - extents.z}));
+    p.bounds.min = {origin.x - extents.x, origin.y - extents.y, origin.z - extents.z};
+    p.bounds.max = {origin.x + extents.x, origin.y + extents.y, origin.z + extents.z};
     return p;
 }
 
@@ -104,15 +106,15 @@ inline ConvexPolytope build_box(math::Vec3 origin, math::Vec3 extents) {
 inline ConvexPolytope build_wedge(math::Vec3 origin, math::Vec3 extents) {
     ConvexPolytope p;
     p.planes.reserve(5);
-    p.planes.push_back(make_plane({ 1, 0, 0}, { origin.x + extents.x, origin.y, origin.z }));
-    p.planes.push_back(make_plane({-1, 0, 0}, { origin.x - extents.x, origin.y, origin.z }));
-    p.planes.push_back(make_plane({ 0,-1, 0}, { origin.x, origin.y - extents.y, origin.z }));
-    p.planes.push_back(make_plane({ 0, 0,-1}, { origin.x, origin.y, origin.z - extents.z }));
+    p.planes.push_back(make_plane({1, 0, 0}, {origin.x + extents.x, origin.y, origin.z}));
+    p.planes.push_back(make_plane({-1, 0, 0}, {origin.x - extents.x, origin.y, origin.z}));
+    p.planes.push_back(make_plane({0, -1, 0}, {origin.x, origin.y - extents.y, origin.z}));
+    p.planes.push_back(make_plane({0, 0, -1}, {origin.x, origin.y, origin.z - extents.z}));
     // hypotenuse: normal in the +Y +Z quadrant, passing through (origin.x, +Y face, -Z face) and (-Y face, +Z face)
-    math::Vec3 n = math::normalize(math::Vec3{ 0.0f, extents.z, extents.y });
-    p.planes.push_back(make_plane(n, { origin.x, origin.y + extents.y, origin.z - extents.z }));
-    p.bounds.min = { origin.x - extents.x, origin.y - extents.y, origin.z - extents.z };
-    p.bounds.max = { origin.x + extents.x, origin.y + extents.y, origin.z + extents.z };
+    math::Vec3 n = math::normalize(math::Vec3{0.0f, extents.z, extents.y});
+    p.planes.push_back(make_plane(n, {origin.x, origin.y + extents.y, origin.z - extents.z}));
+    p.bounds.min = {origin.x - extents.x, origin.y - extents.y, origin.z - extents.z};
+    p.bounds.max = {origin.x + extents.x, origin.y + extents.y, origin.z + extents.z};
     return p;
 }
 
@@ -120,40 +122,47 @@ inline ConvexPolytope build_wedge(math::Vec3 origin, math::Vec3 extents) {
 // is half-height; extents.x is the X radius and extents.z is the Z radius
 // (so the cylinder can be elliptical).
 inline ConvexPolytope build_cylinder(math::Vec3 origin, math::Vec3 extents, u8 sides) {
-    if (sides < 3) sides = 3;
+    if (sides < 3)
+        sides = 3;
     ConvexPolytope p;
     p.planes.reserve(static_cast<usize>(sides) + 2);
-    p.planes.push_back(make_plane({ 0, 1, 0}, { origin.x, origin.y + extents.y, origin.z }));
-    p.planes.push_back(make_plane({ 0,-1, 0}, { origin.x, origin.y - extents.y, origin.z }));
+    p.planes.push_back(make_plane({0, 1, 0}, {origin.x, origin.y + extents.y, origin.z}));
+    p.planes.push_back(make_plane({0, -1, 0}, {origin.x, origin.y - extents.y, origin.z}));
     const f32 step = math::kTwoPi / static_cast<f32>(sides);
     for (u8 i = 0; i < sides; ++i) {
-        const f32 a  = step * static_cast<f32>(i);
+        const f32 a = step * static_cast<f32>(i);
         const f32 cx = std::cos(a);
         const f32 cz = std::sin(a);
-        math::Vec3 n = math::normalize(math::Vec3{ cx, 0.0f, cz });
-        math::Vec3 pt{ origin.x + extents.x * cx, origin.y, origin.z + extents.z * cz };
+        math::Vec3 n = math::normalize(math::Vec3{cx, 0.0f, cz});
+        math::Vec3 pt{origin.x + extents.x * cx, origin.y, origin.z + extents.z * cz};
         p.planes.push_back(make_plane(n, pt));
     }
-    p.bounds.min = { origin.x - extents.x, origin.y - extents.y, origin.z - extents.z };
-    p.bounds.max = { origin.x + extents.x, origin.y + extents.y, origin.z + extents.z };
+    p.bounds.min = {origin.x - extents.x, origin.y - extents.y, origin.z - extents.z};
+    p.bounds.max = {origin.x + extents.x, origin.y + extents.y, origin.z + extents.z};
     return p;
 }
 
 // Prism: top + bottom + N side planes (no top/bottom radius). Default to a
 // triangular prism if sides=3. Same parametrization as cylinder.
 inline ConvexPolytope build_prism(math::Vec3 origin, math::Vec3 extents, u8 sides) {
-    if (sides < 3) sides = 3;
+    if (sides < 3)
+        sides = 3;
     return build_cylinder(origin, extents, sides);
 }
 
 // Dispatch on shape-id (matches editor::BrushShape order in Editor.h).
 inline ConvexPolytope build_polytope(const Brush& b) {
     switch (b.shape) {
-        case 0: return build_box(b.origin, b.extents);
-        case 1: return build_wedge(b.origin, b.extents);
-        case 2: return build_cylinder(b.origin, b.extents, b.sides);
-        case 3: return build_prism(b.origin, b.extents, b.sides);
-        default: return build_box(b.origin, b.extents);
+        case 0:
+            return build_box(b.origin, b.extents);
+        case 1:
+            return build_wedge(b.origin, b.extents);
+        case 2:
+            return build_cylinder(b.origin, b.extents, b.sides);
+        case 3:
+            return build_prism(b.origin, b.extents, b.sides);
+        default:
+            return build_box(b.origin, b.extents);
     }
 }
 
@@ -163,12 +172,12 @@ inline ConvexPolytope build_polytope(const Brush& b) {
 // or is a terminating leaf (solid / empty).
 struct CompiledNode {
     Plane plane{};
-    i32   front_child = -1;       // node index, or negative leaf
-    i32   back_child  = -1;
+    i32 front_child = -1;  // node index, or negative leaf
+    i32 back_child = -1;
 };
 
 struct CompiledLeaf {
-    bool       solid = false;
+    bool solid = false;
     math::Aabb bounds{};
 };
 
@@ -194,25 +203,33 @@ struct CompiledBsp {
 inline CompiledBsp compile_brushes(const std::vector<Brush>& brushes) {
     CompiledBsp out;
     if (brushes.empty()) {
-        out.leaves.push_back(CompiledLeaf{ /*solid=*/false, math::Aabb{} });
+        out.leaves.push_back(CompiledLeaf{/*solid=*/false, math::Aabb{}});
         return out;
     }
 
     // Step 1: lower each brush to its polytope, capture AABBs + op.
-    struct Item { math::Aabb bounds; Op op; };
+    struct Item {
+        math::Aabb bounds;
+        Op op;
+    };
     std::vector<Item> items;
     items.reserve(brushes.size());
     for (const Brush& b : brushes) {
         ConvexPolytope pt = build_polytope(b);
-        items.push_back(Item{ pt.bounds, b.op });
+        items.push_back(Item{pt.bounds, b.op});
     }
 
     // Step 2: world AABB = union of additive bounds.
     math::Aabb world{};
     bool has_world = false;
     for (const Item& it : items) {
-        if (it.op != Op::Add) continue;
-        if (!has_world) { world = it.bounds; has_world = true; continue; }
+        if (it.op != Op::Add)
+            continue;
+        if (!has_world) {
+            world = it.bounds;
+            has_world = true;
+            continue;
+        }
         world.min.x = std::min(world.min.x, it.bounds.min.x);
         world.min.y = std::min(world.min.y, it.bounds.min.y);
         world.min.z = std::min(world.min.z, it.bounds.min.z);
@@ -221,31 +238,36 @@ inline CompiledBsp compile_brushes(const std::vector<Brush>& brushes) {
         world.max.z = std::max(world.max.z, it.bounds.max.z);
     }
     if (!has_world) {
-        out.leaves.push_back(CompiledLeaf{ false, math::Aabb{} });
+        out.leaves.push_back(CompiledLeaf{false, math::Aabb{}});
         return out;
     }
 
     // Step 3: emit one solid leaf per additive brush, skipping any whose
     // bounds are entirely contained in a subtractive brush.
     auto aabb_contains = [](const math::Aabb& outer, const math::Aabb& inner) {
-        return outer.min.x <= inner.min.x && outer.max.x >= inner.max.x
-            && outer.min.y <= inner.min.y && outer.max.y >= inner.max.y
-            && outer.min.z <= inner.min.z && outer.max.z >= inner.max.z;
+        return outer.min.x <= inner.min.x && outer.max.x >= inner.max.x &&
+               outer.min.y <= inner.min.y && outer.max.y >= inner.max.y &&
+               outer.min.z <= inner.min.z && outer.max.z >= inner.max.z;
     };
 
     for (usize i = 0; i < items.size(); ++i) {
-        if (items[i].op != Op::Add) continue;
+        if (items[i].op != Op::Add)
+            continue;
         bool cancelled = false;
         for (usize j = i + 1; j < items.size(); ++j) {
-            if (items[j].op != Op::Subtract) continue;
-            if (aabb_contains(items[j].bounds, items[i].bounds)) { cancelled = true; break; }
+            if (items[j].op != Op::Subtract)
+                continue;
+            if (aabb_contains(items[j].bounds, items[i].bounds)) {
+                cancelled = true;
+                break;
+            }
         }
         if (!cancelled) {
-            out.leaves.push_back(CompiledLeaf{ true, items[i].bounds });
+            out.leaves.push_back(CompiledLeaf{true, items[i].bounds});
         }
     }
     // Always a single "outside" leaf at the end.
-    out.leaves.push_back(CompiledLeaf{ false, world });
+    out.leaves.push_back(CompiledLeaf{false, world});
 
     // Step 4: emit splitting planes along the brush boundary planes the
     // BSP needs to disambiguate solid leaves from the outside. The naive
@@ -255,7 +277,8 @@ inline CompiledBsp compile_brushes(const std::vector<Brush>& brushes) {
     std::vector<f32> split_xs;
     split_xs.reserve(out.leaves.size());
     for (const CompiledLeaf& leaf : out.leaves) {
-        if (!leaf.solid) continue;
+        if (!leaf.solid)
+            continue;
         split_xs.push_back(0.5f * (leaf.bounds.min.x + leaf.bounds.max.x));
     }
     std::sort(split_xs.begin(), split_xs.end());
@@ -264,7 +287,7 @@ inline CompiledBsp compile_brushes(const std::vector<Brush>& brushes) {
     out.nodes.reserve(split_xs.size());
     for (usize i = 0; i < split_xs.size(); ++i) {
         CompiledNode n;
-        n.plane.n = { 1.0f, 0.0f, 0.0f };
+        n.plane.n = {1.0f, 0.0f, 0.0f};
         n.plane.d = split_xs[i];
         // Chain: front child is the next node (or the first solid leaf if last),
         // back child is the outside leaf.
@@ -272,9 +295,9 @@ inline CompiledBsp compile_brushes(const std::vector<Brush>& brushes) {
         if (i + 1 < split_xs.size()) {
             n.front_child = static_cast<i32>(i + 1);
         } else {
-            n.front_child = -static_cast<i32>(0);   // leaf index 0 (first solid)
+            n.front_child = -static_cast<i32>(0);  // leaf index 0 (first solid)
         }
-        n.back_child  = -outside_leaf;
+        n.back_child = -outside_leaf;
         out.nodes.push_back(n);
     }
 

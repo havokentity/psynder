@@ -27,28 +27,28 @@ namespace psynder::scene::detail {
 // of column `i`. Stored in the same order as `components` so binary search
 // over `components` resolves the column index.
 class Archetype {
-public:
-    Archetype()  = default;
+   public:
+    Archetype() = default;
     ~Archetype() = default;
 
-    Archetype(const Archetype&)            = delete;
+    Archetype(const Archetype&) = delete;
     Archetype& operator=(const Archetype&) = delete;
-    Archetype(Archetype&&) noexcept            = default;
+    Archetype(Archetype&&) noexcept = default;
     Archetype& operator=(Archetype&&) noexcept = default;
 
     // Build column layout from a sorted component id list. Called once at
     // archetype creation; recomputes capacity for the chunk size.
     void init(u32 id, std::span<const ComponentId> sorted_components);
 
-    u32  id() const noexcept { return id_; }
-    std::span<const ComponentId>      components()     const noexcept { return components_; }
-    std::span<const u32>              column_offsets() const noexcept { return column_offsets_; }
-    std::span<const u32>              column_sizes()   const noexcept { return column_sizes_; }
-    u32  capacity()  const noexcept { return capacity_per_chunk_; }
-    u32  row_size()  const noexcept { return row_size_; }
-    bool empty()     const noexcept { return total_rows_ == 0; }
-    u32  total_rows()const noexcept { return total_rows_; }
-    u32  chunk_count() const noexcept { return static_cast<u32>(chunks_.size()); }
+    u32 id() const noexcept { return id_; }
+    std::span<const ComponentId> components() const noexcept { return components_; }
+    std::span<const u32> column_offsets() const noexcept { return column_offsets_; }
+    std::span<const u32> column_sizes() const noexcept { return column_sizes_; }
+    u32 capacity() const noexcept { return capacity_per_chunk_; }
+    u32 row_size() const noexcept { return row_size_; }
+    bool empty() const noexcept { return total_rows_ == 0; }
+    u32 total_rows() const noexcept { return total_rows_; }
+    u32 chunk_count() const noexcept { return static_cast<u32>(chunks_.size()); }
 
     // Returns the index in `components()` for the given id, or UINT32_MAX
     // if this archetype does not have that component.
@@ -60,7 +60,10 @@ public:
 
     // Append a default-zeroed row to the archetype. Returns (chunk_index,
     // row_in_chunk).
-    struct RowRef { u32 chunk_index; u32 row; };
+    struct RowRef {
+        u32 chunk_index;
+        u32 row;
+    };
     RowRef append_row(ChunkPool& pool);
 
     // Move the last row of the last chunk into (chunk_index, row), then
@@ -100,18 +103,18 @@ public:
     // Tear down chunks and return them to the pool.
     void release_all(ChunkPool& pool) noexcept;
 
-private:
-    u32                       id_                  = 0;
-    u32                       row_size_            = 0;        // total bytes per row across all user columns + entity sidecar
-    u32                       capacity_per_chunk_  = 0;
-    u32                       entity_column_offset_= 0;
-    u32                       total_rows_          = 0;
+   private:
+    u32 id_ = 0;
+    u32 row_size_ = 0;  // total bytes per row across all user columns + entity sidecar
+    u32 capacity_per_chunk_ = 0;
+    u32 entity_column_offset_ = 0;
+    u32 total_rows_ = 0;
 
-    std::vector<ComponentId>  components_;        // sorted ascending
-    std::vector<u32>          column_offsets_;    // byte offset from chunk base
-    std::vector<u32>          column_sizes_;      // bytes per element
+    std::vector<ComponentId> components_;  // sorted ascending
+    std::vector<u32> column_offsets_;      // byte offset from chunk base
+    std::vector<u32> column_sizes_;        // bytes per element
 
-    std::vector<Chunk*>       chunks_;
+    std::vector<Chunk*> chunks_;
 };
 
 }  // namespace psynder::scene::detail

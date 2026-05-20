@@ -36,8 +36,8 @@ namespace psynder::ui::imm {
 // vertical scale; pass 0 to autoscale to the current window's peak.
 void graph(math::Vec2 origin,
            math::Vec2 size,
-           f32        sample_ms,
-           f32        max_ms = 0.0f,
+           f32 sample_ms,
+           f32 max_ms = 0.0f,
            std::string_view caption = {});
 
 // One-shot version: render a caller-owned series rather than the global
@@ -80,11 +80,11 @@ struct GizmoProjection {
     math::Vec2 axis_z{};
     // Logical length of each axis arm in pixels (post-projection). The
     // editor sets this so the gizmo stays a constant on-screen size.
-    f32        arm_length = 64.0f;
+    f32 arm_length = 64.0f;
 };
 
 GizmoAxis gizmo_translate(const GizmoProjection& proj);
-GizmoAxis gizmo_rotate   (const GizmoProjection& proj);
+GizmoAxis gizmo_rotate(const GizmoProjection& proj);
 
 // ─── Input plumbing ───────────────────────────────────────────────────────
 //

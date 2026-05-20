@@ -34,10 +34,10 @@
 #include <vector>
 
 #if defined(PSYNDER_HAS_RMLUI)
-#  include <RmlUi/Core.h>
-#  include <RmlUi/Core/Context.h>
-#  include <RmlUi/Core/Element.h>
-#  include <RmlUi/Core/ElementDocument.h>
+#include <RmlUi/Core.h>
+#include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/Element.h>
+#include <RmlUi/Core/ElementDocument.h>
 #endif
 
 namespace psynder::ui::rml {
@@ -65,7 +65,9 @@ namespace {
 ::Rml::Context* g_active_context = nullptr;
 }
 
-::Rml::Context* active_context() noexcept { return g_active_context; }
+::Rml::Context* active_context() noexcept {
+    return g_active_context;
+}
 [[maybe_unused]] void set_active_context(::Rml::Context* ctx) noexcept {
     g_active_context = ctx;
 }
@@ -74,12 +76,13 @@ namespace {
 
 namespace {
 
-::Rml::Element* resolve_element(std::string_view doc_name,
-                                std::string_view element_id) noexcept {
+::Rml::Element* resolve_element(std::string_view doc_name, std::string_view element_id) noexcept {
     auto* ctx = detail_vendor::active_context();
-    if (!ctx) return nullptr;
+    if (!ctx)
+        return nullptr;
     auto* doc = ctx->GetDocument(::Rml::String(doc_name.data(), doc_name.size()));
-    if (!doc) return nullptr;
+    if (!doc)
+        return nullptr;
     return doc->GetElementById(::Rml::String(element_id.data(), element_id.size()));
 }
 
@@ -89,7 +92,8 @@ bool set_element_text(std::string_view doc_name,
                       std::string_view element_id,
                       std::string_view value) noexcept {
     auto* el = resolve_element(doc_name, element_id);
-    if (!el) return false;
+    if (!el)
+        return false;
     el->SetInnerRML(::Rml::String(value.data(), value.size()));
     return true;
 }
@@ -99,12 +103,13 @@ bool set_element_attribute(std::string_view doc_name,
                            std::string_view attr_name,
                            std::string_view value) noexcept {
     auto* el = resolve_element(doc_name, element_id);
-    if (!el) return false;
+    if (!el)
+        return false;
     if (value.empty()) {
         el->RemoveAttribute(::Rml::String(attr_name.data(), attr_name.size()));
     } else {
         el->SetAttribute(::Rml::String(attr_name.data(), attr_name.size()),
-                         ::Rml::String(value.data(),     value.size()));
+                         ::Rml::String(value.data(), value.size()));
     }
     return true;
 }
@@ -119,11 +124,12 @@ namespace {
 // `root`.  Returns nullptr if the id isn't present.  The in-tree subset
 // guarantees ids are unique by parser construction — we honour that by
 // returning the first match.
-detail::Element* find_by_id(detail::Element& root,
-                            std::string_view id) noexcept {
-    if (root.id == id) return &root;
+detail::Element* find_by_id(detail::Element& root, std::string_view id) noexcept {
+    if (root.id == id)
+        return &root;
     for (auto& child : root.children) {
-        if (auto* hit = find_by_id(child, id)) return hit;
+        if (auto* hit = find_by_id(child, id))
+            return hit;
     }
     return nullptr;
 }
@@ -135,9 +141,9 @@ void split_classes(std::string_view raw, std::vector<std::string>& out) {
     out.clear();
     usize start = 0;
     for (usize i = 0; i <= raw.size(); ++i) {
-        if (i == raw.size()
-            || std::isspace(static_cast<unsigned char>(raw[i]))) {
-            if (i > start) out.emplace_back(raw.substr(start, i - start));
+        if (i == raw.size() || std::isspace(static_cast<unsigned char>(raw[i]))) {
+            if (i > start)
+                out.emplace_back(raw.substr(start, i - start));
             start = i + 1;
         }
     }
@@ -149,9 +155,11 @@ bool set_element_text(std::string_view doc_name,
                       std::string_view element_id,
                       std::string_view value) noexcept {
     auto* doc = detail::find_mutable_document(doc_name);
-    if (!doc) return false;
+    if (!doc)
+        return false;
     auto* el = find_by_id(doc->root, element_id);
-    if (!el) return false;
+    if (!el)
+        return false;
     // The in-tree subset stores a single collapsed text run per
     // element.  Replacing it wholesale matches what RmlUi's
     // SetInnerRML does for a text-only child — no children are
@@ -166,17 +174,20 @@ bool set_element_attribute(std::string_view doc_name,
                            std::string_view attr_name,
                            std::string_view value) noexcept {
     auto* doc = detail::find_mutable_document(doc_name);
-    if (!doc) return false;
+    if (!doc)
+        return false;
     auto* el = find_by_id(doc->root, element_id);
-    if (!el) return false;
+    if (!el)
+        return false;
 
     // Normalise the attribute name for the two special cases that
     // touch the style cascade.  Everything else is a verbatim map
     // entry — the parser keeps attribute names lower-cased and we
     // honour that here.
     std::string key(attr_name);
-    std::transform(key.begin(), key.end(), key.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+        return std::tolower(c);
+    });
 
     bool needs_recascade = false;
 

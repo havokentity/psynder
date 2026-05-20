@@ -14,7 +14,7 @@
 //      the unmodulated FDN's autocorrelation at the same lag.
 
 #include "audio/internal/MixerCore.h"
-#include "audio/internal/PartitionedConvolver.h"   // ModulatedFdnReverb lives here
+#include "audio/internal/PartitionedConvolver.h"  // ModulatedFdnReverb lives here
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -47,18 +47,18 @@ TEST_CASE("audio: modulated FDN reaches finite steady state", "[audio][fdn][mod]
     REQUIRE(r.mod_depth_samples() > 0.0f);
 
     std::vector<psynder::f32> tail;
-    run_impulse(r, tail, /*n*/ 4800u);   // 100 ms
+    run_impulse(r, tail, /*n*/ 4800u);  // 100 ms
 
     psynder::f32 peak = 0.0f;
-    psynder::f32 e    = 0.0f;
+    psynder::f32 e = 0.0f;
     for (auto x : tail) {
         REQUIRE(std::isfinite(x));
         peak = std::fmax(peak, std::fabs(x));
-        e    += x * x;
+        e += x * x;
     }
     INFO("100 ms tail peak: " << peak);
     REQUIRE(peak > 0.0f);
-    REQUIRE(peak < 2.0f);     // no DC blowup
+    REQUIRE(peak < 2.0f);  // no DC blowup
     REQUIRE(e > 0.0f);
 }
 
@@ -71,17 +71,19 @@ TEST_CASE("audio: modulated FDN tail is sustained", "[audio][fdn][mod]") {
     ModulatedFdnReverb r;
     r.reset(48000u, /*decay s*/ 2.5f);
     std::vector<psynder::f32> tail;
-    run_impulse(r, tail, /*n*/ 19200u);   // 400 ms — well past predelay
+    run_impulse(r, tail, /*n*/ 19200u);  // 400 ms — well past predelay
 
     // 50-100 ms window: tail just past predelay.
     psynder::f32 mid = 0.0f;
-    for (psynder::u32 i = 2400u; i < 4800u; ++i) mid += tail[i] * tail[i];
+    for (psynder::u32 i = 2400u; i < 4800u; ++i)
+        mid += tail[i] * tail[i];
     // 300-400 ms window: deep tail.
     psynder::f32 late = 0.0f;
-    for (psynder::u32 i = 14400u; i < 19200u; ++i) late += tail[i] * tail[i];
+    for (psynder::u32 i = 14400u; i < 19200u; ++i)
+        late += tail[i] * tail[i];
 
     INFO("mid energy: " << mid << ", late energy: " << late);
-    REQUIRE(mid  > 0.0f);
+    REQUIRE(mid > 0.0f);
     REQUIRE(late > 0.0f);
     // Just require both windows to have non-trivial energy — diffusion test.
     REQUIRE(late > mid * 0.001f);
@@ -94,7 +96,7 @@ TEST_CASE("audio: modulated FDN tail differs from unmodulated tail", "[audio][fd
     // the buffer (after the LFO has accumulated a full cycle's worth of
     // detuning) and require it to be a strictly non-trivial fraction of
     // the unmodulated tail's L1 norm.
-    constexpr psynder::u32 kN = 19200;   // 400 ms
+    constexpr psynder::u32 kN = 19200;  // 400 ms
 
     std::vector<psynder::f32> tail_unmod, tail_mod;
 
@@ -108,10 +110,10 @@ TEST_CASE("audio: modulated FDN tail differs from unmodulated tail", "[audio][fd
 
     // L1 difference over [kN/2, kN) — the second half, where the LFO has
     // had time to detune the read pointers.
-    psynder::f32 ref_l1  = 0.0f;
+    psynder::f32 ref_l1 = 0.0f;
     psynder::f32 diff_l1 = 0.0f;
     for (psynder::u32 i = kN / 2u; i < kN; ++i) {
-        ref_l1  += std::fabs(tail_unmod[i]);
+        ref_l1 += std::fabs(tail_unmod[i]);
         diff_l1 += std::fabs(tail_unmod[i] - tail_mod[i]);
     }
     INFO("unmod L1=" << ref_l1 << " diff L1=" << diff_l1);

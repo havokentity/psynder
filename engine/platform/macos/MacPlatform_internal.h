@@ -18,26 +18,26 @@ namespace psynder::platform::macos {
 // tests. The hook receives a render callback that writes interleaved
 // f32 samples into `out` for `frame_count` frames at `sample_rate` Hz with
 // `channel_count` channels.
-using AudioRenderCallback = void (*)(void* user, f32* out, u32 frame_count,
-                                     u32 channel_count, u32 sample_rate);
+using AudioRenderCallback =
+    void (*)(void* user, f32* out, u32 frame_count, u32 channel_count, u32 sample_rate);
 
 struct AudioDeviceDesc {
-    u32 sample_rate     = 48000;
-    u32 channels        = 2;
-    u32 buffer_frames   = 512;
+    u32 sample_rate = 48000;
+    u32 channels = 2;
+    u32 buffer_frames = 512;
 };
 
 bool audio_start(const AudioDeviceDesc& desc, AudioRenderCallback cb, void* user);
 void audio_stop();
 bool audio_running();
-u32  audio_actual_sample_rate();
-u32  audio_actual_channels();
+u32 audio_actual_sample_rate();
+u32 audio_actual_channels();
 
 // ─── Gamepad enumeration (GameController.framework) ──────────────────────
 // Arms connect/disconnect notifications and seeds the count with any
 // already-paired controllers. Idempotent.
 void gamepad_arm();
-u32  gamepad_count();
+u32 gamepad_count();
 
 // ─── HID Force Feedback (IOKit / ForceFeedback.framework) ────────────────
 // Wave-B: minimal support for a constant-force effect. The Wave-C NFS sample
@@ -54,12 +54,12 @@ u32  gamepad_count();
 // descriptor itself is in normalized [-1, +1] floats so the engine doesn't
 // have to memorise the DirectInput convention; we clamp + scale on submit.
 struct FfbConstantForce {
-    f32 magnitude     = 0.0f;   // [-1, +1], 0 = no force
+    f32 magnitude = 0.0f;       // [-1, +1], 0 = no force
     f32 direction_deg = 0.0f;   // 0 = +X axis, 90 = +Y axis (planar)
-    u32 duration_us   = 0u;     // 0 = infinite (FF_INFINITE)
+    u32 duration_us = 0u;       // 0 = infinite (FF_INFINITE)
     u32 sample_period_us = 0u;  // 0 = device default
-    u32 start_delay_us   = 0u;  // 0 = play immediately
-    f32 gain          = 1.0f;   // [0, 1] global gain
+    u32 start_delay_us = 0u;    // 0 = play immediately
+    f32 gain = 1.0f;            // [0, 1] global gain
 };
 
 // Build the descriptor's clamped + scaled integer fields. Returns the
@@ -68,13 +68,13 @@ struct FfbConstantForce {
 // convention for a 2-axis Cartesian direction). Pure function — used by
 // unit tests so it can run without hardware.
 struct FfbConstantForceWire {
-    i32 magnitude;       // [-10000, +10000]
-    i32 direction_x;     // [-10000, +10000]
-    i32 direction_y;     // [-10000, +10000]
-    u32 duration;        // microseconds, 0xFFFFFFFF == FF_INFINITE
+    i32 magnitude;    // [-10000, +10000]
+    i32 direction_x;  // [-10000, +10000]
+    i32 direction_y;  // [-10000, +10000]
+    u32 duration;     // microseconds, 0xFFFFFFFF == FF_INFINITE
     u32 sample_period;
     u32 start_delay;
-    u32 gain;            // [0, 10000]
+    u32 gain;  // [0, 10000]
 };
 FfbConstantForceWire ffb_build_constant_force(const FfbConstantForce& d) noexcept;
 
@@ -92,6 +92,6 @@ void ffb_shutdown();
 std::string fs_executable_path();
 std::string fs_user_config_dir();
 std::string fs_current_working_directory();
-bool        fs_file_exists(std::string_view path);
+bool fs_file_exists(std::string_view path);
 
 }  // namespace psynder::platform::macos

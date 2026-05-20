@@ -37,14 +37,14 @@ namespace {
 // Wave B will plug in inner-frame CDLOD selection and a real DrawItem
 // emit path against lane 07's queue.
 struct MeshState {
-    HeightmapDesc                    desc{};
-    std::vector<detail::CdlodChunk>  chunks;
-    bool                             built = false;
+    HeightmapDesc desc{};
+    std::vector<detail::CdlodChunk> chunks;
+    bool built = false;
 };
 
 struct RaymarchState {
-    HeightmapDesc        desc{};
-    render::Framebuffer* target = nullptr;   // borrowed; lifetime = caller
+    HeightmapDesc desc{};
+    render::Framebuffer* target = nullptr;  // borrowed; lifetime = caller
 };
 
 // We don't have a global ECS handle for the terrain object yet, so use
@@ -55,24 +55,25 @@ struct RaymarchState {
 // migrate to a properly-allocated arena slot tied to the scene root entity.
 struct Slot {
     const void* key = nullptr;
-    MeshState   mesh;
+    MeshState mesh;
 };
 struct RaySlot {
-    const void*   key = nullptr;
+    const void* key = nullptr;
     RaymarchState ray;
 };
 
 constexpr usize kMaxTerrains = 16;
-Slot     g_mesh_slots[kMaxTerrains];
-RaySlot  g_ray_slots[kMaxTerrains];
+Slot g_mesh_slots[kMaxTerrains];
+RaySlot g_ray_slots[kMaxTerrains];
 
 MeshState* mesh_state_for(const TerrainMesh* tm) noexcept {
     for (auto& s : g_mesh_slots) {
-        if (s.key == tm) return &s.mesh;
+        if (s.key == tm)
+            return &s.mesh;
     }
     for (auto& s : g_mesh_slots) {
         if (s.key == nullptr) {
-            s.key  = tm;
+            s.key = tm;
             s.mesh = MeshState{};
             return &s.mesh;
         }
@@ -82,7 +83,8 @@ MeshState* mesh_state_for(const TerrainMesh* tm) noexcept {
 
 RaymarchState* ray_state_for(const TerrainRaymarch* tr) noexcept {
     for (auto& s : g_ray_slots) {
-        if (s.key == tr) return &s.ray;
+        if (s.key == tr)
+            return &s.ray;
     }
     for (auto& s : g_ray_slots) {
         if (s.key == nullptr) {
@@ -103,32 +105,36 @@ void TerrainMesh::build(const HeightmapDesc& desc) {
         PSY_LOG_WARN("world_outdoor: TerrainMesh slot table full");
         return;
     }
-    st->desc   = desc;
+    st->desc = desc;
     st->chunks = detail::build_all_chunks(desc);
-    st->built  = true;
+    st->built = true;
 }
 
-void TerrainMesh::render_cdlod(const math::Mat4& /*view*/,
-                               const math::Mat4& /*proj*/) const {
+void TerrainMesh::render_cdlod(const math::Mat4& /*view*/, const math::Mat4& /*proj*/) const {
     const MeshState* st = nullptr;
     for (auto& s : g_mesh_slots) {
-        if (s.key == this) { st = &s.mesh; break; }
+        if (s.key == this) {
+            st = &s.mesh;
+            break;
+        }
     }
-    if (!st || !st->built) return;
+    if (!st || !st->built)
+        return;
 
     // Emit each leaf chunk into lane 07's submit queue. Wave A's chunk
     // morph is identity (no inter-level slope yet); the watertight
     // invariant comes from sharing integer texel positions between chunks.
     auto& rast = render::raster::Rasterizer::Get();
     for (const auto& c : st->chunks) {
-        if (c.vertices.empty() || c.indices.empty()) continue;
+        if (c.vertices.empty() || c.indices.empty())
+            continue;
         render::raster::DrawItem item{};
-        item.vertices     = c.vertices.data();
+        item.vertices = c.vertices.data();
         item.vertex_count = static_cast<u32>(c.vertices.size());
-        item.indices      = c.indices.data();
-        item.index_count  = static_cast<u32>(c.indices.size());
-        item.model        = math::identity4();
-        item.flags        = 0;
+        item.indices = c.indices.data();
+        item.index_count = static_cast<u32>(c.indices.size());
+        item.model = math::identity4();
+        item.flags = 0;
         rast.submit(item);
     }
 }
@@ -172,21 +178,20 @@ struct DerivedCamera {
     math::Vec3 fwd{};
     math::Vec3 right{};
     math::Vec3 up{};
-    f32        fov_tan = 0.0f;
-    f32        aspect  = 1.0f;
+    f32 fov_tan = 0.0f;
+    f32 aspect = 1.0f;
 };
 
-DerivedCamera derive_camera(const math::Mat4& view,
-                            const math::Mat4& proj) noexcept {
+DerivedCamera derive_camera(const math::Mat4& view, const math::Mat4& proj) noexcept {
     DerivedCamera c{};
-    c.right = math::Vec3{ view.m[0], view.m[4], view.m[8]  };
-    c.up    = math::Vec3{ view.m[1], view.m[5], view.m[9]  };
-    c.fwd   = math::Vec3{-view.m[2],-view.m[6],-view.m[10] };
+    c.right = math::Vec3{view.m[0], view.m[4], view.m[8]};
+    c.up = math::Vec3{view.m[1], view.m[5], view.m[9]};
+    c.fwd = math::Vec3{-view.m[2], -view.m[6], -view.m[10]};
     // Renormalize defensively — the produced view matrix is orthonormal
     // but rounding can creep in once the caller composes transforms.
     c.right = math::normalize(c.right);
-    c.up    = math::normalize(c.up);
-    c.fwd   = math::normalize(c.fwd);
+    c.up = math::normalize(c.up);
+    c.fwd = math::normalize(c.fwd);
 
     // eye in world-space from the inverse of (R * T(-eye)).
     const f32 tx = view.m[12];
@@ -200,7 +205,7 @@ DerivedCamera derive_camera(const math::Mat4& view,
 
     // perspective_rh: m[5] = 1/tan(fov_y/2); m[0] = m[5] / aspect.
     c.fov_tan = proj.m[5] > 1e-6f ? 1.0f / proj.m[5] : 1.0f;
-    c.aspect  = proj.m[0] > 1e-6f ? proj.m[5] / proj.m[0] : 1.0f;
+    c.aspect = proj.m[0] > 1e-6f ? proj.m[5] / proj.m[0] : 1.0f;
     return c;
 }
 
@@ -208,8 +213,10 @@ DerivedCamera derive_camera(const math::Mat4& view,
 // rasterizer's per-pixel `pack_depth` writes (cf. `TileRaster.cpp`). Inlined
 // here so we don't have to add a new symbol to the render lane.
 PSY_FORCEINLINE u32 pack_depth_u24(f32 z) noexcept {
-    if (z < 0.0f) z = 0.0f;
-    if (z > 1.0f) z = 1.0f;
+    if (z < 0.0f)
+        z = 0.0f;
+    if (z > 1.0f)
+        z = 1.0f;
     u32 raw;
     std::memcpy(&raw, &z, sizeof(raw));
     return raw & 0xFFFFFF00u;
@@ -218,9 +225,8 @@ PSY_FORCEINLINE u32 pack_depth_u24(f32 z) noexcept {
 // Build a primary ray direction for the (px+0.5, py+0.5) pixel sample
 // using the derived camera. Identical math to sample_06's
 // `primary_ray_dir`.
-PSY_FORCEINLINE math::Vec3 primary_ray_dir(const DerivedCamera& cam,
-                                           u32 px, u32 py,
-                                           u32 fb_w, u32 fb_h) noexcept {
+PSY_FORCEINLINE math::Vec3 primary_ray_dir(
+    const DerivedCamera& cam, u32 px, u32 py, u32 fb_w, u32 fb_h) noexcept {
     const f32 nx = (static_cast<f32>(px) + 0.5f) / static_cast<f32>(fb_w);
     const f32 ny = (static_cast<f32>(py) + 0.5f) / static_cast<f32>(fb_h);
     const f32 sx = (2.0f * nx - 1.0f) * cam.aspect * cam.fov_tan;
@@ -237,31 +243,31 @@ PSY_FORCEINLINE math::Vec3 primary_ray_dir(const DerivedCamera& cam,
 // caller passed; byte-identical to the rasterizer's per-pixel z under
 // `pack_depth`, so subsequent raster submits Z-test against the terrain
 // correctly.
-PSY_FORCEINLINE f32 ndc_z_for_world(const math::Mat4& view,
-                                    const math::Mat4& proj,
-                                    math::Vec3 wp) noexcept {
+PSY_FORCEINLINE f32 ndc_z_for_world(const math::Mat4& view, const math::Mat4& proj, math::Vec3 wp) noexcept {
     const math::Vec4 v{wp.x, wp.y, wp.z, 1.0f};
     const math::Vec4 vview = math::mul(view, v);
     const math::Vec4 vclip = math::mul(proj, vview);
-    if (vclip.w <= 1e-6f) return 1.0f;
+    if (vclip.w <= 1e-6f)
+        return 1.0f;
     f32 z = vclip.z / vclip.w;
     z = z * 0.5f + 0.5f;
-    if (z < 0.0f) return 0.0f;
-    if (z > 1.0f) return 1.0f;
+    if (z < 0.0f)
+        return 0.0f;
+    if (z > 1.0f)
+        return 1.0f;
     return z;
 }
 
 // Splat-weights → RGBA8 with Lambert sun + distance haze. Matches the
 // palette + lighting model sample_06 uses so M6 visual parity is preserved.
-PSY_FORCEINLINE u32 splat_to_rgb(detail::SplatWeights s,
-                                 f32 ndotl, f32 dist) noexcept {
-    constexpr f32 grass[3] = {  98.0f, 122.0f,  60.0f };
-    constexpr f32 rock [3] = { 118.0f, 102.0f,  82.0f };
-    constexpr f32 sand [3] = { 198.0f, 178.0f, 120.0f };
-    constexpr f32 snow [3] = { 230.0f, 232.0f, 240.0f };
-    f32 r = grass[0]*s.w[0] + rock[0]*s.w[1] + sand[0]*s.w[2] + snow[0]*s.w[3];
-    f32 g = grass[1]*s.w[0] + rock[1]*s.w[1] + sand[1]*s.w[2] + snow[1]*s.w[3];
-    f32 b = grass[2]*s.w[0] + rock[2]*s.w[1] + sand[2]*s.w[2] + snow[2]*s.w[3];
+PSY_FORCEINLINE u32 splat_to_rgb(detail::SplatWeights s, f32 ndotl, f32 dist) noexcept {
+    constexpr f32 grass[3] = {98.0f, 122.0f, 60.0f};
+    constexpr f32 rock[3] = {118.0f, 102.0f, 82.0f};
+    constexpr f32 sand[3] = {198.0f, 178.0f, 120.0f};
+    constexpr f32 snow[3] = {230.0f, 232.0f, 240.0f};
+    f32 r = grass[0] * s.w[0] + rock[0] * s.w[1] + sand[0] * s.w[2] + snow[0] * s.w[3];
+    f32 g = grass[1] * s.w[0] + rock[1] * s.w[1] + sand[1] * s.w[2] + snow[1] * s.w[3];
+    f32 b = grass[2] * s.w[0] + rock[2] * s.w[1] + sand[2] * s.w[2] + snow[2] * s.w[3];
 
     constexpr f32 sun_r = 1.20f, sun_g = 0.92f, sun_b = 0.74f;
     constexpr f32 amb_r = 0.32f, amb_g = 0.34f, amb_b = 0.46f;
@@ -277,8 +283,10 @@ PSY_FORCEINLINE u32 splat_to_rgb(detail::SplatWeights s,
     b = b * (1.0f - fog) + haze_b * fog;
 
     auto u8 = [](f32 v) noexcept -> u32 {
-        if (v < 0.0f) return 0u;
-        if (v > 255.0f) return 255u;
+        if (v < 0.0f)
+            return 0u;
+        if (v > 255.0f)
+            return 255u;
         return static_cast<u32>(v);
     };
     return u8(r) | (u8(g) << 8) | (u8(b) << 16) | (0xFFu << 24);
@@ -286,39 +294,43 @@ PSY_FORCEINLINE u32 splat_to_rgb(detail::SplatWeights s,
 
 }  // namespace
 
-void TerrainRaymarch::render(const math::Mat4& view,
-                             const math::Mat4& proj) const {
+void TerrainRaymarch::render(const math::Mat4& view, const math::Mat4& proj) const {
     // Recover state. No state ⇒ silent no-op (matches the Wave-A contract
     // for an unconfigured raymarcher).
     const RaymarchState* st = nullptr;
     for (auto& s : g_ray_slots) {
-        if (s.key == this) { st = &s.ray; break; }
+        if (s.key == this) {
+            st = &s.ray;
+            break;
+        }
     }
-    if (!st || !st->desc.heights || !st->target) return;
+    if (!st || !st->desc.heights || !st->target)
+        return;
     render::Framebuffer& fb = *st->target;
-    if (!fb.pixels || fb.width == 0 || fb.height == 0) return;
-    if (fb.format != render::PixelFormat::RGBA8) return;
+    if (!fb.pixels || fb.width == 0 || fb.height == 0)
+        return;
+    if (fb.format != render::PixelFormat::RGBA8)
+        return;
 
-    const HeightmapDesc& hm  = st->desc;
-    const DerivedCamera  cam = derive_camera(view, proj);
+    const HeightmapDesc& hm = st->desc;
+    const DerivedCamera cam = derive_camera(view, proj);
 
     // Per-column logarithmic march parameters, lifted unchanged from
     // sample_06 so the captured PNG matches before/after the wire-up.
     constexpr f32 kMaxTerrainY = 32.0f;
-    constexpr f32 kStepNear    = 0.4f;
-    constexpr f32 kStepFar     = 6.0f;
+    constexpr f32 kStepNear = 0.4f;
+    constexpr f32 kStepFar = 6.0f;
     constexpr f32 kStepFalloff = 90.0f;
-    constexpr f32 kMaxT        = 420.0f;
+    constexpr f32 kMaxT = 420.0f;
 
     // Lambert sun direction: low east-northeast, golden hour. Matches the
     // sample's lighting so colours are continuous when sample_06 drops
     // its inlined `render_terrain` in a follow-up.
-    const math::Vec3 sun_dir =
-        math::normalize(math::Vec3{ 0.55f, 0.50f, 0.20f });
+    const math::Vec3 sun_dir = math::normalize(math::Vec3{0.55f, 0.50f, 0.20f});
 
     auto* pixels = reinterpret_cast<u32*>(fb.pixels);
-    const u32 W  = fb.width;
-    const u32 H  = fb.height;
+    const u32 W = fb.width;
+    const u32 H = fb.height;
 
     for (u32 y = 0; y < H; ++y) {
         for (u32 x = 0; x < W; ++x) {
@@ -328,18 +340,19 @@ void TerrainRaymarch::render(const math::Mat4& view,
             // Up-pointing ray from above max terrain: skip the march and
             // leave the pixel + depth alone (sky is somebody else's job;
             // we never paint over what we don't own).
-            if (dir.y > 0.005f && cam.eye.y > kMaxTerrainY) continue;
+            if (dir.y > 0.005f && cam.eye.y > kMaxTerrainY)
+                continue;
 
             // Variable-step march. Same scalar-reference semantics as
             // `detail::march_ray`, inlined so we can use sample_06's
             // logarithmic step schedule (the standalone kernel uses a
             // fixed step).
-            f32 prev_t  = 0.0f;
+            f32 prev_t = 0.0f;
             f32 prev_ry = cam.eye.y;
             f32 prev_th = detail::sample_bilinear(hm, cam.eye.x, cam.eye.z);
 
-            bool hit   = false;
-            f32  hit_t = 0.0f;
+            bool hit = false;
+            f32 hit_t = 0.0f;
 
             f32 t = kStepNear;
             while (t <= kMaxT) {
@@ -349,25 +362,27 @@ void TerrainRaymarch::render(const math::Mat4& view,
                 const f32 th = detail::sample_bilinear(hm, wx, wz);
 
                 if (wy <= th) {
-                    const f32 dy_a  = prev_ry - prev_th;     // > 0
-                    const f32 dy_b  = wy      - th;          // ≤ 0
+                    const f32 dy_a = prev_ry - prev_th;  // > 0
+                    const f32 dy_b = wy - th;            // ≤ 0
                     const f32 denom = dy_a - dy_b;
                     f32 frac = denom > 0.0f ? (dy_a / denom) : 0.0f;
-                    if (frac < 0.0f) frac = 0.0f;
-                    if (frac > 1.0f) frac = 1.0f;
+                    if (frac < 0.0f)
+                        frac = 0.0f;
+                    if (frac > 1.0f)
+                        frac = 1.0f;
                     hit_t = prev_t + (t - prev_t) * frac;
                     hit = true;
                     break;
                 }
-                prev_t  = t;
+                prev_t = t;
                 prev_ry = wy;
                 prev_th = th;
-                const f32 step = kStepNear + (kStepFar - kStepNear) *
-                                 std::min(1.0f, t / kStepFalloff);
+                const f32 step = kStepNear + (kStepFar - kStepNear) * std::min(1.0f, t / kStepFalloff);
                 t += step;
             }
 
-            if (!hit) continue;
+            if (!hit)
+                continue;
 
             const math::Vec3 hit_pos{
                 cam.eye.x + dir.x * hit_t,
@@ -382,9 +397,9 @@ void TerrainRaymarch::render(const math::Mat4& view,
             const f32 spacing = hm.spacing > 0.0f ? hm.spacing : 1.0f;
             const i32 tx = static_cast<i32>(std::floor(hit_pos.x / spacing + 0.5f));
             const i32 tz = static_cast<i32>(std::floor(hit_pos.z / spacing + 0.5f));
-            const auto       splat = detail::splat_at_texel(hm, tx, tz);
-            const math::Vec3 n     = detail::normal_at_texel(hm, tx, tz);
-            const f32        ndotl = math::dot(n, sun_dir);
+            const auto splat = detail::splat_at_texel(hm, tx, tz);
+            const math::Vec3 n = detail::normal_at_texel(hm, tx, tz);
+            const f32 ndotl = math::dot(n, sun_dir);
 
             pixels[idx] = splat_to_rgb(splat, ndotl, hit_t);
             if (fb.depth) {
@@ -422,11 +437,11 @@ void set_target(const TerrainRaymarch& rm, render::Framebuffer* fb) noexcept {
 //
 // On any read error we leave the output vector untouched. This means the
 // sample tracks bundled with the engine can ship inline (see Wave B).
-void load_spline_track(std::string_view virtual_path,
-                       std::vector<SplineRoadSegment>& segments_out) {
-    auto& vfs  = asset::Vfs::Get();
-    auto  blob = vfs.read(virtual_path);
-    if (!blob.data || blob.bytes < 8) return;
+void load_spline_track(std::string_view virtual_path, std::vector<SplineRoadSegment>& segments_out) {
+    auto& vfs = asset::Vfs::Get();
+    auto blob = vfs.read(virtual_path);
+    if (!blob.data || blob.bytes < 8)
+        return;
 
     auto read_u32 = [](const u8* p) noexcept {
         u32 v;
@@ -440,22 +455,24 @@ void load_spline_track(std::string_view virtual_path,
     };
 
     const u32 magic = read_u32(blob.data);
-    if (magic != 0x4B545350u) return;       // 'PSTK' (little-endian)
-    const u32 nseg  = read_u32(blob.data + 4);
+    if (magic != 0x4B545350u)
+        return;  // 'PSTK' (little-endian)
+    const u32 nseg = read_u32(blob.data + 4);
 
     constexpr usize kBytesPerSeg = 14u * sizeof(f32);
-    if (blob.bytes < 8u + static_cast<usize>(nseg) * kBytesPerSeg) return;
+    if (blob.bytes < 8u + static_cast<usize>(nseg) * kBytesPerSeg)
+        return;
 
     segments_out.reserve(segments_out.size() + nseg);
     const u8* p = blob.data + 8;
     for (u32 i = 0; i < nseg; ++i) {
         SplineRoadSegment seg{};
-        seg.p0          = math::Vec3{ read_f32(p+0),  read_f32(p+4),  read_f32(p+8)  };
-        seg.p1          = math::Vec3{ read_f32(p+12), read_f32(p+16), read_f32(p+20) };
-        seg.p2          = math::Vec3{ read_f32(p+24), read_f32(p+28), read_f32(p+32) };
-        seg.p3          = math::Vec3{ read_f32(p+36), read_f32(p+40), read_f32(p+44) };
-        seg.half_width  = read_f32(p+48);
-        seg.banking_rad = read_f32(p+52);
+        seg.p0 = math::Vec3{read_f32(p + 0), read_f32(p + 4), read_f32(p + 8)};
+        seg.p1 = math::Vec3{read_f32(p + 12), read_f32(p + 16), read_f32(p + 20)};
+        seg.p2 = math::Vec3{read_f32(p + 24), read_f32(p + 28), read_f32(p + 32)};
+        seg.p3 = math::Vec3{read_f32(p + 36), read_f32(p + 40), read_f32(p + 44)};
+        seg.half_width = read_f32(p + 48);
+        seg.banking_rad = read_f32(p + 52);
         segments_out.push_back(seg);
         p += kBytesPerSeg;
     }

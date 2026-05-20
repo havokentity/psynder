@@ -25,14 +25,14 @@ namespace psynder::platform::win32 {
 // the window's poll_events(). One slot per XInput user index (0..3).
 struct GamepadState {
     bool connected = false;
-    u16  buttons   = 0;       // XINPUT_GAMEPAD_* bitfield mirror
-    i16  lx = 0, ly = 0;       // left thumb
-    i16  rx = 0, ry = 0;       // right thumb
-    u8   lt = 0, rt = 0;       // triggers (0..255)
+    u16 buttons = 0;     // XINPUT_GAMEPAD_* bitfield mirror
+    i16 lx = 0, ly = 0;  // left thumb
+    i16 rx = 0, ry = 0;  // right thumb
+    u8 lt = 0, rt = 0;   // triggers (0..255)
 };
 
 class Win32Input final : public Input {
-public:
+   public:
     Win32Input() = default;
     static constexpr usize kMaxGamepads = 4;
 
@@ -50,11 +50,13 @@ public:
     // ── WindowProc hooks ────────────────────────────────────────────────
     void on_key(KeyCode k, bool down) {
         const auto idx = static_cast<usize>(k);
-        if (idx >= kKeyBits) return;
+        if (idx >= kKeyBits)
+            return;
         const bool was_down = keys_down_.test(idx);
         keys_down_.set(idx, down);
         // "pressed" is the rising edge — set when a key transitions up→down.
-        if (down && !was_down) keys_pressed_this_frame_.set(idx);
+        if (down && !was_down)
+            keys_pressed_this_frame_.set(idx);
     }
     void on_mouse_move(f32 x, f32 y) {
         mouse_.x = x;
@@ -66,15 +68,20 @@ public:
     }
     void on_mouse_button(u32 button, bool down) {
         switch (button) {
-            case 0: mouse_.left   = down; break;
-            case 1: mouse_.right  = down; break;
-            case 2: mouse_.middle = down; break;
-            default: break;
+            case 0:
+                mouse_.left = down;
+                break;
+            case 1:
+                mouse_.right = down;
+                break;
+            case 2:
+                mouse_.middle = down;
+                break;
+            default:
+                break;
         }
     }
-    void on_mouse_wheel(f32 ticks) {
-        mouse_wheel_accum_ += ticks;
-    }
+    void on_mouse_wheel(f32 ticks) { mouse_wheel_accum_ += ticks; }
 
     // ── Frame book-keeping (called once per poll_events) ────────────────
     // Pulls XInput state and clears edge-flagged inputs from the prior frame.
@@ -92,23 +99,23 @@ public:
     // edge-state behavior without pulling XInput.lib in.
     void reset_edge_state_for_test() {
         keys_pressed_this_frame_.reset();
-        mouse_.wheel       = mouse_wheel_accum_;
+        mouse_.wheel = mouse_wheel_accum_;
         mouse_wheel_accum_ = 0.0f;
-        mouse_.dx          = 0.0f;
-        mouse_.dy          = 0.0f;
+        mouse_.dx = 0.0f;
+        mouse_.dy = 0.0f;
     }
 
-private:
+   private:
     // One bit per KeyCode. KeyCode::Count is well under 96, so bitset<256>
     // gives plenty of head-room even with future additions.
     static constexpr usize kKeyBits = 256;
     using KeyBits = std::bitset<kKeyBits>;
 
-    KeyBits      keys_down_{};
-    KeyBits      keys_pressed_this_frame_{};
+    KeyBits keys_down_{};
+    KeyBits keys_pressed_this_frame_{};
 
-    MouseState   mouse_{};
-    f32          mouse_wheel_accum_ = 0.0f;
+    MouseState mouse_{};
+    f32 mouse_wheel_accum_ = 0.0f;
     GamepadState pads_[kMaxGamepads]{};
 };
 

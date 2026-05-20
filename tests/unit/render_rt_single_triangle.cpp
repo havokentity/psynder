@@ -17,9 +17,9 @@ namespace {
 
 Triangle make_triangle_xy_at(f32 z) {
     return Triangle{
-        math::Vec3{ -1.0f, -1.0f, z },
-        math::Vec3{  1.0f, -1.0f, z },
-        math::Vec3{  0.0f,  1.0f, z },
+        math::Vec3{-1.0f, -1.0f, z},
+        math::Vec3{1.0f, -1.0f, z},
+        math::Vec3{0.0f, 1.0f, z},
     };
 }
 
@@ -33,10 +33,10 @@ TEST_CASE("Bvh8 single triangle: ray-through-centroid hits", "[render_rt][single
     REQUIRE(bvh.node_count() >= 1u);
 
     Ray r;
-    r.origin    = { 0.0f, 0.0f, 0.0f };
-    r.direction = { 0.0f, 0.0f, 1.0f };
-    r.t_min     = 1e-4f;
-    r.t_max     = 1e30f;
+    r.origin = {0.0f, 0.0f, 0.0f};
+    r.direction = {0.0f, 0.0f, 1.0f};
+    r.t_min = 1e-4f;
+    r.t_max = 1e30f;
 
     Hit h = bvh.intersect(r);
     REQUIRE(h.hit);
@@ -50,10 +50,10 @@ TEST_CASE("Bvh8 single triangle: ray-aside misses", "[render_rt][single_triangle
     bvh.build(&t, 1);
 
     Ray r;
-    r.origin    = { 10.0f, 10.0f, 0.0f };
-    r.direction = { 0.0f, 0.0f, 1.0f };
-    r.t_min     = 1e-4f;
-    r.t_max     = 1e30f;
+    r.origin = {10.0f, 10.0f, 0.0f};
+    r.direction = {0.0f, 0.0f, 1.0f};
+    r.t_min = 1e-4f;
+    r.t_max = 1e30f;
 
     Hit h = bvh.intersect(r);
     REQUIRE_FALSE(h.hit);
@@ -66,14 +66,14 @@ TEST_CASE("Bvh8 single triangle: occluded() agrees with intersect()",
     bvh.build(&t, 1);
 
     Ray r;
-    r.origin    = { 0.0f, 0.0f, 0.0f };
-    r.direction = { 0.0f, 0.0f, 1.0f };
-    r.t_min     = 1e-4f;
-    r.t_max     = 1e30f;
+    r.origin = {0.0f, 0.0f, 0.0f};
+    r.direction = {0.0f, 0.0f, 1.0f};
+    r.t_min = 1e-4f;
+    r.t_max = 1e30f;
 
     REQUIRE(bvh.occluded(r));
 
-    r.origin = { 10.0f, 10.0f, 0.0f };
+    r.origin = {10.0f, 10.0f, 0.0f};
     REQUIRE_FALSE(bvh.occluded(r));
 }
 
@@ -86,10 +86,10 @@ TEST_CASE("Bvh8 single triangle: backface hit (Möller–Trumbore double-sided)"
     // Ray from behind the triangle going +Z still hits (Wave-A MT is
     // two-sided; we'd add a face-cull flag later if needed).
     Ray r;
-    r.origin    = { 0.0f, 0.0f, 10.0f };
-    r.direction = { 0.0f, 0.0f, -1.0f };
-    r.t_min     = 1e-4f;
-    r.t_max     = 1e30f;
+    r.origin = {0.0f, 0.0f, 10.0f};
+    r.direction = {0.0f, 0.0f, -1.0f};
+    r.t_min = 1e-4f;
+    r.t_max = 1e30f;
 
     Hit h = bvh.intersect(r);
     REQUIRE(h.hit);
@@ -102,10 +102,10 @@ TEST_CASE("Bvh8: t_max clamp respected", "[render_rt][single_triangle]") {
     bvh.build(&t, 1);
 
     Ray r;
-    r.origin    = { 0.0f, 0.0f, 0.0f };
-    r.direction = { 0.0f, 0.0f, 1.0f };
-    r.t_min     = 1e-4f;
-    r.t_max     = 4.0f;  // doesn't reach the triangle
+    r.origin = {0.0f, 0.0f, 0.0f};
+    r.direction = {0.0f, 0.0f, 1.0f};
+    r.t_min = 1e-4f;
+    r.t_max = 4.0f;  // doesn't reach the triangle
 
     Hit h = bvh.intersect(r);
     REQUIRE_FALSE(h.hit);

@@ -15,13 +15,13 @@ namespace psynder::render::raster {
 // retained for perspective-correct attribute interpolation. uv/color carry
 // the per-vertex attributes the rasterizer interpolates today.
 struct ScreenVertex {
-    f32 x;          // viewport x (pixel space, sub-pixel from FxQ24_8 fp)
-    f32 y;          // viewport y
-    f32 z;          // depth in [0,1]
-    f32 inv_w;      // 1 / clipspace w
-    f32 u_over_w;   // uv.u * inv_w
-    f32 v_over_w;   // uv.v * inv_w
-    f32 r_over_w;   // r * inv_w (premultiplied vertex color)
+    f32 x;         // viewport x (pixel space, sub-pixel from FxQ24_8 fp)
+    f32 y;         // viewport y
+    f32 z;         // depth in [0,1]
+    f32 inv_w;     // 1 / clipspace w
+    f32 u_over_w;  // uv.u * inv_w
+    f32 v_over_w;  // uv.v * inv_w
+    f32 r_over_w;  // r * inv_w (premultiplied vertex color)
     f32 g_over_w;
     f32 b_over_w;
     f32 a_over_w;
@@ -66,10 +66,17 @@ PSY_FORCEINLINE i64 eval_edge2(const TriSetup& t, FxQ24_8 px, FxQ24_8 py) noexce
 
 // Setup a triangle from three post-MVP clipspace verts.
 // Returns false if degenerate / back-facing / fully outside viewport.
-bool setup_triangle(const math::Vec4& cp0, const math::Vec4& cp1, const math::Vec4& cp2,
-                    math::Vec2 uv0, math::Vec2 uv1, math::Vec2 uv2,
-                    u32 col0, u32 col1, u32 col2,
-                    u32 viewport_w, u32 viewport_h,
+bool setup_triangle(const math::Vec4& cp0,
+                    const math::Vec4& cp1,
+                    const math::Vec4& cp2,
+                    math::Vec2 uv0,
+                    math::Vec2 uv1,
+                    math::Vec2 uv2,
+                    u32 col0,
+                    u32 col1,
+                    u32 col2,
+                    u32 viewport_w,
+                    u32 viewport_h,
                     TriSetup& out) noexcept;
 
 }  // namespace psynder::render::raster

@@ -15,7 +15,7 @@
 #include <cstring>
 
 #if defined(__x86_64__) || defined(_M_X64)
-#   include <immintrin.h>
+#include <immintrin.h>
 #endif
 
 namespace psynder::render::post::detail {
@@ -48,8 +48,10 @@ PSY_FORCEINLINE f32 reinhard(f32 x, f32 exposure) noexcept {
 // region; the gamma argument is honoured for non-2.2 users (CRT lovers tend
 // to want 2.2 or 2.5).
 PSY_FORCEINLINE f32 linear_to_srgb(f32 c, f32 gamma) noexcept {
-    if (c <= 0.0f) return 0.0f;
-    if (c >= 1.0f) return 1.0f;
+    if (c <= 0.0f)
+        return 0.0f;
+    if (c >= 1.0f)
+        return 1.0f;
     // Strictly speaking sRGB is the piecewise 1/2.4 curve, but DESIGN §7.7
     // calls out "gamma" as user-tunable. Pow is fine here — resolve is 1 ms
     // budget at 1080p and modern powf hits ~3-4 cycles via lib.
@@ -61,10 +63,22 @@ PSY_FORCEINLINE f32 linear_to_srgb(f32 c, f32 gamma) noexcept {
 // flat HDR gradients. Normalised so threshold lives in [0, 1).
 PSY_FORCEINLINE f32 bayer4x4(u32 x, u32 y) noexcept {
     static constexpr u8 m[16] = {
-         0,  8,  2, 10,
-        12,  4, 14,  6,
-         3, 11,  1,  9,
-        15,  7, 13,  5,
+        0,
+        8,
+        2,
+        10,
+        12,
+        4,
+        14,
+        6,
+        3,
+        11,
+        1,
+        9,
+        15,
+        7,
+        13,
+        5,
     };
     const u32 idx = (y & 3u) * 4u + (x & 3u);
     return (static_cast<f32>(m[idx]) + 0.5f) * (1.0f / 16.0f);
@@ -85,27 +99,33 @@ PSY_FORCEINLINE f32 blue_noise(u32 x, u32 y) noexcept {
 }
 
 enum class DitherMode : u32 {
-    Off    = 0,
-    Bayer  = 1,
-    Blue   = 2,
+    Off = 0,
+    Bayer = 1,
+    Blue = 2,
 };
 
 PSY_FORCEINLINE f32 dither_threshold(DitherMode m, u32 x, u32 y) noexcept {
     switch (m) {
-        case DitherMode::Bayer: return bayer4x4(x, y);
-        case DitherMode::Blue:  return blue_noise(x, y);
-        case DitherMode::Off:   default: return 0.5f;
+        case DitherMode::Bayer:
+            return bayer4x4(x, y);
+        case DitherMode::Blue:
+            return blue_noise(x, y);
+        case DitherMode::Off:
+        default:
+            return 0.5f;
     }
 }
 
 // Float → u8 with dither. Threshold is in [0,1); the fractional contribution
 // of c is compared to threshold to decide rounding direction. Saturates.
 PSY_FORCEINLINE u8 quantize_u8(f32 c, f32 threshold) noexcept {
-    if (c <= 0.0f) return 0;
-    if (c >= 1.0f) return 255;
+    if (c <= 0.0f)
+        return 0;
+    if (c >= 1.0f)
+        return 255;
     const f32 scaled = c * 255.0f;
-    const f32 base   = std::floor(scaled);
-    const f32 frac   = scaled - base;
+    const f32 base = std::floor(scaled);
+    const f32 frac = scaled - base;
     return static_cast<u8>(base + (frac > threshold ? 1.0f : 0.0f));
 }
 
@@ -122,21 +142,25 @@ PSY_FORCEINLINE f32 scanline_factor(u32 row, f32 strength) noexcept {
 // horizontal and vertical passes. The separability property is exactly:
 //   convolve2D(image, g_x * g_y^T) == convolve1D_x(convolve1D_y(image, g_y), g_x)
 // and that's what the unit test verifies on a small image.
-inline constexpr int   kBloomRadius = 2;
-inline constexpr usize kBloomTaps   = static_cast<usize>(kBloomRadius * 2 + 1);
-inline constexpr f32   kBloomKernel[kBloomTaps] = {
+inline constexpr int kBloomRadius = 2;
+inline constexpr usize kBloomTaps = static_cast<usize>(kBloomRadius * 2 + 1);
+inline constexpr f32 kBloomKernel[kBloomTaps] = {
     // σ=1.0, samples at -2,-1,0,1,2 — normalised.
-    0.06136f, 0.24477f, 0.38774f, 0.24477f, 0.06136f,
+    0.06136f,
+    0.24477f,
+    0.38774f,
+    0.24477f,
+    0.06136f,
 };
 
 // Static check that the kernel is unit-mass to within float ulps. This is
 // what makes the separable-2D and 2×1D convolutions return the same average.
-static_assert(
-    kBloomKernel[0] + kBloomKernel[1] + kBloomKernel[2] +
-    kBloomKernel[3] + kBloomKernel[4] > 0.999f, "bloom kernel under-normalised");
-static_assert(
-    kBloomKernel[0] + kBloomKernel[1] + kBloomKernel[2] +
-    kBloomKernel[3] + kBloomKernel[4] < 1.001f, "bloom kernel over-normalised");
+static_assert(kBloomKernel[0] + kBloomKernel[1] + kBloomKernel[2] + kBloomKernel[3] + kBloomKernel[4] >
+                  0.999f,
+              "bloom kernel under-normalised");
+static_assert(kBloomKernel[0] + kBloomKernel[1] + kBloomKernel[2] + kBloomKernel[3] + kBloomKernel[4] <
+                  1.001f,
+              "bloom kernel over-normalised");
 
 // Convolve a horizontal scanline of `n` HDR pixels with the bloom kernel.
 // Clamp-edge addressing. `dst` and `src` may not alias.
@@ -145,8 +169,10 @@ inline void gaussian_h(const HdrPixel* src, HdrPixel* dst, u32 n) noexcept {
         f32 r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f;
         for (int t = -kBloomRadius; t <= kBloomRadius; ++t) {
             i64 sx = static_cast<i64>(x) + t;
-            if (sx < 0)              sx = 0;
-            if (sx >= static_cast<i64>(n)) sx = static_cast<i64>(n) - 1;
+            if (sx < 0)
+                sx = 0;
+            if (sx >= static_cast<i64>(n))
+                sx = static_cast<i64>(n) - 1;
             const HdrPixel& p = src[static_cast<usize>(sx)];
             const f32 w = kBloomKernel[static_cast<usize>(t + kBloomRadius)];
             r += p.r * w;
@@ -165,27 +191,26 @@ inline void gaussian_v(const HdrPixel* src, HdrPixel* dst, u32 w, u32 h) noexcep
             f32 r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f;
             for (int t = -kBloomRadius; t <= kBloomRadius; ++t) {
                 i64 sy = static_cast<i64>(y) + t;
-                if (sy < 0)              sy = 0;
-                if (sy >= static_cast<i64>(h)) sy = static_cast<i64>(h) - 1;
+                if (sy < 0)
+                    sy = 0;
+                if (sy >= static_cast<i64>(h))
+                    sy = static_cast<i64>(h) - 1;
                 const HdrPixel& p =
-                    src[static_cast<usize>(sy) * static_cast<usize>(w)
-                        + static_cast<usize>(x)];
+                    src[static_cast<usize>(sy) * static_cast<usize>(w) + static_cast<usize>(x)];
                 const f32 w_t = kBloomKernel[static_cast<usize>(t + kBloomRadius)];
                 r += p.r * w_t;
                 g += p.g * w_t;
                 b += p.b * w_t;
                 a += p.a * w_t;
             }
-            dst[static_cast<usize>(y) * static_cast<usize>(w)
-                + static_cast<usize>(x)] = HdrPixel{r, g, b, a};
+            dst[static_cast<usize>(y) * static_cast<usize>(w) + static_cast<usize>(x)] =
+                HdrPixel{r, g, b, a};
         }
     }
 }
 
 // Full separable 2-D pass — H then V — into a scratch buffer (size >= w*h).
-inline void gaussian_separable(
-    const HdrPixel* src, HdrPixel* dst, HdrPixel* scratch, u32 w, u32 h) noexcept
-{
+inline void gaussian_separable(const HdrPixel* src, HdrPixel* dst, HdrPixel* scratch, u32 w, u32 h) noexcept {
     // H pass into scratch
     const usize uw = static_cast<usize>(w);
     for (u32 y = 0; y < h; ++y) {
@@ -198,9 +223,7 @@ inline void gaussian_separable(
 
 // Reference dense 2-D convolution; only used by the separability unit test
 // (slow, O(w*h*k*k)).
-inline void gaussian_dense(
-    const HdrPixel* src, HdrPixel* dst, u32 w, u32 h) noexcept
-{
+inline void gaussian_dense(const HdrPixel* src, HdrPixel* dst, u32 w, u32 h) noexcept {
     for (u32 y = 0; y < h; ++y) {
         for (u32 x = 0; x < w; ++x) {
             f32 r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f;
@@ -208,23 +231,26 @@ inline void gaussian_dense(
                 for (int tx = -kBloomRadius; tx <= kBloomRadius; ++tx) {
                     i64 sx = static_cast<i64>(x) + tx;
                     i64 sy = static_cast<i64>(y) + ty;
-                    if (sx < 0) sx = 0;
-                    if (sy < 0) sy = 0;
-                    if (sx >= static_cast<i64>(w)) sx = static_cast<i64>(w) - 1;
-                    if (sy >= static_cast<i64>(h)) sy = static_cast<i64>(h) - 1;
+                    if (sx < 0)
+                        sx = 0;
+                    if (sy < 0)
+                        sy = 0;
+                    if (sx >= static_cast<i64>(w))
+                        sx = static_cast<i64>(w) - 1;
+                    if (sy >= static_cast<i64>(h))
+                        sy = static_cast<i64>(h) - 1;
                     const HdrPixel& p =
-                        src[static_cast<usize>(sy) * static_cast<usize>(w)
-                            + static_cast<usize>(sx)];
-                    const f32 wt = kBloomKernel[static_cast<usize>(tx + kBloomRadius)]
-                                 * kBloomKernel[static_cast<usize>(ty + kBloomRadius)];
+                        src[static_cast<usize>(sy) * static_cast<usize>(w) + static_cast<usize>(sx)];
+                    const f32 wt = kBloomKernel[static_cast<usize>(tx + kBloomRadius)] *
+                                   kBloomKernel[static_cast<usize>(ty + kBloomRadius)];
                     r += p.r * wt;
                     g += p.g * wt;
                     b += p.b * wt;
                     a += p.a * wt;
                 }
             }
-            dst[static_cast<usize>(y) * static_cast<usize>(w)
-                + static_cast<usize>(x)] = HdrPixel{r, g, b, a};
+            dst[static_cast<usize>(y) * static_cast<usize>(w) + static_cast<usize>(x)] =
+                HdrPixel{r, g, b, a};
         }
     }
 }
@@ -265,7 +291,7 @@ PSY_FORCEINLINE void stream_store_hdr(HdrPixel* dst, HdrPixel v) noexcept {
     // 16-byte sized and laid out tightly so the row is naturally aligned
     // for w >= 1 if the buffer base is 16B aligned. We don't assume that
     // here — fall back to two i64 streams which only need 8B alignment.
-    alignas(16) f32 tmp[4] = { v.r, v.g, v.b, v.a };
+    alignas(16) f32 tmp[4] = {v.r, v.g, v.b, v.a};
     const __m128 lane = _mm_load_ps(tmp);
     _mm_stream_ps(reinterpret_cast<float*>(dst), lane);
 #elif defined(__aarch64__)
@@ -281,15 +307,17 @@ PSY_FORCEINLINE void stream_store_hdr(HdrPixel* dst, HdrPixel v) noexcept {
 // ─── Motion-blur tap sampler ─────────────────────────────────────────────
 // Bilinear HDR sample with clamp-edge addressing. Decoupled from the kernel
 // so unit tests can pin the maths in isolation.
-PSY_FORCEINLINE HdrPixel sample_hdr_bilinear(
-    const HdrPixel* src, u32 w, u32 h, f32 fx, f32 fy) noexcept
-{
-    if (fx < 0.0f) fx = 0.0f;
-    if (fy < 0.0f) fy = 0.0f;
+PSY_FORCEINLINE HdrPixel sample_hdr_bilinear(const HdrPixel* src, u32 w, u32 h, f32 fx, f32 fy) noexcept {
+    if (fx < 0.0f)
+        fx = 0.0f;
+    if (fy < 0.0f)
+        fy = 0.0f;
     const f32 fwm1 = static_cast<f32>(w) - 1.0f;
     const f32 fhm1 = static_cast<f32>(h) - 1.0f;
-    if (fx > fwm1) fx = fwm1;
-    if (fy > fhm1) fy = fhm1;
+    if (fx > fwm1)
+        fx = fwm1;
+    if (fy > fhm1)
+        fy = fhm1;
     const i32 x0 = static_cast<i32>(fx);
     const i32 y0 = static_cast<i32>(fy);
     const i32 x1 = (x0 + 1) < static_cast<i32>(w) ? (x0 + 1) : x0;
@@ -303,10 +331,10 @@ PSY_FORCEINLINE HdrPixel sample_hdr_bilinear(
     const HdrPixel& p11 = src[static_cast<usize>(y1) * uw + static_cast<usize>(x1)];
     const f32 rx = 1.0f - wx, ry = 1.0f - wy;
     return HdrPixel{
-        (p00.r*rx + p10.r*wx)*ry + (p01.r*rx + p11.r*wx)*wy,
-        (p00.g*rx + p10.g*wx)*ry + (p01.g*rx + p11.g*wx)*wy,
-        (p00.b*rx + p10.b*wx)*ry + (p01.b*rx + p11.b*wx)*wy,
-        (p00.a*rx + p10.a*wx)*ry + (p01.a*rx + p11.a*wx)*wy,
+        (p00.r * rx + p10.r * wx) * ry + (p01.r * rx + p11.r * wx) * wy,
+        (p00.g * rx + p10.g * wx) * ry + (p01.g * rx + p11.g * wx) * wy,
+        (p00.b * rx + p10.b * wx) * ry + (p01.b * rx + p11.b * wx) * wy,
+        (p00.a * rx + p10.a * wx) * ry + (p01.a * rx + p11.a * wx) * wy,
     };
 }
 
@@ -319,24 +347,22 @@ PSY_FORCEINLINE HdrPixel sample_hdr_bilinear(
 //   - taps>=2 with zero velocity averages to the source pixel exactly.
 //   - The kernel is symmetric: blur(+v) == blur(-v) within float roundoff.
 inline HdrPixel motion_blur_tap(
-    const HdrPixel* src, u32 w, u32 h, u32 x, u32 y,
-    f32 vx, f32 vy, int taps) noexcept
-{
-    if (taps < 1) taps = 1;
+    const HdrPixel* src, u32 w, u32 h, u32 x, u32 y, f32 vx, f32 vy, int taps) noexcept {
+    if (taps < 1)
+        taps = 1;
     f32 r = 0.0f, g = 0.0f, b = 0.0f;
     // Symmetric sampling along the velocity vector. With `taps` samples we
     // place them at offsets t in {-0.5, -0.5 + 1/(taps-1), ..., +0.5} (or
     // exactly 0 when taps == 1).
     if (taps == 1) {
-        const HdrPixel s = sample_hdr_bilinear(
-            src, w, h, static_cast<f32>(x), static_cast<f32>(y));
+        const HdrPixel s = sample_hdr_bilinear(src, w, h, static_cast<f32>(x), static_cast<f32>(y));
         return s;
     }
     const f32 inv_tm1 = 1.0f / static_cast<f32>(taps - 1);
     const f32 cx = static_cast<f32>(x);
     const f32 cy = static_cast<f32>(y);
     for (int i = 0; i < taps; ++i) {
-        const f32 t  = static_cast<f32>(i) * inv_tm1 - 0.5f;
+        const f32 t = static_cast<f32>(i) * inv_tm1 - 0.5f;
         const f32 fx = cx + vx * t;
         const f32 fy = cy + vy * t;
         const HdrPixel s = sample_hdr_bilinear(src, w, h, fx, fy);
@@ -346,9 +372,8 @@ inline HdrPixel motion_blur_tap(
     }
     const f32 inv = 1.0f / static_cast<f32>(taps);
     // Alpha carried from centre pixel — blur should not modify transparency.
-    const HdrPixel centre = src[
-        static_cast<usize>(y) * static_cast<usize>(w) + static_cast<usize>(x)];
-    return HdrPixel{ r * inv, g * inv, b * inv, centre.a };
+    const HdrPixel centre = src[static_cast<usize>(y) * static_cast<usize>(w) + static_cast<usize>(x)];
+    return HdrPixel{r * inv, g * inv, b * inv, centre.a};
 }
 
 }  // namespace psynder::render::post::detail

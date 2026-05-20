@@ -26,7 +26,7 @@ namespace psynder::math {
 // when accumulating a bound over a set of points.
 inline Aabb aabb_empty() noexcept {
     constexpr f32 inf = std::numeric_limits<f32>::infinity();
-    return Aabb{ Vec3{ inf,  inf,  inf}, Vec3{-inf, -inf, -inf} };
+    return Aabb{Vec3{inf, inf, inf}, Vec3{-inf, -inf, -inf}};
 }
 
 inline Aabb aabb_from_center_extents(Vec3 center, Vec3 half_extents) noexcept {
@@ -42,37 +42,30 @@ constexpr bool is_empty(const Aabb& b) noexcept {
 }
 
 constexpr Vec3 center(const Aabb& b) noexcept {
-    return { (b.min.x + b.max.x) * 0.5f,
-             (b.min.y + b.max.y) * 0.5f,
-             (b.min.z + b.max.z) * 0.5f };
+    return {(b.min.x + b.max.x) * 0.5f, (b.min.y + b.max.y) * 0.5f, (b.min.z + b.max.z) * 0.5f};
 }
 
 constexpr Vec3 extents(const Aabb& b) noexcept {
-    return { (b.max.x - b.min.x) * 0.5f,
-             (b.max.y - b.min.y) * 0.5f,
-             (b.max.z - b.min.z) * 0.5f };
+    return {(b.max.x - b.min.x) * 0.5f, (b.max.y - b.min.y) * 0.5f, (b.max.z - b.min.z) * 0.5f};
 }
 
 constexpr Vec3 size(const Aabb& b) noexcept {
-    return { b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z };
+    return {b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z};
 }
 
 constexpr bool contains(const Aabb& b, Vec3 p) noexcept {
-    return p.x >= b.min.x && p.x <= b.max.x
-        && p.y >= b.min.y && p.y <= b.max.y
-        && p.z >= b.min.z && p.z <= b.max.z;
+    return p.x >= b.min.x && p.x <= b.max.x && p.y >= b.min.y && p.y <= b.max.y && p.z >= b.min.z &&
+           p.z <= b.max.z;
 }
 
 constexpr bool contains(const Aabb& outer, const Aabb& inner) noexcept {
-    return inner.min.x >= outer.min.x && inner.max.x <= outer.max.x
-        && inner.min.y >= outer.min.y && inner.max.y <= outer.max.y
-        && inner.min.z >= outer.min.z && inner.max.z <= outer.max.z;
+    return inner.min.x >= outer.min.x && inner.max.x <= outer.max.x && inner.min.y >= outer.min.y &&
+           inner.max.y <= outer.max.y && inner.min.z >= outer.min.z && inner.max.z <= outer.max.z;
 }
 
 constexpr bool intersects(const Aabb& a, const Aabb& b) noexcept {
-    return a.min.x <= b.max.x && a.max.x >= b.min.x
-        && a.min.y <= b.max.y && a.max.y >= b.min.y
-        && a.min.z <= b.max.z && a.max.z >= b.min.z;
+    return a.min.x <= b.max.x && a.max.x >= b.min.x && a.min.y <= b.max.y && a.max.y >= b.min.y &&
+           a.min.z <= b.max.z && a.max.z >= b.min.z;
 }
 
 // ─── Aabb mutators (return-by-value, immutable inputs) ───────────────────
@@ -100,15 +93,15 @@ constexpr Aabb aabb_union(const Aabb& a, Vec3 p) noexcept {
 
 constexpr Aabb expand(const Aabb& a, f32 margin) noexcept {
     return Aabb{
-        Vec3{ a.min.x - margin, a.min.y - margin, a.min.z - margin },
-        Vec3{ a.max.x + margin, a.max.y + margin, a.max.z + margin },
+        Vec3{a.min.x - margin, a.min.y - margin, a.min.z - margin},
+        Vec3{a.max.x + margin, a.max.y + margin, a.max.z + margin},
     };
 }
 
 constexpr Aabb expand(const Aabb& a, Vec3 margin) noexcept {
     return Aabb{
-        Vec3{ a.min.x - margin.x, a.min.y - margin.y, a.min.z - margin.z },
-        Vec3{ a.max.x + margin.x, a.max.y + margin.y, a.max.z + margin.z },
+        Vec3{a.min.x - margin.x, a.min.y - margin.y, a.min.z - margin.z},
+        Vec3{a.max.x + margin.x, a.max.y + margin.y, a.max.z + margin.z},
     };
 }
 
@@ -120,10 +113,12 @@ Aabb transform(const Aabb& a, const Mat4& m) noexcept;
 
 // ─── Sphere ──────────────────────────────────────────────────────────────
 inline Sphere sphere_empty() noexcept {
-    return Sphere{ Vec3{0,0,0}, -1.0f };
+    return Sphere{Vec3{0, 0, 0}, -1.0f};
 }
 
-constexpr bool is_empty(const Sphere& s) noexcept { return s.radius < 0.0f; }
+constexpr bool is_empty(const Sphere& s) noexcept {
+    return s.radius < 0.0f;
+}
 
 constexpr bool contains(const Sphere& s, Vec3 p) noexcept {
     Vec3 d = sub(p, s.center);
@@ -143,7 +138,7 @@ bool intersects(const Sphere& s, const Aabb& a) noexcept;
 Sphere sphere_union(const Sphere& a, const Sphere& b) noexcept;
 
 constexpr Sphere expand(const Sphere& s, f32 margin) noexcept {
-    return Sphere{ s.center, s.radius + margin };
+    return Sphere{s.center, s.radius + margin};
 }
 
 // Transforming a sphere by a Mat4 yields an ellipsoid in general; we keep
@@ -153,6 +148,6 @@ Sphere transform(const Sphere& s, const Mat4& m) noexcept;
 
 // Bridge: smallest enclosing sphere of an AABB and vice versa.
 Sphere bounding_sphere(const Aabb& a) noexcept;
-Aabb   bounding_aabb(const Sphere& s) noexcept;
+Aabb bounding_aabb(const Sphere& s) noexcept;
 
 }  // namespace psynder::math

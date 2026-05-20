@@ -17,33 +17,33 @@
 #include <new>
 
 #if defined(_WIN32)
-  #ifndef WIN32_LEAN_AND_MEAN
-    #define WIN32_LEAN_AND_MEAN
-  #endif
-  #include <windows.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #else
-  // macOS guards ucontext.h behind _XOPEN_SOURCE because the routines are
-  // formally deprecated; we still want them as the only portable user-
-  // space context-switch primitive. Define before include. The deprecation
-  // diagnostic is suppressed at the call sites (not here) because clang
-  // emits the warning when the function is *referenced*, not when the
-  // header is read.
-  #if defined(__APPLE__)
-    #ifndef _XOPEN_SOURCE
-      #define _XOPEN_SOURCE 600
-    #endif
-  #endif
-  #include <ucontext.h>
-  // SIGSTKSZ is exposed by <signal.h> on glibc; macOS exposes it transitively
-  // through <ucontext.h>, but Linux does not. Include explicitly so the
-  // sanity-floor stack-size check below compiles on every POSIX target.
-  #include <csignal>
-  #if defined(__APPLE__)
-    // Re-poison once we're past the header. From here on, warnings about
-    // get/make/swapcontext at *call sites* are silenced one block at a
-    // time via local pragma. We deliberately don't disable globally so a
-    // ucontext usage outside the documented backend would still warn.
-  #endif
+// macOS guards ucontext.h behind _XOPEN_SOURCE because the routines are
+// formally deprecated; we still want them as the only portable user-
+// space context-switch primitive. Define before include. The deprecation
+// diagnostic is suppressed at the call sites (not here) because clang
+// emits the warning when the function is *referenced*, not when the
+// header is read.
+#if defined(__APPLE__)
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 600
+#endif
+#endif
+#include <ucontext.h>
+// SIGSTKSZ is exposed by <signal.h> on glibc; macOS exposes it transitively
+// through <ucontext.h>, but Linux does not. Include explicitly so the
+// sanity-floor stack-size check below compiles on every POSIX target.
+#include <csignal>
+#if defined(__APPLE__)
+// Re-poison once we're past the header. From here on, warnings about
+// get/make/swapcontext at *call sites* are silenced one block at a
+// time via local pragma. We deliberately don't disable globally so a
+// ucontext usage outside the documented backend would still warn.
+#endif
 #endif
 
 namespace psynder::jobs::detail {
@@ -124,20 +124,22 @@ VOID CALLBACK win_fiber_entry(LPVOID lp) {
 }  // namespace
 
 Fiber* Fiber::create(std::size_t stack_size, FiberFn fn, void* user) noexcept {
-    if (stack_size == 0) stack_size = kFiberDefaultStack;
+    if (stack_size == 0)
+        stack_size = kFiberDefaultStack;
     auto* f = new (std::nothrow) Fiber();
-    if (!f) return nullptr;
-    f->fn_         = fn;
-    f->user_       = user;
+    if (!f)
+        return nullptr;
+    f->fn_ = fn;
+    f->user_ = user;
     f->stack_size_ = stack_size;
     // CreateFiberEx: commit size 0 lets the OS commit on touch. Reserve =
     // stack_size. The FIBER_FLAG_FLOAT_SWITCH flag preserves FPU state.
     f->native_ = CreateFiberEx(
         /*dwStackCommitSize*/ 0,
         /*dwStackReserveSize*/ stack_size,
-        /*dwFlags*/          FIBER_FLAG_FLOAT_SWITCH,
-        /*lpStartAddress*/   &win_fiber_entry,
-        /*lpParameter*/      f);
+        /*dwFlags*/ FIBER_FLAG_FLOAT_SWITCH,
+        /*lpStartAddress*/ &win_fiber_entry,
+        /*lpParameter*/ f);
     if (!f->native_) {
         delete f;
         return nullptr;
@@ -146,7 +148,8 @@ Fiber* Fiber::create(std::size_t stack_size, FiberFn fn, void* user) noexcept {
 }
 
 void Fiber::destroy(Fiber* f) noexcept {
-    if (!f) return;
+    if (!f)
+        return;
     if (f->native_) {
         DeleteFiber(f->native_);
         f->native_ = nullptr;
@@ -187,7 +190,8 @@ void Fiber::resume() noexcept {
 
 void Fiber::yield() noexcept {
     Fiber* f = t_current_fiber;
-    if (!f || !f->host_) return;  // not inside a fiber
+    if (!f || !f->host_)
+        return;  // not inside a fiber
     SwitchToFiber(f->host_);
 }
 
@@ -203,8 +207,8 @@ Fiber* Fiber::current() noexcept {
 // silence the deprecation diagnostic locally around the call sites; the
 // alternative (per-arch context switch in assembly) is much larger.
 #if defined(__APPLE__) && defined(__clang__)
-  #pragma clang diagnostic push
-  #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
 namespace {
@@ -242,17 +246,21 @@ Fiber* Fiber::create(std::size_t stack_size, FiberFn fn, void* user) noexcept {
         stack_size = kFiberDefaultStack;
     }
     auto* f = new (std::nothrow) Fiber();
-    if (!f) return nullptr;
-    f->fn_         = fn;
-    f->user_       = user;
+    if (!f)
+        return nullptr;
+    f->fn_ = fn;
+    f->user_ = user;
     f->stack_size_ = stack_size;
 
     auto* pctx = new (std::nothrow) PosixCtx();
-    if (!pctx) { delete f; return nullptr; }
+    if (!pctx) {
+        delete f;
+        return nullptr;
+    }
     std::memset(pctx, 0, sizeof(*pctx));
 #if defined(__APPLE__)
     pctx->uc.uc_mcontext = &pctx->mc;
-    pctx->uc.uc_mcsize   = sizeof(pctx->mc);
+    pctx->uc.uc_mcsize = sizeof(pctx->mc);
 #endif
 
     void* stack = std::malloc(stack_size);
@@ -268,24 +276,25 @@ Fiber* Fiber::create(std::size_t stack_size, FiberFn fn, void* user) noexcept {
         delete f;
         return nullptr;
     }
-    pctx->uc.uc_stack.ss_sp   = stack;
+    pctx->uc.uc_stack.ss_sp = stack;
     pctx->uc.uc_stack.ss_size = stack_size;
-    pctx->uc.uc_link          = nullptr;  // entry must yield; never falls off
+    pctx->uc.uc_link = nullptr;  // entry must yield; never falls off
 #if defined(__APPLE__)
     // getcontext may have re-zeroed uc_mcontext on some kernels — re-wire.
     pctx->uc.uc_mcontext = &pctx->mc;
-    pctx->uc.uc_mcsize   = sizeof(pctx->mc);
+    pctx->uc.uc_mcsize = sizeof(pctx->mc);
 #endif
     // 0-arg makecontext: portable across the BSDs and Linux glibc.
     makecontext(&pctx->uc, &posix_fiber_entry, 0);
 
     f->native_ = pctx;
-    f->stack_  = stack;
+    f->stack_ = stack;
     return f;
 }
 
 void Fiber::destroy(Fiber* f) noexcept {
-    if (!f) return;
+    if (!f)
+        return;
     if (f->native_) {
         delete static_cast<PosixCtx*>(f->native_);
         f->native_ = nullptr;
@@ -315,14 +324,13 @@ void Fiber::resume() noexcept {
     std::memset(&host, 0, sizeof(host));
 #if defined(__APPLE__)
     host.uc.uc_mcontext = &host.mc;
-    host.uc.uc_mcsize   = sizeof(host.mc);
+    host.uc.uc_mcsize = sizeof(host.mc);
 #endif
     host_ = &host;
     t_entry_handoff = this;
     Fiber* prev = t_current_fiber;
     t_current_fiber = this;
-    swapcontext(&host.uc,
-                &static_cast<PosixCtx*>(native_)->uc);
+    swapcontext(&host.uc, &static_cast<PosixCtx*>(native_)->uc);
     // Returned: fiber yielded back to us. Restore previous current and
     // forget the host pointer (the local is now dead).
     t_current_fiber = prev;
@@ -331,10 +339,10 @@ void Fiber::resume() noexcept {
 
 void Fiber::yield() noexcept {
     Fiber* f = t_current_fiber;
-    if (!f || !f->host_) return;
+    if (!f || !f->host_)
+        return;
     // Save fiber state into native_; restore host state from host_.
-    swapcontext(&static_cast<PosixCtx*>(f->native_)->uc,
-                &static_cast<PosixCtx*>(f->host_)->uc);
+    swapcontext(&static_cast<PosixCtx*>(f->native_)->uc, &static_cast<PosixCtx*>(f->host_)->uc);
 }
 
 Fiber* Fiber::current() noexcept {
@@ -342,7 +350,7 @@ Fiber* Fiber::current() noexcept {
 }
 
 #if defined(__APPLE__) && defined(__clang__)
-  #pragma clang diagnostic pop
+#pragma clang diagnostic pop
 #endif
 
 #endif  // _WIN32

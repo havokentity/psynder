@@ -18,7 +18,7 @@ namespace hw = psynder::hardware;
 TEST_CASE("CPU core counts are sane", "[core][hardware]") {
     const auto& f = hw::detect();
     REQUIRE(f.cores_physical >= 1);
-    REQUIRE(f.cores_logical  >= f.cores_physical);
+    REQUIRE(f.cores_logical >= f.cores_physical);
 }
 
 TEST_CASE("CPU cache sizes agree across levels", "[core][hardware]") {

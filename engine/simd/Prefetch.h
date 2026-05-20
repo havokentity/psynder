@@ -26,10 +26,10 @@
 #include "core/Types.h"
 
 #if defined(_MSC_VER) && !defined(__clang__)
-#   include <intrin.h>
-#   if defined(_M_X64) || defined(_M_IX86)
-#       include <xmmintrin.h>
-#   endif
+#include <intrin.h>
+#if defined(_M_X64) || defined(_M_IX86)
+#include <xmmintrin.h>
+#endif
 #endif
 
 namespace psynder::simd {
@@ -79,12 +79,15 @@ PSY_FORCEINLINE void prefetch_nta(const void* p) noexcept {
 // and aarch64 (Apple Silicon, Cortex-A) line we target. Bytes is the
 // *unconsumed* length we want resident; the helper rounds up to the
 // stride so the tail line is always covered.
-PSY_FORCEINLINE void prefetch_range(const void* p, psynder::usize bytes,
+PSY_FORCEINLINE void prefetch_range(const void* p,
+                                    psynder::usize bytes,
                                     psynder::usize stride = 64) noexcept {
-    if (p == nullptr || bytes == 0 || stride == 0) return;
+    if (p == nullptr || bytes == 0 || stride == 0)
+        return;
     const auto* cur = static_cast<const psynder::u8*>(p);
     const auto* end = cur + bytes;
-    for (; cur < end; cur += stride) prefetch_t0(cur);
+    for (; cur < end; cur += stride)
+        prefetch_t0(cur);
 }
 
 }  // namespace psynder::simd

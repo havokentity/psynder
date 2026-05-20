@@ -14,7 +14,7 @@
 
 #include <cmath>
 
-namespace pwo  = psynder::world::outdoor;
+namespace pwo = psynder::world::outdoor;
 namespace pwod = psynder::world::outdoor::detail;
 
 namespace {
@@ -23,10 +23,10 @@ pwo::SplineRoadSegment make_straight_segment(float length, float half_width) {
     pwo::SplineRoadSegment s{};
     // Straight segment from (0,0,0) to (length,0,0), control points evenly
     // spaced. This guarantees a constant tangent and trivial arc length.
-    s.p0 = {0.0f,         0.0f, 0.0f};
-    s.p1 = {length/3.0f,  0.0f, 0.0f};
-    s.p2 = {2.0f*length/3.0f, 0.0f, 0.0f};
-    s.p3 = {length,       0.0f, 0.0f};
+    s.p0 = {0.0f, 0.0f, 0.0f};
+    s.p1 = {length / 3.0f, 0.0f, 0.0f};
+    s.p2 = {2.0f * length / 3.0f, 0.0f, 0.0f};
+    s.p3 = {length, 0.0f, 0.0f};
     s.half_width = half_width;
     s.banking_rad = 0.0f;
     return s;
@@ -34,8 +34,7 @@ pwo::SplineRoadSegment make_straight_segment(float length, float half_width) {
 
 }  // namespace
 
-TEST_CASE("Bezier endpoints reproduce the control points",
-          "[world_outdoor][spline]") {
+TEST_CASE("Bezier endpoints reproduce the control points", "[world_outdoor][spline]") {
     auto seg = make_straight_segment(40.0f, 4.0f);
     const auto p0 = pwod::bezier_eval(seg, 0.0f);
     const auto p1 = pwod::bezier_eval(seg, 1.0f);
@@ -43,8 +42,7 @@ TEST_CASE("Bezier endpoints reproduce the control points",
     REQUIRE(p1.x == 40.0f);
 }
 
-TEST_CASE("Bezier tangent is non-zero along the curve",
-          "[world_outdoor][spline]") {
+TEST_CASE("Bezier tangent is non-zero along the curve", "[world_outdoor][spline]") {
     auto seg = make_straight_segment(40.0f, 4.0f);
     for (int i = 0; i <= 10; ++i) {
         const float t = static_cast<float>(i) * 0.1f;
@@ -61,12 +59,11 @@ TEST_CASE("Bezier arc length approximates the chord for a straight segment",
     REQUIRE(arc < 41.0f);
 }
 
-TEST_CASE("Extruded strip has the expected vertex / index counts",
-          "[world_outdoor][spline]") {
+TEST_CASE("Extruded strip has the expected vertex / index counts", "[world_outdoor][spline]") {
     auto seg = make_straight_segment(50.0f, 4.0f);
     const auto strip = pwod::extrude_segment(seg, /*samples=*/8, /*uv_repeat=*/8.0f);
-    REQUIRE(strip.vertices.size() == 16u);    // 2 verts per sample × 8 samples
-    REQUIRE(strip.indices.size()  == 42u);    // 6 indices per quad × 7 quads
+    REQUIRE(strip.vertices.size() == 16u);  // 2 verts per sample × 8 samples
+    REQUIRE(strip.indices.size() == 42u);   // 6 indices per quad × 7 quads
     REQUIRE((strip.indices.size() % 3u) == 0u);
     REQUIRE((strip.flags & pwod::kDrawItemFlagDrivable) != 0u);
 }
@@ -94,8 +91,7 @@ TEST_CASE("Straight extrusion produces a flat strip of the requested width",
     }
 }
 
-TEST_CASE("Banking rolls the road frame about the tangent",
-          "[world_outdoor][spline]") {
+TEST_CASE("Banking rolls the road frame about the tangent", "[world_outdoor][spline]") {
     auto seg = make_straight_segment(40.0f, 4.0f);
     seg.banking_rad = psynder::math::kHalfPi * 0.5f;  // 45° banking
     const auto strip = pwod::extrude_segment(seg, 4, 8.0f);
@@ -105,17 +101,19 @@ TEST_CASE("Banking rolls the road frame about the tangent",
     // differ in Y.
     bool found_y_diff = false;
     for (std::size_t i = 0; i + 1 < strip.vertices.size(); i += 2) {
-        const float dy = strip.vertices[i].position.y - strip.vertices[i+1].position.y;
-        if (std::fabs(dy) > 1e-3f) { found_y_diff = true; break; }
+        const float dy = strip.vertices[i].position.y - strip.vertices[i + 1].position.y;
+        if (std::fabs(dy) > 1e-3f) {
+            found_y_diff = true;
+            break;
+        }
     }
     REQUIRE(found_y_diff);
 }
 
-TEST_CASE("Bezier midpoint of straight segment matches linear",
-          "[world_outdoor][spline]") {
+TEST_CASE("Bezier midpoint of straight segment matches linear", "[world_outdoor][spline]") {
     auto seg = make_straight_segment(60.0f, 3.0f);
     const auto m = pwod::bezier_eval(seg, 0.5f);
     REQUIRE(std::fabs(m.x - 30.0f) < 1e-3f);
-    REQUIRE(std::fabs(m.y -  0.0f) < 1e-3f);
-    REQUIRE(std::fabs(m.z -  0.0f) < 1e-3f);
+    REQUIRE(std::fabs(m.y - 0.0f) < 1e-3f);
+    REQUIRE(std::fabs(m.z - 0.0f) < 1e-3f);
 }

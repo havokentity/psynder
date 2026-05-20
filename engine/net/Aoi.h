@@ -33,8 +33,8 @@ namespace psynder::net {
 
 struct AoiPeerState {
     math::Vec3 centre{0.f, 0.f, 0.f};
-    f32        radius   = 0.f;
-    f32        radius_sq = 0.f;  // cached squared radius for the hot loop.
+    f32 radius = 0.f;
+    f32 radius_sq = 0.f;  // cached squared radius for the hot loop.
 };
 
 // Default per-channel priority. Priorities are unitless; `2` is the
@@ -46,7 +46,7 @@ inline constexpr u8 kDefaultChannelPriority = 2;
 inline constexpr usize kAoiPriorityChannels = 4;
 
 class AoiFilter {
-public:
+   public:
     AoiFilter() noexcept { channel_priorities_.fill(kDefaultChannelPriority); }
 
     // Register / update the peer's interest sphere.
@@ -85,10 +85,10 @@ public:
     // path simple.
     u32 bytes_for_channel(u8 channel, u32 base_budget_bytes) const noexcept;
 
-private:
+   private:
     // Keyed by raw u32 from the Handle so we don't need a std::hash override.
-    std::unordered_map<u32, AoiPeerState>       peers_;
-    std::array<u8, kAoiPriorityChannels>        channel_priorities_{};
+    std::unordered_map<u32, AoiPeerState> peers_;
+    std::array<u8, kAoiPriorityChannels> channel_priorities_{};
 };
 
 }  // namespace psynder::net

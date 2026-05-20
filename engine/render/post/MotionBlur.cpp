@@ -34,14 +34,14 @@ namespace {
 // are multiplied on top of this — typical pattern is the renderer wires
 // `params.strength = 1.0` and lets the player tune the cvar.
 PSY_CVAR(r_motion_blur_strength,
-    "1.0",
-    "Camera motion-blur shutter scale (0=off, 1=normal). Per-call strength multiplies on top.",
-    console::CVAR_ARCHIVE);
+         "1.0",
+         "Camera motion-blur shutter scale (0=off, 1=normal). Per-call strength multiplies on top.",
+         console::CVAR_ARCHIVE);
 
 PSY_CVAR(r_motion_blur_max_pixel,
-    "32.0",
-    "Per-pixel clamp on motion-blur velocity magnitude (pixels).",
-    console::CVAR_ARCHIVE);
+         "32.0",
+         "Per-pixel clamp on motion-blur velocity magnitude (pixels).",
+         console::CVAR_ARCHIVE);
 
 f32 cvar_strength() noexcept {
     if (const auto* cv = console::Console::Get().FindCVar("r_motion_blur_strength")) {
@@ -73,18 +73,16 @@ f32 cvar_max_pixel(f32 fallback) noexcept {
 // caller's `cur_vp_inv` is responsible for the perspective inverse. The
 // rasterizer's depth is stored as u32 mantissa per lane 07, but the public
 // caller is expected to pass the float view of that buffer.
-void reproject_velocity(const DepthReprojectMotion& r,
-                        math::Vec2* out) noexcept
-{
+void reproject_velocity(const DepthReprojectMotion& r, math::Vec2* out) noexcept {
     const u32 w = r.width;
     const u32 h = r.height;
-    if (!w || !h || !r.depth || !out) return;
+    if (!w || !h || !r.depth || !out)
+        return;
     const f32 inv_w = 1.0f / static_cast<f32>(w);
     const f32 inv_h = 1.0f / static_cast<f32>(h);
     for (u32 y = 0; y < h; ++y) {
         for (u32 x = 0; x < w; ++x) {
-            const f32 depth =
-                r.depth[static_cast<usize>(y) * w + x];
+            const f32 depth = r.depth[static_cast<usize>(y) * w + x];
             // NDC for current pixel centre.
             const f32 ndc_x = (static_cast<f32>(x) + 0.5f) * inv_w * 2.0f - 1.0f;
             const f32 ndc_y = 1.0f - (static_cast<f32>(y) + 0.5f) * inv_h * 2.0f;
@@ -97,25 +95,20 @@ void reproject_velocity(const DepthReprojectMotion& r,
             // budget). For long-range parallax-heavy shots, the explicit-
             // velocity path is the right choice.
             (void)depth;
-            const math::Vec4 cur_ndc{ ndc_x, ndc_y, 0.0f, 1.0f };
+            const math::Vec4 cur_ndc{ndc_x, ndc_y, 0.0f, 1.0f};
             const math::Vec4 world = math::mul(r.cur_vp_inv, cur_ndc);
             const f32 inv_w_clip = world.w != 0.0f ? 1.0f / world.w : 0.0f;
-            const math::Vec3 world_p{
-                world.x * inv_w_clip,
-                world.y * inv_w_clip,
-                world.z * inv_w_clip
-            };
-            const math::Vec4 prev_clip = math::mul(
-                r.prev_vp, math::Vec4{world_p.x, world_p.y, world_p.z, 1.0f});
+            const math::Vec3 world_p{world.x * inv_w_clip, world.y * inv_w_clip, world.z * inv_w_clip};
+            const math::Vec4 prev_clip =
+                math::mul(r.prev_vp, math::Vec4{world_p.x, world_p.y, world_p.z, 1.0f});
             const f32 invw = prev_clip.w != 0.0f ? 1.0f / prev_clip.w : 0.0f;
             const f32 prev_ndc_x = prev_clip.x * invw;
             const f32 prev_ndc_y = prev_clip.y * invw;
             const f32 prev_sx = (prev_ndc_x + 1.0f) * 0.5f * static_cast<f32>(w);
             const f32 prev_sy = (1.0f - prev_ndc_y) * 0.5f * static_cast<f32>(h);
-            const f32 cur_sx  = static_cast<f32>(x) + 0.5f;
-            const f32 cur_sy  = static_cast<f32>(y) + 0.5f;
-            out[static_cast<usize>(y) * w + x] =
-                math::Vec2{ cur_sx - prev_sx, cur_sy - prev_sy };
+            const f32 cur_sx = static_cast<f32>(x) + 0.5f;
+            const f32 cur_sy = static_cast<f32>(y) + 0.5f;
+            out[static_cast<usize>(y) * w + x] = math::Vec2{cur_sx - prev_sx, cur_sy - prev_sy};
         }
     }
 }
@@ -124,15 +117,18 @@ void reproject_velocity(const DepthReprojectMotion& r,
 void blur_kernel(detail::HdrPixel* dst,
                  const detail::HdrPixel* src,
                  const math::Vec2* velocity,
-                 u32 w, u32 h,
-                 f32 scale, f32 max_pixel, int taps) noexcept
-{
-    if (taps < 1) taps = 1;
-    if (taps > 64) taps = 64;
+                 u32 w,
+                 u32 h,
+                 f32 scale,
+                 f32 max_pixel,
+                 int taps) noexcept {
+    if (taps < 1)
+        taps = 1;
+    if (taps > 64)
+        taps = 64;
     for (u32 y = 0; y < h; ++y) {
         for (u32 x = 0; x < w; ++x) {
-            const math::Vec2 v_in =
-                velocity[static_cast<usize>(y) * w + x];
+            const math::Vec2 v_in = velocity[static_cast<usize>(y) * w + x];
             f32 vx = v_in.x * scale;
             f32 vy = v_in.y * scale;
             // Clamp magnitude to keep the blur ring inside `max_pixel`.
@@ -147,8 +143,7 @@ void blur_kernel(detail::HdrPixel* dst,
             // matches the "strength=0 is identity" guarantee.
             const f32 mag2 = vx * vx + vy * vy;
             if (mag2 < 1e-8f) {
-                dst[static_cast<usize>(y) * w + x] =
-                    src[static_cast<usize>(y) * w + x];
+                dst[static_cast<usize>(y) * w + x] = src[static_cast<usize>(y) * w + x];
                 continue;
             }
             dst[static_cast<usize>(y) * w + x] =
@@ -161,29 +156,32 @@ void blur_kernel(detail::HdrPixel* dst,
 
 // ─── Public entry points ─────────────────────────────────────────────────
 
-void apply_motion_blur(Framebuffer& hdr,
-                       const VelocityField& velocity,
-                       const MotionBlurParams& params)
-{
-    if (!params.enabled) return;
-    if (!hdr.pixels || hdr.width == 0 || hdr.height == 0) return;
-    if (!velocity.pixels) return;
+void apply_motion_blur(Framebuffer& hdr, const VelocityField& velocity, const MotionBlurParams& params) {
+    if (!params.enabled)
+        return;
+    if (!hdr.pixels || hdr.width == 0 || hdr.height == 0)
+        return;
+    if (!velocity.pixels)
+        return;
     if (velocity.width != hdr.width || velocity.height != hdr.height) {
         PSY_LOG_WARN("post/motion_blur: velocity {}x{} vs framebuffer {}x{}; skipping",
-                     velocity.width, velocity.height, hdr.width, hdr.height);
+                     velocity.width,
+                     velocity.height,
+                     hdr.width,
+                     hdr.height);
         return;
     }
     const f32 cvar = cvar_strength();
     const f32 scale = std::max(0.0f, params.strength) * std::max(0.0f, cvar);
-    if (scale <= 0.0f) return;
+    if (scale <= 0.0f)
+        return;
 
     const u32 w = hdr.width;
     const u32 h = hdr.height;
     const f32 max_pix = cvar_max_pixel(params.max_pixel);
 
     auto* hdr_pix = reinterpret_cast<detail::HdrPixel*>(hdr.pixels);
-    const usize src_pitch_pix =
-        hdr.pitch ? (hdr.pitch / sizeof(detail::HdrPixel)) : w;
+    const usize src_pitch_pix = hdr.pitch ? (hdr.pitch / sizeof(detail::HdrPixel)) : w;
 
     // Build a tightly-packed src snapshot so the kernel can read from a
     // contiguous image while writing through streaming stores to dst (the
@@ -198,19 +196,14 @@ void apply_motion_blur(Framebuffer& hdr,
 
     // Scratch dst — tight; we copy back at the end.
     std::vector<detail::HdrPixel> dst_tight(static_cast<usize>(w) * h);
-    blur_kernel(dst_tight.data(),
-                src_tight.data(),
-                velocity.pixels,
-                w, h, scale, max_pix, params.taps);
+    blur_kernel(dst_tight.data(), src_tight.data(), velocity.pixels, w, h, scale, max_pix, params.taps);
 
     // Stream the result into the public framebuffer (write-once-read-elsewhere
     // per DESIGN §4.3). The fence below is what makes the streaming stores
     // visible to the present path that runs after this call.
     for (u32 y = 0; y < h; ++y) {
-        detail::HdrPixel* row =
-            hdr_pix + static_cast<usize>(y) * src_pitch_pix;
-        const detail::HdrPixel* sr =
-            dst_tight.data() + static_cast<usize>(y) * w;
+        detail::HdrPixel* row = hdr_pix + static_cast<usize>(y) * src_pitch_pix;
+        const detail::HdrPixel* sr = dst_tight.data() + static_cast<usize>(y) * w;
         for (u32 x = 0; x < w; ++x) {
             detail::stream_store_hdr(row + x, sr[x]);
         }
@@ -220,14 +213,19 @@ void apply_motion_blur(Framebuffer& hdr,
 
 void apply_motion_blur_depth(Framebuffer& hdr,
                              const DepthReprojectMotion& reproject,
-                             const MotionBlurParams& params)
-{
-    if (!params.enabled) return;
-    if (!hdr.pixels || hdr.width == 0 || hdr.height == 0) return;
-    if (!reproject.depth) return;
+                             const MotionBlurParams& params) {
+    if (!params.enabled)
+        return;
+    if (!hdr.pixels || hdr.width == 0 || hdr.height == 0)
+        return;
+    if (!reproject.depth)
+        return;
     if (reproject.width != hdr.width || reproject.height != hdr.height) {
         PSY_LOG_WARN("post/motion_blur_depth: depth {}x{} vs framebuffer {}x{}; skipping",
-                     reproject.width, reproject.height, hdr.width, hdr.height);
+                     reproject.width,
+                     reproject.height,
+                     hdr.width,
+                     hdr.height);
         return;
     }
 
@@ -235,15 +233,10 @@ void apply_motion_blur_depth(Framebuffer& hdr,
     // kernel. The per-frame scratch alloc is a known cost; the depth path
     // is opt-in and called by callers that prefer reconstruction over
     // carrying a velocity buffer in their render-pass graph.
-    std::vector<math::Vec2> velocity(
-        static_cast<usize>(reproject.width) * reproject.height);
+    std::vector<math::Vec2> velocity(static_cast<usize>(reproject.width) * reproject.height);
     reproject_velocity(reproject, velocity.data());
 
-    VelocityField vf{
-        velocity.data(),
-        reproject.width,
-        reproject.height
-    };
+    VelocityField vf{velocity.data(), reproject.width, reproject.height};
     apply_motion_blur(hdr, vf, params);
 }
 

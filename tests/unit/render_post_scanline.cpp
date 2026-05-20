@@ -28,9 +28,8 @@ namespace {
 float image_mean_luminance(const std::vector<HdrPixel>& img) {
     double sum = 0.0;
     for (const auto& p : img) {
-        sum += 0.2126 * static_cast<double>(p.r)
-             + 0.7152 * static_cast<double>(p.g)
-             + 0.0722 * static_cast<double>(p.b);
+        sum += 0.2126 * static_cast<double>(p.r) + 0.7152 * static_cast<double>(p.g) +
+               0.0722 * static_cast<double>(p.b);
     }
     return static_cast<float>(sum / static_cast<double>(img.size()));
 }
@@ -71,8 +70,7 @@ void apply_scanline_in_place(std::vector<HdrPixel>& img, u32 w, u32 h, float str
 }  // namespace
 
 TEST_CASE("render_post: scanline preserves average luminance (even height)",
-          "[render_post][scanline]")
-{
+          "[render_post][scanline]") {
     const u32 W = 32;
     const u32 H = 32;  // even — invariant holds exactly
 
@@ -87,9 +85,7 @@ TEST_CASE("render_post: scanline preserves average luminance (even height)",
     }
 }
 
-TEST_CASE("render_post: scanline at strength=0 is identity",
-          "[render_post][scanline]")
-{
+TEST_CASE("render_post: scanline at strength=0 is identity", "[render_post][scanline]") {
     const u32 W = 16, H = 16;
     auto a = make_test_image(W, H);
     auto b = a;
@@ -101,9 +97,7 @@ TEST_CASE("render_post: scanline at strength=0 is identity",
     }
 }
 
-TEST_CASE("render_post: scanline_factor schedule matches design",
-          "[render_post][scanline]")
-{
+TEST_CASE("render_post: scanline_factor schedule matches design", "[render_post][scanline]") {
     const float s = 0.3f;
     // Even rows brightened, odd rows darkened
     REQUIRE(scanline_factor(0u, s) == Catch::Approx(1.0f + s));
@@ -111,13 +105,11 @@ TEST_CASE("render_post: scanline_factor schedule matches design",
     REQUIRE(scanline_factor(2u, s) == Catch::Approx(1.0f + s));
     REQUIRE(scanline_factor(3u, s) == Catch::Approx(1.0f - s));
     // Pair mean is 1
-    REQUIRE(0.5f * (scanline_factor(0u, s) + scanline_factor(1u, s))
-            == Catch::Approx(1.0f));
+    REQUIRE(0.5f * (scanline_factor(0u, s) + scanline_factor(1u, s)) == Catch::Approx(1.0f));
 }
 
 TEST_CASE("render_post: scanline per-row-pair invariant on uniform pairs",
-          "[render_post][scanline]")
-{
+          "[render_post][scanline]") {
     // When consecutive even/odd rows have the same content, the per-pair
     // mean (and hence image mean) is preserved exactly — this is the
     // foundation of the average-luminance theorem the test above relies on.

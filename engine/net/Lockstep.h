@@ -26,19 +26,19 @@
 namespace psynder::net {
 
 struct LockstepInput {
-    u32              peer_index = 0;   // 0..max_peers-1 (NOT PeerId.raw)
-    u32              tick       = 0;
-    std::vector<u8>  payload;          // game-defined input blob
+    u32 peer_index = 0;  // 0..max_peers-1 (NOT PeerId.raw)
+    u32 tick = 0;
+    std::vector<u8> payload;  // game-defined input blob
 };
 
 struct LockstepBundle {
-    u32                          tick = 0;
-    std::vector<LockstepInput>   inputs;   // one per peer, sorted by peer_index
-    bool                         complete = false;
+    u32 tick = 0;
+    std::vector<LockstepInput> inputs;  // one per peer, sorted by peer_index
+    bool complete = false;
 };
 
 class LockstepCoordinator {
-public:
+   public:
     explicit LockstepCoordinator(u32 expected_peers) noexcept;
 
     // Register a peer's input for tick T. Returns true if the bundle for
@@ -57,7 +57,7 @@ public:
     // For tests.
     usize pending_buckets() const noexcept { return buckets_.size(); }
 
-private:
+   private:
     u32 expected_peers_;
     std::unordered_map<u32, LockstepBundle> buckets_;  // keyed by tick
 };

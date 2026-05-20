@@ -19,14 +19,12 @@ using Catch::Approx;
 TEST_CASE("sphere-sphere narrowphase detects overlap and reports correct depth",
           "[physics][narrowphase]") {
     Contact c;
-    bool hit = kernels::kernel_sphere_sphere(
-        {0, 0, 0}, 1.0f, {1.5f, 0, 0}, 1.0f, c);
+    bool hit = kernels::kernel_sphere_sphere({0, 0, 0}, 1.0f, {1.5f, 0, 0}, 1.0f, c);
     REQUIRE(hit);
     REQUIRE(c.depth == Approx(0.5f).margin(1e-5f));
     REQUIRE(c.normal_world.x == Approx(1.0f).margin(1e-5f));
 
-    hit = kernels::kernel_sphere_sphere(
-        {0, 0, 0}, 1.0f, {2.0f, 0, 0}, 1.0f, c);
+    hit = kernels::kernel_sphere_sphere({0, 0, 0}, 1.0f, {2.0f, 0, 0}, 1.0f, c);
     REQUIRE_FALSE(hit);
 }
 
@@ -42,34 +40,28 @@ TEST_CASE("AABB-AABB picks minimum-translation axis", "[physics][narrowphase]") 
     REQUIRE(c.depth == Approx(0.2f).margin(1e-5f));
 }
 
-TEST_CASE("capsule-capsule narrowphase handles parallel configurations",
-          "[physics][narrowphase]") {
+TEST_CASE("capsule-capsule narrowphase handles parallel configurations", "[physics][narrowphase]") {
     Contact c;
     math::Quat id{0, 0, 0, 1};
-    bool hit = kernels::kernel_capsule_capsule(
-        {0, 0, 0}, id, 0.3f, 0.5f,
-        {0.5f, 0, 0}, id, 0.3f, 0.5f, c);
+    bool hit =
+        kernels::kernel_capsule_capsule({0, 0, 0}, id, 0.3f, 0.5f, {0.5f, 0, 0}, id, 0.3f, 0.5f, c);
     REQUIRE(hit);
     REQUIRE(c.depth == Approx(0.1f).margin(1e-4f));
 }
 
-TEST_CASE("sphere-capsule kernel works at any orientation",
-          "[physics][narrowphase]") {
+TEST_CASE("sphere-capsule kernel works at any orientation", "[physics][narrowphase]") {
     Contact c;
     math::Quat rot = math::quat_from_axis_angle({0, 0, 1}, math::kHalfPi);
     // Capsule rotated 90 deg around Z: its axis lies along X. A sphere offset
     // along Y by less than the capsule's radius+sphere's radius should hit.
-    bool hit = kernels::kernel_sphere_capsule(
-        {0, 0.4f, 0}, 0.3f,
-        {0, 0, 0}, rot, 0.3f, 1.0f,
-        c);
+    bool hit = kernels::kernel_sphere_capsule({0, 0.4f, 0}, 0.3f, {0, 0, 0}, rot, 0.3f, 1.0f, c);
     REQUIRE(hit);
     REQUIRE(c.depth > 0.0f);
 }
 
 TEST_CASE("GJK+EPA finds penetration for two overlapping axis-aligned boxes",
           "[physics][narrowphase][gjk]") {
-    GjkSupport a{{0, 0, 0}, {0, 0, 0, 1}, /*Box*/2, {1, 1, 1}};
+    GjkSupport a{{0, 0, 0}, {0, 0, 0, 1}, /*Box*/ 2, {1, 1, 1}};
     GjkSupport b{{1.5f, 0, 0}, {0, 0, 0, 1}, 2, {1, 1, 1}};
     Contact c;
     bool hit = kernels::kernel_gjk_epa(a, b, c);
@@ -77,8 +69,7 @@ TEST_CASE("GJK+EPA finds penetration for two overlapping axis-aligned boxes",
     REQUIRE(c.depth == Approx(0.5f).margin(1e-2f));
 }
 
-TEST_CASE("GJK+EPA reports no overlap when boxes are clearly apart",
-          "[physics][narrowphase][gjk]") {
+TEST_CASE("GJK+EPA reports no overlap when boxes are clearly apart", "[physics][narrowphase][gjk]") {
     GjkSupport a{{0, 0, 0}, {0, 0, 0, 1}, 2, {1, 1, 1}};
     GjkSupport b{{5, 0, 0}, {0, 0, 0, 1}, 2, {1, 1, 1}};
     Contact c;
@@ -117,28 +108,28 @@ TEST_CASE("Sphere-sphere head-on closing speed reverses after solver pass",
     c.body_a = 0;
     c.body_b = 1;
     c.normal_world = {1, 0, 0};
-    c.depth        = 0.0f;
-    c.point_world  = {0, 0, 0};
+    c.depth = 0.0f;
+    c.point_world = {0, 0, 0};
 
     std::vector<Contact> contacts{c};
     std::vector<u32> body_indices;
     std::vector<Island> islands;
-    kernels::kernel_detect_islands(contacts,
-        {bodies.data(), bodies.size()}, body_indices, islands);
+    kernels::kernel_detect_islands(contacts, {bodies.data(), bodies.size()}, body_indices, islands);
     REQUIRE(islands.size() == 1);
 
     SolverParams params;
-    f32 ke_before = 0.5f * (math::dot(A.linear_velocity, A.linear_velocity)
-                          + math::dot(B.linear_velocity, B.linear_velocity));
+    f32 ke_before = 0.5f * (math::dot(A.linear_velocity, A.linear_velocity) +
+                            math::dot(B.linear_velocity, B.linear_velocity));
 
     kernels::kernel_solve_island(islands[0],
-        {contacts.data(), contacts.size()},
-        {body_indices.data(), body_indices.size()},
-        {bodies.data(), bodies.size()},
-        params, 1.0f / 120.0f);
+                                 {contacts.data(), contacts.size()},
+                                 {body_indices.data(), body_indices.size()},
+                                 {bodies.data(), bodies.size()},
+                                 params,
+                                 1.0f / 120.0f);
 
-    f32 ke_after = 0.5f * (math::dot(A.linear_velocity, A.linear_velocity)
-                         + math::dot(B.linear_velocity, B.linear_velocity));
+    f32 ke_after = 0.5f * (math::dot(A.linear_velocity, A.linear_velocity) +
+                           math::dot(B.linear_velocity, B.linear_velocity));
 
     // Velocities should have reversed sign (perfectly elastic).
     REQUIRE(A.linear_velocity.x < 0.0f);

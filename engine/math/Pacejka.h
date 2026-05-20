@@ -65,9 +65,7 @@ inline constexpr f32 kPacejkaE = 0.97f;
 // positive slip ratio means the tire is *driving* (ω·r > v); a negative
 // slip ratio means braking (ω·r < v). The ε floor avoids a divide-by-zero
 // at standstill and just decays smoothly toward zero as speed → 0.
-inline f32 pacejka_slip_ratio(f32 wheel_omega_rps,
-                              f32 wheel_radius_m,
-                              f32 ground_speed_mps) noexcept {
+inline f32 pacejka_slip_ratio(f32 wheel_omega_rps, f32 wheel_radius_m, f32 ground_speed_mps) noexcept {
     // Floor on |v| so the ratio is well-defined and bounded near rest.
     // 0.1 m/s ≈ 0.4 km/h is well below typical sim minima; below that
     // the sim should be in a static-friction handover anyway.
@@ -83,10 +81,7 @@ inline f32 pacejka_slip_ratio(f32 wheel_omega_rps,
 // Returns the scalar force magnitude for slip `s` given peak `D` and
 // shape coefficients `B`, `C`, `E`. The result has the same sign as `s`
 // (force opposing slip; the caller flips the sign on consumption).
-inline f32 pacejka_axis_force(f32 s, f32 D,
-                              f32 B = kPacejkaB,
-                              f32 C = kPacejkaC,
-                              f32 E = kPacejkaE) noexcept {
+inline f32 pacejka_axis_force(f32 s, f32 D, f32 B = kPacejkaB, f32 C = kPacejkaC, f32 E = kPacejkaE) noexcept {
     f32 Bs = B * s;
     f32 inner = Bs - E * (Bs - std::atan(Bs));
     return D * std::sin(C * std::atan(inner));
@@ -110,16 +105,15 @@ inline f32 pacejka_axis_force(f32 s, f32 D,
 // magic formula evaluated on the combined slip magnitude. This is the
 // "friction circle" approximation; lane 12 may swap in a more accurate
 // combined-slip model later.
-inline Vec2 pacejka_combined_force(f32 slip_x,
-                                   f32 slip_y,
-                                   f32 load_N,
-                                   f32 mu) noexcept {
+inline Vec2 pacejka_combined_force(f32 slip_x, f32 slip_y, f32 load_N, f32 mu) noexcept {
     // Peak force D = μ·Fz, clamped at zero for the no-load/no-mu edge.
     f32 D = mu * load_N;
-    if (D <= 0.0f) return Vec2{0.0f, 0.0f};
+    if (D <= 0.0f)
+        return Vec2{0.0f, 0.0f};
 
     f32 s_mag = std::sqrt(slip_x * slip_x + slip_y * slip_y);
-    if (s_mag <= 0.0f) return Vec2{0.0f, 0.0f};
+    if (s_mag <= 0.0f)
+        return Vec2{0.0f, 0.0f};
 
     // Magnitude follows magic formula on the combined slip magnitude.
     f32 F_mag = pacejka_axis_force(s_mag, D);

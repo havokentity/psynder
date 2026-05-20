@@ -21,9 +21,9 @@ namespace {
 
 // Fiber-side context.
 struct AdderState {
-    int  step = 0;
-    int  sum  = 0;
-    int  ok   = 0;
+    int step = 0;
+    int sum = 0;
+    int ok = 0;
 };
 
 // Entry point: the fiber computes 1+2+3+...+N in chunks, yielding back to
@@ -34,21 +34,27 @@ void adder_fiber(void* user) noexcept {
     // Stack locals (the test): a deliberately large array so we can detect
     // stack corruption if the fiber's stack is mishandled.
     int locals[64];
-    for (int i = 0; i < 64; ++i) locals[i] = i + 1;
+    for (int i = 0; i < 64; ++i)
+        locals[i] = i + 1;
     int acc = 0;
     // Phase A: accumulate locals[0..31].
-    for (int i = 0; i < 32; ++i) acc += locals[i];
+    for (int i = 0; i < 32; ++i)
+        acc += locals[i];
     s->step = 1;
     Fiber::yield();  // host resumes us — locals[] and `acc` must survive
     // Phase B: continue with locals[32..63].
     int phase_b_seed = acc;
-    for (int i = 32; i < 64; ++i) acc += locals[i];
+    for (int i = 32; i < 64; ++i)
+        acc += locals[i];
     s->step = 2;
     Fiber::yield();
     // Phase C: verify locals[] is unchanged.
     int verify_ok = 1;
     for (int i = 0; i < 64; ++i) {
-        if (locals[i] != i + 1) { verify_ok = 0; break; }
+        if (locals[i] != i + 1) {
+            verify_ok = 0;
+            break;
+        }
     }
     // 1+2+...+64 == 64*65/2 == 2080.
     if (verify_ok && acc == 2080 && phase_b_seed == (32 * 33) / 2) {
@@ -98,9 +104,12 @@ TEST_CASE("Fiber: multiple fibers, alternating resume", "[jobs][fiber]") {
     // Each fiber yields 4 times inside its loop. After the loop returns,
     // platform_entry sets done_=1 and yields once more (the terminal
     // yield) — so 5 resumes are required to fully drain each fiber.
-    constexpr int kIters  = 4;
+    constexpr int kIters = 4;
     constexpr int kResumes = kIters + 1;
-    struct State { int counter = 0; int rounds = 0; };
+    struct State {
+        int counter = 0;
+        int rounds = 0;
+    };
     std::vector<State> states(kFibers);
 
     auto entry = +[](void* u) noexcept {
@@ -141,7 +150,9 @@ TEST_CASE("Fiber::current() reports the running fiber", "[jobs][fiber]") {
 
     REQUIRE(Fiber::current() == nullptr);
 
-    struct Ctx { Fiber** self_observed; };
+    struct Ctx {
+        Fiber** self_observed;
+    };
     auto entry = +[](void* u) noexcept {
         auto* c = static_cast<Ctx*>(u);
         *(c->self_observed) = Fiber::current();

@@ -13,7 +13,7 @@
 namespace psynder::script {
 
 class Vm {
-public:
+   public:
     static Vm& Get();
 
     bool start();

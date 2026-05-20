@@ -25,32 +25,32 @@ struct Vertex {
     math::Vec3 normal;
     math::Vec2 uv;
     math::Vec2 lightmap_uv;
-    u32        color = 0xFFFFFFFFu;   // packed RGBA8
+    u32 color = 0xFFFFFFFFu;  // packed RGBA8
 };
 
 // ─── DrawItem — the unit the binner sees ─────────────────────────────────
 struct DrawItem {
-    const Vertex*    vertices    = nullptr;
-    u32              vertex_count= 0;
-    const u32*       indices     = nullptr;
-    u32              index_count = 0;
-    math::Mat4       model;
-    MaterialId       material;
-    u8               flags       = 0;
+    const Vertex* vertices = nullptr;
+    u32 vertex_count = 0;
+    const u32* indices = nullptr;
+    u32 index_count = 0;
+    math::Mat4 model;
+    MaterialId material;
+    u8 flags = 0;
 };
 
 // ─── Scene-wide rasterizer state ─────────────────────────────────────────
 struct ViewState {
-    math::Mat4   view;
-    math::Mat4   projection;
-    Framebuffer  target;
-    u32          tile_w = 64;
-    u32          tile_h = 64;
+    math::Mat4 view;
+    math::Mat4 projection;
+    Framebuffer target;
+    u32 tile_w = 64;
+    u32 tile_h = 64;
 };
 
 // ─── Driver API ──────────────────────────────────────────────────────────
 class Rasterizer {
-public:
+   public:
     static Rasterizer& Get();
 
     void begin_frame(const ViewState& view);

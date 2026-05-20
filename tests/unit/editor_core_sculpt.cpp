@@ -23,7 +23,7 @@ TEST_CASE("sculpt: raise pushes the centre vertex up", "[editor][sculpt]") {
     auto hf = make_hf(33, 33, 1.0f);
     REQUIRE(hf.sample(16, 16) == 0.0f);
     sculpt::raise(hf, math::Vec3{16.0f, 0.0f, 16.0f}, 5.0f, 1.0f);
-    REQUIRE(hf.sample(16, 16) > 0.5f);   // centre + smoothstep at d=0 = strength
+    REQUIRE(hf.sample(16, 16) > 0.5f);  // centre + smoothstep at d=0 = strength
 }
 
 TEST_CASE("sculpt: lower inverts raise on a fresh heightfield", "[editor][sculpt]") {
@@ -41,8 +41,8 @@ TEST_CASE("sculpt: flatten pulls neighbourhood toward centre height", "[editor][
     sculpt::flatten(hf, math::Vec3{16.0f, 0.0f, 16.0f}, 4.0f, 1.0f);
     const f32 c = hf.sample(16, 16);
     const f32 n = hf.sample(15, 16);
-    REQUIRE(c == 10.0f);     // centre is the target, untouched
-    REQUIRE(n > 0.0f);       // neighbour pulled up toward 10
+    REQUIRE(c == 10.0f);  // centre is the target, untouched
+    REQUIRE(n > 0.0f);    // neighbour pulled up toward 10
     REQUIRE(n < 10.0f);
 }
 
@@ -52,8 +52,8 @@ TEST_CASE("sculpt: paint normalises four channel weights", "[editor][sculpt]") {
     g.allocate(hf.size_x, hf.size_z);
 
     // Default = layer 0 only.
-    REQUIRE(g.at(16,16)[0] == 1.0f);
-    REQUIRE(g.at(16,16)[1] == 0.0f);
+    REQUIRE(g.at(16, 16)[0] == 1.0f);
+    REQUIRE(g.at(16, 16)[1] == 0.0f);
 
     sculpt::paint(g, math::Vec3{16.0f, 0.0f, 16.0f}, 4.0f, hf, /*material=*/1, /*weight=*/1.0f);
 

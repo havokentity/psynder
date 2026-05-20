@@ -14,12 +14,12 @@ namespace psynder::editor::ipc {
 
 struct ServerDesc {
     const char* bind_host = "127.0.0.1";
-    u16         port      = 7654;
-    bool        require_session_token = true;
+    u16 port = 7654;
+    bool require_session_token = true;
 };
 
 class Server {
-public:
+   public:
     static Server& Get();
 
     bool start(const ServerDesc& desc);

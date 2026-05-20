@@ -30,8 +30,7 @@ struct CacheReset {
     CacheReset() {
         // Force r_force_shading_path to 0 (auto). Tests that need a
         // different value re-set it.
-        console::Console::Get().RegisterCVar(
-            "r_force_shading_path", "0", "", 0);
+        console::Console::Get().RegisterCVar("r_force_shading_path", "0", "", 0);
         console::Console::Get().SetCVarOverride("r_force_shading_path", "0");
         SurfaceCache::Get().clear();
         SurfaceCache::Get().reset_stats();
@@ -45,17 +44,18 @@ TEST_CASE("classify_surface returns OnTheFly when no eligibility hints",
     CacheReset reset;
     SurfaceDesc s{};
     s.surface_id = 1;
-    s.flags      = 0;  // none of the eligibility bits set
+    s.flags = 0;  // none of the eligibility bits set
     REQUIRE(classify_surface(s) == ShadingPath::OnTheFly);
 }
 
-TEST_CASE("classify_surface returns OnTheFly even when eligible for the "
-          "first kHysteresis-1 frames",
-          "[raster][surface-cache][hysteresis][adr-001]") {
+TEST_CASE(
+    "classify_surface returns OnTheFly even when eligible for the "
+    "first kHysteresis-1 frames",
+    "[raster][surface-cache][hysteresis][adr-001]") {
     CacheReset reset;
     SurfaceDesc s{};
     s.surface_id = 42;
-    s.flags      = draw_flags::kEligibleMask;
+    s.flags = draw_flags::kEligibleMask;
 
     // First (kHysteresis - 1) classifications must still be OnTheFly.
     for (u32 i = 0; i < SurfaceCache::kHysteresis - 1; ++i) {
@@ -72,11 +72,10 @@ TEST_CASE("classify_surface: a single ineligible frame resets the streak",
     CacheReset reset;
     SurfaceDesc eligible{};
     eligible.surface_id = 7;
-    eligible.flags      = draw_flags::kEligibleMask;
+    eligible.flags = draw_flags::kEligibleMask;
     SurfaceDesc passing_flash{};
     passing_flash.surface_id = 7;
-    passing_flash.flags      = draw_flags::kEligibleMask &
-                               ~draw_flags::kNoDynamicLights;
+    passing_flash.flags = draw_flags::kEligibleMask & ~draw_flags::kNoDynamicLights;
 
     // Build up 3 eligible frames (still OnTheFly — one short of the bar).
     for (u32 i = 0; i < 3; ++i) {
@@ -101,7 +100,7 @@ TEST_CASE("r_force_shading_path forces both paths regardless of eligibility",
     CacheReset reset;
     SurfaceDesc s{};
     s.surface_id = 11;
-    s.flags      = draw_flags::kEligibleMask;
+    s.flags = draw_flags::kEligibleMask;
 
     // Force OnTheFly even when surface is fully eligible.
     console::Console::Get().SetCVarOverride("r_force_shading_path", "1");
@@ -114,7 +113,7 @@ TEST_CASE("r_force_shading_path forces both paths regardless of eligibility",
     console::Console::Get().SetCVarOverride("r_force_shading_path", "2");
     SurfaceDesc t{};
     t.surface_id = 12;
-    t.flags      = 0;
+    t.flags = 0;
     REQUIRE(classify_surface(t) == ShadingPath::SurfaceCached);
 
     // Reset the override.
@@ -125,8 +124,12 @@ TEST_CASE("SurfaceCache::acquire and find: same key returns the same slot",
           "[raster][surface-cache]") {
     CacheReset reset;
     auto& c = SurfaceCache::Get();
-    const u32 slot1 = c.acquire(/*surface_id*/100, /*lm_ver*/3, /*mip*/0,
-                                /*w*/64, /*h*/64, /*bytes*/64*64*4);
+    const u32 slot1 = c.acquire(/*surface_id*/ 100,
+                                /*lm_ver*/ 3,
+                                /*mip*/ 0,
+                                /*w*/ 64,
+                                /*h*/ 64,
+                                /*bytes*/ 64 * 64 * 4);
     REQUIRE(slot1 != SurfaceCache::kInvalid);
 
     // find() the same key — same slot.
@@ -150,22 +153,26 @@ TEST_CASE("SurfaceCache: LRU evicts the oldest entry when slab fills",
     // Acquire many entries, each ~256 KB, until eviction kicks in. The
     // slab is 4 MiB, so ~16 such entries fill it; we push past that.
     constexpr u32 kEntryBytes = 256 * 1024;
-    constexpr u32 kCount      = 20;
+    constexpr u32 kCount = 20;
     u32 first_slot = SurfaceCache::kInvalid;
     for (u32 i = 0; i < kCount; ++i) {
-        const u32 slot = c.acquire(/*sid*/1000 + i, /*lm_ver*/0, /*mip*/0,
-                                   /*w*/256, /*h*/256, kEntryBytes);
+        const u32 slot = c.acquire(/*sid*/ 1000 + i,
+                                   /*lm_ver*/ 0,
+                                   /*mip*/ 0,
+                                   /*w*/ 256,
+                                   /*h*/ 256,
+                                   kEntryBytes);
         REQUIRE(slot != SurfaceCache::kInvalid);
-        if (i == 0) first_slot = slot;
+        if (i == 0)
+            first_slot = slot;
     }
 
     // After kCount acquires, the LRU must have evicted at least some
     // entries (the slab is bounded at 4 MiB). We should see eviction
     // events in the stats.
     const auto s = c.stats();
-    INFO("entries_live = " << s.entries_live
-         << ", slab_used = " << s.slab_bytes_used
-         << ", evictions = " << s.evictions);
+    INFO("entries_live = " << s.entries_live << ", slab_used = " << s.slab_bytes_used
+                           << ", evictions = " << s.evictions);
     REQUIRE(s.evictions > 0);
     REQUIRE(s.slab_bytes_used <= SurfaceCache::kSlabBytes);
 
@@ -177,14 +184,15 @@ TEST_CASE("SurfaceCache: LRU evicts the oldest entry when slab fills",
     (void)first_slot;
 }
 
-TEST_CASE("SurfaceCache: entries are not destroyed when surface becomes "
-          "ineligible — DESIGN.md §7.6",
-          "[raster][surface-cache][warm]") {
+TEST_CASE(
+    "SurfaceCache: entries are not destroyed when surface becomes "
+    "ineligible — DESIGN.md §7.6",
+    "[raster][surface-cache][warm]") {
     CacheReset reset;
     auto& c = SurfaceCache::Get();
     SurfaceDesc s{};
     s.surface_id = 9001;
-    s.flags      = draw_flags::kEligibleMask;
+    s.flags = draw_flags::kEligibleMask;
 
     // Pass the hysteresis bar.
     for (u32 i = 0; i < SurfaceCache::kHysteresis; ++i) {
@@ -205,12 +213,11 @@ TEST_CASE("SurfaceCache: entries are not destroyed when surface becomes "
     REQUIRE(c.stats().entries_live >= 1);
 }
 
-TEST_CASE("SurfaceCache::clear wipes every entry",
-          "[raster][surface-cache]") {
+TEST_CASE("SurfaceCache::clear wipes every entry", "[raster][surface-cache]") {
     CacheReset reset;
     auto& c = SurfaceCache::Get();
-    REQUIRE(c.acquire(1, 0, 0, 32, 32, 32*32*4) != SurfaceCache::kInvalid);
-    REQUIRE(c.acquire(2, 0, 0, 32, 32, 32*32*4) != SurfaceCache::kInvalid);
+    REQUIRE(c.acquire(1, 0, 0, 32, 32, 32 * 32 * 4) != SurfaceCache::kInvalid);
+    REQUIRE(c.acquire(2, 0, 0, 32, 32, 32 * 32 * 4) != SurfaceCache::kInvalid);
     REQUIRE(c.stats().entries_live >= 2);
     c.clear();
     REQUIRE(c.stats().entries_live == 0);
@@ -227,8 +234,7 @@ TEST_CASE("SurfaceCache: oversized acquire (> slab) rejects cleanly",
     REQUIRE(slot == SurfaceCache::kInvalid);
 }
 
-TEST_CASE("SurfaceCache::begin_frame advances the frame index",
-          "[raster][surface-cache]") {
+TEST_CASE("SurfaceCache::begin_frame advances the frame index", "[raster][surface-cache]") {
     CacheReset reset;
     auto& c = SurfaceCache::Get();
     const u32 before = c.frame_index();
@@ -243,9 +249,10 @@ TEST_CASE("SurfaceCache::begin_frame advances the frame index",
 // counter. After kHysteresis-many begin_frame() calls with an eligible
 // DrawItem, the classifier should return SurfaceCached. This test goes
 // directly through the public Rasterizer API.
-TEST_CASE("Rasterizer dispatches SurfaceCached after kHysteresis "
-          "eligible frames",
-          "[raster][surface-cache][integration]") {
+TEST_CASE(
+    "Rasterizer dispatches SurfaceCached after kHysteresis "
+    "eligible frames",
+    "[raster][surface-cache][integration]") {
     CacheReset reset;
     auto& cache = SurfaceCache::Get();
 
@@ -253,16 +260,16 @@ TEST_CASE("Rasterizer dispatches SurfaceCached after kHysteresis "
     struct ImageRT {
         std::vector<u32> pixels;
         std::vector<u32> depth;
-        Framebuffer      fb{};
+        Framebuffer fb{};
         ImageRT(u32 w, u32 h)
-            : pixels(static_cast<std::size_t>(w) * h, 0xFF000000u),
-              depth(static_cast<std::size_t>(w) * h, 0) {
-            fb.width  = w;
+            : pixels(static_cast<std::size_t>(w) * h, 0xFF000000u)
+            , depth(static_cast<std::size_t>(w) * h, 0) {
+            fb.width = w;
             fb.height = h;
-            fb.pitch  = w * 4;
+            fb.pitch = w * 4;
             fb.format = PixelFormat::RGBA8;
             fb.pixels = reinterpret_cast<u8*>(pixels.data());
-            fb.depth  = depth.data();
+            fb.depth = depth.data();
         }
     };
 
@@ -270,23 +277,24 @@ TEST_CASE("Rasterizer dispatches SurfaceCached after kHysteresis "
     ImageRT img(64, 64);
 
     ViewState v{};
-    v.view       = math::look_at_rh(math::Vec3{0,0,2}, math::Vec3{0,0,0}, math::Vec3{0,1,0});
-    v.projection = math::perspective_rh(60.0f * math::kDegToRad,
-                                        static_cast<f32>(img.fb.width) /
-                                        static_cast<f32>(img.fb.height),
-                                        0.1f, 100.0f);
-    v.target     = img.fb;
-    v.tile_w     = 64;
-    v.tile_h     = 64;
+    v.view = math::look_at_rh(math::Vec3{0, 0, 2}, math::Vec3{0, 0, 0}, math::Vec3{0, 1, 0});
+    v.projection =
+        math::perspective_rh(60.0f * math::kDegToRad,
+                             static_cast<f32>(img.fb.width) / static_cast<f32>(img.fb.height),
+                             0.1f,
+                             100.0f);
+    v.target = img.fb;
+    v.tile_w = 64;
+    v.tile_h = 64;
 
     DrawItem d{};
-    d.vertices     = mesh.vertices;
+    d.vertices = mesh.vertices;
     d.vertex_count = mesh.vertex_count;
-    d.indices      = mesh.indices;
-    d.index_count  = mesh.index_count;
-    d.model        = math::identity4();
-    d.material     = MaterialId{ /*raw*/ 0xCAFE };
-    d.flags        = draw_flags::kEligibleMask;  // fully eligible
+    d.indices = mesh.indices;
+    d.index_count = mesh.index_count;
+    d.model = math::identity4();
+    d.material = MaterialId{/*raw*/ 0xCAFE};
+    d.flags = draw_flags::kEligibleMask;  // fully eligible
 
     auto& r = Rasterizer::Get();
     // Run kHysteresis frames — each begin_frame bumps the cache index.

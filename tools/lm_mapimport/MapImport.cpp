@@ -36,17 +36,18 @@ void append_f32(std::vector<u8>& out, f32 value) {
 }
 template <class T>
 bool read_le(std::span<const u8> bytes, usize off, T& out) {
-    if (off + sizeof(T) > bytes.size()) return false;
+    if (off + sizeof(T) > bytes.size())
+        return false;
     using U = std::make_unsigned_t<T>;
     U u = 0;
-    for (usize i = 0; i < sizeof(T); ++i) u |= static_cast<U>(bytes[off + i]) << (8 * i);
+    for (usize i = 0; i < sizeof(T); ++i)
+        u |= static_cast<U>(bytes[off + i]) << (8 * i);
     out = static_cast<T>(u);
     return true;
 }
 // read_f32 currently unused — kept around as a sibling of append_f32 for the
 // upcoming chunk-reading helpers (Wave-B will pull entity transforms out of
 // the brushes chunk via the same helper).
-
 
 // ─── Encode entities chunk ───────────────────────────────────────────────
 //
@@ -91,11 +92,9 @@ std::vector<u8> encode_brushes(const qbsp::MapFile& map) {
     return out;
 }
 
-}  // anon namespace
+}  // namespace
 
-ImportResult import_map(std::string_view map_text,
-                        LevelFile& out,
-                        const ImportOptions& opt) {
+ImportResult import_map(std::string_view map_text, LevelFile& out, const ImportOptions& opt) {
     ImportResult res;
     out = {};
 
@@ -138,8 +137,8 @@ ImportResult import_map(std::string_view map_text,
 
     res.ok = true;
     res.entity_count = static_cast<u32>(map.entities.size());
-    res.brush_count  = map.entities.empty() ? 0u
-                       : static_cast<u32>(map.entities.front().brushes.size());
+    res.brush_count =
+        map.entities.empty() ? 0u : static_cast<u32>(map.entities.front().brushes.size());
     return res;
 }
 
@@ -148,14 +147,14 @@ void write_level(const LevelFile& level, std::vector<u8>& out) {
     append_le<u32>(out, kPsyLevelMagic);
     append_le<u32>(out, kPsyLevelVersion);
     append_le<u32>(out, static_cast<u32>(level.chunks.size()));
-    append_le<u32>(out, 0);   // reserved
+    append_le<u32>(out, 0);  // reserved
 
     // Two-pass: emit chunk descriptors (kind, offset, length) first, then
     // the payload region.
     usize desc_off = out.size();
     for (usize i = 0; i < level.chunks.size(); ++i) {
         append_le<u32>(out, static_cast<u32>(level.chunks[i].kind));
-        append_le<u64>(out, 0u);   // patched below
+        append_le<u64>(out, 0u);  // patched below
         append_le<u64>(out, static_cast<u64>(level.chunks[i].bytes.size()));
     }
     for (usize i = 0; i < level.chunks.size(); ++i) {
@@ -166,13 +165,20 @@ void write_level(const LevelFile& level, std::vector<u8>& out) {
 }
 
 bool read_level(std::span<const u8> bytes, LevelFile& out, std::string* err) {
-    auto fail = [&](const char* msg) { if (err) *err = msg; return false; };
-    if (bytes.size() < 16) return fail("psylevel header truncated");
+    auto fail = [&](const char* msg) {
+        if (err)
+            *err = msg;
+        return false;
+    };
+    if (bytes.size() < 16)
+        return fail("psylevel header truncated");
     u32 magic = 0, version = 0, chunk_count = 0;
     read_le<u32>(bytes, 0, magic);
-    if (magic != kPsyLevelMagic) return fail("psylevel bad magic");
+    if (magic != kPsyLevelMagic)
+        return fail("psylevel bad magic");
     read_le<u32>(bytes, 4, version);
-    if (version != kPsyLevelVersion) return fail("psylevel unsupported version");
+    if (version != kPsyLevelVersion)
+        return fail("psylevel unsupported version");
     read_le<u32>(bytes, 8, chunk_count);
 
     out.chunks.clear();
@@ -181,11 +187,15 @@ bool read_level(std::span<const u8> bytes, LevelFile& out, std::string* err) {
     for (u32 i = 0; i < chunk_count; ++i) {
         u32 kind = 0;
         u64 off = 0, len = 0;
-        if (!read_le<u32>(bytes, cursor, kind)) return fail("chunk desc truncated");
-        if (!read_le<u64>(bytes, cursor + 4, off)) return fail("chunk desc truncated");
-        if (!read_le<u64>(bytes, cursor + 12, len)) return fail("chunk desc truncated");
+        if (!read_le<u32>(bytes, cursor, kind))
+            return fail("chunk desc truncated");
+        if (!read_le<u64>(bytes, cursor + 4, off))
+            return fail("chunk desc truncated");
+        if (!read_le<u64>(bytes, cursor + 12, len))
+            return fail("chunk desc truncated");
         cursor += 20;
-        if (off + len > bytes.size()) return fail("chunk payload out of range");
+        if (off + len > bytes.size())
+            return fail("chunk payload out of range");
         LevelChunk c;
         c.kind = static_cast<ChunkKind>(kind);
         c.bytes.assign(bytes.data() + off, bytes.data() + off + len);
@@ -196,33 +206,40 @@ bool read_level(std::span<const u8> bytes, LevelFile& out, std::string* err) {
 
 void print_help() {
     std::fprintf(stdout,
-        "lm_mapimport — Psynder TrenchBroom .map → .psylevel one-way bridge\n"
-        "\n"
-        "Usage:\n"
-        "  lm_mapimport <in.map> <out.psylevel> [--compile-bsp]\n"
-        "  lm_mapimport --help\n"
-        "\n"
-        "Per DESIGN.md §10.8 this is the courtesy importer for legacy\n"
-        "Quake-style maps. The native authoring tool is the in-engine\n"
-        "editor (lane 18); use this only when porting existing assets.\n");
+                 "lm_mapimport — Psynder TrenchBroom .map → .psylevel one-way bridge\n"
+                 "\n"
+                 "Usage:\n"
+                 "  lm_mapimport <in.map> <out.psylevel> [--compile-bsp]\n"
+                 "  lm_mapimport --help\n"
+                 "\n"
+                 "Per DESIGN.md §10.8 this is the courtesy importer for legacy\n"
+                 "Quake-style maps. The native authoring tool is the in-engine\n"
+                 "editor (lane 18); use this only when porting existing assets.\n");
 }
 
 namespace {
 
 bool read_file(const fs::path& p, std::string& out, std::string& err) {
     std::ifstream in(p, std::ios::binary);
-    if (!in) { err = "cannot open " + p.string(); return false; }
+    if (!in) {
+        err = "cannot open " + p.string();
+        return false;
+    }
     in.seekg(0, std::ios::end);
     out.resize(static_cast<usize>(in.tellg()));
     in.seekg(0, std::ios::beg);
-    if (!out.empty()) in.read(out.data(), static_cast<std::streamsize>(out.size()));
+    if (!out.empty())
+        in.read(out.data(), static_cast<std::streamsize>(out.size()));
     return static_cast<bool>(in);
 }
 bool write_file(const fs::path& p, std::span<const u8> data, std::string& err) {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
-    if (!out) { err = "cannot write " + p.string(); return false; }
+    if (!out) {
+        err = "cannot write " + p.string();
+        return false;
+    }
     if (!data.empty()) {
         out.write(reinterpret_cast<const char*>(data.data()),
                   static_cast<std::streamsize>(data.size()));
@@ -230,18 +247,28 @@ bool write_file(const fs::path& p, std::span<const u8> data, std::string& err) {
     return static_cast<bool>(out);
 }
 
-}  // anon
+}  // namespace
 
 int cli_main(int argc, char** argv) {
-    if (argc < 2) { print_help(); return 1; }
+    if (argc < 2) {
+        print_help();
+        return 1;
+    }
     std::string_view a = argv[1];
-    if (a == "--help" || a == "-h" || a == "help") { print_help(); return 0; }
-    if (argc < 3) { print_help(); return 1; }
+    if (a == "--help" || a == "-h" || a == "help") {
+        print_help();
+        return 0;
+    }
+    if (argc < 3) {
+        print_help();
+        return 1;
+    }
 
     ImportOptions opt;
     for (int i = 3; i < argc; ++i) {
         std::string_view k = argv[i];
-        if (k == "--compile-bsp") opt.compile_bsp = true;
+        if (k == "--compile-bsp")
+            opt.compile_bsp = true;
     }
     std::string text, err;
     if (!read_file(fs::path(argv[1]), text, err)) {
@@ -262,7 +289,9 @@ int cli_main(int argc, char** argv) {
     }
     std::fprintf(stdout,
                  "lm_mapimport: %u entities (%u worldspawn brushes) -> %s%s\n",
-                 r.entity_count, r.brush_count, argv[2],
+                 r.entity_count,
+                 r.brush_count,
+                 argv[2],
                  opt.compile_bsp ? " [bsp embedded]" : "");
     return 0;
 }

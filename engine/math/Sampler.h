@@ -25,13 +25,15 @@
 
 namespace psynder::math {
 
-struct Sample2D { f32 u, v; };
+struct Sample2D {
+    f32 u, v;
+};
 
 struct StratifiedSampler2D {
     Rng rng{};
-    u32 nx = 1;        // strata per row
-    u32 ny = 1;        // strata per column
-    u32 cursor = 0;    // next stratum index, walks 0 .. nx*ny - 1
+    u32 nx = 1;      // strata per row
+    u32 ny = 1;      // strata per column
+    u32 cursor = 0;  // next stratum index, walks 0 .. nx*ny - 1
 
     constexpr void reset(u32 nx_, u32 ny_) noexcept {
         nx = nx_ == 0 ? 1u : nx_;
@@ -69,9 +71,11 @@ struct StratifiedSampler2D {
     // typically allocate `kMaxSamples` from a scratch arena.
     constexpr void fill(Sample2D* out, u32 capacity) noexcept {
         u32 n = count();
-        if (capacity < n) n = capacity;
+        if (capacity < n)
+            n = capacity;
         cursor = 0;
-        for (u32 i = 0; i < n; ++i) out[i] = next();
+        for (u32 i = 0; i < n; ++i)
+            out[i] = next();
     }
 };
 

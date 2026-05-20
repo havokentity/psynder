@@ -39,24 +39,24 @@ namespace lmm {
 
 // Submesh entry in the in-memory mesh. Maps 1:1 to formats::LmmSubmesh.
 struct Submesh {
-    u32 index_start    = 0;
-    u32 index_count    = 0;
-    u32 material_hash  = 0;   // FNV-1a of the material name; binds to a .lmt
-    u32 reserved       = 0;
+    u32 index_start = 0;
+    u32 index_count = 0;
+    u32 material_hash = 0;  // FNV-1a of the material name; binds to a .lmt
+    u32 reserved = 0;
 };
 
 // In-memory mesh. Vertex bytes are kept opaque so callers can vary the
 // stride per `vertex_fmt`; the codec writes/reads them verbatim.
 struct Mesh {
-    formats::LmmVertexFmt vertex_fmt   = formats::LmmVertexFmt::Pos3N3UV2;
-    u32                   vertex_stride = 32;     // bytes per vertex
-    u32                   vertex_count = 0;
-    u32                   index_count  = 0;
-    f32                   bbox_min[3]  = {0, 0, 0};
-    f32                   bbox_max[3]  = {0, 0, 0};
-    std::vector<Submesh>  submeshes;
-    std::vector<u8>       vertex_data;             // vertex_count * vertex_stride
-    std::vector<u8>       index_data;              // index_count * (16-bit ? 2 : 4)
+    formats::LmmVertexFmt vertex_fmt = formats::LmmVertexFmt::Pos3N3UV2;
+    u32 vertex_stride = 32;  // bytes per vertex
+    u32 vertex_count = 0;
+    u32 index_count = 0;
+    f32 bbox_min[3] = {0, 0, 0};
+    f32 bbox_max[3] = {0, 0, 0};
+    std::vector<Submesh> submeshes;
+    std::vector<u8> vertex_data;  // vertex_count * vertex_stride
+    std::vector<u8> index_data;   // index_count * (16-bit ? 2 : 4)
 };
 
 // Return the size in bytes of one index for this vertex count. The runtime
@@ -69,8 +69,10 @@ inline u32 index_byte_size(u32 vertex_count) noexcept {
 // Compute the stride implied by a vertex format.
 inline u32 stride_for(formats::LmmVertexFmt fmt) noexcept {
     switch (fmt) {
-        case formats::LmmVertexFmt::Pos3N3UV2:    return 32;  // 8 floats
-        case formats::LmmVertexFmt::Pos3N3T4UV2:  return 48;  // 12 floats
+        case formats::LmmVertexFmt::Pos3N3UV2:
+            return 32;  // 8 floats
+        case formats::LmmVertexFmt::Pos3N3T4UV2:
+            return 48;  // 12 floats
     }
     return 32;
 }
@@ -93,30 +95,34 @@ bool read_mesh(std::span<const u8> bytes, Mesh& mesh);
 namespace lmt {
 
 struct Mip {
-    u32 width     = 0;
-    u32 height    = 0;
-    u32 offset    = 0;   // offset within `pixel_data`
+    u32 width = 0;
+    u32 height = 0;
+    u32 offset = 0;  // offset within `pixel_data`
     u32 byte_size = 0;
 };
 
 struct Texture {
-    u16                   width      = 0;
-    u16                   height     = 0;
-    formats::LmtPixelFmt  pixel_fmt  = formats::LmtPixelFmt::RGBA8;
-    u16                   flags      = 0;
-    std::vector<Mip>      mips;                       // mip 0 is largest
-    std::vector<u8>       palette;                    // 256*4 bytes when P8, else empty
-    std::vector<u8>       pixel_data;                 // concatenated mip pixels
+    u16 width = 0;
+    u16 height = 0;
+    formats::LmtPixelFmt pixel_fmt = formats::LmtPixelFmt::RGBA8;
+    u16 flags = 0;
+    std::vector<Mip> mips;       // mip 0 is largest
+    std::vector<u8> palette;     // 256*4 bytes when P8, else empty
+    std::vector<u8> pixel_data;  // concatenated mip pixels
 };
 
 // Bytes per pixel for the runtime side of LmtPixelFmt. P8 maps to 1 byte
 // of index data per pixel (the palette is separate).
 inline u32 bytes_per_pixel(formats::LmtPixelFmt fmt) noexcept {
     switch (fmt) {
-        case formats::LmtPixelFmt::P8:     return 1;
-        case formats::LmtPixelFmt::RGB565: return 2;
-        case formats::LmtPixelFmt::RGBA8:  return 4;
-        case formats::LmtPixelFmt::RG88:   return 2;
+        case formats::LmtPixelFmt::P8:
+            return 1;
+        case formats::LmtPixelFmt::RGB565:
+            return 2;
+        case formats::LmtPixelFmt::RGBA8:
+            return 4;
+        case formats::LmtPixelFmt::RG88:
+            return 2;
     }
     return 4;
 }
@@ -130,21 +136,23 @@ bool read_texture(std::span<const u8> bytes, Texture& texture);
 namespace lma {
 
 struct Audio {
-    u32                   sample_rate  = 48000;
-    u32                   frame_count  = 0;
-    formats::LmaSampleFmt sample_fmt   = formats::LmaSampleFmt::PCM_S16;
-    u16                   channels     = 1;
-    u16                   flags        = 0;
-    u32                   loop_start   = 0;   // valid only when kLmaFlagLoop is set
-    u32                   loop_end     = 0;
-    std::vector<u8>       pcm_data;            // frame_count * channels * bytes_per_sample
+    u32 sample_rate = 48000;
+    u32 frame_count = 0;
+    formats::LmaSampleFmt sample_fmt = formats::LmaSampleFmt::PCM_S16;
+    u16 channels = 1;
+    u16 flags = 0;
+    u32 loop_start = 0;  // valid only when kLmaFlagLoop is set
+    u32 loop_end = 0;
+    std::vector<u8> pcm_data;  // frame_count * channels * bytes_per_sample
 };
 
 // Bytes per sample for a given format.
 inline u32 bytes_per_sample(formats::LmaSampleFmt fmt) noexcept {
     switch (fmt) {
-        case formats::LmaSampleFmt::PCM_S16: return 2;
-        case formats::LmaSampleFmt::PCM_F32: return 4;
+        case formats::LmaSampleFmt::PCM_S16:
+            return 2;
+        case formats::LmaSampleFmt::PCM_F32:
+            return 4;
     }
     return 2;
 }

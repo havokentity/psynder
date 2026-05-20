@@ -41,7 +41,7 @@
 
 namespace psynder::world::bsp {
 
-inline constexpr u32 kBspFileMagic   = 0x50534250u;  // 'P','B','S','P'
+inline constexpr u32 kBspFileMagic = 0x50534250u;  // 'P','B','S','P'
 inline constexpr u32 kBspFileVersion = 1u;
 
 struct BspFileChunk {
@@ -50,19 +50,19 @@ struct BspFileChunk {
 };
 
 struct BspFileHeader {
-    u32          magic;
-    u32          version;
-    u32          flags;
-    u32          total_bytes;
-    u32          cluster_count;
-    u32          pvs_row_bytes;
+    u32 magic;
+    u32 version;
+    u32 flags;
+    u32 total_bytes;
+    u32 cluster_count;
+    u32 pvs_row_bytes;
     BspFileChunk nodes;
     BspFileChunk leaves;
     BspFileChunk faces;
     BspFileChunk vertices;
     BspFileChunk indices;
     BspFileChunk pvs;
-    u32          reserved[6];
+    u32 reserved[6];
 };
 static_assert(sizeof(BspFileHeader) == 96, "BspFileHeader must be exactly 96 bytes");
 
@@ -99,7 +99,7 @@ static_assert(sizeof(BspFileFace) == 16, "BspFileFace layout drift");
 // the struct here — we just bulk-memcpy bytes — but the size is asserted so
 // any change to the rasterizer Vertex layout requires a format version bump.
 inline constexpr u32 kBspFileVertexBytes = 48;
-inline constexpr u32 kBspFileIndexBytes  = 4;
+inline constexpr u32 kBspFileIndexBytes = 4;
 
 // Sentinel cluster used when a leaf is "solid" (inside-wall) and has no PVS
 // row. `locate` may return such a leaf when the point lies inside geometry.
@@ -108,8 +108,14 @@ inline constexpr i32 kBspSolidCluster = -1;
 // ─── Helpers — index <-> leaf-child encoding ─────────────────────────────
 // A node's front_child / back_child is either a non-negative node index OR
 // a "leaf reference" encoded as ~leaf_index (so leaf 0 → -1, leaf 1 → -2, …).
-constexpr bool bsp_is_leaf(i32 child) noexcept { return child < 0; }
-constexpr i32  bsp_leaf_index(i32 child) noexcept { return ~child; }
-constexpr i32  bsp_encode_leaf(i32 leaf_index) noexcept { return ~leaf_index; }
+constexpr bool bsp_is_leaf(i32 child) noexcept {
+    return child < 0;
+}
+constexpr i32 bsp_leaf_index(i32 child) noexcept {
+    return ~child;
+}
+constexpr i32 bsp_encode_leaf(i32 leaf_index) noexcept {
+    return ~leaf_index;
+}
 
 }  // namespace psynder::world::bsp

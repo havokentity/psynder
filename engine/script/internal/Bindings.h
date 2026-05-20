@@ -12,14 +12,14 @@
 #include <string>
 
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic push
-#  pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 extern "C" {
 #include "lua.h"
 }
 #if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 #endif
 
 namespace psynder::script::detail {
@@ -53,9 +53,6 @@ void install_world_api(lua_State* L, ScriptRegistry* registry);
 // as the system callback's positional arguments. Returns false if a system
 // raised; the error is written to `err_out`. Wave A runs systems serially —
 // the scheduler hookup lands once lane 04 + 06 expose the parallel API.
-bool run_registered_systems(lua_State*       L,
-                            ScriptRegistry&  registry,
-                            f64              dt,
-                            std::string&     err_out);
+bool run_registered_systems(lua_State* L, ScriptRegistry& registry, f64 dt, std::string& err_out);
 
 }  // namespace psynder::script::detail

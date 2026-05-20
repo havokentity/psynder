@@ -38,7 +38,8 @@ T roundtrip_one(const T& in, EncodeFn enc, DecodeFn dec) {
 TEST_CASE("msgpack: primitive roundtrip", "[ipc][msgpack]") {
     SECTION("bool") {
         for (bool v : {true, false}) {
-            msgpack::Writer w; w.boolean(v);
+            msgpack::Writer w;
+            w.boolean(v);
             msgpack::Reader r(w.data(), w.size());
             bool out = !v;
             REQUIRE(r.boolean(out));
@@ -47,13 +48,21 @@ TEST_CASE("msgpack: primitive roundtrip", "[ipc][msgpack]") {
     }
     SECTION("unsigned int extremes") {
         const u64 samples[] = {
-            0ull, 1ull, 127ull, 128ull, 255ull, 256ull, 65535ull, 65536ull,
+            0ull,
+            1ull,
+            127ull,
+            128ull,
+            255ull,
+            256ull,
+            65535ull,
+            65536ull,
             static_cast<u64>(std::numeric_limits<u32>::max()),
             static_cast<u64>(std::numeric_limits<u32>::max()) + 1ull,
             std::numeric_limits<u64>::max(),
         };
         for (u64 v : samples) {
-            msgpack::Writer w; w.u64_(v);
+            msgpack::Writer w;
+            w.u64_(v);
             msgpack::Reader r(w.data(), w.size());
             u64 out = 0;
             REQUIRE(r.u64_(out));
@@ -62,12 +71,24 @@ TEST_CASE("msgpack: primitive roundtrip", "[ipc][msgpack]") {
     }
     SECTION("signed int extremes") {
         const i64 samples[] = {
-            0, -1, -32, -33, 127, -128, -129, 32767, -32768, -32769,
-            std::numeric_limits<i32>::min(), std::numeric_limits<i32>::max(),
-            std::numeric_limits<i64>::min(), std::numeric_limits<i64>::max(),
+            0,
+            -1,
+            -32,
+            -33,
+            127,
+            -128,
+            -129,
+            32767,
+            -32768,
+            -32769,
+            std::numeric_limits<i32>::min(),
+            std::numeric_limits<i32>::max(),
+            std::numeric_limits<i64>::min(),
+            std::numeric_limits<i64>::max(),
         };
         for (i64 v : samples) {
-            msgpack::Writer w; w.i64_(v);
+            msgpack::Writer w;
+            w.i64_(v);
             msgpack::Reader r(w.data(), w.size());
             i64 out = 0;
             REQUIRE(r.i64_(out));
@@ -76,12 +97,14 @@ TEST_CASE("msgpack: primitive roundtrip", "[ipc][msgpack]") {
     }
     SECTION("f32 / f64 bit-exact") {
         const f32 a = 3.14159265f;
-        msgpack::Writer w; w.f32_(a);
+        msgpack::Writer w;
+        w.f32_(a);
         msgpack::Reader r(w.data(), w.size());
         f32 out = 0;
         REQUIRE(r.f32_(out));
         REQUIRE(out == a);
-        msgpack::Writer w2; w2.f64_(2.718281828459045);
+        msgpack::Writer w2;
+        w2.f64_(2.718281828459045);
         msgpack::Reader r2(w2.data(), w2.size());
         f64 out64 = 0;
         REQUIRE(r2.f64_(out64));
@@ -99,7 +122,8 @@ TEST_CASE("msgpack: primitive roundtrip", "[ipc][msgpack]") {
             std::string(65536, 'x'),
         };
         for (const auto& s : sizes) {
-            msgpack::Writer w; w.str(s);
+            msgpack::Writer w;
+            w.str(s);
             msgpack::Reader r(w.data(), w.size());
             std::string out;
             REQUIRE(r.str(out));
@@ -108,8 +132,10 @@ TEST_CASE("msgpack: primitive roundtrip", "[ipc][msgpack]") {
     }
     SECTION("binary blobs") {
         std::vector<u8> blob(300);
-        for (size_t i = 0; i < blob.size(); ++i) blob[i] = static_cast<u8>(i & 0xFF);
-        msgpack::Writer w; w.bin(blob.data(), blob.size());
+        for (size_t i = 0; i < blob.size(); ++i)
+            blob[i] = static_cast<u8>(i & 0xFF);
+        msgpack::Writer w;
+        w.bin(blob.data(), blob.size());
         msgpack::Reader r(w.data(), w.size());
         std::vector<u8> out;
         REQUIRE(r.bin(out));
@@ -119,7 +145,8 @@ TEST_CASE("msgpack: primitive roundtrip", "[ipc][msgpack]") {
         std::vector<std::string> arr = {"hello", "world", "psynder"};
         msgpack::Writer w;
         w.array_header(arr.size());
-        for (const auto& s : arr) w.str(s);
+        for (const auto& s : arr)
+            w.str(s);
         msgpack::Reader r(w.data(), w.size());
         u32 n = 0;
         REQUIRE(r.array_header(n));
@@ -152,13 +179,13 @@ TEST_CASE("msgpack: skip() walks past values", "[ipc][msgpack]") {
 
 TEST_CASE("msgpack: malformed input is rejected", "[ipc][msgpack]") {
     // Truncated str header (claims 200 bytes but only has 4).
-    std::vector<u8> bad = { 0xD9, 200, 'x', 'y', 'z' };
+    std::vector<u8> bad = {0xD9, 200, 'x', 'y', 'z'};
     msgpack::Reader r(bad.data(), bad.size());
     std::string out;
     REQUIRE_FALSE(r.str(out));
 
     // Truncated u32: tag 0xCE then only 2 bytes.
-    std::vector<u8> bad2 = { 0xCE, 1, 2 };
+    std::vector<u8> bad2 = {0xCE, 1, 2};
     msgpack::Reader r2(bad2.data(), bad2.size());
     u32 v = 0;
     REQUIRE_FALSE(r2.u32_(v));
@@ -193,7 +220,8 @@ TEST_CASE("ipc: generated Welcome / StatsTick / SceneDelta roundtrip", "[ipc][pr
         w.server_ver = 42;
         w.server_build = "psynder-test";
         w.reason = "";
-        msgpack::Writer mw; proto::Welcome_encode(mw, w);
+        msgpack::Writer mw;
+        proto::Welcome_encode(mw, w);
         msgpack::Reader mr(mw.data(), mw.size());
         proto::Welcome out;
         REQUIRE(proto::Welcome_decode(mr, out));
@@ -209,7 +237,8 @@ TEST_CASE("ipc: generated Welcome / StatsTick / SceneDelta roundtrip", "[ipc][pr
         s.gpu_ms = 0.0f;
         s.draw_calls = 1024;
         s.entities = 9876;
-        msgpack::Writer mw; proto::StatsTick_encode(mw, s);
+        msgpack::Writer mw;
+        proto::StatsTick_encode(mw, s);
         msgpack::Reader mr(mw.data(), mw.size());
         proto::StatsTick out;
         REQUIRE(proto::StatsTick_decode(mr, out));
@@ -225,7 +254,8 @@ TEST_CASE("ipc: generated Welcome / StatsTick / SceneDelta roundtrip", "[ipc][pr
         d.entity_id = 0x01020304;
         d.op = 7;
         d.payload = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70};
-        msgpack::Writer mw; proto::SceneDelta_encode(mw, d);
+        msgpack::Writer mw;
+        proto::SceneDelta_encode(mw, d);
         msgpack::Reader mr(mw.data(), mw.size());
         proto::SceneDelta out;
         REQUIRE(proto::SceneDelta_decode(mr, out));

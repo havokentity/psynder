@@ -31,7 +31,8 @@ namespace {
 std::string make_tmp_path(const char* tag) {
     const char* env = std::getenv("TMPDIR");
     std::string base = (env && *env) ? env : "/tmp";
-    if (!base.empty() && base.back() != '/') base.push_back('/');
+    if (!base.empty() && base.back() != '/')
+        base.push_back('/');
     base += "psynder_flight_";
     base += tag;
     base += "_";
@@ -45,8 +46,10 @@ usize count_data_lines(const std::string& path) {
     std::string line;
     usize n = 0;
     while (std::getline(f, line)) {
-        if (line.empty()) continue;
-        if (line[0] == '#') continue;
+        if (line.empty())
+            continue;
+        if (line[0] == '#')
+            continue;
         ++n;
     }
     return n;
@@ -54,8 +57,7 @@ usize count_data_lines(const std::string& path) {
 
 }  // namespace
 
-TEST_CASE("call_site_hash is deterministic and varies with line",
-          "[core][alloc][flightrec]") {
+TEST_CASE("call_site_hash is deterministic and varies with line", "[core][alloc][flightrec]") {
     constexpr u32 a = mem::call_site_hash("/foo/bar.cpp", 42);
     constexpr u32 b = mem::call_site_hash("/foo/bar.cpp", 42);
     constexpr u32 c = mem::call_site_hash("/foo/bar.cpp", 43);
@@ -108,24 +110,21 @@ TEST_CASE("flight recorder ring wraps and dumps only the last `capacity`",
 
     const std::string path = make_tmp_path("wrap");
     const usize written = mem::flight_recorder_dump(path.c_str());
-    REQUIRE(written == kCap);   // exactly capacity records survive
+    REQUIRE(written == kCap);  // exactly capacity records survive
     REQUIRE(count_data_lines(path) == kCap);
     std::remove(path.c_str());
 }
 
-TEST_CASE("flight recorder dump returns 0 for a bad path",
-          "[core][alloc][flightrec]") {
+TEST_CASE("flight recorder dump returns 0 for a bad path", "[core][alloc][flightrec]") {
     mem::flight_recorder_init(64);
     mem::flight_recorder_clear();
     mem::flight_recorder_record(1, +1, 8, mem::Tag::Misc);
     // A directory that does not exist must fail open() cleanly.
-    REQUIRE(mem::flight_recorder_dump(
-        "/this/path/does/not/exist/psynder_flight.csv") == 0);
+    REQUIRE(mem::flight_recorder_dump("/this/path/does/not/exist/psynder_flight.csv") == 0);
     REQUIRE(mem::flight_recorder_dump(nullptr) == 0);
 }
 
-TEST_CASE("LinearArena::alloc registers into the flight recorder",
-          "[core][alloc][flightrec]") {
+TEST_CASE("LinearArena::alloc registers into the flight recorder", "[core][alloc][flightrec]") {
     mem::flight_recorder_init(128);
     mem::flight_recorder_clear();
 
@@ -135,7 +134,7 @@ TEST_CASE("LinearArena::alloc registers into the flight recorder",
     REQUIRE(a.alloc(128, 16) != nullptr);
 
     const auto count = mem::flight_recorder_count();
-    REQUIRE(count >= 2);   // each successful alloc adds one entry
+    REQUIRE(count >= 2);  // each successful alloc adds one entry
 
     const std::string path = make_tmp_path("arena");
     const usize written = mem::flight_recorder_dump(path.c_str());

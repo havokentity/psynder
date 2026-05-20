@@ -28,12 +28,12 @@ namespace psynder::mem {
 // free. The serial counter is the monotonically-increasing record index
 // (used for ordering when the ring has wrapped).
 struct FlightEntry {
-    u64   serial = 0;
-    u32   site   = 0;
-    i32   op     = 0;       // +1 alloc, -1 free
-    u32   size   = 0;
-    Tag   tag    = Tag::Misc;
-    u32   _pad   = 0;       // keep 32-byte size for cache-friendly scans
+    u64 serial = 0;
+    u32 site = 0;
+    i32 op = 0;  // +1 alloc, -1 free
+    u32 size = 0;
+    Tag tag = Tag::Misc;
+    u32 _pad = 0;  // keep 32-byte size for cache-friendly scans
 };
 
 // Stable 32-bit hash of (file, line). The hash collapses the (file*, line)
@@ -58,10 +58,7 @@ void flight_recorder_init(usize capacity) noexcept;
 
 // Record one allocation (op = +1) or free (op = -1). Lock-free for the
 // writer. Always safe to call from any thread.
-void flight_recorder_record(u32 site,
-                            i32 op,
-                            u32 size,
-                            Tag tag) noexcept;
+void flight_recorder_record(u32 site, i32 op, u32 size, Tag tag) noexcept;
 
 // Number of entries successfully recorded so far. May exceed capacity if
 // the ring has wrapped.
@@ -83,9 +80,10 @@ usize flight_recorder_dump(const char* path) noexcept;
 // Convenience macro that records the file/line of the call site. Use this
 // from within allocator paths that want to participate in the flight
 // recorder; passing 0 for the hash skips hashing entirely.
-#define PSY_FLIGHT_RECORD(op, size, tag)                                       \
-    ::psynder::mem::flight_recorder_record(                                    \
-        ::psynder::mem::call_site_hash(__FILE__, __LINE__),                    \
-        (op), static_cast<::psynder::u32>(size), (tag))
+#define PSY_FLIGHT_RECORD(op, size, tag)                                                       \
+    ::psynder::mem::flight_recorder_record(::psynder::mem::call_site_hash(__FILE__, __LINE__), \
+                                           (op),                                               \
+                                           static_cast<::psynder::u32>(size),                  \
+                                           (tag))
 
 }  // namespace psynder::mem

@@ -55,14 +55,16 @@ void destroy_window_impl(Window* w) {
 std::string executable_path() {
     wchar_t buf[MAX_PATH * 2];
     const DWORD n = ::GetModuleFileNameW(nullptr, buf, _countof(buf));
-    if (n == 0) return {};
+    if (n == 0)
+        return {};
     return win32::from_wide(std::wstring_view{buf, n});
 }
 
 std::string user_config_dir() {
     PWSTR p = nullptr;
     if (FAILED(::SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &p)) || !p) {
-        if (p) ::CoTaskMemFree(p);
+        if (p)
+            ::CoTaskMemFree(p);
         return {};
     }
     std::string out = win32::from_wide(std::wstring_view{p});
@@ -73,15 +75,15 @@ std::string user_config_dir() {
 std::string current_working_directory() {
     wchar_t buf[MAX_PATH * 2];
     const DWORD n = ::GetCurrentDirectoryW(_countof(buf), buf);
-    if (n == 0) return {};
+    if (n == 0)
+        return {};
     return win32::from_wide(std::wstring_view{buf, n});
 }
 
 bool file_exists(std::string_view path) {
     const std::wstring w = win32::to_wide(path);
-    const DWORD attrs    = ::GetFileAttributesW(w.c_str());
-    return attrs != INVALID_FILE_ATTRIBUTES
-        && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    const DWORD attrs = ::GetFileAttributesW(w.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
 }  // namespace psynder::platform
@@ -90,6 +92,8 @@ bool file_exists(std::string_view path) {
 
 // Mac/Linux CI configures don't add this directory, so this fallback only
 // fires if a future cross-tool ever pulls every .cpp through clang-tidy.
-namespace psynder::platform::win32_stub { void anchor() {} }
+namespace psynder::platform::win32_stub {
+void anchor() {}
+}  // namespace psynder::platform::win32_stub
 
 #endif  // PSYNDER_PLATFORM_WIN32

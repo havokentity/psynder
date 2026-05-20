@@ -34,12 +34,12 @@ namespace psynder::world::outdoor::detail {
 // A single CDLOD chunk's mesh. Stored in the same Vertex / index layout the
 // rasterizer's DrawItem expects (lane 07).
 struct CdlodChunk {
-    u32                                       chunk_x = 0;   // grid coord
-    u32                                       chunk_z = 0;
-    u32                                       lod     = 0;   // 0 = leaf
-    std::vector<render::raster::Vertex>       vertices;
-    std::vector<u32>                          indices;
-    math::Aabb                                bounds;
+    u32 chunk_x = 0;  // grid coord
+    u32 chunk_z = 0;
+    u32 lod = 0;  // 0 = leaf
+    std::vector<render::raster::Vertex> vertices;
+    std::vector<u32> indices;
+    math::Aabb bounds;
 };
 
 // Build a single leaf-level chunk. The chunk covers texels
@@ -47,15 +47,14 @@ struct CdlodChunk {
 // sides) along X, similarly along Z — that is, (kChunkDim+1)² verts and
 // kChunkDim² × 2 triangles. Edge vertices are shared with neighbors by
 // position (verbatim integer texel coords; no per-chunk float drift).
-inline CdlodChunk build_chunk(const HeightmapDesc& h,
-                              u32                  chunk_x,
-                              u32                  chunk_z) noexcept {
+inline CdlodChunk build_chunk(const HeightmapDesc& h, u32 chunk_x, u32 chunk_z) noexcept {
     CdlodChunk c{};
     c.chunk_x = chunk_x;
     c.chunk_z = chunk_z;
-    c.lod     = 0;
+    c.lod = 0;
 
-    if (h.size_x < 2 || h.size_z < 2) return c;
+    if (h.size_x < 2 || h.size_z < 2)
+        return c;
 
     const i32 x0 = static_cast<i32>(chunk_x * kChunkDim);
     const i32 z0 = static_cast<i32>(chunk_z * kChunkDim);
@@ -68,14 +67,15 @@ inline CdlodChunk build_chunk(const HeightmapDesc& h,
     const i32 vz_max = static_cast<i32>(h.size_z) - 1;
     const i32 xN = (x1 > vx_max) ? vx_max : x1;
     const i32 zN = (z1 > vz_max) ? vz_max : z1;
-    if (xN <= x0 || zN <= z0) return c;
+    if (xN <= x0 || zN <= z0)
+        return c;
 
     const u32 verts_x = static_cast<u32>(xN - x0 + 1);
     const u32 verts_z = static_cast<u32>(zN - z0 + 1);
 
     c.vertices.reserve(static_cast<usize>(verts_x) * verts_z);
 
-    f32 y_min =  1e30f;
+    f32 y_min = 1e30f;
     f32 y_max = -1e30f;
 
     for (u32 vz = 0; vz < verts_z; ++vz) {
@@ -89,21 +89,23 @@ inline CdlodChunk build_chunk(const HeightmapDesc& h,
             const f32 wz = static_cast<f32>(z) * h.spacing;
             const f32 wy = height_at_texel(h, x, z);
 
-            if (wy < y_min) y_min = wy;
-            if (wy > y_max) y_max = wy;
+            if (wy < y_min)
+                y_min = wy;
+            if (wy > y_max)
+                y_max = wy;
 
             render::raster::Vertex v{};
-            v.position     = math::Vec3{ wx, wy, wz };
-            v.normal       = normal_at_texel(h, x, z);
+            v.position = math::Vec3{wx, wy, wz};
+            v.normal = normal_at_texel(h, x, z);
             // UV is texel-relative for the colormap.
-            v.uv           = math::Vec2{
+            v.uv = math::Vec2{
                 static_cast<f32>(x) / static_cast<f32>(h.size_x),
                 static_cast<f32>(z) / static_cast<f32>(h.size_z),
             };
             // Lightmap UV uses the same parameterization as `uv` — the
             // light channel lives next to the colormap (DESIGN §9.2).
-            v.lightmap_uv  = v.uv;
-            v.color        = pack_splat(splat_at_texel(h, x, z));
+            v.lightmap_uv = v.uv;
+            v.color = pack_splat(splat_at_texel(h, x, z));
 
             c.vertices.push_back(v);
         }
@@ -115,15 +117,13 @@ inline CdlodChunk build_chunk(const HeightmapDesc& h,
     const u32 quads_z = verts_z - 1;
     c.indices.reserve(static_cast<usize>(quads_x) * quads_z * 6u);
 
-    auto idx = [verts_x](u32 vx, u32 vz) {
-        return vz * verts_x + vx;
-    };
+    auto idx = [verts_x](u32 vx, u32 vz) { return vz * verts_x + vx; };
 
     for (u32 qz = 0; qz < quads_z; ++qz) {
         for (u32 qx = 0; qx < quads_x; ++qx) {
-            const u32 i00 = idx(qx,     qz);
+            const u32 i00 = idx(qx, qz);
             const u32 i10 = idx(qx + 1, qz);
-            const u32 i01 = idx(qx,     qz + 1);
+            const u32 i01 = idx(qx, qz + 1);
             const u32 i11 = idx(qx + 1, qz + 1);
             // Triangle 1: (00, 01, 10)
             c.indices.push_back(i00);
@@ -136,13 +136,14 @@ inline CdlodChunk build_chunk(const HeightmapDesc& h,
         }
     }
 
-    if (y_min > y_max) { y_min = 0.0f; y_max = 0.0f; }
-    c.bounds.min = math::Vec3{
-        static_cast<f32>(x0) * h.spacing, y_min, static_cast<f32>(z0) * h.spacing
-    };
-    c.bounds.max = math::Vec3{
-        static_cast<f32>(xN) * h.spacing, y_max, static_cast<f32>(zN) * h.spacing
-    };
+    if (y_min > y_max) {
+        y_min = 0.0f;
+        y_max = 0.0f;
+    }
+    c.bounds.min =
+        math::Vec3{static_cast<f32>(x0) * h.spacing, y_min, static_cast<f32>(z0) * h.spacing};
+    c.bounds.max =
+        math::Vec3{static_cast<f32>(xN) * h.spacing, y_max, static_cast<f32>(zN) * h.spacing};
     return c;
 }
 
@@ -168,14 +169,15 @@ inline std::vector<CdlodChunk> build_all_chunks(const HeightmapDesc& h) {
 // CDLOD morph and is exposed here so unit tests can pin the value.
 PSY_FORCEINLINE f32 cdlod_morph_t(math::Vec3 vertex_world,
                                   math::Vec3 eye,
-                                  f32        near_band,
-                                  f32        far_band) noexcept {
-    if (far_band <= near_band) return 0.0f;
+                                  f32 near_band,
+                                  f32 far_band) noexcept {
+    if (far_band <= near_band)
+        return 0.0f;
     const f32 dx = vertex_world.x - eye.x;
     const f32 dy = vertex_world.y - eye.y;
     const f32 dz = vertex_world.z - eye.z;
-    const f32 d  = std::sqrt(dx * dx + dy * dy + dz * dz);
-    const f32 t  = (d - near_band) / (far_band - near_band);
+    const f32 d = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const f32 t = (d - near_band) / (far_band - near_band);
     return clamp_f32(t, 0.0f, 1.0f);
 }
 
@@ -244,11 +246,10 @@ PSY_FORCEINLINE f32 morph_height(f32 y_fine, f32 y_coarse, f32 t) noexcept {
 // (only one axis on-grid), it's the linear blend of the two on-axis
 // neighbors. At the interior (off-grid in both axes), it's the bilinear
 // blend of the 4 corners.
-PSY_FORCEINLINE f32 coarse_height_at_lod(const HeightmapDesc& h,
-                                         i32 x, i32 z,
-                                         u32 lod_level) noexcept {
-    if (lod_level == 0) return height_at_texel(h, x, z);  // identity
-    const i32 stride = 1 << lod_level;     // 2^L
+PSY_FORCEINLINE f32 coarse_height_at_lod(const HeightmapDesc& h, i32 x, i32 z, u32 lod_level) noexcept {
+    if (lod_level == 0)
+        return height_at_texel(h, x, z);  // identity
+    const i32 stride = 1 << lod_level;    // 2^L
     // Snap down to the nearest stride-aligned coarse grid corner.
     // Use bit-and on positive coords; for negative coords we'd want floor,
     // but heightmap texels are always in [0, size) and the caller has
@@ -273,7 +274,7 @@ PSY_FORCEINLINE f32 coarse_height_at_lod(const HeightmapDesc& h,
 // vertex's Y at submit time (or in a vertex pre-pass — the cost is sub-
 // millisecond for our chunk counts).
 struct CdlodMorph {
-    u32 lod_level    = 0;     // 0 = leaf, 1 = stride-2, 2 = stride-4, …
+    u32 lod_level = 0;        // 0 = leaf, 1 = stride-2, 2 = stride-4, …
     f32 morph_factor = 0.0f;  // t∈[0,1]: 0 = fine, 1 = coarse
 };
 
@@ -290,12 +291,13 @@ struct CdlodMorph {
 // `lod_distances_count` lets the caller pass any number of LOD bands; we
 // clamp to the last one for distances beyond the farthest band.
 inline CdlodMorph compute_chunk_morph(const CdlodChunk& chunk,
-                                      math::Vec3        eye,
-                                      const f32*        lod_distances,
-                                      u32               lod_distances_count,
-                                      f32               morph_start_fraction = 0.667f) noexcept {
+                                      math::Vec3 eye,
+                                      const f32* lod_distances,
+                                      u32 lod_distances_count,
+                                      f32 morph_start_fraction = 0.667f) noexcept {
     CdlodMorph m{};
-    if (!lod_distances || lod_distances_count == 0) return m;
+    if (!lod_distances || lod_distances_count == 0)
+        return m;
 
     // Chunk center for the distance query.
     const f32 cx = 0.5f * (chunk.bounds.min.x + chunk.bounds.max.x);
@@ -304,16 +306,19 @@ inline CdlodMorph compute_chunk_morph(const CdlodChunk& chunk,
     const f32 dx = cx - eye.x;
     const f32 dy = cy - eye.y;
     const f32 dz = cz - eye.z;
-    const f32 d  = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const f32 d = std::sqrt(dx * dx + dy * dy + dz * dz);
 
     // Find which LOD bin we're in.
     u32 lod = 0;
     for (u32 i = 0; i < lod_distances_count; ++i) {
-        if (d <= lod_distances[i]) { lod = i; break; }
-        lod = i;     // overshoot — keep last
+        if (d <= lod_distances[i]) {
+            lod = i;
+            break;
+        }
+        lod = i;  // overshoot — keep last
         if (i + 1 == lod_distances_count) {
             // Past the farthest band: stay at the coarsest LOD, morph=1.
-            m.lod_level    = lod;
+            m.lod_level = lod;
             m.morph_factor = 1.0f;
             return m;
         }
@@ -321,7 +326,7 @@ inline CdlodMorph compute_chunk_morph(const CdlodChunk& chunk,
     m.lod_level = lod;
 
     // Inside the band [start, end] interpolate morph from 0 → 1.
-    const f32 end   = lod_distances[lod];
+    const f32 end = lod_distances[lod];
     const f32 start = morph_start_fraction * end;
     if (d <= start) {
         m.morph_factor = 0.0f;
@@ -343,16 +348,18 @@ inline CdlodMorph compute_chunk_morph(const CdlodChunk& chunk,
 // post-morph Y is identical because `coarse_height_at_lod` reads the same
 // texel corners and `morph_height` is a deterministic linear blend.
 PSY_FORCEINLINE f32 apply_vertex_morph(const HeightmapDesc& h,
-                                       i32                  texel_x,
-                                       i32                  texel_z,
-                                       const CdlodMorph&    morph) noexcept {
-    const f32 y_fine   = height_at_texel(h, texel_x, texel_z);
-    if (morph.lod_level == 0 || morph.morph_factor <= 0.0f) return y_fine;
+                                       i32 texel_x,
+                                       i32 texel_z,
+                                       const CdlodMorph& morph) noexcept {
+    const f32 y_fine = height_at_texel(h, texel_x, texel_z);
+    if (morph.lod_level == 0 || morph.morph_factor <= 0.0f)
+        return y_fine;
     const f32 y_coarse = coarse_height_at_lod(h, texel_x, texel_z, morph.lod_level);
     // Special-case the endpoints so callers / tests can reason about
     // bitwise reproduction at morph=0 / morph=1 (the lerp `a + (b-a)*t` is
     // mathematically t=1 → b, but in float `a + b - a` ≠ b for some `a`).
-    if (morph.morph_factor >= 1.0f) return y_coarse;
+    if (morph.morph_factor >= 1.0f)
+        return y_coarse;
     return morph_height(y_fine, y_coarse, morph.morph_factor);
 }
 
@@ -365,30 +372,36 @@ PSY_FORCEINLINE f32 apply_vertex_morph(const HeightmapDesc& h,
 // state still get a leaf chunk). `build_chunk_with_morph` is the new entry
 // point for Wave B-aware callers.
 inline CdlodChunk build_chunk_with_morph(const HeightmapDesc& h,
-                                         u32                  chunk_x,
-                                         u32                  chunk_z,
-                                         const CdlodMorph&    morph) noexcept {
+                                         u32 chunk_x,
+                                         u32 chunk_z,
+                                         const CdlodMorph& morph) noexcept {
     CdlodChunk c = build_chunk(h, chunk_x, chunk_z);
-    if (morph.lod_level == 0 || morph.morph_factor <= 0.0f) return c;
+    if (morph.lod_level == 0 || morph.morph_factor <= 0.0f)
+        return c;
 
     // Walk the chunk's verts and rewrite each Y. The X/Z positions encode
     // the texel coord directly (Wave A places verts at `texel*spacing`),
     // so we recover the texel from a divide. Spacing > 0 is guaranteed —
     // `build_chunk` early-outs on size_x < 2 / size_z < 2.
     const f32 inv_spacing = 1.0f / (h.spacing > 0.0f ? h.spacing : 1.0f);
-    f32 y_min =  1e30f;
+    f32 y_min = 1e30f;
     f32 y_max = -1e30f;
     for (auto& v : c.vertices) {
         const i32 tx_i = static_cast<i32>(std::floor(v.position.x * inv_spacing + 0.5f));
         const i32 tz_i = static_cast<i32>(std::floor(v.position.z * inv_spacing + 0.5f));
         v.position.y = apply_vertex_morph(h, tx_i, tz_i, morph);
-        if (v.position.y < y_min) y_min = v.position.y;
-        if (v.position.y > y_max) y_max = v.position.y;
+        if (v.position.y < y_min)
+            y_min = v.position.y;
+        if (v.position.y > y_max)
+            y_max = v.position.y;
     }
-    if (y_min > y_max) { y_min = 0.0f; y_max = 0.0f; }
+    if (y_min > y_max) {
+        y_min = 0.0f;
+        y_max = 0.0f;
+    }
     c.bounds.min.y = y_min;
     c.bounds.max.y = y_max;
-    c.lod          = morph.lod_level;
+    c.lod = morph.lod_level;
     return c;
 }
 

@@ -11,16 +11,19 @@
 
 namespace psynder::net {
 
-HostImpl::~HostImpl() { stop(); }
+HostImpl::~HostImpl() {
+    stop();
+}
 
 bool HostImpl::start(const HostDesc& desc) noexcept {
-    if (started_) return false;
-    port_      = desc.port;
+    if (started_)
+        return false;
+    port_ = desc.port;
     max_peers_ = desc.max_peers;
-    mode_      = desc.mode;
-    tick_      = 0;
+    mode_ = desc.mode;
+    tick_ = 0;
     next_peer_handle_ = 1;
-    next_peer_index_  = 0;
+    next_peer_index_ = 0;
     peers_.clear();
     inbox_.clear();
     pending_ack_peers_.clear();
@@ -34,10 +37,11 @@ bool HostImpl::start(const HostDesc& desc) noexcept {
 }
 
 void HostImpl::stop() noexcept {
-    if (!started_) return;
+    if (!started_)
+        return;
     LoopbackBus::Get().unbind(port_);
-    started_  = false;
-    port_     = 0;
+    started_ = false;
+    port_ = 0;
     peers_.clear();
     inbox_.clear();
     pending_ack_peers_.clear();
@@ -50,31 +54,32 @@ PeerState* HostImpl::find_peer_(PeerId id) noexcept {
 
 PeerState* HostImpl::find_peer_by_port_(u16 port) noexcept {
     for (auto& [k, v] : peers_) {
-        if (v.remote_port == port) return &v;
+        if (v.remote_port == port)
+            return &v;
     }
     return nullptr;
 }
 
 PeerId HostImpl::register_peer_(u16 remote_port) noexcept {
-    if (peers_.size() >= max_peers_) return PeerId{};
-    PeerId h{ next_peer_handle_++ };
+    if (peers_.size() >= max_peers_)
+        return PeerId{};
+    PeerId h{next_peer_handle_++};
     // Build the per-peer reliability + ack tracker with the host's
     // configured selective-ACK width (default Bits32 ⇒ Wave-A wire form).
-    auto [it, inserted] = peers_.emplace(
-        std::piecewise_construct,
-        std::forward_as_tuple(h.raw),
-        std::forward_as_tuple());
+    auto [it, inserted] =
+        peers_.emplace(std::piecewise_construct, std::forward_as_tuple(h.raw), std::forward_as_tuple());
     PeerState& ps = it->second;
-    ps.id          = h;
+    ps.id = h;
     ps.remote_port = remote_port;
-    ps.peer_index  = next_peer_index_++;
-    ps.send        = Reliability(window_size_);
-    ps.recv        = AckTracker(window_size_);
+    ps.peer_index = next_peer_index_++;
+    ps.send = Reliability(window_size_);
+    ps.recv = AckTracker(window_size_);
     return h;
 }
 
 PeerId HostImpl::connect(u16 dest_port) noexcept {
-    if (!started_) return PeerId{};
+    if (!started_)
+        return PeerId{};
     // Reuse existing peer state if we already know about that port.
     if (PeerState* existing = find_peer_by_port_(dest_port)) {
         return existing->id;
@@ -82,33 +87,37 @@ PeerId HostImpl::connect(u16 dest_port) noexcept {
     return register_peer_(dest_port);
 }
 
-void HostImpl::send_raw_(u16 dst_port, const FrameHeader& h,
-                         std::span<const u8> payload) noexcept {
+void HostImpl::send_raw_(u16 dst_port, const FrameHeader& h, std::span<const u8> payload) noexcept {
     u8 buf[kFrameHeaderBytes + 1500];
-    if (payload.size() > sizeof(buf) - kFrameHeaderBytes) return;
-    if (!encode_header(h, std::span<u8>(buf, kFrameHeaderBytes))) return;
+    if (payload.size() > sizeof(buf) - kFrameHeaderBytes)
+        return;
+    if (!encode_header(h, std::span<u8>(buf, kFrameHeaderBytes)))
+        return;
     if (!payload.empty()) {
         std::copy(payload.begin(), payload.end(), buf + kFrameHeaderBytes);
     }
-    LoopbackBus::Get().send_to(port_, dst_port,
+    LoopbackBus::Get().send_to(port_,
+                               dst_port,
                                std::span<const u8>(buf, kFrameHeaderBytes + payload.size()));
 }
 
-void HostImpl::send(PeerId peer, std::span<const u8> bytes,
-                    bool reliable, u8 channel) noexcept {
-    if (!started_) return;
+void HostImpl::send(PeerId peer, std::span<const u8> bytes, bool reliable, u8 channel) noexcept {
+    if (!started_)
+        return;
     PeerState* ps = find_peer_(peer);
-    if (!ps) return;
+    if (!ps)
+        return;
 
     FrameHeader h;
-    h.channel     = channel;
+    h.channel = channel;
     h.payload_len = u16(bytes.size());
     ps->recv.snapshot(h.ack_base, h.ack_bits);
 
     if (reliable) {
         u32 seq = ps->send.enqueue(bytes, tick_);
-        if (seq == 0) return;  // window full; caller backs off
-        h.seq    = seq;
+        if (seq == 0)
+            return;  // window full; caller backs off
+        h.seq = seq;
         h.flags |= kFlagReliable;
         ps->send.mark_transmitted(seq, tick_);
     } else {
@@ -118,10 +127,13 @@ void HostImpl::send(PeerId peer, std::span<const u8> bytes,
 }
 
 void HostImpl::on_datagram(u16 src_port, std::span<const u8> bytes) noexcept {
-    if (!started_) return;
+    if (!started_)
+        return;
     FrameHeader h;
-    if (!decode_header(bytes, h)) return;
-    if (bytes.size() < kFrameHeaderBytes + h.payload_len) return;
+    if (!decode_header(bytes, h))
+        return;
+    if (bytes.size() < kFrameHeaderBytes + h.payload_len)
+        return;
     std::span<const u8> payload(bytes.data() + kFrameHeaderBytes, h.payload_len);
 
     // Locate / auto-register sender. Loopback datagrams from an unknown port
@@ -130,9 +142,11 @@ void HostImpl::on_datagram(u16 src_port, std::span<const u8> bytes) noexcept {
     PeerState* ps = find_peer_by_port_(src_port);
     if (!ps) {
         PeerId id = register_peer_(src_port);
-        if (!id.valid()) return;  // peer table full; drop
+        if (!id.valid())
+            return;  // peer table full; drop
         ps = find_peer_(id);
-        if (!ps) return;
+        if (!ps)
+            return;
     }
 
     // Apply piggy-backed ack from the peer.
@@ -150,13 +164,14 @@ void HostImpl::on_datagram(u16 src_port, std::span<const u8> bytes) noexcept {
         handle_unreliable_in_(*ps, h, payload);
     }
     // Owe this peer an ack on the next flush.
-    if (std::find(pending_ack_peers_.begin(), pending_ack_peers_.end(), ps->id)
-        == pending_ack_peers_.end()) {
+    if (std::find(pending_ack_peers_.begin(), pending_ack_peers_.end(), ps->id) ==
+        pending_ack_peers_.end()) {
         pending_ack_peers_.push_back(ps->id);
     }
 }
 
-void HostImpl::handle_reliable_in_(PeerState& ps, const FrameHeader& h,
+void HostImpl::handle_reliable_in_(PeerState& ps,
+                                   const FrameHeader& h,
                                    std::span<const u8> payload) noexcept {
     // observe() handles the 32-bit selective-ACK window dedup; the
     // in-order delivery cursor + ooo_buffer handles dedup for older holes
@@ -171,8 +186,8 @@ void HostImpl::handle_reliable_in_(PeerState& ps, const FrameHeader& h,
     }
     if (h.seq == ps.next_deliver) {
         InboundMessage im{};
-        im.from     = ps.id;
-        im.channel  = h.channel;
+        im.from = ps.id;
+        im.channel = h.channel;
         im.reliable = true;
         im.bytes.assign(payload.begin(), payload.end());
         inbox_.push_back(std::move(im));
@@ -187,11 +202,12 @@ void HostImpl::handle_reliable_in_(PeerState& ps, const FrameHeader& h,
     }
 }
 
-void HostImpl::handle_unreliable_in_(PeerState& ps, const FrameHeader& /*h*/,
+void HostImpl::handle_unreliable_in_(PeerState& ps,
+                                     const FrameHeader& /*h*/,
                                      std::span<const u8> payload) noexcept {
     InboundMessage im{};
-    im.from     = ps.id;
-    im.channel  = kChannelDefault;
+    im.from = ps.id;
+    im.channel = kChannelDefault;
     im.reliable = false;
     im.bytes.assign(payload.begin(), payload.end());
     inbox_.push_back(std::move(im));
@@ -200,12 +216,13 @@ void HostImpl::handle_unreliable_in_(PeerState& ps, const FrameHeader& /*h*/,
 void HostImpl::drain_ooo_(PeerState& ps) noexcept {
     for (;;) {
         auto it = ps.ooo_buffer.find(ps.next_deliver);
-        if (it == ps.ooo_buffer.end()) break;
+        if (it == ps.ooo_buffer.end())
+            break;
         InboundMessage im{};
-        im.from     = ps.id;
+        im.from = ps.id;
         im.reliable = true;
-        im.channel  = kChannelDefault;
-        im.bytes    = std::move(it->second);
+        im.channel = kChannelDefault;
+        im.bytes = std::move(it->second);
         inbox_.push_back(std::move(im));
         ps.ooo_buffer.erase(it);
         ++ps.next_deliver;
@@ -214,16 +231,18 @@ void HostImpl::drain_ooo_(PeerState& ps) noexcept {
 
 void HostImpl::run_rto_(PeerState& ps) noexcept {
     std::vector<u32> rt;
-    if (ps.send.collect_retransmits(tick_, kDefaultRtoTicks, rt) == 0) return;
+    if (ps.send.collect_retransmits(tick_, kDefaultRtoTicks, rt) == 0)
+        return;
 
     for (u32 slot : rt) {
         SendEntry& e = ps.send.entry(slot);
-        if (!e.in_use || e.acked) continue;
+        if (!e.in_use || e.acked)
+            continue;
         FrameHeader h;
-        h.channel     = kChannelDefault;
+        h.channel = kChannelDefault;
         h.payload_len = u16(e.payload.size());
-        h.flags       = kFlagReliable;
-        h.seq         = e.seq;
+        h.flags = kFlagReliable;
+        h.seq = e.seq;
         ps.recv.snapshot(h.ack_base, h.ack_bits);
         send_raw_(ps.remote_port, h, e.payload);
         ps.send.mark_transmitted(e.seq, tick_);
@@ -233,16 +252,18 @@ void HostImpl::run_rto_(PeerState& ps) noexcept {
 void HostImpl::flush_acks_(PeerState& ps) noexcept {
     // Emit a tiny ack-only datagram for the peer.
     FrameHeader h;
-    h.flags       = kFlagAckOnly;
-    h.seq         = 0;
+    h.flags = kFlagAckOnly;
+    h.seq = 0;
     h.payload_len = 0;
     ps.recv.snapshot(h.ack_base, h.ack_bits);
-    if (h.ack_base == 0) return;  // nothing to ack yet.
+    if (h.ack_base == 0)
+        return;  // nothing to ack yet.
     send_raw_(ps.remote_port, h, std::span<const u8>{});
 }
 
 u32 HostImpl::poll(std::vector<InboundMessage>& out) noexcept {
-    if (!started_) return 0;
+    if (!started_)
+        return 0;
     u32 n = u32(inbox_.size());
     for (InboundMessage& m : inbox_) {
         out.push_back(std::move(m));
@@ -252,7 +273,8 @@ u32 HostImpl::poll(std::vector<InboundMessage>& out) noexcept {
 }
 
 void HostImpl::tick() noexcept {
-    if (!started_) return;
+    if (!started_)
+        return;
     ++tick_;
     for (auto& [k, v] : peers_) {
         run_rto_(v);
@@ -269,7 +291,7 @@ void HostImpl::tick() noexcept {
 void HostImpl::lockstep_submit(u32 tick, std::span<const u8> input) noexcept {
     LockstepInput li{};
     li.peer_index = 0;  // owner is always peer_index 0 on its own host.
-    li.tick       = tick;
+    li.tick = tick;
     li.payload.assign(input.begin(), input.end());
     lockstep_.submit(std::move(li));
 }
@@ -286,7 +308,8 @@ LockstepBundle HostImpl::lockstep_take(u32 tick) noexcept {
 
 HostImpl* make_test_host(const HostDesc& desc) noexcept {
     auto* h = new (std::nothrow) HostImpl();
-    if (!h) return nullptr;
+    if (!h)
+        return nullptr;
     if (!h->start(desc)) {
         delete h;
         return nullptr;
@@ -295,7 +318,8 @@ HostImpl* make_test_host(const HostDesc& desc) noexcept {
 }
 
 void destroy_test_host(HostImpl* h) noexcept {
-    if (!h) return;
+    if (!h)
+        return;
     h->stop();
     delete h;
 }

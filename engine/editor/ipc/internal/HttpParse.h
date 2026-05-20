@@ -29,16 +29,23 @@ struct Request {
 
     const std::string* find(std::string_view name) const noexcept {
         for (const auto& h : headers) {
-            if (h.name.size() != name.size()) continue;
+            if (h.name.size() != name.size())
+                continue;
             bool eq = true;
             for (::psynder::usize i = 0; i < name.size(); ++i) {
                 char a = h.name[i];
                 char b = name[i];
-                if (a >= 'A' && a <= 'Z') a = static_cast<char>(a + ('a' - 'A'));
-                if (b >= 'A' && b <= 'Z') b = static_cast<char>(b + ('a' - 'A'));
-                if (a != b) { eq = false; break; }
+                if (a >= 'A' && a <= 'Z')
+                    a = static_cast<char>(a + ('a' - 'A'));
+                if (b >= 'A' && b <= 'Z')
+                    b = static_cast<char>(b + ('a' - 'A'));
+                if (a != b) {
+                    eq = false;
+                    break;
+                }
             }
-            if (eq) return &h.value;
+            if (eq)
+                return &h.value;
         }
         return nullptr;
     }
@@ -51,30 +58,37 @@ inline ::psynder::usize parse_request(const char* p, ::psynder::usize n, Request
     static constexpr const char* kEoh = "\r\n\r\n";
     ::psynder::usize eoh = static_cast<::psynder::usize>(-1);
     for (::psynder::usize i = 0; i + 4 <= n; ++i) {
-        if (p[i] == '\r' && p[i+1] == '\n' && p[i+2] == '\r' && p[i+3] == '\n') {
+        if (p[i] == '\r' && p[i + 1] == '\n' && p[i + 2] == '\r' && p[i + 3] == '\n') {
             eoh = i;
             break;
         }
     }
     if (eoh == static_cast<::psynder::usize>(-1)) {
-        if (n > 32 * 1024) return SIZE_MAX;  // too big without headers terminating
+        if (n > 32 * 1024)
+            return SIZE_MAX;  // too big without headers terminating
         return 0;
     }
 
     // Request line: METHOD SP PATH SP VERSION CRLF
     ::psynder::usize i = 0;
-    while (i < eoh && p[i] != ' ') ++i;
-    if (i == eoh) return SIZE_MAX;
+    while (i < eoh && p[i] != ' ')
+        ++i;
+    if (i == eoh)
+        return SIZE_MAX;
     req.method.assign(p, i);
     ++i;
     ::psynder::usize j = i;
-    while (j < eoh && p[j] != ' ') ++j;
-    if (j == eoh) return SIZE_MAX;
+    while (j < eoh && p[j] != ' ')
+        ++j;
+    if (j == eoh)
+        return SIZE_MAX;
     req.path.assign(p + i, j - i);
     ++j;
     ::psynder::usize k = j;
-    while (k < eoh && p[k] != '\r') ++k;
-    if (k == eoh || p[k] != '\r' || k + 1 >= eoh || p[k+1] != '\n') return SIZE_MAX;
+    while (k < eoh && p[k] != '\r')
+        ++k;
+    if (k == eoh || p[k] != '\r' || k + 1 >= eoh || p[k + 1] != '\n')
+        return SIZE_MAX;
     req.version.assign(p + j, k - j);
 
     // Headers — the last header line ends at p[eoh..eoh+1] = "\r\n" (eoh is
@@ -82,20 +96,26 @@ inline ::psynder::usize parse_request(const char* p, ::psynder::usize n, Request
     ::psynder::usize cur = k + 2;  // past request-line CRLF
     while (cur < eoh) {
         ::psynder::usize line_end = cur;
-        while (line_end < eoh && p[line_end] != '\r') ++line_end;
+        while (line_end < eoh && p[line_end] != '\r')
+            ++line_end;
         // The last header's CRLF starts exactly at eoh; that's valid.
-        if (line_end > eoh) return SIZE_MAX;
+        if (line_end > eoh)
+            return SIZE_MAX;
         ::psynder::usize colon = cur;
-        while (colon < line_end && p[colon] != ':') ++colon;
-        if (colon >= line_end) return SIZE_MAX;
+        while (colon < line_end && p[colon] != ':')
+            ++colon;
+        if (colon >= line_end)
+            return SIZE_MAX;
         Header h;
         h.name.assign(p + cur, colon - cur);
         ++colon;
-        while (colon < line_end && (p[colon] == ' ' || p[colon] == '\t')) ++colon;
+        while (colon < line_end && (p[colon] == ' ' || p[colon] == '\t'))
+            ++colon;
         h.value.assign(p + colon, line_end - colon);
         req.headers.emplace_back(std::move(h));
-        if (line_end == eoh) break;  // we just consumed the last header
-        cur = line_end + 2;          // skip the header's CRLF
+        if (line_end == eoh)
+            break;           // we just consumed the last header
+        cur = line_end + 2;  // skip the header's CRLF
     }
     (void)kEoh;
     return eoh + 4;  // include trailing CRLF CRLF

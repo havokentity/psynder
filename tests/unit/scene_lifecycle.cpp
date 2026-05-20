@@ -81,14 +81,19 @@ TEST_CASE("scene: many create/destroy cycles do not leak slots", "[scene][lifecy
     for (int c = 0; c < kCycles; ++c) {
         std::vector<Entity> es;
         es.reserve(kPerCycle);
-        for (int i = 0; i < kPerCycle; ++i) es.push_back(w.create());
-        for (auto e : es) REQUIRE(w.alive(e));
-        for (auto e : es) w.destroy(e);
-        for (auto e : es) REQUIRE_FALSE(w.alive(e));
+        for (int i = 0; i < kPerCycle; ++i)
+            es.push_back(w.create());
+        for (auto e : es)
+            REQUIRE(w.alive(e));
+        for (auto e : es)
+            w.destroy(e);
+        for (auto e : es)
+            REQUIRE_FALSE(w.alive(e));
     }
 }
 
-TEST_CASE("scene: add component places entity in archetype and roundtrips via get", "[scene][lifecycle][component]") {
+TEST_CASE("scene: add component places entity in archetype and roundtrips via get",
+          "[scene][lifecycle][component]") {
     drain_world();
     auto& w = World::Get();
 
@@ -114,7 +119,8 @@ TEST_CASE("scene: add component places entity in archetype and roundtrips via ge
     w.destroy(e);
 }
 
-TEST_CASE("scene: add/remove migrates between archetypes preserving overlap", "[scene][lifecycle][archetype]") {
+TEST_CASE("scene: add/remove migrates between archetypes preserving overlap",
+          "[scene][lifecycle][archetype]") {
     drain_world();
     auto& w = World::Get();
 

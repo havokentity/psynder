@@ -23,7 +23,7 @@
 #include <cstring>
 #include <vector>
 
-namespace pwo  = psynder::world::outdoor;
+namespace pwo = psynder::world::outdoor;
 namespace pwod = psynder::world::outdoor::detail;
 
 namespace {
@@ -61,11 +61,11 @@ TEST_CASE("CDLOD chunk grid covers the whole map", "[world_outdoor][cdlod]") {
     auto raw = make_heightmap(W, H);
 
     pwo::HeightmapDesc desc{};
-    desc.size_x       = W;
-    desc.size_z       = H;
-    desc.spacing      = 1.0f;
+    desc.size_x = W;
+    desc.size_z = H;
+    desc.spacing = 1.0f;
     desc.height_scale = 0.01f;
-    desc.heights      = raw.data();
+    desc.heights = raw.data();
 
     REQUIRE(pwod::chunk_count_x(desc) == 2u);
     REQUIRE(pwod::chunk_count_z(desc) == 2u);
@@ -83,27 +83,26 @@ TEST_CASE("CDLOD chunk grid covers the whole map", "[world_outdoor][cdlod]") {
     }
 }
 
-TEST_CASE("CDLOD stitching is watertight along shared edges",
-          "[world_outdoor][cdlod][watertight]") {
+TEST_CASE("CDLOD stitching is watertight along shared edges", "[world_outdoor][cdlod][watertight]") {
     // A 65×65 map covers two columns of leaf chunks (chunk 0 = quads 0..63,
     // chunk 1 = quads 64..63 — which is empty given the clamp). Use a 128×64
     // map instead: that gives a clean 2×1 chunk grid with a shared seam at
     // x=64.
-    const std::uint32_t W = 129;   // 2 chunks of 64 quads + 1
-    const std::uint32_t H = 65;    // 1 chunk of 64 quads + 1
+    const std::uint32_t W = 129;  // 2 chunks of 64 quads + 1
+    const std::uint32_t H = 65;   // 1 chunk of 64 quads + 1
     auto raw = make_heightmap(W, H);
 
     pwo::HeightmapDesc desc{};
-    desc.size_x       = W;
-    desc.size_z       = H;
-    desc.spacing      = 0.5f;
+    desc.size_x = W;
+    desc.size_z = H;
+    desc.spacing = 0.5f;
     desc.height_scale = 0.05f;
-    desc.heights      = raw.data();
+    desc.heights = raw.data();
 
     REQUIRE(pwod::chunk_count_x(desc) == 2u);
     REQUIRE(pwod::chunk_count_z(desc) == 1u);
 
-    const auto left  = pwod::build_chunk(desc, 0, 0);
+    const auto left = pwod::build_chunk(desc, 0, 0);
     const auto right = pwod::build_chunk(desc, 1, 0);
 
     REQUIRE_FALSE(left.vertices.empty());
@@ -112,10 +111,10 @@ TEST_CASE("CDLOD stitching is watertight along shared edges",
     // The shared edge is x = kChunkDim (in texel coords) = 64. In the left
     // chunk, those are the LAST column of verts (vx = kChunkDim). In the
     // right chunk, those are the FIRST column (vx = 0).
-    const std::uint32_t L_verts_x = pwod::kChunkDim + 1u;     // 65
+    const std::uint32_t L_verts_x = pwod::kChunkDim + 1u;  // 65
     const std::uint32_t R_verts_x =
-        std::min<std::uint32_t>(pwod::kChunkDim + 1u, W - pwod::kChunkDim); // 65
-    const std::uint32_t L_verts_z = static_cast<std::uint32_t>(left.vertices.size())  / L_verts_x;
+        std::min<std::uint32_t>(pwod::kChunkDim + 1u, W - pwod::kChunkDim);  // 65
+    const std::uint32_t L_verts_z = static_cast<std::uint32_t>(left.vertices.size()) / L_verts_x;
     const std::uint32_t R_verts_z = static_cast<std::uint32_t>(right.vertices.size()) / R_verts_x;
     REQUIRE(L_verts_z == 65u);
     REQUIRE(R_verts_z == 65u);
@@ -123,7 +122,7 @@ TEST_CASE("CDLOD stitching is watertight along shared edges",
     // Walk the shared seam: for every Z, left.last-column must equal
     // right.first-column, BITWISE.
     for (std::uint32_t vz = 0; vz < L_verts_z; ++vz) {
-        const auto& vL = left.vertices [vz * L_verts_x + (L_verts_x - 1u)];
+        const auto& vL = left.vertices[vz * L_verts_x + (L_verts_x - 1u)];
         const auto& vR = right.vertices[vz * R_verts_x + 0u];
         INFO("seam row vz=" << vz);
         REQUIRE(floats_bitwise_equal(vL.position.x, vR.position.x));
@@ -140,19 +139,18 @@ TEST_CASE("CDLOD stitching is watertight along shared edges",
     }
 }
 
-TEST_CASE("CDLOD chunk vertex positions reproduce the heightmap exactly",
-          "[world_outdoor][cdlod]") {
+TEST_CASE("CDLOD chunk vertex positions reproduce the heightmap exactly", "[world_outdoor][cdlod]") {
     // Each leaf vertex should sit at world = (texel*spacing, h*height_scale).
     // No per-chunk drift, no half-texel offset, no implicit centering.
     const std::uint32_t W = 33;
     const std::uint32_t H = 33;
     auto raw = make_heightmap(W, H);
     pwo::HeightmapDesc desc{};
-    desc.size_x       = W;
-    desc.size_z       = H;
-    desc.spacing      = 2.0f;
+    desc.size_x = W;
+    desc.size_z = H;
+    desc.spacing = 2.0f;
     desc.height_scale = 0.25f;
-    desc.heights      = raw.data();
+    desc.heights = raw.data();
 
     REQUIRE(pwod::chunk_count_x(desc) == 1u);
     REQUIRE(pwod::chunk_count_z(desc) == 1u);
@@ -162,7 +160,11 @@ TEST_CASE("CDLOD chunk vertex positions reproduce the heightmap exactly",
 
     // Sample 5 reference positions and confirm they reproduce input.
     const std::pair<std::uint32_t, std::uint32_t> samples[] = {
-        {0,0}, {17,9}, {0,32}, {32,0}, {32,32},
+        {0, 0},
+        {17, 9},
+        {0, 32},
+        {32, 0},
+        {32, 32},
     };
     const std::uint32_t verts_x = W;
     for (auto [sx, sz] : samples) {
@@ -170,7 +172,7 @@ TEST_CASE("CDLOD chunk vertex positions reproduce the heightmap exactly",
         REQUIRE(floats_bitwise_equal(v.position.x, static_cast<float>(sx) * desc.spacing));
         REQUIRE(floats_bitwise_equal(v.position.z, static_cast<float>(sz) * desc.spacing));
         const std::uint16_t h = raw[static_cast<std::size_t>(sz) * W + sx];
-        const float         expected_y = static_cast<float>(h) * desc.height_scale;
+        const float expected_y = static_cast<float>(h) * desc.height_scale;
         REQUIRE(floats_bitwise_equal(v.position.y, expected_y));
     }
 }
@@ -180,11 +182,11 @@ TEST_CASE("CDLOD splat weights normalize to 1", "[world_outdoor][cdlod][splat]")
     const std::uint32_t H = 17;
     auto raw = make_heightmap(W, H);
     pwo::HeightmapDesc desc{};
-    desc.size_x       = W;
-    desc.size_z       = H;
-    desc.spacing      = 1.0f;
+    desc.size_x = W;
+    desc.size_z = H;
+    desc.spacing = 1.0f;
     desc.height_scale = 0.1f;
-    desc.heights      = raw.data();
+    desc.heights = raw.data();
 
     for (std::int32_t z = 0; z < static_cast<std::int32_t>(H); ++z) {
         for (std::int32_t x = 0; x < static_cast<std::int32_t>(W); ++x) {
@@ -201,7 +203,7 @@ TEST_CASE("CDLOD splat weights normalize to 1", "[world_outdoor][cdlod][splat]")
 }
 
 TEST_CASE("CDLOD morph parameter clamps to [0,1]", "[world_outdoor][cdlod]") {
-    const psynder::math::Vec3 eye{ 0.0f, 0.0f, 0.0f };
+    const psynder::math::Vec3 eye{0.0f, 0.0f, 0.0f};
     // Inside the near band — morph should be 0.
     REQUIRE(pwod::cdlod_morph_t(psynder::math::Vec3{10.0f, 0.0f, 0.0f}, eye, 20.0f, 80.0f) == 0.0f);
     // Beyond the far band — morph should be 1.

@@ -36,15 +36,19 @@ struct PSY_CACHELINE_ALIGN ChaseLevDeque {
     // Result of try_pop / try_steal. We return an index plus a status because
     // both 0-job and empty-deque need to be distinguishable from a race.
     enum class Status : u8 { Ok, Empty, Aborted };
-    struct PopResult { u32 index; Status status; };
+    struct PopResult {
+        u32 index;
+        Status status;
+    };
 
     // Allocate the ring buffer. `capacity` MUST be a power of two.
     void init(u32 capacity) noexcept {
         // Round capacity up to next power of two if caller didn't.
         u32 c = 1;
-        while (c < capacity) c <<= 1;
-        capacity_      = c;
-        mask_          = c - 1;
+        while (c < capacity)
+            c <<= 1;
+        capacity_ = c;
+        mask_ = c - 1;
         // Allocate aligned to a cache line so adjacent deques don't share.
         void* mem = aligned_xalloc(kCacheLine, sizeof(std::atomic<u32>) * c);
         buffer_ = static_cast<std::atomic<u32>*>(mem);
@@ -64,7 +68,7 @@ struct PSY_CACHELINE_ALIGN ChaseLevDeque {
             buffer_ = nullptr;
         }
         capacity_ = 0;
-        mask_     = 0;
+        mask_ = 0;
     }
 
     // Owner-only. Returns false if the deque is full.
@@ -89,12 +93,12 @@ struct PSY_CACHELINE_ALIGN ChaseLevDeque {
         i64 t = top_.load(std::memory_order_relaxed);
         if (t <= b) {
             // Non-empty.
-            u32 idx = buffer_[static_cast<u64>(b) & mask_].load(
-                std::memory_order_relaxed);
+            u32 idx = buffer_[static_cast<u64>(b) & mask_].load(std::memory_order_relaxed);
             if (t == b) {
                 // Last element — race with a thief.
                 i64 expected = t;
-                if (!top_.compare_exchange_strong(expected, t + 1,
+                if (!top_.compare_exchange_strong(expected,
+                                                  t + 1,
                                                   std::memory_order_seq_cst,
                                                   std::memory_order_relaxed)) {
                     // Lost the race — thief got it.
@@ -117,10 +121,10 @@ struct PSY_CACHELINE_ALIGN ChaseLevDeque {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         i64 b = bottom_.load(std::memory_order_acquire);
         if (t < b) {
-            u32 idx = buffer_[static_cast<u64>(t) & mask_].load(
-                std::memory_order_relaxed);
+            u32 idx = buffer_[static_cast<u64>(t) & mask_].load(std::memory_order_relaxed);
             i64 expected = t;
-            if (!top_.compare_exchange_strong(expected, t + 1,
+            if (!top_.compare_exchange_strong(expected,
+                                              t + 1,
                                               std::memory_order_seq_cst,
                                               std::memory_order_relaxed)) {
                 return {0, Status::Aborted};
@@ -137,14 +141,14 @@ struct PSY_CACHELINE_ALIGN ChaseLevDeque {
         return b - t;
     }
 
-  private:
+   private:
     // bottom_ and top_ get their own cache line to avoid false sharing
     // between owner (writes bottom) and thieves (write top).
     alignas(kCacheLine) std::atomic<i64> top_{0};
     alignas(kCacheLine) std::atomic<i64> bottom_{0};
-    std::atomic<u32>* buffer_   = nullptr;
-    u32               capacity_ = 0;
-    u64               mask_     = 0;
+    std::atomic<u32>* buffer_ = nullptr;
+    u32 capacity_ = 0;
+    u64 mask_ = 0;
 };
 
 }  // namespace psynder::jobs::detail

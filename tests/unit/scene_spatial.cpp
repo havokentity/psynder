@@ -24,24 +24,24 @@
 
 using namespace psynder;
 using namespace psynder::scene;
-using psynder::scene::detail::ISpatialIndex;
-using psynder::scene::detail::BvhRefitStats;
-using psynder::scene::detail::SapPair;
 using psynder::scene::detail::bvh_backend;
-using psynder::scene::detail::sap_backend;
-using psynder::scene::detail::grid_backend;
-using psynder::scene::detail::resolve;
 using psynder::scene::detail::bvh_refit;
-using psynder::scene::detail::sap_step;
-using psynder::scene::detail::sap_overlap_pairs;
+using psynder::scene::detail::BvhRefitStats;
+using psynder::scene::detail::grid_backend;
 using psynder::scene::detail::grid_radius_query;
+using psynder::scene::detail::ISpatialIndex;
+using psynder::scene::detail::resolve;
+using psynder::scene::detail::sap_backend;
+using psynder::scene::detail::sap_overlap_pairs;
+using psynder::scene::detail::sap_step;
+using psynder::scene::detail::SapPair;
 
 namespace {
 
 math::Aabb cube(math::Vec3 c, f32 r) {
     return math::Aabb{
-        { c.x - r, c.y - r, c.z - r },
-        { c.x + r, c.y + r, c.z + r },
+        {c.x - r, c.y - r, c.z - r},
+        {c.x + r, c.y + r, c.z + r},
     };
 }
 
@@ -51,14 +51,14 @@ math::Aabb cube(math::Vec3 c, f32 r) {
 }  // namespace
 
 TEST_CASE("scene: spatial backends are non-null after Wave B", "[scene][spatial][routing]") {
-    REQUIRE(bvh_backend()  != nullptr);
-    REQUIRE(sap_backend()  != nullptr);
+    REQUIRE(bvh_backend() != nullptr);
+    REQUIRE(sap_backend() != nullptr);
     REQUIRE(grid_backend() != nullptr);
 
-    REQUIRE(resolve(SpatialBackend::Bvh)            != nullptr);
+    REQUIRE(resolve(SpatialBackend::Bvh) != nullptr);
     REQUIRE(resolve(SpatialBackend::SweepAndPrune) != nullptr);
-    REQUIRE(resolve(SpatialBackend::HashedGrid)    != nullptr);
-    REQUIRE(resolve(SpatialBackend::None)          == nullptr);
+    REQUIRE(resolve(SpatialBackend::HashedGrid) != nullptr);
+    REQUIRE(resolve(SpatialBackend::None) == nullptr);
 }
 
 TEST_CASE("scene: BVH refit after movement still finds the entity", "[scene][spatial][bvh]") {
@@ -66,16 +66,20 @@ TEST_CASE("scene: BVH refit after movement still finds the entity", "[scene][spa
 
     // Insert four entities; one of them is the "mover".
     SpatialKey k_static_a = bvh->insert(101, cube({-10, 0, 0}, 0.5f));
-    SpatialKey k_mover    = bvh->insert(200, cube({ 0, 0, 0}, 0.5f));
-    SpatialKey k_static_b = bvh->insert(102, cube({ 10, 0, 0}, 0.5f));
-    SpatialKey k_static_c = bvh->insert(103, cube({ 0, 10, 0}, 0.5f));
+    SpatialKey k_mover = bvh->insert(200, cube({0, 0, 0}, 0.5f));
+    SpatialKey k_static_b = bvh->insert(102, cube({10, 0, 0}, 0.5f));
+    SpatialKey k_static_c = bvh->insert(103, cube({0, 10, 0}, 0.5f));
     REQUIRE(k_mover.valid());
 
     // Trigger an initial build via a query.
     u32 buf[16] = {};
     bvh->query_aabb(cube({0, 0, 0}, 1.0f), std::span<u32>(buf, 16));
     bool found_at_origin = false;
-    for (u32 v : buf) if (v == 200) { found_at_origin = true; break; }
+    for (u32 v : buf)
+        if (v == 200) {
+            found_at_origin = true;
+            break;
+        }
     REQUIRE(found_at_origin);
 
     // Capture as-built SAH cost — first refit reports cost == as-built.
@@ -90,17 +94,27 @@ TEST_CASE("scene: BVH refit after movement still finds the entity", "[scene][spa
     REQUIRE(s1.sah_cost >= s0.sah_cost_as_built);
 
     // Query at the new location: the moved entity must still be findable.
-    for (auto& v : buf) v = 0;
+    for (auto& v : buf)
+        v = 0;
     bvh->query_aabb(cube({100, 0, 0}, 1.0f), std::span<u32>(buf, 16));
     bool found_after_move = false;
-    for (u32 v : buf) if (v == 200) { found_after_move = true; break; }
+    for (u32 v : buf)
+        if (v == 200) {
+            found_after_move = true;
+            break;
+        }
     REQUIRE(found_after_move);
 
     // Query at the old location: the moved entity must NOT show up.
-    for (auto& v : buf) v = 0;
+    for (auto& v : buf)
+        v = 0;
     bvh->query_aabb(cube({0, 0, 0}, 1.0f), std::span<u32>(buf, 16));
     bool found_at_old = false;
-    for (u32 v : buf) if (v == 200) { found_at_old = true; break; }
+    for (u32 v : buf)
+        if (v == 200) {
+            found_at_old = true;
+            break;
+        }
     REQUIRE_FALSE(found_at_old);
 
     // Cleanup.
@@ -110,14 +124,14 @@ TEST_CASE("scene: BVH refit after movement still finds the entity", "[scene][spa
     bvh->remove(k_mover);
 }
 
-TEST_CASE("scene: BVH refit recommends async rebuild after big displacement", "[scene][spatial][bvh][rebuild]") {
+TEST_CASE("scene: BVH refit recommends async rebuild after big displacement",
+          "[scene][spatial][bvh][rebuild]") {
     auto* bvh = bvh_backend();
     // Build a small tree, then displace one leaf far enough to triple
     // the SAH cost. Threshold per DESIGN.md §9.4 is 1.3×.
     std::vector<SpatialKey> keys;
     for (int i = 0; i < 8; ++i) {
-        keys.push_back(bvh->insert(static_cast<u32>(300 + i),
-                                    cube({static_cast<f32>(i), 0, 0}, 0.5f)));
+        keys.push_back(bvh->insert(static_cast<u32>(300 + i), cube({static_cast<f32>(i), 0, 0}, 0.5f)));
     }
     // Force build.
     u32 buf[8] = {};
@@ -131,7 +145,8 @@ TEST_CASE("scene: BVH refit recommends async rebuild after big displacement", "[
     REQUIRE(after.sah_cost > baseline.sah_cost_as_built);
     REQUIRE(after.should_async_rebuild);
 
-    for (auto k : keys) bvh->remove(k);
+    for (auto k : keys)
+        bvh->remove(k);
 }
 
 TEST_CASE("scene: SAP detects new overlap pair when two AABBs collide", "[scene][spatial][sap]") {
@@ -139,8 +154,8 @@ TEST_CASE("scene: SAP detects new overlap pair when two AABBs collide", "[scene]
 
     // Two boxes that start far apart.
     SpatialKey ka = sap->insert(400, cube({-5, 0, 0}, 0.5f));
-    SpatialKey kb = sap->insert(401, cube({ 5, 0, 0}, 0.5f));
-    SpatialKey kc = sap->insert(402, cube({ 0, 20, 0}, 0.5f));   // distractor
+    SpatialKey kb = sap->insert(401, cube({5, 0, 0}, 0.5f));
+    SpatialKey kc = sap->insert(402, cube({0, 20, 0}, 0.5f));  // distractor
 
     sap_step();
     {
@@ -148,7 +163,8 @@ TEST_CASE("scene: SAP detects new overlap pair when two AABBs collide", "[scene]
         bool found_400_401 = false;
         for (const auto& p : pairs) {
             if ((p.a == 400 && p.b == 401) || (p.a == 401 && p.b == 400)) {
-                found_400_401 = true; break;
+                found_400_401 = true;
+                break;
             }
         }
         REQUIRE_FALSE(found_400_401);
@@ -162,7 +178,8 @@ TEST_CASE("scene: SAP detects new overlap pair when two AABBs collide", "[scene]
         bool found_400_401 = false;
         for (const auto& p : pairs) {
             if ((p.a == 400 && p.b == 401) || (p.a == 401 && p.b == 400)) {
-                found_400_401 = true; break;
+                found_400_401 = true;
+                break;
             }
         }
         REQUIRE(found_400_401);
@@ -176,7 +193,8 @@ TEST_CASE("scene: SAP detects new overlap pair when two AABBs collide", "[scene]
         bool found_400_401 = false;
         for (const auto& p : pairs) {
             if ((p.a == 400 && p.b == 401) || (p.a == 401 && p.b == 400)) {
-                found_400_401 = true; break;
+                found_400_401 = true;
+                break;
             }
         }
         REQUIRE_FALSE(found_400_401);
@@ -197,30 +215,33 @@ TEST_CASE("scene: hashed-grid radius query returns nearest entities", "[scene][s
     constexpr f32 kRadius = 3.5f;
     constexpr f32 kExtent = 0.4f;
     std::vector<SpatialKey> keys;
-    std::vector<u32>        in_radius;
+    std::vector<u32> in_radius;
     for (int i = -3; i <= 3; ++i) {
         for (int j = -3; j <= 3; ++j) {
             const u32 ent = static_cast<u32>(500 + (i + 3) * 7 + (j + 3));
-            keys.push_back(grid->insert(ent, cube({ static_cast<f32>(i),
-                                                    static_cast<f32>(j),
-                                                    0.0f }, kExtent)));
+            keys.push_back(
+                grid->insert(ent, cube({static_cast<f32>(i), static_cast<f32>(j), 0.0f}, kExtent)));
             // Closest point on the entity's AABB to origin.
             const f32 cx = std::max(std::abs(static_cast<f32>(i)) - kExtent, 0.0f);
             const f32 cy = std::max(std::abs(static_cast<f32>(j)) - kExtent, 0.0f);
-            if (std::sqrt(cx*cx + cy*cy) <= kRadius) in_radius.push_back(ent);
+            if (std::sqrt(cx * cx + cy * cy) <= kRadius)
+                in_radius.push_back(ent);
         }
     }
 
     u32 out[128] = {};
-    const u32 n = grid_radius_query(math::Vec3{0, 0, 0}, kRadius,
-                                    std::span<u32>(out, 128));
+    const u32 n = grid_radius_query(math::Vec3{0, 0, 0}, kRadius, std::span<u32>(out, 128));
     REQUIRE(n > 0);
 
     // Every returned entity must really be inside the radius — closest
     // point on the entity AABB to the sphere center is ≤ kRadius.
     for (u32 i = 0; i < n; ++i) {
         bool matched = false;
-        for (u32 e : in_radius) if (out[i] == e) { matched = true; break; }
+        for (u32 e : in_radius)
+            if (out[i] == e) {
+                matched = true;
+                break;
+            }
         REQUIRE(matched);
     }
 
@@ -231,19 +252,24 @@ TEST_CASE("scene: hashed-grid radius query returns nearest entities", "[scene][s
     // (no false negatives).
     for (u32 e : in_radius) {
         bool found = false;
-        for (u32 i = 0; i < n; ++i) if (out[i] == e) { found = true; break; }
+        for (u32 i = 0; i < n; ++i)
+            if (out[i] == e) {
+                found = true;
+                break;
+            }
         REQUIRE(found);
     }
 
-    for (auto k : keys) grid->remove(k);
+    for (auto k : keys)
+        grid->remove(k);
 }
 
 TEST_CASE("scene: query router picks the right backend per QueryKind", "[scene][spatial][router]") {
     clear_region_overrides();
-    REQUIRE(route_query(QueryKind::Raycast)          == SpatialBackend::Bvh);
-    REQUIRE(route_query(QueryKind::FrustumCull)      == SpatialBackend::Bvh);
-    REQUIRE(route_query(QueryKind::AabbOverlap)      == SpatialBackend::Bvh);
-    REQUIRE(route_query(QueryKind::Broadphase)       == SpatialBackend::SweepAndPrune);
+    REQUIRE(route_query(QueryKind::Raycast) == SpatialBackend::Bvh);
+    REQUIRE(route_query(QueryKind::FrustumCull) == SpatialBackend::Bvh);
+    REQUIRE(route_query(QueryKind::AabbOverlap) == SpatialBackend::Bvh);
+    REQUIRE(route_query(QueryKind::Broadphase) == SpatialBackend::SweepAndPrune);
     REQUIRE(route_query(QueryKind::NearestNeighbour) == SpatialBackend::HashedGrid);
 }
 
@@ -277,7 +303,8 @@ TEST_CASE("scene: query router honors per-region overrides", "[scene][spatial][r
     clear_region_overrides();
 }
 
-TEST_CASE("scene: BVH backend handles bursty insert/remove without dangling state", "[scene][spatial][bvh]") {
+TEST_CASE("scene: BVH backend handles bursty insert/remove without dangling state",
+          "[scene][spatial][bvh]") {
     auto* bvh = bvh_backend();
     std::vector<SpatialKey> keys;
     std::vector<SpatialKey> new_keys;
@@ -285,31 +312,34 @@ TEST_CASE("scene: BVH backend handles bursty insert/remove without dangling stat
     // Insert 32, remove 16 (every other), insert 16 more — the slot
     // reuse path must not corrupt queries.
     for (int i = 0; i < 32; ++i) {
-        keys.push_back(bvh->insert(static_cast<u32>(700 + i),
-                                    cube({ static_cast<f32>(i) * 2.0f, 0, 0 }, 0.4f)));
+        keys.push_back(
+            bvh->insert(static_cast<u32>(700 + i), cube({static_cast<f32>(i) * 2.0f, 0, 0}, 0.4f)));
     }
     for (int i = 0; i < 32; i += 2) {
         bvh->remove(keys[static_cast<usize>(i)]);
     }
     for (int i = 0; i < 16; ++i) {
         const u32 ent = static_cast<u32>(800 + i);
-        new_keys.push_back(bvh->insert(ent,
-                                       cube({ static_cast<f32>(i) * 2.0f, 5, 0 }, 0.4f)));
+        new_keys.push_back(bvh->insert(ent, cube({static_cast<f32>(i) * 2.0f, 5, 0}, 0.4f)));
     }
 
     // Query the cluster — we must see the surviving "700-series" odd
     // entities + the new "800-series" entities, never the removed evens.
     u32 buf[64] = {};
-    bvh->query_aabb(cube({ 0, 2.5f, 0 }, 100.0f), std::span<u32>(buf, 64));
+    bvh->query_aabb(cube({0, 2.5f, 0}, 100.0f), std::span<u32>(buf, 64));
 
     bool saw_removed = false;
     bool saw_survivor = false;
     bool saw_new = false;
     for (u32 v : buf) {
-        if (v == 0) continue;
-        if (v >= 700 && v < 732 && (v - 700) % 2 == 0) saw_removed = true;
-        if (v >= 700 && v < 732 && (v - 700) % 2 == 1) saw_survivor = true;
-        if (v >= 800 && v < 816) saw_new = true;
+        if (v == 0)
+            continue;
+        if (v >= 700 && v < 732 && (v - 700) % 2 == 0)
+            saw_removed = true;
+        if (v >= 700 && v < 732 && (v - 700) % 2 == 1)
+            saw_survivor = true;
+        if (v >= 800 && v < 816)
+            saw_new = true;
     }
     REQUIRE_FALSE(saw_removed);
     REQUIRE(saw_survivor);
@@ -317,6 +347,8 @@ TEST_CASE("scene: BVH backend handles bursty insert/remove without dangling stat
 
     // Drain everything so we don't pollute downstream tests sharing the
     // process-global BVH state.
-    for (int i = 1; i < 32; i += 2) bvh->remove(keys[static_cast<usize>(i)]);
-    for (auto k : new_keys) bvh->remove(k);
+    for (int i = 1; i < 32; i += 2)
+        bvh->remove(keys[static_cast<usize>(i)]);
+    for (auto k : new_keys)
+        bvh->remove(k);
 }

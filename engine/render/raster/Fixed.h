@@ -17,9 +17,9 @@
 
 namespace psynder::render::raster {
 
-inline constexpr i32 kSubPixelBits  = 8;
+inline constexpr i32 kSubPixelBits = 8;
 inline constexpr i32 kSubPixelScale = 1 << kSubPixelBits;  // 256
-inline constexpr i32 kSubPixelMask  = kSubPixelScale - 1;
+inline constexpr i32 kSubPixelMask = kSubPixelScale - 1;
 
 // Fixed-point Q24.8 scalar. Stored as int32 — top 24 bits integer, low 8
 // bits fraction. Wraps at ±2^23 pixels; any input outside that range gets
@@ -36,27 +36,43 @@ struct FxQ24_8 {
         // fits the rasterizer's range.
         return FxQ24_8{static_cast<i32>(std::lround(x * static_cast<f32>(kSubPixelScale)))};
     }
-    static inline FxQ24_8 from_int(i32 x) noexcept {
-        return FxQ24_8{x << kSubPixelBits};
-    }
+    static inline FxQ24_8 from_int(i32 x) noexcept { return FxQ24_8{x << kSubPixelBits}; }
 
     inline f32 to_float() const noexcept {
         return static_cast<f32>(v) * (1.0f / static_cast<f32>(kSubPixelScale));
     }
     inline i32 floor_to_int() const noexcept { return v >> kSubPixelBits; }
-    inline i32 ceil_to_int()  const noexcept { return (v + kSubPixelMask) >> kSubPixelBits; }
+    inline i32 ceil_to_int() const noexcept { return (v + kSubPixelMask) >> kSubPixelBits; }
 };
 
-PSY_FORCEINLINE FxQ24_8 operator+(FxQ24_8 a, FxQ24_8 b) noexcept { return FxQ24_8{a.v + b.v}; }
-PSY_FORCEINLINE FxQ24_8 operator-(FxQ24_8 a, FxQ24_8 b) noexcept { return FxQ24_8{a.v - b.v}; }
-PSY_FORCEINLINE FxQ24_8 operator-(FxQ24_8 a)            noexcept { return FxQ24_8{-a.v}; }
+PSY_FORCEINLINE FxQ24_8 operator+(FxQ24_8 a, FxQ24_8 b) noexcept {
+    return FxQ24_8{a.v + b.v};
+}
+PSY_FORCEINLINE FxQ24_8 operator-(FxQ24_8 a, FxQ24_8 b) noexcept {
+    return FxQ24_8{a.v - b.v};
+}
+PSY_FORCEINLINE FxQ24_8 operator-(FxQ24_8 a) noexcept {
+    return FxQ24_8{-a.v};
+}
 
-PSY_FORCEINLINE bool operator==(FxQ24_8 a, FxQ24_8 b) noexcept { return a.v == b.v; }
-PSY_FORCEINLINE bool operator!=(FxQ24_8 a, FxQ24_8 b) noexcept { return a.v != b.v; }
-PSY_FORCEINLINE bool operator< (FxQ24_8 a, FxQ24_8 b) noexcept { return a.v <  b.v; }
-PSY_FORCEINLINE bool operator<=(FxQ24_8 a, FxQ24_8 b) noexcept { return a.v <= b.v; }
-PSY_FORCEINLINE bool operator> (FxQ24_8 a, FxQ24_8 b) noexcept { return a.v >  b.v; }
-PSY_FORCEINLINE bool operator>=(FxQ24_8 a, FxQ24_8 b) noexcept { return a.v >= b.v; }
+PSY_FORCEINLINE bool operator==(FxQ24_8 a, FxQ24_8 b) noexcept {
+    return a.v == b.v;
+}
+PSY_FORCEINLINE bool operator!=(FxQ24_8 a, FxQ24_8 b) noexcept {
+    return a.v != b.v;
+}
+PSY_FORCEINLINE bool operator<(FxQ24_8 a, FxQ24_8 b) noexcept {
+    return a.v < b.v;
+}
+PSY_FORCEINLINE bool operator<=(FxQ24_8 a, FxQ24_8 b) noexcept {
+    return a.v <= b.v;
+}
+PSY_FORCEINLINE bool operator>(FxQ24_8 a, FxQ24_8 b) noexcept {
+    return a.v > b.v;
+}
+PSY_FORCEINLINE bool operator>=(FxQ24_8 a, FxQ24_8 b) noexcept {
+    return a.v >= b.v;
+}
 
 // 2D edge cross product, full 64-bit intermediate. Edge function for the
 // directed line (a → b) evaluated at point p:
@@ -66,9 +82,7 @@ PSY_FORCEINLINE bool operator>=(FxQ24_8 a, FxQ24_8 b) noexcept { return a.v >= b
 // Positive on the left of the directed edge for CCW front-facing triangles
 // in our right-handed coordinate system (DESIGN.md §10.1). The result is
 // Q48.16 (two Q24.8s multiplied) — we keep it as i64.
-PSY_FORCEINLINE i64 edge_func(FxQ24_8 ax, FxQ24_8 ay,
-                              FxQ24_8 bx, FxQ24_8 by,
-                              FxQ24_8 px, FxQ24_8 py) noexcept {
+PSY_FORCEINLINE i64 edge_func(FxQ24_8 ax, FxQ24_8 ay, FxQ24_8 bx, FxQ24_8 by, FxQ24_8 px, FxQ24_8 py) noexcept {
     const i64 dx = static_cast<i64>(bx.v) - static_cast<i64>(ax.v);
     const i64 dy = static_cast<i64>(by.v) - static_cast<i64>(ay.v);
     const i64 qx = static_cast<i64>(px.v) - static_cast<i64>(ax.v);
@@ -77,23 +91,21 @@ PSY_FORCEINLINE i64 edge_func(FxQ24_8 ax, FxQ24_8 ay,
 }
 
 // Signed 2× triangle area in Q48.16. Sign is positive for CCW front-facing.
-PSY_FORCEINLINE i64 tri_area_2x(FxQ24_8 ax, FxQ24_8 ay,
-                                FxQ24_8 bx, FxQ24_8 by,
-                                FxQ24_8 cx, FxQ24_8 cy) noexcept {
+PSY_FORCEINLINE i64
+tri_area_2x(FxQ24_8 ax, FxQ24_8 ay, FxQ24_8 bx, FxQ24_8 by, FxQ24_8 cx, FxQ24_8 cy) noexcept {
     return edge_func(ax, ay, bx, by, cx, cy);
 }
 
 // Top-left fill convention. For each edge (a → b), an edge sample is
 // "inside" when E > 0, OR (E == 0 and the edge is a top or left edge).
 // Returns the bias to add to E so the comparison is just `>= 0`.
-PSY_FORCEINLINE i64 top_left_bias(FxQ24_8 ax, FxQ24_8 ay,
-                                  FxQ24_8 bx, FxQ24_8 by) noexcept {
+PSY_FORCEINLINE i64 top_left_bias(FxQ24_8 ax, FxQ24_8 ay, FxQ24_8 bx, FxQ24_8 by) noexcept {
     // Top edge:  by == ay && bx <  ax  (horizontal, points left)
     // Left edge: by <  ay                (general edge going up)
     // Both classifications use the convention from the rasterizer chapter
     // of the Larrabee / Olano-Greer top-left rule.
-    const bool top  = (by.v == ay.v) && (bx.v < ax.v);
-    const bool left = (by.v <  ay.v);
+    const bool top = (by.v == ay.v) && (bx.v < ax.v);
+    const bool left = (by.v < ay.v);
     return (top || left) ? 0 : -1;
 }
 

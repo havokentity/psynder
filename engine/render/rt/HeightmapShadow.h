@@ -27,13 +27,13 @@
 namespace psynder::render::rt {
 
 struct Heightmap {
-    const f32* y_data    = nullptr;   // width*height samples, row-major (j*width + i)
-    u32        width     = 0;
-    u32        height    = 0;
+    const f32* y_data = nullptr;  // width*height samples, row-major (j*width + i)
+    u32 width = 0;
+    u32 height = 0;
     math::Vec2 origin_xz{0.0f, 0.0f};
-    f32        cell_size = 1.0f;
-    f32        y_min     = 0.0f;      // global min Y (for slab clip)
-    f32        y_max     = 0.0f;      // global max Y (for slab clip)
+    f32 cell_size = 1.0f;
+    f32 y_min = 0.0f;  // global min Y (for slab clip)
+    f32 y_max = 0.0f;  // global max Y (for slab clip)
 };
 
 // Raymarch the heightmap along `ray` and return true if the ray is
@@ -45,7 +45,6 @@ struct Heightmap {
 // Implementation: 2D DDA in the XZ plane combined with a per-cell Y test
 // against the (bilinearly-interpolated) surface. We do up to `max_steps`
 // march steps; a typical shadow ray needs ≪ 256.
-bool trace_heightmap_shadow(const Heightmap& hm, const Ray& ray,
-                            u32 max_steps = 256) noexcept;
+bool trace_heightmap_shadow(const Heightmap& hm, const Ray& ray, u32 max_steps = 256) noexcept;
 
 }  // namespace psynder::render::rt

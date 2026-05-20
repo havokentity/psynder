@@ -38,21 +38,27 @@ BspMap make_two_leaf_map() {
 
     BspNode n0{};
     n0.plane_normal = {0, 1, 0};
-    n0.plane_d      = 0.0f;
-    n0.front_child  = bsp_encode_leaf(0);   // leaf 0 (y > 0)
-    n0.back_child   = bsp_encode_leaf(1);   // leaf 1 (y < 0)
-    map.nodes = { n0 };
+    n0.plane_d = 0.0f;
+    n0.front_child = bsp_encode_leaf(0);  // leaf 0 (y > 0)
+    n0.back_child = bsp_encode_leaf(1);   // leaf 1 (y < 0)
+    map.nodes = {n0};
 
     BspLeaf l0{};
-    l0.cluster = 0; l0.first_face = 0; l0.face_count = 0;
-    l0.bounds.min = {-10, 0, -10}; l0.bounds.max = { 10, 10, 10};
+    l0.cluster = 0;
+    l0.first_face = 0;
+    l0.face_count = 0;
+    l0.bounds.min = {-10, 0, -10};
+    l0.bounds.max = {10, 10, 10};
 
     BspLeaf l1{};
-    l1.cluster = 1; l1.first_face = 0; l1.face_count = 0;
-    l1.bounds.min = {-10, -10, -10}; l1.bounds.max = { 10, 0, 10};
+    l1.cluster = 1;
+    l1.first_face = 0;
+    l1.face_count = 0;
+    l1.bounds.min = {-10, -10, -10};
+    l1.bounds.max = {10, 0, 10};
 
-    map.leaves = { l0, l1 };
-    map.pvs.clear();   // no PVS → conservative-visible default
+    map.leaves = {l0, l1};
+    map.pvs.clear();  // no PVS → conservative-visible default
     return map;
 }
 
@@ -62,33 +68,34 @@ BspMap make_two_leaf_map() {
 BspPortalSet make_portal_at(f32 cx) {
     BspPortalSet ps;
     ps.vertices = {
-        math::Vec3{ cx - 0.5f, 0.0f, -0.5f },
-        math::Vec3{ cx + 0.5f, 0.0f, -0.5f },
-        math::Vec3{ cx + 0.5f, 0.0f,  0.5f },
-        math::Vec3{ cx - 0.5f, 0.0f,  0.5f },
+        math::Vec3{cx - 0.5f, 0.0f, -0.5f},
+        math::Vec3{cx + 0.5f, 0.0f, -0.5f},
+        math::Vec3{cx + 0.5f, 0.0f, 0.5f},
+        math::Vec3{cx - 0.5f, 0.0f, 0.5f},
     };
     BspPortal p{};
-    p.front_leaf    = 0;
-    p.back_leaf     = 1;
-    p.first_vertex  = 0;
-    p.vertex_count  = 4;
+    p.front_leaf = 0;
+    p.back_leaf = 1;
+    p.first_vertex = 0;
+    p.vertex_count = 4;
     // CCW looking from front_leaf (y > 0) toward back_leaf (y < 0) → normal
     // points -y (front → back).
-    p.plane_normal  = { 0.0f, -1.0f, 0.0f };
-    p.plane_d       = 0.0f;
-    ps.portals = { p };
+    p.plane_normal = {0.0f, -1.0f, 0.0f};
+    p.plane_d = 0.0f;
+    ps.portals = {p};
     return ps;
 }
 
-struct Acc { std::set<i32> clusters; };
+struct Acc {
+    std::set<i32> clusters;
+};
 void acc_emit(const BspLeaf& l, const PortalFrustum&, void* u) {
     static_cast<Acc*>(u)->clusters.insert(l.cluster);
 }
 
 }  // namespace
 
-TEST_CASE("world_bsp/portal-clip rejects a leaf behind an occluded portal",
-          "[world_bsp][portal]") {
+TEST_CASE("world_bsp/portal-clip rejects a leaf behind an occluded portal", "[world_bsp][portal]") {
     const BspMap map = make_two_leaf_map();
     // Eye at (0, 0.5, 0) — in leaf 0 (y > 0).
     const math::Vec3 eye{0.0f, 0.5f, 0.0f};
@@ -101,16 +108,16 @@ TEST_CASE("world_bsp/portal-clip rejects a leaf behind an occluded portal",
     frustum.plane_count = 4;
     // +x half-space (everything left of x=eye.x rejected). normal=(+1,0,0)
     // through eye: dot(n, p) >= dot(n, eye) → x >= 0.
-    frustum.normals[0] = { 1.0f, 0.0f, 0.0f };
-    frustum.d[0]       = math::dot(frustum.normals[0], eye);
+    frustum.normals[0] = {1.0f, 0.0f, 0.0f};
+    frustum.d[0] = math::dot(frustum.normals[0], eye);
     // Upper bound: x <= 100 (normal = -1,0,0 through (100,...))
-    frustum.normals[1] = { -1.0f, 0.0f, 0.0f };
-    frustum.d[1]       = math::dot(frustum.normals[1], math::Vec3{100.0f, 0.0f, 0.0f});
+    frustum.normals[1] = {-1.0f, 0.0f, 0.0f};
+    frustum.d[1] = math::dot(frustum.normals[1], math::Vec3{100.0f, 0.0f, 0.0f});
     // z slab: |z| <= 100
-    frustum.normals[2] = { 0.0f, 0.0f,  1.0f };
-    frustum.d[2]       = math::dot(frustum.normals[2], math::Vec3{0.0f, 0.0f, -100.0f});
-    frustum.normals[3] = { 0.0f, 0.0f, -1.0f };
-    frustum.d[3]       = math::dot(frustum.normals[3], math::Vec3{0.0f, 0.0f,  100.0f});
+    frustum.normals[2] = {0.0f, 0.0f, 1.0f};
+    frustum.d[2] = math::dot(frustum.normals[2], math::Vec3{0.0f, 0.0f, -100.0f});
+    frustum.normals[3] = {0.0f, 0.0f, -1.0f};
+    frustum.d[3] = math::dot(frustum.normals[3], math::Vec3{0.0f, 0.0f, 100.0f});
 
     SECTION("portal placed inside frustum → back leaf is visible") {
         BspPortalSet portals = make_portal_at(5.0f);  // +x → inside the wedge
@@ -134,8 +141,8 @@ TEST_CASE("world_bsp/portal-clip rejects a leaf behind an occluded portal",
     SECTION("clip_frustum_by_portal agrees with the BFS rejection") {
         BspPortalSet portals = make_portal_at(-5.0f);
         PortalFrustum clipped{};
-        const bool ok = clip_frustum_by_portal(frustum, portals.portals[0],
-                                               portals.vertices, eye, clipped);
+        const bool ok =
+            clip_frustum_by_portal(frustum, portals.portals[0], portals.vertices, eye, clipped);
         REQUIRE_FALSE(ok);  // every portal vertex is strictly outside plane 0
     }
 }
@@ -145,7 +152,7 @@ TEST_CASE("world_bsp/lightmap atlas returns the same page for repeat queries",
     // Carve a 4 MiB slab — enough for ~40 pages × 96 KiB. The test doesn't
     // exercise the full 256-page resident cap, just the cache-hit behaviour.
     std::vector<u8> backing(4u * 1024u * 1024u);
-    mem::LinearArena arena{ backing.data(), backing.size() };
+    mem::LinearArena arena{backing.data(), backing.size()};
 
     LightmapAtlas atlas;
     atlas.init(&arena);
@@ -153,9 +160,9 @@ TEST_CASE("world_bsp/lightmap atlas returns the same page for repeat queries",
     LightmapPage* a = atlas.atlas_page_for_surface(42u);
     REQUIRE(a != nullptr);
     REQUIRE(a->page_id == 42u);
-    REQUIRE(a->width   == kLightmapPageWidth);
-    REQUIRE(a->height  == kLightmapPageHeight);
-    REQUIRE(a->pixels  != nullptr);            // arena was non-null
+    REQUIRE(a->width == kLightmapPageWidth);
+    REQUIRE(a->height == kLightmapPageHeight);
+    REQUIRE(a->pixels != nullptr);  // arena was non-null
     REQUIRE(atlas.resident_page_count() == 1u);
 
     // Repeat query for the same id MUST return the same page.
