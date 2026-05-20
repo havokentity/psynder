@@ -200,7 +200,28 @@ void Rasterizer::end_frame() {
         // interpolating uv + colour at the cut, then fan-triangulate the 3-or-4
         // vertex result. One input triangle yields up to two output triangles.
         const u32 tri_count = d.index_count / 3;
-        TriSetup* tris = fs.arena.alloc_array<TriSetup>(tri_count * 2 + 1);
+        // Near-plane clipping turns a triangle that straddles z + w = 0 into a
+        // quad -> two triangles; triangles fully in front stay one, fully behind
+        // contribute none. Count the straddlers up front so we reserve the tight
+        // bound (tri_count + straddlers) rather than an unconditional 2x, which
+        // on big meshes wastes frame-arena space and risks exhaustion (a failed
+        // alloc silently drops the draw).
+        u32 straddlers = 0;
+        for (u32 ti = 0; ti < tri_count; ++ti) {
+            const u32 j0 = d.indices[ti * 3 + 0];
+            const u32 j1 = d.indices[ti * 3 + 1];
+            const u32 j2 = d.indices[ti * 3 + 2];
+            if (j0 >= d.vertex_count || j1 >= d.vertex_count || j2 >= d.vertex_count)
+                continue;
+            const f32 s0 = cp[j0].z + cp[j0].w;
+            const f32 s1 = cp[j1].z + cp[j1].w;
+            const f32 s2 = cp[j2].z + cp[j2].w;
+            const bool any_behind = (s0 < 0.0f) || (s1 < 0.0f) || (s2 < 0.0f);
+            const bool any_front = (s0 >= 0.0f) || (s1 >= 0.0f) || (s2 >= 0.0f);
+            if (any_behind && any_front)
+                ++straddlers;  // crosses the near plane -> up to 2 output tris
+        }
+        TriSetup* tris = fs.arena.alloc_array<TriSetup>(tri_count + straddlers + 1);
         if (!tris) {
             fs.draw_cmds[di] = DrawCmd{};
             continue;
@@ -274,20 +295,23 @@ void Rasterizer::end_frame() {
 
             // Fan-triangulate the clipped polygon (3 or 4 verts).
             for (u32 k = 1; k + 1 < np; ++k) {
-                setup_triangle(poly[0].cp,
-                               poly[k].cp,
-                               poly[k + 1].cp,
-                               poly[0].uv,
-                               poly[k].uv,
-                               poly[k + 1].uv,
-                               repack(poly[0]),
-                               repack(poly[k]),
-                               repack(poly[k + 1]),
-                               fs.view.target.width,
-                               fs.view.target.height,
-                               tris[produced],
-                               d.cull);
-                ++produced;  // binner skips entries with valid == false
+                const bool ok = setup_triangle(poly[0].cp,
+                                               poly[k].cp,
+                                               poly[k + 1].cp,
+                                               poly[0].uv,
+                                               poly[k].uv,
+                                               poly[k + 1].uv,
+                                               repack(poly[0]),
+                                               repack(poly[k]),
+                                               repack(poly[k + 1]),
+                                               fs.view.target.width,
+                                               fs.view.target.height,
+                                               tris[produced],
+                                               d.cull);
+                // Advance only on success so cmd.tri_count counts valid tris and
+                // the binner never iterates culled / degenerate setups.
+                if (ok)
+                    ++produced;
             }
         }
 

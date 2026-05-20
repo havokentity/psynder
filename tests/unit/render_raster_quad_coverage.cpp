@@ -89,6 +89,61 @@ u32 background_holes_in_centre(const u32* indices, u32 index_count, u8 cull) {
     return holes;
 }
 
+// Render a large floor quad that STRADDLES the near plane — its near edge sits
+// behind the camera (clip-space z + w < 0), the rest extends far in front — and
+// return the number of COVERED (white) pixels in the lower-centre band where the
+// floor must project. Near-plane clipping has to split the straddling triangles
+// and keep the in-front part; the pre-fix code dropped any triangle with a
+// vertex behind the near plane, which collapses this count to ~0.
+u32 floor_coverage_lower_band(u8 cull) {
+    constexpr u32 W = 160, H = 160;
+    Image img(W, H);
+
+    // Floor at y = -1. The near edge (z = 6) is behind the eye (z = 4), so those
+    // triangles straddle the near plane; the far edge (z = -24) is well in front.
+    const Vertex verts[] = {
+        Vertex{math::Vec3{-8, -1, 6}, math::Vec3{0, 1, 0}, math::Vec2{0, 0}, math::Vec2{0, 0}, 0xFFFFFFFFu},
+        Vertex{math::Vec3{8, -1, 6}, math::Vec3{0, 1, 0}, math::Vec2{1, 0}, math::Vec2{0, 0}, 0xFFFFFFFFu},
+        Vertex{math::Vec3{8, -1, -24}, math::Vec3{0, 1, 0}, math::Vec2{1, 1}, math::Vec2{0, 0}, 0xFFFFFFFFu},
+        Vertex{math::Vec3{-8, -1, -24}, math::Vec3{0, 1, 0}, math::Vec2{0, 1}, math::Vec2{0, 0}, 0xFFFFFFFFu},
+    };
+    const u32 idx[] = {0, 1, 2, 0, 2, 3};
+
+    ViewState v{};
+    v.view = math::look_at_rh(math::Vec3{0, 1.5f, 4}, math::Vec3{0, -1, -4}, math::Vec3{0, 1, 0});
+    v.projection = math::perspective_rh(60.0f * math::kDegToRad,
+                                        static_cast<f32>(W) / static_cast<f32>(H),
+                                        0.1f,
+                                        100.0f);
+    v.target = img.fb;
+    v.tile_w = 64;
+    v.tile_h = 64;
+
+    clear_framebuffer(img.fb, 0xFF000000u);
+
+    DrawItem d{};
+    d.vertices = verts;
+    d.vertex_count = 4;
+    d.indices = idx;
+    d.index_count = 6;
+    d.model = math::identity4();
+    d.cull = cull;
+
+    auto& r = Rasterizer::Get();
+    r.begin_frame(v);
+    r.submit(d);
+    r.end_frame();
+
+    u32 covered = 0;
+    for (u32 y = static_cast<u32>(H * 0.62f); y < static_cast<u32>(H * 0.95f); ++y) {
+        for (u32 x = static_cast<u32>(W * 0.30f); x < static_cast<u32>(W * 0.70f); ++x) {
+            if (img.pixels[static_cast<std::size_t>(y) * W + x] == 0xFFFFFFFFu)
+                ++covered;
+        }
+    }
+    return covered;
+}
+
 }  // namespace
 
 // HiZ coplanar-quad guard (the original "holes pop" regression): a
@@ -112,4 +167,17 @@ TEST_CASE("back-face culling: one winding fills, the mirror is culled", "[raster
     // (its central box is all background).
     REQUIRE((a == 0) != (b == 0));
     REQUIRE((a == 0 ? b : a) > 1000);
+}
+
+// Near-plane clipping guard: a floor quad whose near edge sits BEHIND the camera
+// must still fill the lower screen. The pre-fix path dropped any triangle with a
+// vertex behind the near plane, which blacked out floors/walls in interior (FPS)
+// views — exactly the "room is mostly black with holes at the corners" bug.
+// Rendered two-sided so the assertion is winding-independent (this is about
+// clipping, not culling). The lower-centre band is ~53x64 = 3392 px; a correctly
+// clipped floor fills essentially all of it, while a dropped straddle yields ~0.
+TEST_CASE("near-plane clip: a straddling floor still fills (no dropped half)",
+          "[raster][coverage][clip]") {
+    const u32 covered = floor_coverage_lower_band(/*cull=None*/ 2);
+    REQUIRE(covered > 3000);
 }
