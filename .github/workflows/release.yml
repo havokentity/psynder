@@ -1,0 +1,187 @@
+name: release
+
+# Triggered when a vX.Y.Z tag is pushed. Builds release binaries on all
+# three platforms, packages the samples + lm_* tools into per-OS archives
+# with SHA256 sidecars, and publishes a GitHub Release with auto-generated
+# notes. workflow_dispatch is provided so the packaging can be smoke-tested
+# without cutting a real tag (it uploads CI artifacts but does NOT publish a
+# Release unless invoked on a tag ref).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required to create the GitHub Release
+
+jobs:
+  package:
+    name: package ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos
+            arch: arm64
+            runner: macos-14
+            preset: mac-release
+          - os: linux
+            arch: x64
+            runner: ubuntu-24.04
+            preset: linux-release
+          - os: windows
+            arch: x64
+            runner: windows-2022
+            preset: win-release
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Install deps (Linux/Mac)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install ninja
+          else
+            sudo apt-get update
+            sudo apt-get install -y ninja-build libwayland-dev wayland-protocols \
+              libxkbcommon-dev libpipewire-0.3-dev libasound2-dev libxrandr-dev \
+              libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxext-dev \
+              libxfixes-dev libdrm-dev libgbm-dev
+          fi
+
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y
+
+      - name: Setup MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure + Build
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }}
+
+      # ── Package (Unix: macOS + Linux) ────────────────────────────────────
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          [ "${GITHUB_REF_TYPE:-}" = "tag" ] || VERSION="dev-${GITHUB_SHA::7}"
+          PKG="psynder-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}"
+          OUT="${GITHUB_WORKSPACE}/dist/${PKG}"
+          mkdir -p "${OUT}"
+          BIN="build/${{ matrix.preset }}/bin"
+          cp "${BIN}"/sample_0* "${OUT}/"
+          cp "${BIN}"/lm_pak "${BIN}"/lm_cook "${BIN}"/lm_qbsp \
+             "${BIN}"/lm_bake "${BIN}"/lm_mapimport "${OUT}/"
+          cp LICENSE README.md "${OUT}/" 2>/dev/null || true
+          # Per-platform runtime notes (printf, not heredoc, to stay robust
+          # against YAML block-scalar indentation).
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            printf '%s\n' \
+              'Psynder - macOS (Apple Silicon, arm64)' \
+              'Requires macOS 14.0+. No external runtime deps: zstd, fmt and' \
+              'Lua are statically linked. Present uses CAMetalLayer (system).' \
+              'Run a sample: ./sample_05_hybrid_night' > "${OUT}/RUNTIME.txt"
+          else
+            printf '%s\n' \
+              'Psynder - Linux (x86-64)' \
+              'Runtime libraries expected on the host (install via your package' \
+              'manager if missing): libwayland-client, libxkbcommon, libX11 and' \
+              'the Xrandr/Xcursor/Xi/Xinerama/Xext/Xfixes extensions, plus' \
+              'libpipewire-0.3 OR libasound2 for audio. The renderer is pure-CPU;' \
+              'no GPU driver is required (X11/Wayland software present paths).' \
+              'Run a sample: ./sample_05_hybrid_night' > "${OUT}/RUNTIME.txt"
+          fi
+          cd "${GITHUB_WORKSPACE}/dist"
+          tar czf "${PKG}.tar.gz" "${PKG}"
+          shasum -a 256 "${PKG}.tar.gz" > "${PKG}.tar.gz.sha256"
+          rm -rf "${PKG}"
+          ls -la
+
+      # ── Package (Windows) ────────────────────────────────────────────────
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Version = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_REF_TYPE -ne 'tag') { $Version = "dev-$($env:GITHUB_SHA.Substring(0,7))" }
+          $Pkg = "psynder-$Version-windows-x64"
+          $Out = "$env:GITHUB_WORKSPACE/dist/$Pkg"
+          New-Item -ItemType Directory -Force -Path $Out | Out-Null
+          $Bin = "build/win-release/bin"
+          Copy-Item "$Bin/sample_0*.exe" $Out
+          Copy-Item "$Bin/lm_pak.exe","$Bin/lm_cook.exe","$Bin/lm_qbsp.exe",`
+                    "$Bin/lm_bake.exe","$Bin/lm_mapimport.exe" $Out
+          Copy-Item LICENSE,README.md $Out -ErrorAction SilentlyContinue
+          # Array -> Set-Content writes one line per element; avoids a YAML-
+          # indentation-sensitive here-string.
+          $notes = @(
+            'Psynder - Windows (x86-64)',
+            'Requires the Microsoft Visual C++ Redistributable (2015-2022, x64)',
+            'if not already installed: https://aka.ms/vs/17/release/vc_redist.x64.exe',
+            'Present uses DXGI flip-model (system D3D11/DXGI). The renderer itself',
+            'is pure-CPU; the GPU is only used for the final scaled blit.',
+            'Run a sample: .\sample_05_hybrid_night.exe'
+          )
+          Set-Content -Path "$Out/RUNTIME.txt" -Value $notes -Encoding ASCII
+          $Zip = "$env:GITHUB_WORKSPACE/dist/$Pkg.zip"
+          Compress-Archive -Path "$Out/*" -DestinationPath $Zip -Force
+          $hash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $Pkg.zip" | Out-File -Encoding ASCII "$Zip.sha256"
+          Remove-Item -Recurse -Force $Out
+          Get-ChildItem "$env:GITHUB_WORKSPACE/dist"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: psynder-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: publish GitHub Release
+    needs: package
+    runs-on: ubuntu-24.04
+    # Only publish a Release for real tag pushes; workflow_dispatch just
+    # produces downloadable CI artifacts above for smoke-testing.
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List collected assets
+        run: ls -la dist
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Pure-CPU C++23 game engine + software renderer. Pre-built samples
+            and asset tools for macOS (arm64), Linux (x64) and Windows (x64).
+
+            Each archive contains the 7 sample binaries (`sample_00`–`sample_06`)
+            and the 5 offline tools (`lm_pak`, `lm_cook`, `lm_qbsp`, `lm_bake`,
+            `lm_mapimport`), plus a `RUNTIME.txt` listing per-OS runtime
+            requirements. SHA256 sidecars accompany every archive.
+
+            See `RUNTIME.txt` inside each package before running.

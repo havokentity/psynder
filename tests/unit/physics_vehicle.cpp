@@ -66,7 +66,7 @@ TEST_CASE("Pacejka longitudinal force is monotone in slip ratio below the peak",
     REQUIRE(monotone);
 }
 
-TEST_CASE("Pacejka combined slip stays inside the friction circle (mu·Fz)",
+TEST_CASE("Pacejka combined slip stays inside the friction circle (mu.Fz)",
           "[physics][vehicle][pacejka]") {
     // At high combined slip the magnitude must never exceed mu·Fz —
     // that's the friction-circle clipping the kernel must enforce.
@@ -189,7 +189,7 @@ TEST_CASE("Brake torque opposes wheel rotation in both directions",
 
 // ─── Aero ────────────────────────────────────────────────────────────────
 
-TEST_CASE("Aero drag scales with v^2 — doubling speed quadruples drag", "[physics][vehicle][aero]") {
+TEST_CASE("Aero drag scales with v^2 - doubling speed quadruples drag", "[physics][vehicle][aero]") {
     // Drag force = ½ρv²·Cd·A. With the same Cd·A, doubling the speed should
     // multiply the magnitude by exactly 4 (within float noise).
     math::Vec3 down{0, -1, 0};

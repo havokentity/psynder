@@ -151,11 +151,11 @@
     { "name": "linux-asan-debug",   "configurePreset": "linux-asan-debug",   "jobs": 0 }
   ],
   "testPresets": [
-    { "name": "mac-debug",       "configurePreset": "mac-debug",      "output": { "outputOnFailure": true } },
-    { "name": "mac-release",     "configurePreset": "mac-release",    "output": { "outputOnFailure": true } },
-    { "name": "linux-debug",     "configurePreset": "linux-debug",    "output": { "outputOnFailure": true } },
-    { "name": "linux-release",   "configurePreset": "linux-release",  "output": { "outputOnFailure": true } },
-    { "name": "win-debug",       "configurePreset": "win-debug",      "output": { "outputOnFailure": true } },
-    { "name": "win-release",     "configurePreset": "win-release",    "output": { "outputOnFailure": true } }
+    { "name": "mac-debug",       "configurePreset": "mac-debug",      "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
+    { "name": "mac-release",     "configurePreset": "mac-release",    "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
+    { "name": "linux-debug",     "configurePreset": "linux-debug",    "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
+    { "name": "linux-release",   "configurePreset": "linux-release",  "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
+    { "name": "win-debug",       "configurePreset": "win-debug",      "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
+    { "name": "win-release",     "configurePreset": "win-release",    "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } }
   ]
 }

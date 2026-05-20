@@ -18,6 +18,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -27,18 +28,21 @@ using psynder::usize;
 
 namespace {
 
-// Build a unique tmp path so parallel ctest runs don't collide.
+// Build a unique tmp path so parallel ctest runs don't collide. Uses the
+// platform temp dir (TMPDIR/P_tmpdir on POSIX, %TEMP%/%TMP% on Windows) via
+// std::filesystem — the old hardcoded "/tmp" fallback doesn't exist on
+// Windows, so the dump file write failed there.
 std::string make_tmp_path(const char* tag) {
-    const char* env = std::getenv("TMPDIR");
-    std::string base = (env && *env) ? env : "/tmp";
-    if (!base.empty() && base.back() != '/')
-        base.push_back('/');
-    base += "psynder_flight_";
-    base += tag;
-    base += "_";
-    base += std::to_string(static_cast<long long>(std::rand()));
-    base += ".csv";
-    return base;
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+    if (ec || dir.empty())
+        dir = std::filesystem::path(".");
+    std::string name = "psynder_flight_";
+    name += tag;
+    name += "_";
+    name += std::to_string(static_cast<long long>(std::rand()));
+    name += ".csv";
+    return (dir / name).string();
 }
 
 usize count_data_lines(const std::string& path) {

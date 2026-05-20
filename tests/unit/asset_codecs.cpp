@@ -95,7 +95,7 @@ bool meshes_equal(const asset::lmm::Mesh& a, const asset::lmm::Mesh& b) {
 
 }  // namespace
 
-TEST_CASE("asset/codecs: .lmm writer ↔ reader round-trip (u16 indices)", "[asset][codecs][lmm]") {
+TEST_CASE("asset/codecs: .lmm writer <-> reader round-trip (u16 indices)", "[asset][codecs][lmm]") {
     // 8 vertices, 6 indices (1 quad as 2 triangles), 2 submeshes.
     auto mesh = make_test_mesh(/*vertex_count=*/8, /*index_count=*/6, /*submesh_count=*/2);
     std::vector<u8> blob;
@@ -117,7 +117,7 @@ TEST_CASE("asset/codecs: .lmm writer ↔ reader round-trip (u16 indices)", "[ass
     REQUIRE(meshes_equal(mesh, decoded));
 }
 
-TEST_CASE("asset/codecs: .lmm writer ↔ reader round-trip (u32 indices, wide mesh)",
+TEST_CASE("asset/codecs: .lmm writer <-> reader round-trip (u32 indices, wide mesh)",
           "[asset][codecs][lmm]") {
     // 70k vertices forces 32-bit indices.
     auto mesh = make_test_mesh(/*vertex_count=*/70'000,
@@ -157,7 +157,7 @@ TEST_CASE("asset/codecs: .lmm reader rejects bad magic / version", "[asset][code
     }
 }
 
-TEST_CASE("asset/codecs: .lmt writer ↔ reader round-trip (RGBA8 + mip pyramid)",
+TEST_CASE("asset/codecs: .lmt writer <-> reader round-trip (RGBA8 + mip pyramid)",
           "[asset][codecs][lmt]") {
     asset::lmt::Texture tex;
     tex.width = 4;
@@ -196,7 +196,7 @@ TEST_CASE("asset/codecs: .lmt writer ↔ reader round-trip (RGBA8 + mip pyramid)
     REQUIRE(decoded.pixel_data == tex.pixel_data);
 }
 
-TEST_CASE("asset/codecs: .lmt writer ↔ reader round-trip (P8 with palette)",
+TEST_CASE("asset/codecs: .lmt writer <-> reader round-trip (P8 with palette)",
           "[asset][codecs][lmt]") {
     asset::lmt::Texture tex;
     tex.width = 8;
@@ -227,7 +227,7 @@ TEST_CASE("asset/codecs: .lmt writer ↔ reader round-trip (P8 with palette)",
     REQUIRE(decoded.pixel_data == tex.pixel_data);
 }
 
-TEST_CASE("asset/codecs: .lma writer ↔ reader round-trip (PCM_S16 mono)", "[asset][codecs][lma]") {
+TEST_CASE("asset/codecs: .lma writer <-> reader round-trip (PCM_S16 mono)", "[asset][codecs][lma]") {
     asset::lma::Audio audio;
     audio.sample_rate = 48000;
     audio.frame_count = 1024;
@@ -253,7 +253,7 @@ TEST_CASE("asset/codecs: .lma writer ↔ reader round-trip (PCM_S16 mono)", "[as
     REQUIRE(decoded.pcm_data == audio.pcm_data);
 }
 
-TEST_CASE("asset/codecs: .lma writer ↔ reader round-trip (PCM_F32 stereo + loop)",
+TEST_CASE("asset/codecs: .lma writer <-> reader round-trip (PCM_F32 stereo + loop)",
           "[asset][codecs][lma]") {
     asset::lma::Audio audio;
     audio.sample_rate = 44100;

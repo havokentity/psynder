@@ -42,7 +42,7 @@ TEST_CASE("Stance: ladder beats prone but not water", "[physics][character][stan
     REQUIRE(water == kernels::CharStanceK::Water);
 }
 
-TEST_CASE("Stance: crouch button transitions Stand → Crouch", "[physics][character][stance]") {
+TEST_CASE("Stance: crouch button transitions Stand -> Crouch", "[physics][character][stance]") {
     auto next = kernels::kernel_char_next_stance(kernels::CharStanceK::Stand,
                                                  kernels::CharIntent{true, false, false, false});
     REQUIRE(next == kernels::CharStanceK::Crouch);
@@ -54,7 +54,7 @@ TEST_CASE("Stance: prone request from Prone state keeps you prone", "[physics][c
     REQUIRE(next == kernels::CharStanceK::Prone);
 }
 
-TEST_CASE("Stance: prone → stand requires intermediate crouch step",
+TEST_CASE("Stance: prone -> stand requires intermediate crouch step",
           "[physics][character][stance]") {
     // Releasing all stance modifiers while prone should drop us into
     // Crouch first, not all the way to Stand — that's the FPS feel.

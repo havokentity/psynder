@@ -340,6 +340,22 @@ TEST_CASE("ipc: HTTP healthz route works without auth", "[ipc][http][server]") {
     REQUIRE(send_all(s, "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
     std::vector<::psynder::u8> tail;
     auto head = read_http_head(s, tail);
+    // The body ("ok\n") may arrive in a TCP segment *after* the header
+    // boundary — macOS usually coalesces head+body into one recv(), but
+    // Linux frequently splits them, leaving `tail` empty. Drain whatever
+    // remains so the body assertion is timing-independent.
+    {
+        set_recv_timeout(s, std::chrono::milliseconds(500));
+        char tmp[256];
+        for (;;) {
+            auto got = ::recv(s, tmp, sizeof(tmp), 0);
+            if (got <= 0)
+                break;
+            tail.insert(tail.end(),
+                        reinterpret_cast<const ::psynder::u8*>(tmp),
+                        reinterpret_cast<const ::psynder::u8*>(tmp) + got);
+        }
+    }
     sock_close(s);
     REQUIRE(head.rfind("HTTP/1.1 200", 0) == 0);
     // Content-Length: 3 then body "ok\n" appears either after the head boundary

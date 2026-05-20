@@ -37,7 +37,7 @@ TEST_CASE("HiZ tile clears to 1.0 (far plane)", "[raster][hiz][adr-002]") {
     REQUIRE(h.kRows == 8);
 }
 
-TEST_CASE("HiZ tile dimensions match ADR-002 / DESIGN.md §7.3", "[raster][hiz][adr-002]") {
+TEST_CASE("HiZ tile dimensions match ADR-002 / DESIGN.md sec 7.3", "[raster][hiz][adr-002]") {
     REQUIRE(HiZTile<32, 32>::kCols == 4);
     REQUIRE(HiZTile<32, 32>::kRows == 4);
     REQUIRE(HiZTile<64, 64>::kCols == 8);

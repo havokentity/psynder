@@ -20,13 +20,13 @@ namespace pm = psynder::platform::macos;
 
 TEST_CASE("platform_macos: ffb_build_constant_force clamps + scales magnitude",
           "[platform-macos][ffb]") {
-    SECTION("zero magnitude → zero wire magnitude") {
+    SECTION("zero magnitude -> zero wire magnitude") {
         pm::FfbConstantForce d{};
         d.magnitude = 0.0f;
         const auto w = pm::ffb_build_constant_force(d);
         REQUIRE(w.magnitude == 0);
     }
-    SECTION("unit magnitude → +10000") {
+    SECTION("unit magnitude -> +10000") {
         pm::FfbConstantForce d{};
         d.magnitude = 1.0f;
         d.gain = 1.0f;
@@ -34,20 +34,20 @@ TEST_CASE("platform_macos: ffb_build_constant_force clamps + scales magnitude",
         REQUIRE(w.magnitude == 10000);
         REQUIRE(w.gain == 10000u);
     }
-    SECTION("negative-unit magnitude → -10000") {
+    SECTION("negative-unit magnitude -> -10000") {
         pm::FfbConstantForce d{};
         d.magnitude = -1.0f;
         const auto w = pm::ffb_build_constant_force(d);
         REQUIRE(w.magnitude == -10000);
     }
-    SECTION("overrange magnitude clamps to ±10000, never wraps") {
+    SECTION("overrange magnitude clamps to +/-10000, never wraps") {
         pm::FfbConstantForce d{};
         d.magnitude = 4.2f;
         REQUIRE(pm::ffb_build_constant_force(d).magnitude == 10000);
         d.magnitude = -7.5f;
         REQUIRE(pm::ffb_build_constant_force(d).magnitude == -10000);
     }
-    SECTION("0° direction → +X axis (10000, 0)") {
+    SECTION("0deg direction -> +X axis (10000, 0)") {
         pm::FfbConstantForce d{};
         d.magnitude = 0.5f;
         d.direction_deg = 0.0f;
@@ -55,21 +55,21 @@ TEST_CASE("platform_macos: ffb_build_constant_force clamps + scales magnitude",
         REQUIRE(w.direction_x == 10000);
         REQUIRE(std::abs(w.direction_y) <= 1);  // round-to-int slop
     }
-    SECTION("90° direction → +Y axis (0, 10000)") {
+    SECTION("90deg direction -> +Y axis (0, 10000)") {
         pm::FfbConstantForce d{};
         d.direction_deg = 90.0f;
         const auto w = pm::ffb_build_constant_force(d);
         REQUIRE(std::abs(w.direction_x) <= 1);
         REQUIRE(w.direction_y == 10000);
     }
-    SECTION("180° direction → -X axis (-10000, 0)") {
+    SECTION("180deg direction -> -X axis (-10000, 0)") {
         pm::FfbConstantForce d{};
         d.direction_deg = 180.0f;
         const auto w = pm::ffb_build_constant_force(d);
         REQUIRE(w.direction_x == -10000);
         REQUIRE(std::abs(w.direction_y) <= 1);
     }
-    SECTION("duration 0 → FF_INFINITE sentinel, nonzero passes through") {
+    SECTION("duration 0 -> FF_INFINITE sentinel, nonzero passes through") {
         pm::FfbConstantForce d{};
         d.duration_us = 0u;
         REQUIRE(pm::ffb_build_constant_force(d).duration == 0xFFFFFFFFu);

@@ -78,7 +78,7 @@ TEST_CASE("script: execute_string runs a chunk", "[script][exec]") {
     REQUIRE(out == "42");
 }
 
-TEST_CASE("script: DOTS — register_system over component arrays", "[script][dots]") {
+TEST_CASE("script: DOTS - register_system over component arrays", "[script][dots]") {
     VmFixture fix;
 
     // The system callback receives whole component arrays as positional
@@ -164,7 +164,7 @@ TEST_CASE("script: DOTS — register_system over component arrays", "[script][do
     REQUIRE(out == "7.0000");
 }
 
-TEST_CASE("script: DOTS — no per-entity OOP escape hatch exists", "[script][dots]") {
+TEST_CASE("script: DOTS - no per-entity OOP escape hatch exists", "[script][dots]") {
     VmFixture fix;
 
     std::string out;
