@@ -44,9 +44,39 @@ VehicleWorld& vehicle_world() {
 // solver hot loop is the bottleneck — no virtual dispatches, no allocations.
 void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
     // Chassis basis vectors in world space.
-    math::Vec3 forward = quat_rotate(chassis.rotation, {0, 0, 1});
-    math::Vec3 right = quat_rotate(chassis.rotation, {1, 0, 0});
+    //
+    // The longitudinal (forward) axis is derived from the wheel layout — the
+    // line from the rear (drive) axle to the front (non-drive) axle — rather
+    // than assumed to be chassis-local +Z. A vehicle whose wheels are placed
+    // along local X must drive along local X, otherwise the drive thrust acts
+    // perpendicular to the wheelbase and spins the chassis instead of pushing
+    // it (the sample-04 "barely accelerates" bug). For the conventional
+    // local-+Z layout this derivation yields exactly +Z, so existing callers
+    // are unaffected; it falls back to local +Z when the layout is degenerate
+    // (no axle split, or coincident axle centroids).
     math::Vec3 up = quat_rotate(chassis.rotation, {0, 1, 0});
+    math::Vec3 fwd_local{0.0f, 0.0f, 1.0f};
+    {
+        math::Vec3 front_sum{0, 0, 0}, rear_sum{0, 0, 0};
+        u32 nf = 0, nr = 0;
+        for (const VehicleWheel& wh : v.wheels) {
+            if (wh.drive_wheel) {
+                rear_sum = math::add(rear_sum, wh.local_position);
+                ++nr;
+            } else {
+                front_sum = math::add(front_sum, wh.local_position);
+                ++nf;
+            }
+        }
+        if (nf > 0 && nr > 0) {
+            const math::Vec3 d = math::sub(math::mul(front_sum, 1.0f / static_cast<f32>(nf)),
+                                           math::mul(rear_sum, 1.0f / static_cast<f32>(nr)));
+            if (math::dot(d, d) > 1e-6f)
+                fwd_local = math::normalize(d);
+        }
+    }
+    math::Vec3 forward = quat_rotate(chassis.rotation, fwd_local);
+    math::Vec3 right = math::normalize(math::cross(up, forward));
 
     // Drivetrain: read drive-wheel omegas and step the engine + gearbox.
     f32 omega_l = 0.0f, omega_r = 0.0f;
@@ -155,6 +185,12 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
     //   * slip_lat  = atan2(v_lat, |v_long|) − steer_angle (radians)
     //   * Fz        = suspension normal load computed above this tick
     for (VehicleWheel& wh : v.wheels) {
+        // Propagate the chassis steering command to the steered wheels. Only
+        // the front (non-drive) wheels steer; the rear/drive wheels stay fixed.
+        // set_steer() only writes v.steer, so without this the per-wheel
+        // steer_angle stays 0 and the car cannot turn.
+        wh.steer_angle = wh.drive_wheel ? 0.0f : v.steer;
+
         if (!wh.on_ground || wh.load_n <= 0.0f)
             continue;
 

@@ -690,16 +690,19 @@ int main(int argc, char** argv) {
     chassis_desc.friction = 0.5f;
     const physics::BodyId chassis = world.create_body(chassis_desc);
 
-    // Four wheels — locations are in chassis-local space. Front wheels are
-    // toward -X in chassis-local because the chassis faces local -Z and the
-    // cube model is rolled so its long axis is X; we keep "front" semantic
-    // for the drive flag (rear-wheel drive).
+    // Four wheels — locations are in chassis-local space. The car drives along
+    // +X (the direction segment 0 runs and the auto-driver aims), so the long
+    // axis is local X. The vehicle module derives the chassis forward axis from
+    // the wheel layout — front (non-drive) axle minus rear (drive) axle — so we
+    // put the front wheels at +X (leading) and the rear, rear-wheel-drive axle
+    // at -X. That makes "forward" point +X; if front/rear were swapped the
+    // drive thrust would act sideways to the wheelbase and just spin the car.
     std::array<physics::vehicle::WheelDesc, 4> wheels{};
     const f32 wx = 1.45f, wz = 0.85f, wy = -0.35f;
-    wheels[0].local_position = v3(-wx, wy, wz);   // front-left
-    wheels[1].local_position = v3(-wx, wy, -wz);  // front-right
-    wheels[2].local_position = v3(wx, wy, wz);    // rear-left
-    wheels[3].local_position = v3(wx, wy, -wz);   // rear-right
+    wheels[0].local_position = v3(wx, wy, wz);    // front-left
+    wheels[1].local_position = v3(wx, wy, -wz);   // front-right
+    wheels[2].local_position = v3(-wx, wy, wz);   // rear-left  (drive)
+    wheels[3].local_position = v3(-wx, wy, -wz);  // rear-right (drive)
     for (auto& w : wheels) {
         w.radius = 0.35f;
         w.suspension = 0.30f;
