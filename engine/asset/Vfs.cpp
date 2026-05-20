@@ -256,6 +256,11 @@ struct WatchTarget {
     std::string vpath;
     fs::path resolved;
     fs::file_time_type last_write{};
+    // Track size alongside mtime: a rename-into-place on Windows/NTFS can
+    // restore the *original* file's timestamp (filesystem tunneling), so an
+    // mtime-only check misses content swaps where the new file happens to
+    // land on the old mtime. Size advances catch those.
+    std::uintmax_t last_size = 0;
     void (*cb)(std::string_view, void*) noexcept = nullptr;
     void* user = nullptr;
     bool valid = false;
@@ -706,12 +711,19 @@ void poll_watchers_once(VfsState& s) {
 
         std::error_code ec;
         fs::file_time_type t{};
+        std::uintmax_t sz = 0;
         bool live_exists = false;
         if (has_live) {
             t = fs::last_write_time(live_path, ec);
             // If the path resolved but the stat just-now failed (e.g.
             // race with rename), treat it as missing this cycle.
             live_exists = !ec;
+            if (live_exists) {
+                std::error_code sec;
+                sz = fs::file_size(live_path, sec);
+                if (sec)
+                    sz = 0;
+            }
         }
 
         if (!w.valid) {
@@ -723,6 +735,7 @@ void poll_watchers_once(VfsState& s) {
                     real.exists = live_exists;
                     if (live_exists) {
                         real.last_write = t;
+                        real.last_size = sz;
                         real.resolved = live_path;
                     }
                     break;
@@ -735,6 +748,7 @@ void poll_watchers_once(VfsState& s) {
         bool should_fire = false;
         bool new_exists = w.exists;
         fs::file_time_type new_mtime = w.last_write;
+        std::uintmax_t new_size = w.last_size;
         fs::path new_path = w.resolved;
 
         if (w.exists && !live_exists) {
@@ -746,17 +760,21 @@ void poll_watchers_once(VfsState& s) {
             should_fire = true;
             new_exists = true;
             new_mtime = t;
+            new_size = sz;
             new_path = live_path;
-        } else if (live_exists && t != w.last_write) {
-            // Plain mtime change on an existing file.
+        } else if (live_exists && (t != w.last_write || sz != w.last_size)) {
+            // Content changed: mtime advanced, or size changed even when the
+            // mtime didn't (NTFS rename-into-place tunneling).
             should_fire = true;
             new_mtime = t;
+            new_size = sz;
             new_path = live_path;
         } else if (live_exists && live_path != w.resolved) {
             // The vpath now resolves through a different mount — treat as
             // a change so consumers can re-load.
             should_fire = true;
             new_mtime = t;
+            new_size = sz;
             new_path = live_path;
         }
 
@@ -767,6 +785,7 @@ void poll_watchers_once(VfsState& s) {
                     if (real.vpath == w.vpath && real.user == w.user) {
                         real.exists = new_exists;
                         real.last_write = new_mtime;
+                        real.last_size = new_size;
                         real.resolved = new_path;
                         break;
                     }
