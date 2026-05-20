@@ -66,6 +66,10 @@ void destroy(VehicleId v);
 void set_throttle(VehicleId v, f32 t);   // 0..1
 void set_brake(VehicleId v, f32 b);      // 0..1
 void set_steer(VehicleId v, f32 angle);  // radians
+// Flat ground-plane height (world Y) the suspension rays contact against.
+// Default 0. The oval test track in sample 04 is flat, so a single plane is
+// sufficient; elevated terrain would need a per-wheel height probe instead.
+void set_ground_plane(VehicleId v, f32 ground_y);
 }  // namespace vehicle
 
 // Character controller (DESIGN.md §10.1 character specialization)
