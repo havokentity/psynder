@@ -18,6 +18,7 @@
 #include "Physics.h"
 #include "WorldImpl.h"
 #include "Shape.h"
+#include "Vehicle.h"
 #include "FpControl.h"
 
 #include "jobs/JobSystem.h"
@@ -75,6 +76,26 @@ static void integrate_positions(WorldState& w, f32 dt) noexcept {
             b.rotation.z + 0.5f * dt * dq.z,
             b.rotation.w + 0.5f * dt * dq.w,
         });
+    }
+}
+
+// Run the vehicle solver for every live vehicle, accumulating tire +
+// suspension + aero forces onto each chassis body's force/torque before the
+// integrator consumes (and clears) them this sub-tick. Maps a vehicle's
+// stored chassis handle back to its Body slot via the low 24 bits, skipping
+// stale handles. Single-threaded with the rest of the tick — no allocation.
+static void step_vehicles(WorldState& w, f32 dt) noexcept {
+    VehicleWorld& vw = vehicle_world();
+    for (Vehicle& v : vw.vehicles) {
+        if (v.gen == 0)
+            continue;  // freed slot
+        const u32 bidx = v.chassis_body & 0x00FFFFFFu;
+        if (bidx >= w.bodies.size())
+            continue;
+        Body& chassis = w.bodies[bidx];
+        if (chassis.gen == 0 || chassis.inv_mass == 0.0f)
+            continue;  // stale or static chassis
+        vehicle_step(v, chassis, dt);
     }
 }
 
@@ -254,6 +275,9 @@ void World::step(f32 dt_seconds) {
             b.prev_rotation = b.rotation;
         }
 
+        // Vehicle solver runs first so its tire/suspension/aero forces are
+        // in the chassis accumulators when integrate_forces consumes them.
+        detail::step_vehicles(w, dt);
         detail::integrate_forces(w, dt);
         detail::rebuild_aabbs(w);
         detail::broadphase_sap(w.aabb_scratch, w.pair_scratch);
@@ -268,6 +292,45 @@ void World::step(f32 dt_seconds) {
 
 void World::set_gravity(math::Vec3 g) {
     detail::world_state().gravity = g;
+}
+
+void World::set_body_position(BodyId id, math::Vec3 p) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;  // static — leave it pinned
+    b.position = p;
+    b.prev_position = p;  // no interpolation across the teleport
+    b.linear_velocity = {0, 0, 0};
+    b.angular_velocity = {0, 0, 0};
+}
+
+void World::set_body_velocity(BodyId id, math::Vec3 v) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;
+    b.linear_velocity = v;
+}
+
+void World::apply_impulse(BodyId id, math::Vec3 impulse) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;
+    b.linear_velocity = math::add(b.linear_velocity, math::mul(impulse, b.inv_mass));
 }
 
 math::Vec3 World::get_position(BodyId id) const {

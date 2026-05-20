@@ -88,13 +88,72 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
             break;
     }
 
-    // Per-wheel tire forces (Pacejka). For each wheel:
-    //   * slip_long = (r·ω − v_long) / max(|v_long|, eps)
-    //   * slip_lat  = atan2(v_lat, |v_long|) − steer_angle (radians)
-    //   * Fz        = spring·compression + damping (last tick's load)
     math::Vec3 total_force{0, 0, 0};
     math::Vec3 total_torque{0, 0, 0};
 
+    // ─── Per-wheel suspension ground contact ─────────────────────────────
+    //
+    // Cast a downward ray from each wheel's attach point on the chassis. The
+    // wheel hardware hangs below the attach point by up to the suspension
+    // rest travel, and the tire contacts the ground a further `radius` below
+    // the bottom of that travel — so the maximum reach from attach point to
+    // contact is `rest + radius`. On a flat ground plane the contact normal
+    // is world-up and the ground height is the constant `v.ground_y`.
+    //
+    // compression = (rest + radius) − (attach.y − ground_y), clamped to the
+    // physical travel [0, rest]. When > 0 the wheel touches down: we set
+    // on_ground, store the spring+damper normal load, and push that load up
+    // along the contact normal at the wheel (force + torque about the COM).
+    // When the attach point is too high the wheel is airborne (load 0); the
+    // Pacejka loop below then skips it.
+    const math::Vec3 contact_normal{0.0f, 1.0f, 0.0f};  // flat ground → world up
+    for (VehicleWheel& wh : v.wheels) {
+        const math::Vec3 attach =
+            math::add(chassis.position, quat_rotate(chassis.rotation, wh.local_position));
+        const math::Vec3 ra = math::sub(attach, chassis.position);
+
+        const f32 max_reach = wh.suspension_rest_length + wh.radius;
+        const f32 gap = attach.y - v.ground_y;  // attach height above ground
+        f32 compression = max_reach - gap;
+
+        if (compression <= 0.0f) {
+            wh.on_ground = false;
+            wh.load_n = 0.0f;
+            wh.compression = 0.0f;
+            continue;
+        }
+        // Can't compress past the available suspension travel.
+        compression = std::min(compression, wh.suspension_rest_length);
+
+        // Damper rides the chassis velocity at the contact along the normal
+        // (its upward speed). Subtracting it from the spring term makes the
+        // damper dissipative: when the chassis rises (compression_vel > 0) it
+        // bleeds the upward push; when it drops (< 0) it adds resistance.
+        // (Using the negated compression *rate* here would invert the sign
+        // and pump energy in — the spring would launch and oscillate.)
+        const math::Vec3 attach_v =
+            math::add(chassis.linear_velocity, math::cross(chassis.angular_velocity, ra));
+        const f32 compression_vel = math::dot(attach_v, contact_normal);
+
+        // Spring + damper. Clamp to >= 0 so the suspension can only push the
+        // chassis up, never pull it down (no tensile suspension force).
+        f32 Fz = wh.spring_k * compression - wh.damping * compression_vel;
+        if (Fz < 0.0f)
+            Fz = 0.0f;
+
+        wh.on_ground = true;
+        wh.load_n = Fz;
+        wh.compression = compression;
+
+        const math::Vec3 normal_force = math::mul(contact_normal, Fz);
+        total_force = math::add(total_force, normal_force);
+        total_torque = math::add(total_torque, math::cross(ra, normal_force));
+    }
+
+    // Per-wheel tire forces (Pacejka). For each wheel:
+    //   * slip_long = (r·ω − v_long) / max(|v_long|, eps)
+    //   * slip_lat  = atan2(v_lat, |v_long|) − steer_angle (radians)
+    //   * Fz        = suspension normal load computed above this tick
     for (VehicleWheel& wh : v.wheels) {
         if (!wh.on_ground || wh.load_n <= 0.0f)
             continue;
@@ -243,6 +302,13 @@ void set_steer(VehicleId id, f32 angle) {
     u32 idx = id.raw & 0x00FFFFFFu;
     if (idx < w.vehicles.size())
         w.vehicles[idx].steer = angle;
+}
+
+void set_ground_plane(VehicleId id, f32 ground_y) {
+    auto& w = detail::vehicle_world();
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx < w.vehicles.size())
+        w.vehicles[idx].ground_y = ground_y;
 }
 
 }  // namespace psynder::physics::vehicle
