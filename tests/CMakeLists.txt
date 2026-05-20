@@ -48,6 +48,13 @@ if(PSYNDER_BUILD_SAMPLES)
             RESOURCE_LOCK "psynder_platform_singleton"
             TIMEOUT 30)
     endif()
+    if(TARGET sample_09_char_playground)
+        add_test(NAME sample_09_char_playground_smoke
+                 COMMAND sample_09_char_playground --smoke-frames=4)
+        set_tests_properties(sample_09_char_playground_smoke PROPERTIES
+            RESOURCE_LOCK "psynder_platform_singleton"
+            TIMEOUT 30)
+    endif()
     if(TARGET sample_10_shape_sandbox)
         add_test(NAME sample_10_shape_sandbox_smoke
                  COMMAND sample_10_shape_sandbox --smoke-frames=4)
