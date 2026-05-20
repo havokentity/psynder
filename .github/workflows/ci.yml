@@ -47,7 +47,8 @@ jobs:
             sudo apt-get install -y ninja-build libwayland-dev wayland-protocols \
               libxkbcommon-dev libpipewire-0.3-dev libasound2-dev libxrandr-dev \
               libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxext-dev \
-              libxfixes-dev libdrm-dev libgbm-dev
+              libxfixes-dev libdrm-dev libgbm-dev \
+              xvfb
           fi
 
       - name: Install Ninja (Windows)
@@ -64,12 +65,20 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
 
-      - name: Test
-        # linux-asan-debug has no test preset (build-only sanitizer gate).
-        # The test presets carry repeat:until-pass:2 so the known flaky
-        # IPC port-acquisition test (#75) doesn't red the run on a single
-        # race. A genuine failure still fails twice and gates.
-        if: matrix.preset != 'linux-asan-debug'
+      # The sample + golden tests open a real window. GitHub's Linux runners
+      # are headless (no X11/Wayland display), so they need a virtual X server
+      # — xvfb-run gives one and the engine's X11 fallback path renders into
+      # it. macOS runners ship a WindowServer and Windows has a desktop, so
+      # those run ctest directly. linux-asan-debug has no test preset (it's a
+      # build-only sanitizer gate). The test presets carry repeat:until-pass:2
+      # so the flaky IPC port-acquisition test (#75) survives a single race
+      # while a genuine failure still fails twice and gates.
+      - name: Test (Linux, headless via Xvfb)
+        if: runner.os == 'Linux' && matrix.preset != 'linux-asan-debug'
+        run: xvfb-run -a ctest --preset ${{ matrix.preset }}
+
+      - name: Test (Mac / Windows)
+        if: runner.os != 'Linux'
         run: ctest --preset ${{ matrix.preset }}
 
       # Collect the shippable binaries (samples + lm_* tools) so every push
