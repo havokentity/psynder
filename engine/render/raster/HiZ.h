@@ -102,15 +102,33 @@ struct HiZTile {
         const u32 cy1 = (static_cast<u32>(y1 - 1) / kHiZCellPx) + 1;
         for (u32 cy = cy0; cy < cy1 && cy < kRows; ++cy) {
             for (u32 cx = cx0; cx < cx1 && cx < kCols; ++cx) {
-                if (max_z[cy * kCols + cx] > test_z)
+                // `>=`, not `>`: a triangle whose nearest depth EQUALS a cell's
+                // stored max is still potentially visible (e.g. the second
+                // triangle of a coplanar, camera-facing quad whose z matches
+                // what the first triangle just wrote). Rejecting on equality
+                // dropped that second triangle, leaving half the quad as a hole
+                // on face-on walls/floors — so equality must pass.
+                //
+                // This early-reject is conservative because max_z is kept a true
+                // upper bound on the cell's farthest depth: the tile rasterizer
+                // only tightens a cell (update_cell) when a triangle FULLY covers
+                // it, so max_z never drops below the cell's actual farthest. The
+                // per-pixel depth test remains the authority for triangles that
+                // survive the early-reject.
+                if (max_z[cy * kCols + cx] >= test_z)
                     return true;
             }
         }
         return false;
     }
 
-    // Tighten a single cell's max_z after a quad finishes. The depth-buffer
-    // already carries the current z; HiZ keeps a conservative upper bound.
+    // Tighten a single cell's max_z (monotonically lowers it). Conservative by
+    // contract: callers must only pass a `new_max_z` that bounds the farthest
+    // depth over the WHOLE cell. The tile rasterizer satisfies this by calling
+    // here only for cells a triangle FULLY covers (then min(old, tri_z) <=
+    // tri_z_max for every pixel) — see the caller. Tightening a partially-
+    // covered cell would underestimate its farthest depth and make
+    // any_cell_passes() over-reject visible geometry.
     PSY_FORCEINLINE void update_cell(u32 cell, f32 new_max_z) noexcept {
         if (new_max_z < max_z[cell])
             max_z[cell] = new_max_z;

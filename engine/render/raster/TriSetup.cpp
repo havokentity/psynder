@@ -3,11 +3,13 @@
 // DESIGN.md §7.3 — edge functions in Q24.8, sub-pixel precision 1/256 px.
 
 #include "EdgeEq.h"
+#include "Raster.h"
 
 #include "core/Types.h"
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace psynder::render::raster {
 
@@ -28,9 +30,9 @@ PSY_FORCEINLINE u8 unpack_a(u32 c) noexcept {
 
 }  // namespace
 
-bool setup_triangle(const math::Vec4& cp0,
-                    const math::Vec4& cp1,
-                    const math::Vec4& cp2,
+bool setup_triangle(const math::Vec4& cp0_in,
+                    const math::Vec4& cp1_in,
+                    const math::Vec4& cp2_in,
                     math::Vec2 uv0,
                     math::Vec2 uv1,
                     math::Vec2 uv2,
@@ -39,14 +41,72 @@ bool setup_triangle(const math::Vec4& cp0,
                     u32 col2,
                     u32 viewport_w,
                     u32 viewport_h,
-                    TriSetup& out) noexcept {
-    // Reject anything fully behind the near plane. Wave-A keeps the clipper
-    // primitive: triangles that straddle the near plane get culled here.
-    // The proper polygon clipper is a Wave-B item; for the M1 sample the
-    // model sits inside the frustum.
-    if (cp0.w <= 0.0f || cp1.w <= 0.0f || cp2.w <= 0.0f) {
+                    TriSetup& out,
+                    u8 cull_mode) noexcept {
+    // Reject triangles with any vertex on or behind the eye plane (w <= 0),
+    // where the perspective divide is invalid. This is the eye-plane test, not
+    // the near-plane test (z + w >= 0): near-plane straddlers are already split
+    // upstream by Raster.cpp's Sutherland-Hodgman clipper, so by the time setup
+    // runs every vertex has w > 0.
+    if (cp0_in.w <= 0.0f || cp1_in.w <= 0.0f || cp2_in.w <= 0.0f) {
         out.valid = false;
         return false;
+    }
+
+    // Face culling. screen_area2x measures the signed area AFTER the viewport
+    // Y-flip (screen is Y-down). The engine's front-facing convention is a
+    // POSITIVE signed screen area — i.e. CCW after the Y-flip (which is CW in
+    // NDC, Y-up); back faces are negative; zero is degenerate. We decide
+    // front/back from the float screen area here (cheap, and avoids the Q24.8
+    // snap affecting the cull). Meshes must be wound consistently — see
+    // samples/common/MeshWinding.h for a normal-based rewind helper.
+    //   Back  (default): keep front faces (area > 0)
+    //   Front:           keep back faces  (area < 0), rewound to front for setup
+    //   None:            two-sided — rewind back faces to front, draw both sides
+    math::Vec4 cp0 = cp0_in;
+    math::Vec4 cp1 = cp1_in;
+    math::Vec4 cp2 = cp2_in;
+
+    auto screen_area2x = [&](const math::Vec4& a, const math::Vec4& b, const math::Vec4& c) noexcept {
+        const f32 vwf = static_cast<f32>(viewport_w);
+        const f32 vhf = static_cast<f32>(viewport_h);
+        const f32 iwa = 1.0f / a.w, iwb = 1.0f / b.w, iwc = 1.0f / c.w;
+        const f32 ax = (a.x * iwa * 0.5f + 0.5f) * vwf;
+        const f32 ay = (1.0f - (a.y * iwa * 0.5f + 0.5f)) * vhf;
+        const f32 bx = (b.x * iwb * 0.5f + 0.5f) * vwf;
+        const f32 by = (1.0f - (b.y * iwb * 0.5f + 0.5f)) * vhf;
+        const f32 cx = (c.x * iwc * 0.5f + 0.5f) * vwf;
+        const f32 cy = (1.0f - (c.y * iwc * 0.5f + 0.5f)) * vhf;
+        return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    };
+
+    const f32 sa = screen_area2x(cp0, cp1, cp2);
+    const CullMode mode = static_cast<CullMode>(cull_mode);
+    if (mode == CullMode::None) {  // two-sided
+        if (sa == 0.0f) {          // degenerate
+            out.valid = false;
+            return false;
+        }
+        if (sa < 0.0f) {
+            std::swap(cp1, cp2);
+            std::swap(uv1, uv2);
+            std::swap(col1, col2);
+        }
+    } else if (mode == CullMode::Front) {
+        if (sa >= 0.0f) {  // front face or degenerate
+            out.valid = false;
+            return false;
+        }
+        std::swap(cp1, cp2);  // rewind the kept back face to front for setup
+        std::swap(uv1, uv2);
+        std::swap(col1, col2);
+    } else {               // Back (default) — also the safe fallback for any
+                           // unexpected cull_mode value: cull, never silently
+                           // disable culling.
+        if (sa <= 0.0f) {  // back face or degenerate
+            out.valid = false;
+            return false;
+        }
     }
 
     const f32 inv_w0 = 1.0f / cp0.w;
@@ -72,9 +132,10 @@ bool setup_triangle(const math::Vec4& cp0,
     const FxQ24_8 x2 = FxQ24_8::from_float(sx2);
     const FxQ24_8 y2 = FxQ24_8::from_float(sy2);
 
-    // Signed 2× area in Q48.16. Positive ⇒ CCW (front-facing).
+    // Signed 2× area in Q48.16; after the swap above this is > 0 for any
+    // non-degenerate triangle. Only true degenerates (zero area) are dropped.
     const i64 area2x = tri_area_2x(x0, y0, x1, y1, x2, y2);
-    if (area2x <= 0) {  // back-face or degenerate
+    if (area2x <= 0) {  // degenerate (zero-area / collinear)
         out.valid = false;
         return false;
     }

@@ -22,6 +22,8 @@
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as a PNG.
 
 #include "common/CharacterController.h"
+#include "common/Lighting.h"
+#include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
 #include "core/Log.h"
@@ -551,6 +553,16 @@ int main(int argc, char** argv) {
     // Build the synthetic BSP world once.
     World w;
     build_world(w);
+    // Back-face culling is on by default now. Room faces carry inward-pointing
+    // normals, so rewind every triangle to agree with them — that keeps the
+    // interior visible and culls the back of each wall. Then bake a static
+    // directional light into the vertex colours so same-coloured adjacent
+    // walls read as distinct surfaces (form/depth) instead of a flat slab.
+    samples::fix_winding(w.verts.data(),
+                         static_cast<u32>(w.verts.size()),
+                         w.indices.data(),
+                         static_cast<u32>(w.indices.size()));
+    samples::apply_gouraud(w.verts.data(), static_cast<u32>(w.verts.size()), samples::DirLight{});
     PSY_LOG_INFO("sample_03: world built — {} faces, {} leaves, {} verts",
                  w.map.faces.size(),
                  w.map.leaves.size(),
@@ -568,13 +580,39 @@ int main(int argc, char** argv) {
     fb.depth = depth.data();
 
     // Shared first-person / free-cam controller (samples/common). FPS mode
-    // by default; press V to fly. World bounds = the room union so walls
-    // block you; `noclip 1` at the console lifts the clamp + gravity.
+    // by default; press V to fly; `noclip 1` lifts collision + gravity.
     samples::CharacterControllerConfig cc_cfg{};
     cc_cfg.floor_y = w.floor_y;
     cc_cfg.eye_height = 1.6f;
+    // Wall standoff (collision skin). Must comfortably exceed the camera
+    // near-plane distance (0.05, see perspective_rh below) so the near clip
+    // can't poke through a wall and reveal the void/next room when you stand
+    // close. ~0.3 m also reads like a player's body radius. The old 0.05
+    // default equalled the near plane, hence the see-through.
+    constexpr f32 kWallStandoff = 0.3f;
+    cc_cfg.bounds_skin = kWallStandoff;
     samples::CharacterController controller{cc_cfg};
-    controller.set_bounds(w.bounds);
+    // Generic collision: keep the eye inside the UNION of the room / corridor
+    // volumes (the BSP leaf bounds), sliding along their boundary. A single
+    // union AABB (the old set_bounds(w.bounds)) spanned the full room width at
+    // the doorway, so you could walk straight through the wall strips beside
+    // the corridor. Per-leaf volumes block those. The corridor (leaf 1) is
+    // stretched a little into both rooms so its volume overlaps theirs at the
+    // doorways (no dead gap to snag on) — the stretch only re-covers floor
+    // already inside the adjacent room.
+    math::Aabb corridor = w.map.leaves[1].bounds;
+    // Overlap each room by > 2*standoff so the skinned volumes still meet at the
+    // doorways (no dead gap to get stuck in once the skin grew); the stretch
+    // only re-covers floor already inside the adjacent room.
+    const f32 portal_overlap = 2.5f * kWallStandoff;  // 0.75 > 2 * 0.3
+    corridor.min.z -= portal_overlap;
+    corridor.max.z += portal_overlap;
+    const std::array<math::Aabb, 3> walk_volumes = {{
+        w.map.leaves[0].bounds,  // Room A
+        corridor,                // doorway corridor (overlaps both rooms)
+        w.map.leaves[2].bounds,  // Room B
+    }};
+    controller.set_volumes(walk_volumes.data(), static_cast<u32>(walk_volumes.size()));
     controller.set_mode(samples::ControllerMode::Fps);
     controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f});  // in Room A
     controller.set_look(0.0f, 0.0f);
