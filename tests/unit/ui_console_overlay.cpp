@@ -15,6 +15,7 @@
 #include "core/console/Console.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "ui/imm/DebugHud.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -166,6 +167,30 @@ TEST_CASE("console: Up recalls the previous submitted line", "[ui][console]") {
     in.press(KeyCode::Enter);  // resubmit it
     tick(in);
     REQUIRE(con.FindCVar("con_hist_val")->value == "7");
+
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: r_debug_hud cvar drives the debug HUD mode", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    ui::imm::set_debug_hud_mode(ui::imm::DebugHudMode::Off);
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);  // open + register the built-in cvars/commands on first update
+
+    in.type("r_debug_hud full");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(ui::imm::debug_hud_mode() == ui::imm::DebugHudMode::Full);
+
+    in.type("r_debug_hud off");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(ui::imm::debug_hud_mode() == ui::imm::DebugHudMode::Off);
 
     ui::console::set_open(false);
 }

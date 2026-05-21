@@ -9,6 +9,7 @@
 #include "ConsoleOverlay.h"
 
 #include "core/console/Console.h"
+#include "ui/imm/DebugHud.h"
 #include "ui/imm/Imm.h"
 
 #include "core/Types.h"
@@ -19,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <span>
 #include <string>
 #include <string_view>
@@ -32,8 +34,9 @@ using platform::KeyCode;
 
 // ─── Look & layout ─────────────────────────────────────────────────────────
 // imm's 5x7 glyph sits in a 6x8 cell; draw_text advances 6 px / char. We add
-// 2 px of leading for legibility. Colours are 0xRRGGBBAA (filled_rect writes
-// verbatim, so the panel reads as a solid dark slab — the classic Quake look).
+// 2 px of leading for legibility. Colours are 0xRRGGBBAA. The panel is a soft
+// vertical gradient with faint scanlines (a procedural CRT-terminal texture,
+// no asset); the palette is a muted "Nord"-ish set so nothing glares.
 constexpr i32 kCharW = 6;
 constexpr i32 kLineH = 10;
 constexpr f32 kPad = 6.0f;
@@ -42,17 +45,43 @@ constexpr f32 kAnimSpeed = 9.0f;   // open/close slide, units of "anim" per sec
 constexpr f32 kRepeatDelay = 0.40f;
 constexpr f32 kRepeatRate = 0.045f;
 
-constexpr u32 kColPanel = 0x0A0F1AF2u;   // dark navy slab
-constexpr u32 kColBorder = 0x36D9F0FFu;  // cyan accent (bottom edge + prompt)
-constexpr u32 kColInput = 0xECECF0FFu;   // prompt text
-constexpr u32 kColGhost = 0x5E727EFFu;   // dim autocomplete ghost
-constexpr u32 kColText = 0xC2CCD4FFu;    // scrollback
-constexpr u32 kColEcho = 0x8FE3FFFFu;    // echoed "] command" lines
-constexpr u32 kColError = 0xFF6B6BFFu;   // error output
-constexpr u32 kColBannerA = 0x36D9F0FFu;
-constexpr u32 kColBannerB = 0xFF5EA3FFu;
+// Background gradient endpoints (top darker -> bottom slightly lighter). RGB
+// only; the scanline pass darkens every third row for the CRT feel.
+constexpr u8 kBgTopR = 13, kBgTopG = 17, kBgTopB = 26;  // #0D111A
+constexpr u8 kBgBotR = 24, kBgBotG = 30, kBgBotB = 44;  // #181E2C
+constexpr f32 kScanlineDim = 0.82f;
+
+constexpr u32 kColBorder = 0x7FB3C4FFu;  // soft frost cyan (bottom edge + prompt)
+constexpr u32 kColInput = 0xE0E5EEFFu;   // prompt text (snow, slightly dimmed)
+constexpr u32 kColGhost = 0x4C566AFFu;   // dim slate autocomplete ghost
+constexpr u32 kColText = 0xBFC6D2FFu;    // scrollback grey
+constexpr u32 kColEcho = 0x8FBCBBFFu;    // echoed "] command" lines (frost teal)
+constexpr u32 kColError = 0xBF616AFFu;   // muted aurora red (was a glaring red)
+constexpr u32 kColBannerA = 0x7FB3C4FFu;
+constexpr u32 kColBannerB = 0xB48EADFFu;  // soft muted purple
 
 constexpr usize kMaxScrollback = 512;
+
+// Draw the panel background: a top->bottom gradient with a faint scanline
+// every third row. Uses imm::filled_rect per row (1 px tall) so it stays on
+// the public lane-16 surface; only runs while the console is visible.
+void draw_panel_bg(f32 fw, f32 panel_h) noexcept {
+    const i32 ph = static_cast<i32>(panel_h);
+    for (i32 y = 0; y < ph; ++y) {
+        const f32 t = (panel_h > 1.0f) ? static_cast<f32>(y) / panel_h : 0.0f;
+        f32 r = static_cast<f32>(kBgTopR) + (static_cast<f32>(kBgBotR) - kBgTopR) * t;
+        f32 g = static_cast<f32>(kBgTopG) + (static_cast<f32>(kBgBotG) - kBgTopG) * t;
+        f32 b = static_cast<f32>(kBgTopB) + (static_cast<f32>(kBgBotB) - kBgTopB) * t;
+        if ((y % 3) == 0) {
+            r *= kScanlineDim;
+            g *= kScanlineDim;
+            b *= kScanlineDim;
+        }
+        const u32 col = (static_cast<u32>(r) << 24) | (static_cast<u32>(g) << 16) |
+                        (static_cast<u32>(b) << 8) | 0xFFu;
+        imm::filled_rect(math::Vec2{0.0f, static_cast<f32>(y)}, math::Vec2{fw, 1.0f}, col);
+    }
+}
 
 // A scrollback line + its colour. Echo / error / banner get distinct tints.
 struct Line {
@@ -138,6 +167,41 @@ void ensure_init(State& s) noexcept {
                                 out.FormatLine("  {:<16} = {}", v.name, v.value);
                             });
                         });
+    con.RegisterCommand("echo",
+                        "Print the arguments back to the console.",
+                        [](std::span<const std::string_view> args, psynder::console::Output& out) {
+                            std::string line;
+                            for (usize i = 0; i < args.size(); ++i) {
+                                if (i != 0)
+                                    line.push_back(' ');
+                                line.append(args[i]);
+                            }
+                            out.PrintLine(line);
+                        });
+    con.RegisterCommand("quit",
+                        "Exit the application.",
+                        [](std::span<const std::string_view>, psynder::console::Output&) {
+                            std::exit(0);  // dev console in sample apps; runs atexit + static dtors
+                        });
+    con.RegisterCommand("exit",
+                        "Alias for quit.",
+                        [](std::span<const std::string_view>, psynder::console::Output&) {
+                            std::exit(0);
+                        });
+
+    // The debug HUD cvar everything documents but nothing actually registered:
+    // off | compact | full, wired straight to the lane-16 HUD mode (the same
+    // state F1 cycles). Lets `r_debug_hud full` work from the prompt.
+    con.RegisterCVar("r_debug_hud",
+                     "off",
+                     "Debug HUD overlay: off | compact | full.",
+                     0,
+                     [](const psynder::console::CVar& v) {
+                         using ui::imm::DebugHudMode;
+                         ui::imm::set_debug_hud_mode(v.value == "full"      ? DebugHudMode::Full
+                                                     : v.value == "compact" ? DebugHudMode::Compact
+                                                                            : DebugHudMode::Off);
+                     });
 
     push_line(s, "Psynder console.  `~` close   Tab complete   Up/Down history   `help`", kColBannerA);
     push_line(s, "------------------------------------------------------------", kColBannerB);
@@ -455,8 +519,9 @@ void draw(render::Framebuffer& fb) noexcept {
 
     imm::begin_frame(fb);
 
-    // Panel + 2-px cyan bottom edge so it reads as a drawer.
-    imm::filled_rect(math::Vec2{0.0f, 0.0f}, math::Vec2{fw, panel_h}, kColPanel);
+    // Gradient + faint-scanline background (soft CRT-terminal texture) and a
+    // 2-px cyan bottom edge so the panel reads as a drawer.
+    draw_panel_bg(fw, panel_h);
     imm::filled_rect(math::Vec2{0.0f, panel_h - 2.0f}, math::Vec2{fw, 2.0f}, kColBorder);
 
     // Prompt sits on the bottom row of the panel; scrollback fills above it.

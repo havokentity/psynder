@@ -86,11 +86,12 @@ constexpr f32 kPad = 4.0f;
 constexpr f32 kLineHeight = 10.0f;  // 6x8 font + 2px gutter
 constexpr f32 kPanelW = 220.0f;
 
-constexpr u32 kColourPanelBg = 0x101018C0u;
-constexpr u32 kColourPanelFr = 0x808080FFu;
-constexpr u32 kColourLabel = 0xFFFFFFFFu;
-constexpr u32 kColourFps = 0x80FF80FFu;
-constexpr u32 kColourDiagLine = 0xC0C0C0FFu;
+// Muted palette to match the console overlay — nothing glares over gameplay.
+constexpr u32 kColourPanelBg = 0x0D111AD8u;   // dark slate, a touch more opaque
+constexpr u32 kColourPanelFr = 0x5A6172FFu;   // soft slate frame (was mid-grey)
+constexpr u32 kColourLabel = 0xE0E5EEFFu;     // snow (was pure white)
+constexpr u32 kColourFps = 0xA3BE8CFFu;       // muted green (was glaring 0x80FF80)
+constexpr u32 kColourDiagLine = 0xAEB6C2FFu;  // soft grey
 
 // Formatter for "<value> ms" + FPS right-aligned. Returns the rendered
 // FPS string width in pixels so the caller can position it.
