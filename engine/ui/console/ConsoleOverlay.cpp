@@ -158,6 +158,7 @@ struct State {
     int comp_sel = 0;
     bool comp_active = false;
     std::string comp_token;  // token the list was built for (detect changes)
+    bool comp_suppressed_until_text = false;
 
     bool initialised = false;
 };
@@ -501,6 +502,7 @@ void process_text(State& s, const platform::Input& input) noexcept {
         s.input.insert(s.cursor, tmp, static_cast<usize>(n));
         s.cursor += static_cast<usize>(n);
         s.history_pos = -1;  // typing forks off the live line
+        s.comp_suppressed_until_text = false;
     }
 }
 
@@ -526,6 +528,7 @@ void submit(State& s) noexcept {
     s.scroll = 0;
     s.comp_active = false;
     s.comp_token.clear();
+    s.comp_suppressed_until_text = false;
 }
 
 void autocomplete(State& s) noexcept {
@@ -613,12 +616,19 @@ usize token_start(const State& s) noexcept {
 // highlighted row when the token changes so a fresh prefix starts at the top.
 void refresh_completion(State& s) noexcept {
     const auto token = psynder::console::CurrentToken(s.input, s.cursor);
+
+    // Esc can suppress the popup while leaving the typed token intact.
+    // It re-arms only after new text input arrives.
+    if (s.comp_suppressed_until_text || token.text.empty()) {
+        s.comp_active = false;
+        s.comp_items.clear();
+        s.comp_token = token.text;
+        return;
+    }
+
     s.comp_items = gather_matches(s);
-    // Show the popup while typing a token, OR whenever the cursor is in a
-    // value position (so right after "r_resolution " the option list appears
-    // before any value char is typed). Hidden for an empty FIRST token so
-    // merely opening the console doesn't dump the whole registry.
-    s.comp_active = !s.comp_items.empty() && (!token.text.empty() || !token.is_token0);
+    // Show only when actual token chars exist.
+    s.comp_active = !s.comp_items.empty();
     if (token.text != s.comp_token) {
         s.comp_token = token.text;
         s.comp_sel = 0;
@@ -637,15 +647,16 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         submit(s);
     if (input.key_pressed(KeyCode::Escape)) {
         // Esc never quits while the console owns input: dismiss the popup,
-        // else clear the prompt, else (already empty) close the console.
-        if (s.comp_active)
+        // else clear the prompt. We intentionally keep the console open.
+        if (s.comp_active) {
             s.comp_active = false;
-        else if (!s.input.empty()) {
+            s.comp_items.clear();
+            s.comp_suppressed_until_text = true;
+        } else {
             s.input.clear();
             s.cursor = 0;
             s.history_pos = -1;
-        } else {
-            s.open = false;
+            s.comp_suppressed_until_text = false;
         }
     }
     if (input.key_pressed(KeyCode::Tab)) {
