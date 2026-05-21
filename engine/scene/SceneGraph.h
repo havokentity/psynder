@@ -48,8 +48,7 @@ class SceneGraph {
    public:
     void clear();
 
-    SceneNode create_node(SceneNode parent = kInvalidSceneNode,
-                          const LocalTransform& local = {});
+    SceneNode create_node(SceneNode parent = kInvalidSceneNode, const LocalTransform& local = {});
     bool destroy_node(SceneNode node);
     bool alive(SceneNode node) const noexcept;
 

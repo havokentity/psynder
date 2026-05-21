@@ -317,7 +317,8 @@ LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
         if (mask == 0)
             continue;
         ChildHit child_hits[8];
-        const u32 child_count = sorted_child_hits(n, mask, inv_dir, ray.origin, ray.t_min, ray.t_max, child_hits);
+        const u32 child_count =
+            sorted_child_hits(n, mask, inv_dir, ray.origin, ray.t_min, ray.t_max, child_hits);
         for (u32 hc = 0; hc < child_count; ++hc) {
             const u32 c = child_hits[hc].child;
             const u8 kind = n.child_kind[c];
@@ -423,7 +424,8 @@ Hit traverse_tlas_scalar(const TlasState& s, const Ray& ray_in) noexcept {
             continue;
 
         ChildHit child_hits[8];
-        const u32 child_count = sorted_child_hits(n, mask, inv_dir, ray_in.origin, ray_in.t_min, best.t, child_hits);
+        const u32 child_count =
+            sorted_child_hits(n, mask, inv_dir, ray_in.origin, ray_in.t_min, best.t, child_hits);
         for (u32 hc = 0; hc < child_count; ++hc) {
             const u32 c = child_hits[hc].child;
             const u8 kind = n.child_kind[c];
@@ -434,7 +436,8 @@ Hit traverse_tlas_scalar(const TlasState& s, const Ray& ray_in) noexcept {
                     const u32 inst_i = s.prim_indices[first + k];
                     if (inst_i >= s.instances.size())
                         continue;
-                    const Bvh8State* bs = inst_i < s.blas_states.size() ? s.blas_states[inst_i] : nullptr;
+                    const Bvh8State* bs =
+                        inst_i < s.blas_states.size() ? s.blas_states[inst_i] : nullptr;
                     if (!bs)
                         continue;
 
@@ -445,7 +448,8 @@ Hit traverse_tlas_scalar(const TlasState& s, const Ray& ray_in) noexcept {
                         best.t = lh.t;
                         best.primitive = lh.primitive;
                         best.instance = inst_i;
-                        best.normal = transform_normal_to_world(lh.normal, s.instances[inst_i].transform);
+                        best.normal =
+                            transform_normal_to_world(lh.normal, s.instances[inst_i].transform);
                     }
                 }
             }
@@ -492,7 +496,8 @@ bool occluded_tlas_scalar(const TlasState& s, const Ray& ray_in) noexcept {
                     const u32 inst_i = s.prim_indices[first + k];
                     if (inst_i >= s.instances.size())
                         continue;
-                    const Bvh8State* bs = inst_i < s.blas_states.size() ? s.blas_states[inst_i] : nullptr;
+                    const Bvh8State* bs =
+                        inst_i < s.blas_states.size() ? s.blas_states[inst_i] : nullptr;
                     if (!bs)
                         continue;
                     const Ray local = transform_ray(ray_in, s.inv_transform[inst_i], ray_in.t_max);
@@ -885,10 +890,7 @@ bool packet_ray_child_slab(const Ray& ray, const detail::Bvh8Node& n, u32 child)
     return tmax >= std::fmax(tmin, ray.t_min) && tmin <= ray.t_max;
 }
 
-u8 packet_tlas_child_lanes(const ShadowPacket8& pkt,
-                           const detail::Bvh8Node& n,
-                           u32 child,
-                           u8 live) noexcept {
+u8 packet_tlas_child_lanes(const ShadowPacket8& pkt, const detail::Bvh8Node& n, u32 child, u8 live) noexcept {
     u8 out = 0;
     u8 lane_bit = 1;
     for (u32 r = 0; r < 8; ++r, lane_bit = static_cast<u8>(lane_bit << 1)) {

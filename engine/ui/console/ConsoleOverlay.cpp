@@ -77,7 +77,7 @@ constexpr u32 kColText = rgba(0xBF, 0xC6, 0xD2);    // scrollback grey
 constexpr u32 kColEcho = rgba(0x8F, 0xBC, 0xBB);    // echoed "] command" lines (teal)
 constexpr u32 kColError = rgba(0xBF, 0x61, 0x6A);   // muted aurora red
 constexpr u32 kColBannerA = rgba(0x7F, 0xB3, 0xC4);
-constexpr u32 kColBannerB = rgba(0xB4, 0x8E, 0xAD);  // soft muted purple
+constexpr u32 kColBannerB = rgba(0xB4, 0x8E, 0xAD);    // soft muted purple
 constexpr u32 kColWatermark = rgba(0x6E, 0x7D, 0x96);  // subtle slate blue-grey
 
 constexpr usize kMaxScrollback = 512;
@@ -292,13 +292,14 @@ void terrain_tune_finalize_candidate(State& s) {
 
     const f32 fps = (t.score_frames > 0u) ? (t.score_fps_sum / static_cast<f32>(t.score_frames)) : 0.0f;
     const TerrainTuneCandidate cand = t.candidates[t.index];
-    print_line(fmt::format("terrain autotune: [{}/{}] cores={}, min_rows={}, batch_rows={} -> {:.1f} FPS",
-                           t.index + 1,
-                           t.candidates.size(),
-                           cand.cores_hint,
-                           cand.min_rows,
-                           cand.batch_rows,
-                           fps));
+    print_line(
+        fmt::format("terrain autotune: [{}/{}] cores={}, min_rows={}, batch_rows={} -> {:.1f} FPS",
+                    t.index + 1,
+                    t.candidates.size(),
+                    cand.cores_hint,
+                    cand.min_rows,
+                    cand.batch_rows,
+                    fps));
 
     if (!t.have_best || fps > t.best_fps) {
         t.have_best = true;
@@ -568,60 +569,60 @@ void ensure_init(State& s) noexcept {
                      "Top-right console watermark text.",
                      psynder::console::CVAR_ARCHIVE);
 
-    con.RegisterCommand("r_terrain_autotune",
-                        "Autotune terrain CPU settings (run/status/stop).",
-                        [](std::span<const std::string_view> args, psynder::console::Output& out) {
-                            State& st = state();
-                            auto& t = st.terrain_tune;
+    con.RegisterCommand(
+        "r_terrain_autotune",
+        "Autotune terrain CPU settings (run/status/stop).",
+        [](std::span<const std::string_view> args, psynder::console::Output& out) {
+            State& st = state();
+            auto& t = st.terrain_tune;
 
-                            const std::string_view mode = args.empty() ? "run" : args[0];
-                            if (mode == "status") {
-                                out.FormatLine("terrain autotune: {} ({}/{})",
-                                               t.active ? "running" : "idle",
-                                               t.active ? (t.index + 1u) : 0u,
-                                               t.candidates.size());
-                                return;
-                            }
-                            if (mode == "stop") {
-                                if (t.active) {
-                                    t.active = false;
-                                    auto& c = psynder::console::Console::Get();
-                                    c.SetCVarOverride("r_terrain_cpu_cores_hint", t.orig_cores);
-                                    c.SetCVarOverride("r_terrain_min_rows_per_core", t.orig_min_rows);
-                                    c.SetCVarOverride("r_terrain_batch_rows", t.orig_batch_rows);
-                                    out.PrintLine("terrain autotune: stopped, restored previous settings");
-                                } else {
-                                    out.PrintLine("terrain autotune: not running");
-                                }
-                                return;
-                            }
+            const std::string_view mode = args.empty() ? "run" : args[0];
+            if (mode == "status") {
+                out.FormatLine("terrain autotune: {} ({}/{})",
+                               t.active ? "running" : "idle",
+                               t.active ? (t.index + 1u) : 0u,
+                               t.candidates.size());
+                return;
+            }
+            if (mode == "stop") {
+                if (t.active) {
+                    t.active = false;
+                    auto& c = psynder::console::Console::Get();
+                    c.SetCVarOverride("r_terrain_cpu_cores_hint", t.orig_cores);
+                    c.SetCVarOverride("r_terrain_min_rows_per_core", t.orig_min_rows);
+                    c.SetCVarOverride("r_terrain_batch_rows", t.orig_batch_rows);
+                    out.PrintLine("terrain autotune: stopped, restored previous settings");
+                } else {
+                    out.PrintLine("terrain autotune: not running");
+                }
+                return;
+            }
 
-                            if (t.active) {
-                                out.PrintLine("terrain autotune: already running (use status/stop)");
-                                return;
-                            }
+            if (t.active) {
+                out.PrintLine("terrain autotune: already running (use status/stop)");
+                return;
+            }
 
-                            auto& c = psynder::console::Console::Get();
-                            if (auto* v = c.FindCVar("r_terrain_cpu_cores_hint"); v != nullptr)
-                                t.orig_cores = v->value;
-                            if (auto* v = c.FindCVar("r_terrain_min_rows_per_core"); v != nullptr)
-                                t.orig_min_rows = v->value;
-                            if (auto* v = c.FindCVar("r_terrain_batch_rows"); v != nullptr)
-                                t.orig_batch_rows = v->value;
+            auto& c = psynder::console::Console::Get();
+            if (auto* v = c.FindCVar("r_terrain_cpu_cores_hint"); v != nullptr)
+                t.orig_cores = v->value;
+            if (auto* v = c.FindCVar("r_terrain_min_rows_per_core"); v != nullptr)
+                t.orig_min_rows = v->value;
+            if (auto* v = c.FindCVar("r_terrain_batch_rows"); v != nullptr)
+                t.orig_batch_rows = v->value;
 
-                            t = TerrainAutotune{};
-                            t.active = true;
-                            t.candidates = build_terrain_candidates();
-                            if (t.candidates.empty()) {
-                                t.active = false;
-                                out.PrintLine("terrain autotune: no candidates");
-                                return;
-                            }
-                            apply_terrain_candidate(t.candidates[0]);
-                            out.FormatLine(
-                                "terrain autotune: started ({} candidates, 5-10s stabilize each)",
-                                t.candidates.size());
-                        });
+            t = TerrainAutotune{};
+            t.active = true;
+            t.candidates = build_terrain_candidates();
+            if (t.candidates.empty()) {
+                t.active = false;
+                out.PrintLine("terrain autotune: no candidates");
+                return;
+            }
+            apply_terrain_candidate(t.candidates[0]);
+            out.FormatLine("terrain autotune: started ({} candidates, 5-10s stabilize each)",
+                           t.candidates.size());
+        });
 
     push_line(s, "Psynder console.  `~` close   Tab complete   Up/Down history   `help`", kColBannerA);
     push_line(s, "------------------------------------------------------------", kColBannerB);

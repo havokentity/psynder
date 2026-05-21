@@ -101,30 +101,31 @@ struct TerrainSchedSnapshot {
 
 TerrainSchedSnapshot g_terrain_sched_snapshot{};
 
-PSY_COMMAND(r_terrain_sched_dump,
-            "Print terrain scheduler core/batch snapshot from the latest frame",
-            [](std::span<const std::string_view> /*args*/, console::Output& out) {
-                if (!g_terrain_sched_snapshot.valid) {
-                    out.PrintLine("terrain_sched: no frame rendered yet");
-                    return;
-                }
-                const auto& s = g_terrain_sched_snapshot;
-                out.FormatLine(
-                    "terrain_sched: rows={}, hint_cores={}, target_cores={}, min_rows={}, batch_rows={}, "
-                    "chunks={}, hetero={} (p={}, e={}), workers={} (latency={}, throughput={})",
-                    s.rows,
-                    s.core_hint,
-                    s.target_cores,
-                    s.min_rows,
-                    s.batch_rows,
-                    s.chunks,
-                    s.hetero ? 1 : 0,
-                    s.p_cores,
-                    s.e_cores,
-                    s.workers,
-                    s.latency_workers,
-                    s.throughput_workers);
-            });
+PSY_COMMAND(
+    r_terrain_sched_dump,
+    "Print terrain scheduler core/batch snapshot from the latest frame",
+    [](std::span<const std::string_view> /*args*/, console::Output& out) {
+        if (!g_terrain_sched_snapshot.valid) {
+            out.PrintLine("terrain_sched: no frame rendered yet");
+            return;
+        }
+        const auto& s = g_terrain_sched_snapshot;
+        out.FormatLine(
+            "terrain_sched: rows={}, hint_cores={}, target_cores={}, min_rows={}, batch_rows={}, "
+            "chunks={}, hetero={} (p={}, e={}), workers={} (latency={}, throughput={})",
+            s.rows,
+            s.core_hint,
+            s.target_cores,
+            s.min_rows,
+            s.batch_rows,
+            s.chunks,
+            s.hetero ? 1 : 0,
+            s.p_cores,
+            s.e_cores,
+            s.workers,
+            s.latency_workers,
+            s.throughput_workers);
+    });
 
 u32 clamp_core_hint_to_runtime(u32 requested) noexcept {
     const u32 workers = jobs::JobSystem::Get().worker_count();
@@ -161,8 +162,9 @@ u32 terrain_batch_rows(u32 total_rows, u32 target_cores) noexcept {
     }
 
     const int min_rows_hint = r_terrain_min_rows_per_core ? r_terrain_min_rows_per_core->GetInt() : 8;
-    const u32 min_rows =
-        std::clamp(static_cast<u32>(min_rows_hint > 0 ? min_rows_hint : 8), 1u, std::max(1u, total_rows));
+    const u32 min_rows = std::clamp(static_cast<u32>(min_rows_hint > 0 ? min_rows_hint : 8),
+                                    1u,
+                                    std::max(1u, total_rows));
 
     const u32 jobs_target = std::clamp(target_cores, 1u, std::max(1u, total_rows));
     const u32 rows_from_cores = std::max(1u, (total_rows + jobs_target - 1u) / jobs_target);
@@ -598,7 +600,8 @@ void TerrainRaymarch::render(const math::Mat4& view, const math::Mat4& proj) con
                         }
                     }
 
-                    const f32 step = kStepNear + (kStepFar - kStepNear) * std::min(1.0f, t / kStepFalloff);
+                    const f32 step =
+                        kStepNear + (kStepFar - kStepNear) * std::min(1.0f, t / kStepFalloff);
                     t += step;
                 }
 

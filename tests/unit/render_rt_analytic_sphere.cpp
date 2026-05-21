@@ -20,12 +20,13 @@ scene::LocalTransform translate(math::Vec3 t) {
 
 }  // namespace
 
-TEST_CASE("render rt: frame renderer hits scene graph analytic sphere without TLAS", "[render_rt][analytic_sphere]") {
+TEST_CASE("render rt: frame renderer hits scene graph analytic sphere without TLAS",
+          "[render_rt][analytic_sphere]") {
     scene::SceneGraph graph;
-    scene::SceneNode sphere_node = graph.create_node(scene::kInvalidSceneNode, translate({0.0f, 0.0f, 5.0f}));
-    graph.add_analytic_sphere(scene::AnalyticSphereDesc{sphere_node,
-                                                        math::Sphere{{0.0f, 0.0f, 0.0f}, 2.0f},
-                                                        0xFF20C040u});
+    scene::SceneNode sphere_node =
+        graph.create_node(scene::kInvalidSceneNode, translate({0.0f, 0.0f, 5.0f}));
+    graph.add_analytic_sphere(
+        scene::AnalyticSphereDesc{sphere_node, math::Sphere{{0.0f, 0.0f, 0.0f}, 2.0f}, 0xFF20C040u});
     graph.update_world_transforms();
 
     render::rt::FrameRenderInput input{};
@@ -57,5 +58,3 @@ TEST_CASE("render rt: frame renderer hits scene graph analytic sphere without TL
     REQUIRE(((center >> 16) & 0xFFu) == 0x20u);
     REQUIRE(stats.hit_pixels > 0u);
 }
-
-

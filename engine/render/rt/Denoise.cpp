@@ -98,9 +98,11 @@ u32 denoise_batch_rows(u32 total_rows, u32 target_cores) noexcept {
     if (batch_hint > 0)
         return std::clamp(static_cast<u32>(batch_hint), 1u, std::max(1u, total_rows));
 
-    const int min_rows_hint = r_rt_denoise_min_rows_per_core ? r_rt_denoise_min_rows_per_core->GetInt() : 8;
-    const u32 min_rows =
-        std::clamp(static_cast<u32>(min_rows_hint > 0 ? min_rows_hint : 8), 1u, std::max(1u, total_rows));
+    const int min_rows_hint =
+        r_rt_denoise_min_rows_per_core ? r_rt_denoise_min_rows_per_core->GetInt() : 8;
+    const u32 min_rows = std::clamp(static_cast<u32>(min_rows_hint > 0 ? min_rows_hint : 8),
+                                    1u,
+                                    std::max(1u, total_rows));
     const u32 rows_from_cores = std::max(1u, (total_rows + target_cores - 1u) / target_cores);
     return std::clamp(std::max(min_rows, rows_from_cores), 1u, std::max(1u, total_rows));
 }
@@ -189,7 +191,8 @@ void ensure_denoise_console_init() {
             }
             const auto& s = g_denoise_sched;
             out.FormatLine(
-                "rt_denoise_sched: {}x{}, hint_cores={}, target_cores={}, min_rows={}, batch_rows={}, "
+                "rt_denoise_sched: {}x{}, hint_cores={}, target_cores={}, min_rows={}, "
+                "batch_rows={}, "
                 "chunks={}, hetero={} (p={}, e={}), workers={} (latency={}, throughput={})",
                 s.width,
                 s.height,
@@ -240,32 +243,34 @@ void atrous_pass(
     const auto run_rows = [&](u32 y0, u32 y1) {
         for (u32 y = y0; y < y1; ++y) {
             for (u32 x = 0; x < width; ++x) {
-            const u32 idx = y * width + x;
-            const f32 d0 = depth[idx];
-            const f32 n0[3] = {normals[idx * 3], normals[idx * 3 + 1], normals[idx * 3 + 2]};
-            f32 sum_w = 0.0f;
-            f32 sum_v = 0.0f;
-            for (i32 dy = -2; dy <= 2; ++dy) {
-                for (i32 dx = -2; dx <= 2; ++dx) {
-                    const i32 sx = static_cast<i32>(x) + dx * step;
-                    const i32 sy = static_cast<i32>(y) + dy * step;
-                    if (sx < 0 || sx >= static_cast<i32>(width))
-                        continue;
-                    if (sy < 0 || sy >= static_cast<i32>(height))
-                        continue;
-                    const u32 sidx = static_cast<u32>(sy) * width + static_cast<u32>(sx);
-                    const f32 d1 = depth[sidx];
-                    const f32 n1[3] = {normals[sidx * 3], normals[sidx * 3 + 1], normals[sidx * 3 + 2]};
-                    const f32 wd = depth_weight(d1 - d0);
-                    const f32 wn = normal_weight(n0, n1);
-                    const f32 wg = gauss5(dx) * gauss5(dy);
-                    const f32 w = wg * wd * wn;
-                    sum_w += w;
-                    sum_v += w * in[sidx];
+                const u32 idx = y * width + x;
+                const f32 d0 = depth[idx];
+                const f32 n0[3] = {normals[idx * 3], normals[idx * 3 + 1], normals[idx * 3 + 2]};
+                f32 sum_w = 0.0f;
+                f32 sum_v = 0.0f;
+                for (i32 dy = -2; dy <= 2; ++dy) {
+                    for (i32 dx = -2; dx <= 2; ++dx) {
+                        const i32 sx = static_cast<i32>(x) + dx * step;
+                        const i32 sy = static_cast<i32>(y) + dy * step;
+                        if (sx < 0 || sx >= static_cast<i32>(width))
+                            continue;
+                        if (sy < 0 || sy >= static_cast<i32>(height))
+                            continue;
+                        const u32 sidx = static_cast<u32>(sy) * width + static_cast<u32>(sx);
+                        const f32 d1 = depth[sidx];
+                        const f32 n1[3] = {normals[sidx * 3],
+                                           normals[sidx * 3 + 1],
+                                           normals[sidx * 3 + 2]};
+                        const f32 wd = depth_weight(d1 - d0);
+                        const f32 wn = normal_weight(n0, n1);
+                        const f32 wg = gauss5(dx) * gauss5(dy);
+                        const f32 w = wg * wd * wn;
+                        sum_w += w;
+                        sum_v += w * in[sidx];
+                    }
                 }
-            }
-            // Center pixel always has full weight (wg=6/16*6/16=36/256,
-            // wd=1, wn=1), so sum_w > 0 always; the guard is defensive.
+                // Center pixel always has full weight (wg=6/16*6/16=36/256,
+                // wd=1, wn=1), so sum_w > 0 always; the guard is defensive.
                 out[idx] = (sum_w > 0.0f) ? (sum_v / sum_w) : in[idx];
                 // Clamp to [0, max-in-kernel] is implicit because output is a
                 // non-negative convex combination of non-negative inputs.

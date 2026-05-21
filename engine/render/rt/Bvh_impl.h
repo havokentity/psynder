@@ -31,8 +31,8 @@ struct Bvh8State {
 struct TlasState {
     std::vector<Tlas::InstanceDesc> instances;
     std::vector<const Bvh8State*> blas_states;  // mirrors instances; cached at build/refit
-    std::vector<Aabb> world_bounds;         // per-instance world AABB
-    std::vector<math::Mat4> inv_transform;  // for object-space ray xform
+    std::vector<Aabb> world_bounds;             // per-instance world AABB
+    std::vector<math::Mat4> inv_transform;      // for object-space ray xform
     std::vector<u32> prim_indices;
     std::vector<BinaryNode> binary_nodes;
     std::vector<Bvh8Node> wide_nodes;

@@ -373,7 +373,6 @@ void orbit_lights(f32 t_seconds, std::array<Light, kNumLights>& lights) {
     }
 }
 
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -458,14 +457,16 @@ int main(int argc, char** argv) {
                  kNumLights);
     const render::rt::FrameRenderConfig startup_rt_config =
         render::rt::frame_render_config_from_console(kFbW, kFbH, kShadowW, kShadowH, kRtTile);
-    PSY_LOG_INFO("sample_12 AO: enabled={}, debug={}, samples={}, radius={}, strength={}, lit_strength={}, denoise={}",
-                 startup_rt_config.ambient_occlusion ? 1 : 0,
-                 startup_rt_config.ao_debug ? 1 : 0,
-                 startup_rt_config.ao_samples,
-                 startup_rt_config.ao_radius,
-                 startup_rt_config.ao_strength,
-                 startup_rt_config.ao_lit_strength,
-                 startup_rt_config.ao_denoise ? 1 : 0);
+    PSY_LOG_INFO(
+        "sample_12 AO: enabled={}, debug={}, samples={}, radius={}, strength={}, lit_strength={}, "
+        "denoise={}",
+        startup_rt_config.ambient_occlusion ? 1 : 0,
+        startup_rt_config.ao_debug ? 1 : 0,
+        startup_rt_config.ao_samples,
+        startup_rt_config.ao_radius,
+        startup_rt_config.ao_strength,
+        startup_rt_config.ao_lit_strength,
+        startup_rt_config.ao_denoise ? 1 : 0);
 
     const u64 t0 = platform::Clock::ticks_now();
     u32 frame = 0;

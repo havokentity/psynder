@@ -34,7 +34,8 @@ TEST_CASE("scene graph: child world transform is parent times local", "[scene][s
     REQUIRE_THAT(static_cast<double>(world.m[14]), Catch::Matchers::WithinAbs(9.0, 1e-5));
 }
 
-TEST_CASE("scene graph: one parent edit updates the whole dirty subtree in one pass", "[scene][scene_graph]") {
+TEST_CASE("scene graph: one parent edit updates the whole dirty subtree in one pass",
+          "[scene][scene_graph]") {
     SceneGraph graph;
     SceneNode root = graph.create_node(kInvalidSceneNode, trs({1.0f, 0.0f, 0.0f}));
     SceneNode child = graph.create_node(root, trs({0.0f, 2.0f, 0.0f}));
@@ -51,19 +52,24 @@ TEST_CASE("scene graph: one parent edit updates the whole dirty subtree in one p
     REQUIRE_THAT(static_cast<double>(world.m[14]), Catch::Matchers::WithinAbs(3.0, 1e-5));
 }
 
-TEST_CASE("scene graph: analytic spheres gather from cached world transforms", "[scene][scene_graph]") {
+TEST_CASE("scene graph: analytic spheres gather from cached world transforms",
+          "[scene][scene_graph]") {
     SceneGraph graph;
     SceneNode node = graph.create_node(kInvalidSceneNode, trs({2.0f, 3.0f, 4.0f}, {2.0f, 3.0f, 4.0f}));
-    REQUIRE(graph.add_analytic_sphere(AnalyticSphereDesc{node, math::Sphere{{1.0f, 0.0f, 0.0f}, 0.5f}, 0xFF00FF00u}) == 0u);
+    REQUIRE(graph.add_analytic_sphere(
+                AnalyticSphereDesc{node, math::Sphere{{1.0f, 0.0f, 0.0f}, 0.5f}, 0xFF00FF00u}) == 0u);
     graph.update_world_transforms();
 
     std::vector<AnalyticSphereInstance> spheres;
     graph.gather_analytic_spheres(spheres);
     REQUIRE(spheres.size() == 1u);
-    REQUIRE_THAT(static_cast<double>(spheres[0].world_sphere.center.x), Catch::Matchers::WithinAbs(4.0, 1e-5));
-    REQUIRE_THAT(static_cast<double>(spheres[0].world_sphere.center.y), Catch::Matchers::WithinAbs(3.0, 1e-5));
-    REQUIRE_THAT(static_cast<double>(spheres[0].world_sphere.center.z), Catch::Matchers::WithinAbs(4.0, 1e-5));
-    REQUIRE_THAT(static_cast<double>(spheres[0].world_sphere.radius), Catch::Matchers::WithinAbs(2.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(spheres[0].world_sphere.center.x),
+                 Catch::Matchers::WithinAbs(4.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(spheres[0].world_sphere.center.y),
+                 Catch::Matchers::WithinAbs(3.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(spheres[0].world_sphere.center.z),
+                 Catch::Matchers::WithinAbs(4.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(spheres[0].world_sphere.radius),
+                 Catch::Matchers::WithinAbs(2.0, 1e-5));
     REQUIRE(spheres[0].material_rgba8 == 0xFF00FF00u);
 }
-
