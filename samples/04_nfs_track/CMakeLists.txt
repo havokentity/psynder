@@ -14,7 +14,7 @@ target_link_libraries(sample_04_nfs_track PRIVATE
     psynder_render_raster
     psynder_world_outdoor psynder_scene psynder_physics
     psynder_asset psynder_audio psynder_platform
-    psynder_ui_rml
+    psynder_ui_rml psynder_editor_core
     psynder_samples_common
 )
 

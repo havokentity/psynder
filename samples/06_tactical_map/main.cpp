@@ -43,8 +43,6 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
-#include "ui/console/ConsoleOverlay.h"
-#include "ui/imm/DebugHud.h"
 #include "world/outdoor/Terrain.h"
 #include "world/outdoor/TerrainTarget.h"
 
@@ -717,7 +715,7 @@ int main(int argc, char** argv) {
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
@@ -825,22 +823,11 @@ int main(int argc, char** argv) {
 
         rasterizer.end_frame();
 
-        // Engine overlays (lane 18): F2 Play/Edit badge + F1 debug HUD cycle +
-        // `~` drop-down console. sample_step drives the toggles and console
-        // input; the HUD + console then draw over the rendered scene.
+        // Engine overlay suite (lane 18): `~` drop-down console + F1 debug HUD
+        // + F2 Play/Edit badge. One call, drawn over the rendered scene.
         if (auto* in = platform::input()) {
-            (void)editor::sample_step(*in, fb);
+            editor::frame_overlays(*in, fb, {towers.size() + 5u, 0, 0});
         }
-        {
-            ui::imm::DebugHudStats stats{};
-            stats.frame_ms = dt * 1000.0f;
-            stats.avg_frame_ms = dt * 1000.0f;
-            stats.draw_calls = towers.size() + 5u;  // towers + heli body + 4 blades
-            stats.triangles = 0;
-            stats.active_voices = 0;
-            ui::imm::draw_debug_hud(fb, stats);
-        }
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
 
         window->present(fb);
 

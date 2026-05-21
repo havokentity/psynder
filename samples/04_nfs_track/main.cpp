@@ -38,6 +38,7 @@
 #include "asset/Vfs.h"
 #include "core/Log.h"
 #include "core/Types.h"
+#include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
 #include "platform/Platform.h"
@@ -788,9 +789,10 @@ int main(int argc, char** argv) {
     while (!window->should_close()) {
         window->poll_events();
 
-        // Quit on ESC outside smoke mode.
+        // Quit on ESC outside smoke mode — unless the console is open, where
+        // Esc closes the console first.
         if (args.smoke_frames == 0 && platform::input() != nullptr &&
-            platform::input()->key_down(platform::KeyCode::Escape)) {
+            platform::input()->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
@@ -991,6 +993,12 @@ int main(int argc, char** argv) {
             push_hud_telemetry(car_speed, ee.rpm, ee.gear, hud_throttle, hud_brake);
             psynder::ui::rml::update(dt);
             psynder::ui::rml::render(fb);
+        }
+
+        // Engine overlay suite: `~` drop-down console + F1 debug HUD + F2
+        // Play/Edit badge. The car is PID auto-driven, so no movement gate.
+        if (auto* in = platform::input()) {
+            editor::frame_overlays(*in, fb);
         }
 
         window->present(fb);
