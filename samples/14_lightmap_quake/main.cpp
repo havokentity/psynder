@@ -87,6 +87,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
+#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 #include "world/bsp/Bsp.h"
 #include "world/bsp/BspFormat.h"
@@ -947,7 +948,8 @@ int main(int argc, char** argv) {
         last_ticks = now;
         frame_ms_ring[frame % 60u] = frame_ms;
 
-        if (input->key_down(platform::KeyCode::Escape)) {
+        // ESC quits — unless the console is open, where Esc closes it instead.
+        if (input->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
             PSY_LOG_INFO("sample_14: escape pressed, exiting");
             break;
         }
@@ -971,7 +973,8 @@ int main(int argc, char** argv) {
                 console.SetCVarOverride("r_lightmap_baked", "0");
             if (frame == 3 && baked_cvar)
                 console.SetCVarOverride("r_lightmap_baked", "1");
-        } else {
+        } else if (!ui::console::is_open()) {
+            // Frozen while the console owns input so typing doesn't walk the cam.
             controller.update(*input, dt);
         }
 
@@ -1020,6 +1023,7 @@ int main(int argc, char** argv) {
             ui::imm::draw_debug_hud(fb, stats);
         }
 
+        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);
 
         if (args.smoke_frames > 0) {

@@ -39,6 +39,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
+#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <algorithm>
@@ -553,8 +554,8 @@ int main(int argc, char** argv) {
         prev_frame_ticks = now_ticks;
         frame_ms_ring[frame % kFrameHistory] = frame_ms;
 
-        // ESC quits.
-        if (input && input->key_down(platform::KeyCode::Escape)) {
+        // ESC quits — unless the console is open, where Esc closes it instead.
+        if (input && input->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
             PSY_LOG_INFO("sample_11: escape pressed, exiting");
             break;
         }
@@ -586,7 +587,8 @@ int main(int argc, char** argv) {
             controller.set_look(yaw, -0.18f);
         } else {
             t = platform::Clock::seconds(now_ticks - t0);
-            if (input)
+            // Frozen while the console owns input so typing doesn't fly the cam.
+            if (input && !ui::console::is_open())
                 controller.update(*input, dt);
         }
 
@@ -789,6 +791,7 @@ int main(int argc, char** argv) {
             ui::imm::draw_debug_hud(fb, stats);
         }
 
+        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);
 
         if (smoke_frames > 0) {

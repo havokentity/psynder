@@ -31,6 +31,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
+#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <algorithm>
@@ -510,8 +511,9 @@ int main(int argc, char** argv) {
         prev_frame_ticks = now_ticks;
         frame_ms_ring[frame % kFrameHistory] = frame_ms;
 
-        // ESC quits.
-        if (auto* in = platform::input(); in && in->key_down(platform::KeyCode::Escape)) {
+        // ESC quits — unless the console is open, where Esc closes it instead.
+        if (auto* in = platform::input();
+            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
             break;
         }
 
@@ -691,6 +693,7 @@ int main(int argc, char** argv) {
             ui::imm::draw_debug_hud(fb, stats);
         }
 
+        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);
 
         // Bump unconditionally each iteration so the frame_ms_ring populates

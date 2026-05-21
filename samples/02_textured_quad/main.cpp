@@ -35,6 +35,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
+#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <array>
@@ -355,7 +356,8 @@ int main(int argc, char** argv) {
     while (!window->should_close()) {
         window->poll_events();
 
-        if (auto* in = platform::input(); in && in->key_down(platform::KeyCode::Escape)) {
+        if (auto* in = platform::input();
+            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
             break;
         }
 
@@ -455,6 +457,7 @@ int main(int argc, char** argv) {
             stats.active_voices = 0;
             ui::imm::draw_debug_hud(fb, stats);
         }
+        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);
 
         ++frame;
