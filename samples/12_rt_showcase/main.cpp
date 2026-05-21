@@ -23,10 +23,14 @@
 
 #include "common/PngWriter.h"
 
+#include "core/console/Console.h"
+#include "core/hardware/CpuFeatures.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
+#include "jobs/JobSystem.h"
+#include "jobs/JobSystemHetero.h"
 #include "math/Math.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
@@ -39,6 +43,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +51,94 @@
 using namespace psynder;
 
 namespace {
+
+console::CVar* g_rt_parallel = nullptr;
+console::CVar* g_rt_cores_hint = nullptr;
+console::CVar* g_rt_batch_rows = nullptr;
+console::CVar* g_rt_min_rows = nullptr;
+
+void ensure_rt_parallel_cvars() {
+    static bool once = false;
+    if (once)
+        return;
+    once = true;
+    auto& con = console::Console::Get();
+    g_rt_parallel = con.RegisterCVar("r_rt_sample_parallel",
+                                     "1",
+                                     "Enable sample RT pass row-parallel scheduling (0/1)",
+                                     console::CVAR_ARCHIVE);
+    g_rt_cores_hint = con.RegisterCVar("r_rt_sample_cpu_cores_hint",
+                                       "0",
+                                       "Preferred sample RT pass cores (0=auto perf-cores-2)",
+                                       console::CVAR_ARCHIVE);
+    g_rt_batch_rows = con.RegisterCVar("r_rt_sample_batch_rows",
+                                       "0",
+                                       "Rows per sample RT pass chunk (0=auto)",
+                                       console::CVAR_ARCHIVE);
+    g_rt_min_rows = con.RegisterCVar("r_rt_sample_min_rows_per_core",
+                                     "8",
+                                     "Minimum sample RT pass rows per worker chunk in auto mode",
+                                     console::CVAR_ARCHIVE);
+    con.RegisterCommand("r_rt_sample_sched_dump",
+                        "Print sample RT scheduler settings",
+                        [](std::span<const std::string_view>, console::Output& out) {
+                            const int en = g_rt_parallel ? g_rt_parallel->GetInt() : 1;
+                            const int ch = g_rt_cores_hint ? g_rt_cores_hint->GetInt() : 0;
+                            const int br = g_rt_batch_rows ? g_rt_batch_rows->GetInt() : 0;
+                            const int mr = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
+                            const auto hc = jobs::hetero_detected_counts();
+                            out.FormatLine(
+                                "rt_sample_sched: parallel={}, hint_cores={}, batch_rows={}, min_rows={} | "
+                                "workers={} hetero={} (p={}, e={})",
+                                en,
+                                ch,
+                                br,
+                                mr,
+                                jobs::JobSystem::Get().worker_count(),
+                                jobs::hetero_is_active() ? 1 : 0,
+                                hc.p_cores,
+                                hc.e_cores);
+                        });
+}
+
+u32 rt_target_cores() {
+    const int hint = g_rt_cores_hint ? g_rt_cores_hint->GetInt() : 0;
+    const u32 workers = jobs::JobSystem::Get().worker_count();
+    const u32 runtime_max = workers > 0u ? (workers + 1u) : 1u;
+    if (hint > 0)
+        return std::clamp(static_cast<u32>(hint), 1u, runtime_max);
+    const auto hc = jobs::hetero_detected_counts();
+    u32 perf_like = hc.p_cores > 0u ? hc.p_cores : hardware::detect().cores_physical;
+    if (perf_like == 0u)
+        perf_like = 1u;
+    const u32 auto_target = perf_like > 2u ? (perf_like - 2u) : perf_like;
+    return std::clamp(auto_target, 1u, runtime_max);
+}
+
+u32 rt_rows_grain(u32 rows) {
+    const int b = g_rt_batch_rows ? g_rt_batch_rows->GetInt() : 0;
+    if (b > 0)
+        return std::clamp(static_cast<u32>(b), 1u, std::max(1u, rows));
+    const int m = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
+    const u32 min_rows = std::clamp(static_cast<u32>(m > 0 ? m : 8), 1u, std::max(1u, rows));
+    const u32 target = rt_target_cores();
+    const u32 rows_from_cores = std::max(1u, (rows + target - 1u) / target);
+    return std::clamp(std::max(min_rows, rows_from_cores), 1u, std::max(1u, rows));
+}
+
+template <class Fn>
+void rt_parallel_rows(u32 rows, Fn&& body) {
+    if (!(g_rt_parallel && g_rt_parallel->GetBool())) {
+        body(0u, rows);
+        return;
+    }
+    if (jobs::JobSystem::Get().worker_count() == 0u)
+        jobs::JobSystem::Get().start(0);
+    const u32 grain = rt_rows_grain(rows);
+    jobs::JobSystem::Get().parallel_for(0, rows, grain, [&](usize y0, usize y1) {
+        body(static_cast<u32>(y0), static_cast<u32>(y1));
+    });
+}
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────
 struct Args {
@@ -403,6 +496,7 @@ void upsample_bilinear(const u32* src, u32 sw, u32 sh, u32* dst, u32 dw, u32 dh)
 int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
     const u32 smoke_frames = args.smoke_frames;
+    ensure_rt_parallel_cvars();
 
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 12 (raytracing showcase)";
@@ -535,8 +629,9 @@ int main(int argc, char** argv) {
         // ── Pass 1: primary visibility @ low-res (256×144). ─────────────
         // Cast one primary ray per low-res pixel against the TLAS and
         // stash the hit. Pixels that miss draw the sky immediately.
-        for (u32 y = 0; y < kShadowH; ++y) {
-            for (u32 x = 0; x < kShadowW; ++x) {
+        rt_parallel_rows(kShadowH, [&](u32 y0, u32 y1) {
+            for (u32 y = y0; y < y1; ++y) {
+                for (u32 x = 0; x < kShadowW; ++x) {
                 const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kShadowW);
                 const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kShadowH);
                 const render::rt::Ray ray = primary_ray(cam, nx, ny);
@@ -567,7 +662,8 @@ int main(int argc, char** argv) {
                 }
                 hits[idx] = ph;
             }
-        }
+            }
+        });
 
         // ── Pass 2: per-pixel shadow trace (packets of 8). ──────────────
         // For each light, fill ShadowPacket8 with 8 successive hit-pixels'
@@ -577,86 +673,85 @@ int main(int argc, char** argv) {
 
         for (u32 li = 0; li < kNumLights; ++li) {
             const Light& L = lights[li];
-            render::rt::ShadowPacket8 pkt{};
-            u32 in_pkt = 0;
-            u32 pkt_idx[8] = {0};
-            // Track which lanes are "real" vs. padding.
-            bool pkt_real[8] = {false};
+            rt_parallel_rows(kShadowH, [&](u32 y0, u32 y1) {
+                render::rt::ShadowPacket8 pkt{};
+                u32 in_pkt = 0;
+                u32 pkt_idx[8] = {0};
+                bool pkt_real[8] = {false};
 
-            auto dispatch = [&]() {
-                // Fill any padding lanes with a guaranteed-miss ray so the
-                // packet kernel has something safe to read.
-                for (u32 i = in_pkt; i < 8; ++i) {
-                    pkt.rays[i].origin = {0, 1e6f, 0};
-                    pkt.rays[i].direction = {0, 1, 0};
-                    pkt.rays[i].t_min = 1e-4f;
-                    pkt.rays[i].t_max = 1.0f;
-                    pkt_real[i] = false;
-                }
-                render::rt::trace_shadow_packet(tlas, pkt);
-                for (u32 i = 0; i < 8; ++i) {
-                    if (!pkt_real[i])
-                        continue;
-                    const usize px = pkt_idx[i];
-                    if (pkt.occluded[i])
-                        continue;
-                    // Lambert + simple inverse-square falloff.
-                    const PixelHit& ph = hits[px];
-                    math::Vec3 to_light = math::sub(L.position, ph.position);
-                    const f32 d2 = math::dot(to_light, to_light);
-                    const f32 d = std::sqrt(d2);
-                    if (d > L.range || d < 1e-4f)
-                        continue;
-                    const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                    const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
-                    if (ndotl <= 0.0f)
-                        continue;
-                    const f32 atten = 1.0f / (1.0f + d * d * 0.06f);
-                    const f32 k = ndotl * atten * L.intensity;
-                    accum[px * 3 + 0] += ph.r * L.r * k;
-                    accum[px * 3 + 1] += ph.g * L.g * k;
-                    accum[px * 3 + 2] += ph.b * L.b * k;
-                }
-                in_pkt = 0;
-            };
-
-            for (usize px = 0, n = hits.size(); px < n; ++px) {
-                const PixelHit& ph = hits[px];
-                if (!ph.hit)
-                    continue;
-                math::Vec3 to_light = math::sub(L.position, ph.position);
-                const f32 d2 = math::dot(to_light, to_light);
-                const f32 d = std::sqrt(d2);
-                if (d > L.range || d < 1e-4f)
-                    continue;
-                const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                // Back-face cull cheap-out: skip if light is below the
-                // surface (saves a shadow ray per backface).
-                if (math::dot(ph.normal, ld) <= 0.0f)
-                    continue;
-                // Origin offset along the normal to avoid self-shadowing.
-                const math::Vec3 origin = {
-                    ph.position.x + ph.normal.x * 1e-3f,
-                    ph.position.y + ph.normal.y * 1e-3f,
-                    ph.position.z + ph.normal.z * 1e-3f,
+                auto dispatch = [&]() {
+                    for (u32 i = in_pkt; i < 8; ++i) {
+                        pkt.rays[i].origin = {0, 1e6f, 0};
+                        pkt.rays[i].direction = {0, 1, 0};
+                        pkt.rays[i].t_min = 1e-4f;
+                        pkt.rays[i].t_max = 1.0f;
+                        pkt_real[i] = false;
+                    }
+                    render::rt::trace_shadow_packet(tlas, pkt);
+                    for (u32 i = 0; i < 8; ++i) {
+                        if (!pkt_real[i])
+                            continue;
+                        const usize px = pkt_idx[i];
+                        if (pkt.occluded[i])
+                            continue;
+                        const PixelHit& ph = hits[px];
+                        math::Vec3 to_light = math::sub(L.position, ph.position);
+                        const f32 d2 = math::dot(to_light, to_light);
+                        const f32 d = std::sqrt(d2);
+                        if (d > L.range || d < 1e-4f)
+                            continue;
+                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
+                        const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
+                        if (ndotl <= 0.0f)
+                            continue;
+                        const f32 atten = 1.0f / (1.0f + d * d * 0.06f);
+                        const f32 k = ndotl * atten * L.intensity;
+                        accum[px * 3 + 0] += ph.r * L.r * k;
+                        accum[px * 3 + 1] += ph.g * L.g * k;
+                        accum[px * 3 + 2] += ph.b * L.b * k;
+                    }
+                    in_pkt = 0;
                 };
-                pkt.rays[in_pkt].origin = origin;
-                pkt.rays[in_pkt].direction = ld;
-                pkt.rays[in_pkt].t_min = 1e-4f;
-                pkt.rays[in_pkt].t_max = d - 1e-3f;
-                pkt_idx[in_pkt] = static_cast<u32>(px);
-                pkt_real[in_pkt] = true;
-                ++in_pkt;
-                if (in_pkt == 8)
+
+                for (u32 y = y0; y < y1; ++y) {
+                    for (u32 x = 0; x < kShadowW; ++x) {
+                        const usize px = static_cast<usize>(y) * kShadowW + x;
+                        const PixelHit& ph = hits[px];
+                        if (!ph.hit)
+                            continue;
+                        math::Vec3 to_light = math::sub(L.position, ph.position);
+                        const f32 d2 = math::dot(to_light, to_light);
+                        const f32 d = std::sqrt(d2);
+                        if (d > L.range || d < 1e-4f)
+                            continue;
+                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
+                        if (math::dot(ph.normal, ld) <= 0.0f)
+                            continue;
+                        const math::Vec3 origin = {
+                            ph.position.x + ph.normal.x * 1e-3f,
+                            ph.position.y + ph.normal.y * 1e-3f,
+                            ph.position.z + ph.normal.z * 1e-3f,
+                        };
+                        pkt.rays[in_pkt].origin = origin;
+                        pkt.rays[in_pkt].direction = ld;
+                        pkt.rays[in_pkt].t_min = 1e-4f;
+                        pkt.rays[in_pkt].t_max = d - 1e-3f;
+                        pkt_idx[in_pkt] = static_cast<u32>(px);
+                        pkt_real[in_pkt] = true;
+                        ++in_pkt;
+                        if (in_pkt == 8)
+                            dispatch();
+                    }
+                }
+                if (in_pkt > 0)
                     dispatch();
-            }
-            if (in_pkt > 0)
-                dispatch();
+            });
         }
 
         // ── Combine: write final low-res lit color. ─────────────────────
-        for (u32 y = 0; y < kShadowH; ++y) {
-            for (u32 x = 0; x < kShadowW; ++x) {
+        rt_parallel_rows(kShadowH, [&](u32 y0, u32 y1) {
+            for (u32 y = y0; y < y1; ++y) {
+                for (u32 x = 0; x < kShadowW; ++x) {
                 const usize idx = static_cast<usize>(y) * kShadowW + x;
                 if (!hits[idx].hit)
                     continue;  // sky already written
@@ -668,7 +763,8 @@ int main(int argc, char** argv) {
                 const f32 b = ph.b * amb * 30.0f + accum[idx * 3 + 2] * 18.0f;
                 shadow_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
             }
-        }
+            }
+        });
 
         // ── Pass 3: bilinear upsample low-res into the final FB. ────────
         upsample_bilinear(shadow_pixels.data(), kShadowW, kShadowH, final_pixels.data(), kFbW, kFbH);
