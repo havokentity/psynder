@@ -46,11 +46,12 @@ constexpr f32 kAnimSpeed = 9.0f;   // open/close slide, units of "anim" per sec
 constexpr f32 kRepeatDelay = 0.40f;
 constexpr f32 kRepeatRate = 0.045f;
 
-// Background gradient endpoints (top darker -> bottom slightly lighter). RGB
-// only; the scanline pass darkens every third row for the CRT feel.
-constexpr u8 kBgTopR = 13, kBgTopG = 17, kBgTopB = 26;  // #0D111A
-constexpr u8 kBgBotR = 24, kBgBotG = 30, kBgBotB = 44;  // #181E2C
-constexpr f32 kScanlineDim = 0.82f;
+// Background: a soft slate-blue vertical gradient (top -> bottom) shaped by a
+// gentle vignette + faint scanlines + a touch of dither. Milder than the old
+// near-black so it reads as a real panel, still dark enough that the light
+// text stays crisp.
+constexpr f32 kBgTopR = 24.0f, kBgTopG = 30.0f, kBgTopB = 42.0f;  // #181E2A
+constexpr f32 kBgBotR = 34.0f, kBgBotG = 42.0f, kBgBotB = 60.0f;  // #222A3C
 
 constexpr u32 kColBorder = 0x7FB3C4FFu;  // soft frost cyan (bottom edge + prompt)
 constexpr u32 kColInput = 0xE0E5EEFFu;   // prompt text (snow, slightly dimmed)
@@ -63,24 +64,45 @@ constexpr u32 kColBannerB = 0xB48EADFFu;  // soft muted purple
 
 constexpr usize kMaxScrollback = 512;
 
-// Draw the panel background: a top->bottom gradient with a faint scanline
-// every third row. Uses imm::filled_rect per row (1 px tall) so it stays on
-// the public lane-16 surface; only runs while the console is visible.
-void draw_panel_bg(f32 fw, f32 panel_h) noexcept {
-    const i32 ph = static_cast<i32>(panel_h);
-    for (i32 y = 0; y < ph; ++y) {
-        const f32 t = (panel_h > 1.0f) ? static_cast<f32>(y) / panel_h : 0.0f;
-        f32 r = static_cast<f32>(kBgTopR) + (static_cast<f32>(kBgBotR) - kBgTopR) * t;
-        f32 g = static_cast<f32>(kBgTopG) + (static_cast<f32>(kBgBotG) - kBgTopG) * t;
-        f32 b = static_cast<f32>(kBgTopB) + (static_cast<f32>(kBgBotB) - kBgTopB) * t;
-        if ((y % 3) == 0) {
-            r *= kScanlineDim;
-            g *= kScanlineDim;
-            b *= kScanlineDim;
+// Draw the panel background straight into the framebuffer (per-pixel work the
+// imm row-fills can't do): slate-blue vertical gradient + a gentle 2D vignette
+// that focuses the centre so text pops + faint scanlines + a little hash
+// dither to kill banding. Uses the same 0xRRGGBBAA packing as imm so it
+// composites identically to the text drawn on top.
+void draw_panel_bg(render::Framebuffer& fb, f32 panel_h) noexcept {
+    if (fb.format != render::PixelFormat::RGBA8 && fb.format != render::PixelFormat::BGRA8) {
+        // Non-32-bit target: flat fill via the public API and bail.
+        imm::filled_rect(math::Vec2{0.0f, 0.0f},
+                         math::Vec2{static_cast<f32>(fb.width), panel_h},
+                         0x1A2030FFu);
+        return;
+    }
+    const u32 ph = std::min(static_cast<u32>(panel_h), fb.height);
+    const u32 w = fb.width;
+    const f32 inv_w = (w > 1u) ? 1.0f / static_cast<f32>(w - 1u) : 1.0f;
+    const f32 inv_h = (panel_h > 1.0f) ? 1.0f / panel_h : 1.0f;
+    auto clamp8 = [](f32 v) noexcept -> u32 {
+        const i32 i = static_cast<i32>(v + 0.5f);
+        return static_cast<u32>(i < 0 ? 0 : (i > 255 ? 255 : i));
+    };
+    for (u32 y = 0; y < ph; ++y) {
+        const f32 ty = static_cast<f32>(y) * inv_h;  // 0..1 top -> bottom
+        const f32 baseR = kBgTopR + (kBgBotR - kBgTopR) * ty;
+        const f32 baseG = kBgTopG + (kBgBotG - kBgTopG) * ty;
+        const f32 baseB = kBgTopB + (kBgBotB - kBgTopB) * ty;
+        const f32 dy = ty * 2.0f - 1.0f;                 // -1..1 (vertical)
+        const f32 scan = (y % 3u == 0u) ? 0.96f : 1.0f;  // very faint scanline
+        u32* row = reinterpret_cast<u32*>(fb.pixels + static_cast<usize>(fb.pitch) * y);
+        for (u32 x = 0; x < w; ++x) {
+            const f32 dx = static_cast<f32>(x) * inv_w * 2.0f - 1.0f;  // -1..1
+            const f32 vig = 1.0f - 0.22f * (dx * dx * 0.6f + dy * dy * 0.4f);
+            u32 hsh = (x * 374761393u) ^ (y * 668265263u);
+            hsh ^= hsh >> 13;
+            const f32 dith = static_cast<f32>(hsh & 3u) - 1.5f;  // ~ -1.5..+1.5
+            const f32 m = vig * scan;
+            row[x] = (clamp8(baseR * m + dith) << 24) | (clamp8(baseG * m + dith) << 16) |
+                     (clamp8(baseB * m + dith) << 8) | 0xFFu;
         }
-        const u32 col = (static_cast<u32>(r) << 24) | (static_cast<u32>(g) << 16) |
-                        (static_cast<u32>(b) << 8) | 0xFFu;
-        imm::filled_rect(math::Vec2{0.0f, static_cast<f32>(y)}, math::Vec2{fw, 1.0f}, col);
     }
 }
 
@@ -661,9 +683,9 @@ void draw(render::Framebuffer& fb) noexcept {
 
     imm::begin_frame(fb);
 
-    // Gradient + faint-scanline background (soft CRT-terminal texture) and a
-    // 2-px cyan bottom edge so the panel reads as a drawer.
-    draw_panel_bg(fw, panel_h);
+    // Slate-blue gradient + vignette + faint scanline background, then a 2-px
+    // cyan bottom edge so the panel reads as a drawer.
+    draw_panel_bg(fb, panel_h);
     imm::filled_rect(math::Vec2{0.0f, panel_h - 2.0f}, math::Vec2{fw, 2.0f}, kColBorder);
 
     // Prompt sits on the bottom row of the panel; scrollback fills above it.
