@@ -59,6 +59,7 @@
 #include "editor/core/Physgun.h"  // header-only ray_aabb_intersect (lane 18)
 #include "math/Math.h"
 #include "physics/Physics.h"
+#include "editor/core/SampleHook.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -610,8 +611,9 @@ int main(int argc, char** argv) {
 
         auto* in = platform::input();
 
-        // ESC quits outside smoke mode.
-        if (!smoke && in != nullptr && in->key_down(platform::KeyCode::Escape))
+        // ESC quits outside smoke mode — unless the console is open (Esc closes it).
+        if (!smoke && in != nullptr && in->key_down(platform::KeyCode::Escape) &&
+            !editor::overlays_capturing())
             break;
 
         // Frame dt — fixed for smoke runs so the sim is reproducible.
@@ -644,7 +646,9 @@ int main(int argc, char** argv) {
                 PSY_LOG_INFO("sample_10: [script] throw tracked body at frame {}", frame);
                 release_and_throw();
             }
-        } else if (in != nullptr) {
+        } else if (in != nullptr && !editor::overlays_capturing()) {
+            // Physgun frozen while the console owns input (so typing 'g' or
+            // clicking in the prompt doesn't grab/throw a body).
             const bool want = in->key_pressed(platform::KeyCode::G) || in->mouse().left;
             const bool grab_edge =
                 in->key_pressed(platform::KeyCode::G) || (in->mouse().left && !gun.active);
@@ -745,6 +749,11 @@ int main(int argc, char** argv) {
         }
 
         rasterizer.end_frame();
+
+        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
+        if (in != nullptr) {
+            editor::frame_overlays(*in, fb);
+        }
         window->present(fb);
 
         if (smoke) {

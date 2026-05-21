@@ -3,7 +3,9 @@
 # constraints, undo/redo, .psylevel / .psyc serialisation, REPL host.
 #
 # Linkage: scene (entity records), physics (body handle types), script (REPL),
-# ui_imm (in-viewport gizmos), asset (VFS read fall-through for load_*).
+# ui_imm (in-viewport gizmos), ui_console (sample_step drives the drop-down
+# console — propagated PUBLIC so every sample that links editor_core gets it
+# without a per-sample CMake edit), asset (VFS read fall-through for load_*).
 psynder_add_lane(editor_core
     LINKS
         psynder_core
@@ -13,6 +15,7 @@ psynder_add_lane(editor_core
         psynder_physics
         psynder_script
         psynder_ui_imm
+        psynder_ui_console
 )
 
 # Optional zstd compression for .psylevel / .psyc bodies. The SaveLoadApi TU

@@ -43,6 +43,7 @@
 #include "core/Types.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
+#include "editor/core/SampleHook.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -479,9 +480,9 @@ int main(int argc, char** argv) {
     while (!window->should_close()) {
         window->poll_events();
 
-        // ESC quits outside smoke mode.
+        // ESC quits outside smoke mode — unless the console is open (Esc closes it).
         if (args.smoke_frames == 0 && platform::input() != nullptr &&
-            platform::input()->key_down(platform::KeyCode::Escape)) {
+            platform::input()->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
@@ -589,6 +590,11 @@ int main(int argc, char** argv) {
         }
 
         rasterizer.end_frame();
+
+        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
+        if (auto* in = platform::input()) {
+            editor::frame_overlays(*in, fb);
+        }
         window->present(fb);
 
         if (args.smoke_frames > 0) {

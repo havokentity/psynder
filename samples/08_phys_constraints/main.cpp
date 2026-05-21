@@ -42,6 +42,7 @@
 #include "physics/Physics.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "ui/console/ConsoleOverlay.h"
 
 #include <algorithm>
 #include <array>
@@ -571,8 +572,9 @@ int main(int argc, char** argv) {
     while (!window->should_close()) {
         window->poll_events();
 
-        // ESC quits.
-        if (auto* in = platform::input(); in && in->key_down(platform::KeyCode::Escape)) {
+        // ESC quits — unless the console is open, where Esc closes it instead.
+        if (auto* in = platform::input();
+            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
             break;
         }
 
@@ -598,6 +600,7 @@ int main(int argc, char** argv) {
         const Camera cam = make_orbit_camera(t, aspect);
 
         render_scene(pixels, scene, cam);
+        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);
 
         if (smoke_frames > 0) {

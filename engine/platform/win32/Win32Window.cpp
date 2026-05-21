@@ -285,6 +285,12 @@ LRESULT Win32Window::wnd_proc(UINT msg, WPARAM wparam, LPARAM lparam) {
                 in.on_key(k, false);
             return 0;
         }
+        case WM_CHAR: {
+            // Layout-/IME-mapped UTF-16 code unit for the software console.
+            // on_char_utf16 recombines surrogate pairs and filters controls.
+            in.on_char_utf16(static_cast<u16>(wparam));
+            return 0;
+        }
 
         case WM_MOUSEMOVE: {
             const i32 x = GET_X_LPARAM(lparam);

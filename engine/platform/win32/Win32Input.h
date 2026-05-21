@@ -18,6 +18,8 @@
 #include "platform/Platform.h"
 
 #include <bitset>
+#include <span>
+#include <vector>
 
 namespace psynder::platform::win32 {
 
@@ -46,6 +48,7 @@ class Win32Input final : public Input {
         return idx < kKeyBits && keys_pressed_this_frame_.test(idx);
     }
     const MouseState& mouse() const override { return mouse_; }
+    std::span<const u32> text_input() const override { return text_; }
 
     // ── WindowProc hooks ────────────────────────────────────────────────
     void on_key(KeyCode k, bool down) {
@@ -83,6 +86,30 @@ class Win32Input final : public Input {
     }
     void on_mouse_wheel(f32 ticks) { mouse_wheel_accum_ += ticks; }
 
+    // WM_CHAR delivers one UTF-16 code unit at a time (DispatchMessageW is
+    // the Unicode path). A non-BMP scalar arrives as a high+low surrogate
+    // pair across two messages, so we stash a pending high half and combine
+    // it with the next low half. Layout/IME mapping is already done by the
+    // OS, matching the macOS -characters path.
+    void on_char_utf16(u16 unit) {
+        if (pending_high_surrogate_ != 0) {
+            if (unit >= 0xDC00 && unit <= 0xDFFF) {
+                const u32 cp = 0x10000u +
+                               ((static_cast<u32>(pending_high_surrogate_) - 0xD800u) << 10) +
+                               (static_cast<u32>(unit) - 0xDC00u);
+                pending_high_surrogate_ = 0;
+                push_text_codepoint(cp);
+                return;
+            }
+            pending_high_surrogate_ = 0;  // unpaired high surrogate — discard
+        }
+        if (unit >= 0xD800 && unit <= 0xDBFF) {
+            pending_high_surrogate_ = unit;  // wait for the matching low half
+            return;
+        }
+        push_text_codepoint(unit);
+    }
+
     // ── Frame book-keeping (called once per poll_events) ────────────────
     // Pulls XInput state and clears edge-flagged inputs from the prior frame.
     // Defined out-of-line so the XInput symbol stays in the Win32 lane
@@ -103,9 +130,16 @@ class Win32Input final : public Input {
         mouse_wheel_accum_ = 0.0f;
         mouse_.dx = 0.0f;
         mouse_.dy = 0.0f;
+        text_.clear();                // text_input() reports only this frame
+        pending_high_surrogate_ = 0;  // don't let a half-pair bleed frames
     }
 
    private:
+    void push_text_codepoint(u32 cp) {
+        if (cp >= 0x20 && cp != 0x7F)  // drop C0 controls + DEL
+            text_.push_back(cp);
+    }
+
     // One bit per KeyCode. KeyCode::Count is well under 96, so bitset<256>
     // gives plenty of head-room even with future additions.
     static constexpr usize kKeyBits = 256;
@@ -117,6 +151,11 @@ class Win32Input final : public Input {
     MouseState mouse_{};
     f32 mouse_wheel_accum_ = 0.0f;
     GamepadState pads_[kMaxGamepads]{};
+
+    // Text-entry codepoints captured this frame (WM_CHAR), plus the pending
+    // high surrogate while waiting for its low half.
+    std::vector<u32> text_{};
+    u16 pending_high_surrogate_ = 0;
 };
 
 // Singleton accessor — the Platform.h `input()` factory forwards here.

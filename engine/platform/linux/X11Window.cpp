@@ -333,6 +333,19 @@ void X11Window::handle_event(const XEvent& ev) noexcept {
                 kc = keycode_from_evdev(code);
             }
             input_push_key(kc, ev.type == KeyPress);
+            // Text entry for the software console. XLookupString maps the
+            // event through the active layout + modifiers into Latin-1 bytes
+            // (the keysym-based encoding, locale-independent), which equal
+            // their Unicode codepoints for U+0020..U+00FF — ASCII + Latin-1,
+            // enough for console / cvar lines without an XIM/XIC.
+            if (ev.type == KeyPress) {
+                char buf[16];
+                KeySym ignored = 0;
+                const int n =
+                    XLookupString(const_cast<XKeyEvent*>(&ev.xkey), buf, sizeof(buf), &ignored, nullptr);
+                for (int i = 0; i < n; ++i)
+                    input_push_text(static_cast<unsigned char>(buf[i]));
+            }
             break;
         }
         case ButtonPress:

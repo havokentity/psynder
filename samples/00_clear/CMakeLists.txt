@@ -6,5 +6,6 @@ file(GLOB SRC CONFIGURE_DEPENDS *.cpp)
 add_executable(sample_00_clear ${SRC})
 target_link_libraries(sample_00_clear PRIVATE
     psynder_core psynder_math psynder_render_raster psynder_platform
+    psynder_editor_core
     psynder_samples_common
 )

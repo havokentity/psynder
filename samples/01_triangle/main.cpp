@@ -25,6 +25,7 @@
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
+#include "editor/core/SampleHook.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -324,6 +325,11 @@ int main(int argc, char** argv) {
         project(verts[1], b);
         project(verts[2], c);
         raster_triangle_nearest(fb, a, b, c, crate);
+
+        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
+        if (auto* in = platform::input()) {
+            editor::frame_overlays(*in, fb);
+        }
 
         window->present(fb);
 

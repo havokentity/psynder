@@ -26,7 +26,7 @@ if(TARGET Catch2::Catch2WithMain)
         psynder_world_bsp psynder_world_outdoor
         psynder_render_raster psynder_render_rt psynder_render_post
         psynder_asset psynder_audio psynder_net psynder_platform
-        psynder_ui_imm psynder_editor_core
+        psynder_ui_imm psynder_ui_console psynder_editor_core
     )
     # Lane-19 (editor-ipc) tests need to link against the IPC server library.
     if(TARGET psynder_editor_ipc)

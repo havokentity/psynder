@@ -171,9 +171,9 @@ TEST_CASE("ui_imm: plot_blend half-alpha blends towards the destination", "[ui_i
     imm::plot_blend(t.fb, 5, 5, imm::rgba(0xFF, 0x00, 0x00, 0x80));  // red 50%
     // 0x80 ≈ 50%: red channel ≈ 128, blue channel ≈ 127, green 0.
     const u32 out = t.at(5, 5);
-    const u32 out_r = (out >> 24) & 0xFFu;
-    const u32 out_g = (out >> 16) & 0xFFu;
-    const u32 out_b = (out >> 8) & 0xFFu;
+    const u32 out_r = out & 0xFFu;  // R is the low byte (rgba() packing)
+    const u32 out_g = (out >> 8) & 0xFFu;
+    const u32 out_b = (out >> 16) & 0xFFu;
     REQUIRE(out_r > 120U);
     REQUIRE(out_r < 136U);
     REQUIRE(out_g == 0U);

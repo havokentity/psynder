@@ -30,6 +30,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,7 @@ constexpr u16 kVK_ANSI_J = 0x26; constexpr u16 kVK_ANSI_K = 0x28;
 constexpr u16 kVK_ANSI_N = 0x2D; constexpr u16 kVK_ANSI_M = 0x2E;
 constexpr u16 kVK_Return    = 0x24; constexpr u16 kVK_Tab    = 0x30;
 constexpr u16 kVK_Space     = 0x31; constexpr u16 kVK_Delete = 0x33;
+constexpr u16 kVK_ForwardDelete = 0x75;  // Del / fn+Delete (forward delete)
 constexpr u16 kVK_Escape    = 0x35; constexpr u16 kVK_LShift = 0x38;
 constexpr u16 kVK_LControl  = 0x3B; constexpr u16 kVK_LOption= 0x3A;
 constexpr u16 kVK_RShift    = 0x3C; constexpr u16 kVK_RControl=0x3E;
@@ -73,6 +75,7 @@ KeyCode translate_key(unsigned short vk) {
         case kVK_Space:       return KeyCode::Space;
         case kVK_Tab:         return KeyCode::Tab;
         case kVK_Delete:      return KeyCode::Backspace;
+        case kVK_ForwardDelete: return KeyCode::Delete;
         case kVK_LeftArrow:   return KeyCode::Left;
         case kVK_RightArrow:  return KeyCode::Right;
         case kVK_UpArrow:     return KeyCode::Up;
@@ -143,6 +146,7 @@ public:
         return slot.exchange(false, std::memory_order_relaxed);
     }
     const MouseState& mouse() const override { return mouse_state_; }
+    std::span<const u32> text_input() const override { return text_; }
 
     // ─── Internal event injection (used by NSView delegates) ─────────────
     void on_key(KeyCode k, bool is_down) {
@@ -169,13 +173,24 @@ public:
         }
     }
     void on_mouse_wheel(f32 dy) { mouse_state_.wheel += dy; }
-    void begin_frame()          { mouse_state_.dx = 0; mouse_state_.dy = 0; mouse_state_.wheel = 0; }
+    void on_text(u32 codepoint) { text_.push_back(codepoint); }
+    void begin_frame() {
+        mouse_state_.dx = 0;
+        mouse_state_.dy = 0;
+        mouse_state_.wheel = 0;
+        text_.clear();  // text_input() reports only this frame's codepoints
+    }
 
 private:
     static constexpr usize kKeyCount = static_cast<usize>(KeyCode::Count);
     std::array<std::atomic<bool>, kKeyCount> down_{};
     std::array<std::atomic<bool>, kKeyCount> pressed_{};
     MouseState mouse_state_{};
+    // Text-entry codepoints captured this frame. Filled by keyDown: (main
+    // thread, inside poll_events) and read after the pump returns — same
+    // thread, so no atomics needed (unlike the key arrays, which the design
+    // keeps atomic for defensive single-window safety).
+    std::vector<u32> text_{};
 };
 
 MacInput& mac_input() {
@@ -355,6 +370,38 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
 - (void)keyDown:(NSEvent*)event {
     psynder::platform::mac_input().on_key(
         psynder::platform::translate_key([event keyCode]), true);
+
+    // Text entry for the software console overlay. -characters is already
+    // mapped through the active keyboard layout + Shift, so we get '@' for
+    // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command
+    // chords (those are shortcuts, not text) and C0/DEL control codes — the
+    // console reads Enter/Backspace/arrows via key_pressed instead.
+    if (([event modifierFlags] & NSEventModifierFlagCommand) != 0) return;
+    NSString* chars = [event characters];
+    const NSUInteger n = [chars length];
+    for (NSUInteger i = 0; i < n;) {
+        const unichar c = [chars characterAtIndex:i];
+        uint32_t cp = c;
+        // Recombine a UTF-16 surrogate pair into one scalar value.
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+            const unichar lo = [chars characterAtIndex:i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000u + ((static_cast<uint32_t>(c) - 0xD800u) << 10) +
+                     (static_cast<uint32_t>(lo) - 0xDC00u);
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+        // Drop C0 controls + DEL, and AppKit's function-key encodings
+        // (arrows, Delete, Home/End, F-keys, ...) which it reports in the
+        // U+F700..U+F8FF private-use block — those are NOT text and would
+        // otherwise insert missing-glyph boxes into the console prompt.
+        if (cp >= 0x20 && cp != 0x7F && !(cp >= 0xF700 && cp <= 0xF8FF))
+            psynder::platform::mac_input().on_text(cp);
+    }
 }
 - (void)keyUp:(NSEvent*)event {
     psynder::platform::mac_input().on_key(
@@ -396,6 +443,21 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
 }
 @end
 
+// NSWindow subclass that can become key / main even when borderless. A vanilla
+// borderless NSWindow returns NO for -canBecomeKeyWindow and goes deaf to the
+// keyboard — so our borderless full-screen mode would kill console + gameplay
+// input. Overriding keeps the key path alive in every style.
+@interface PsynderNSWindow : NSWindow
+@end
+@implementation PsynderNSWindow
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+- (BOOL)canBecomeMainWindow {
+    return YES;
+}
+@end
+
 // ─── Window impl ─────────────────────────────────────────────────────────
 namespace psynder::platform {
 namespace {
@@ -413,7 +475,7 @@ public:
                 NSWindowStyleMaskMiniaturizable;
             if (desc.resizable) style |= NSWindowStyleMaskResizable;
 
-            ns_window_ = [[NSWindow alloc]
+            ns_window_ = [[PsynderNSWindow alloc]
                 initWithContentRect:frame
                           styleMask:style
                             backing:NSBackingStoreBuffered
@@ -498,8 +560,10 @@ public:
             } while (event);
             [NSApp updateWindows];
 
-            // ESC closes the window per the M0 demo contract
-            if (mac_input().key_down(KeyCode::Escape)) {
+            // ESC closes the window per the M0 demo contract — UNLESS something
+            // is capturing text (the console is open), where Esc is the
+            // console's (clear the prompt / dismiss popup), not a quit.
+            if (mac_input().key_down(KeyCode::Escape) && !text_input_capturing()) {
                 should_close_.store(true, std::memory_order_relaxed);
             }
         }
@@ -701,6 +765,43 @@ public:
         return static_cast<u32>(sz.height);
     }
 
+    // ─── Runtime display control ─────────────────────────────────────────
+    // Borderless full-screen: drop the chrome, cover the screen. present()
+    // already stretches the CPU framebuffer to the (now full-screen) view, so
+    // the frame fills the display with no framebuffer realloc here.
+    void set_fullscreen(bool on) override {
+        if (!ns_window_ || on == fullscreen_) return;
+        @autoreleasepool {
+            if (on) {
+                saved_frame_ = [ns_window_ frame];
+                saved_style_ = [ns_window_ styleMask];
+                NSScreen* screen = [ns_window_ screen] ?: [NSScreen mainScreen];
+                [ns_window_ setStyleMask:NSWindowStyleMaskBorderless];
+                [ns_window_ setFrame:[screen frame] display:YES];
+                fullscreen_ = true;
+            } else {
+                [ns_window_ setStyleMask:saved_style_];
+                [ns_window_ setFrame:saved_frame_ display:YES];
+                fullscreen_ = false;
+            }
+            [ns_window_ makeFirstResponder:metal_view_];
+            [ns_window_ makeKeyAndOrderFront:nil];
+        }
+    }
+    bool is_fullscreen() const override { return fullscreen_; }
+
+    void set_window_size(u32 w, u32 h) override {
+        if (!ns_window_ || w == 0 || h == 0) return;
+        @autoreleasepool {
+            if (fullscreen_) set_fullscreen(false);  // leave full-screen first
+            [ns_window_ setContentSize:NSMakeSize(static_cast<CGFloat>(w), static_cast<CGFloat>(h))];
+            [ns_window_ center];
+            [ns_window_ makeFirstResponder:metal_view_];
+        }
+        desc_.window_width  = w;
+        desc_.window_height = h;
+    }
+
 private:
     // ─── Metal pipeline / sampler setup ──────────────────────────────────
     void build_pipeline_() {
@@ -808,6 +909,11 @@ private:
     ScanoutState                  scanout_{};
     CGFloat                       backing_scale_   = 1.0;
     std::atomic<bool>             should_close_{false};
+
+    // Borderless full-screen state: saved windowed frame + style to restore.
+    bool                          fullscreen_      = false;
+    NSRect                        saved_frame_     = NSZeroRect;
+    NSWindowStyleMask             saved_style_     = 0;
 };
 
 }  // anonymous namespace

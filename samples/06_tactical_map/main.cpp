@@ -38,6 +38,7 @@
 
 #include "core/Log.h"
 #include "core/Types.h"
+#include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
@@ -739,7 +740,9 @@ int main(int argc, char** argv) {
     while (!window->should_close()) {
         window->poll_events();
 
-        if (auto* in = platform::input(); in && in->key_down(platform::KeyCode::Escape)) {
+        // ESC quits — unless the console is open, where Esc closes it instead.
+        if (auto* in = platform::input();
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
@@ -846,6 +849,12 @@ int main(int argc, char** argv) {
         }
 
         rasterizer.end_frame();
+
+        // Engine overlay suite (lane 18): `~` drop-down console + F1 debug HUD
+        // + F2 Play/Edit badge. One call, drawn over the rendered scene.
+        if (auto* in = platform::input()) {
+            editor::frame_overlays(*in, fb, {towers.size() + 5u, 0, 0});
+        }
 
         window->present(fb);
 

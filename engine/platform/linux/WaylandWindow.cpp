@@ -922,6 +922,15 @@ void WaylandWindow::on_keyboard_key(
         kc = keycode_from_xkb(static_cast<uint32_t>(sym));
     }
     input_push_key(kc, state == WL_KEYBOARD_KEY_STATE_PRESSED);
+    // Text entry for the software console. xkb_state_key_get_utf32 maps the
+    // key through the active layout + modifier state to a Unicode scalar
+    // (0 when the key yields no character); input_push_text drops controls.
+    if (state == WL_KEYBOARD_KEY_STATE_PRESSED && w->xkb_state_) {
+        const xkb_keycode_t xkc = key + 8;
+        const uint32_t cp = xkb_state_key_get_utf32(w->xkb_state_, xkc);
+        if (cp != 0)
+            input_push_text(cp);
+    }
 }
 void WaylandWindow::on_keyboard_modifiers(void* data,
                                           wl_keyboard*,

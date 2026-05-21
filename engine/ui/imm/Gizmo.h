@@ -86,11 +86,11 @@ inline math::Vec2 default_screen(math::Vec2 s) noexcept {
     return s;
 }
 
-// Colour wheel for the three axes. Source-literal RGBA8.
-inline constexpr u32 kColourX = 0xFF3050FFu;    // red
-inline constexpr u32 kColourY = 0x30FF50FFu;    // green
-inline constexpr u32 kColourZ = 0x3050FFFFu;    // blue
-inline constexpr u32 kColourHot = 0xFFFF40FFu;  // yellow when grabbed
+// Colour wheel for the three axes (packed via rgba() — R in the low byte).
+inline constexpr u32 kColourX = rgba(0xFF, 0x30, 0x50);    // red
+inline constexpr u32 kColourY = rgba(0x30, 0xFF, 0x50);    // green
+inline constexpr u32 kColourZ = rgba(0x30, 0x50, 0xFF);    // blue
+inline constexpr u32 kColourHot = rgba(0xFF, 0xFF, 0x40);  // yellow when grabbed
 
 }  // namespace gizmo_detail
 

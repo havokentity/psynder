@@ -31,6 +31,10 @@ void input_push_key(KeyCode k, bool down) noexcept;
 void input_push_mouse_motion(float dx, float dy, float abs_x, float abs_y) noexcept;
 void input_push_mouse_button(int button /*0=L 1=R 2=M*/, bool down) noexcept;
 void input_push_mouse_wheel(float delta) noexcept;
+// Append a typed Unicode codepoint to this frame's text-entry buffer
+// (Input::text_input()). Fed by Xutf8LookupString / xkb_state_key_get_utf32;
+// C0 controls + DEL are filtered inside. Cleared by input_frame_advance().
+void input_push_text(u32 codepoint) noexcept;
 // Called once per frame from poll_events() — promotes "down" to "pressed"
 // (first frame down) and clears edge bits.
 void input_frame_advance() noexcept;

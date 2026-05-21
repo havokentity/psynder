@@ -35,6 +35,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
+#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <algorithm>
@@ -581,8 +582,9 @@ int main(int argc, char** argv) {
         prev_frame_ticks = now_ticks;
         frame_ms_ring[frame % kFrameHistory] = frame_ms;
 
-        // ESC quits.
-        if (auto* in = platform::input(); in && in->key_down(platform::KeyCode::Escape)) {
+        // ESC quits — unless the console is open, where Esc closes it instead.
+        if (auto* in = platform::input();
+            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
             PSY_LOG_INFO("sample_13: escape pressed, exiting");
             break;
         }
@@ -609,8 +611,9 @@ int main(int argc, char** argv) {
             const f32 t01 = std::clamp(phase, 0.0f, 1.0f);
             controller.set_position({0.0f, room.floor_y + cc_cfg.eye_height, -5.0f + 8.0f * t01});
             controller.set_look(0.0f, 0.0f);
-        } else if (edit_mode != editor::Mode::Edit && input) {
+        } else if (edit_mode != editor::Mode::Edit && input && !ui::console::is_open()) {
             // Live play: WASD + mouse-look. V flies; `noclip 1` lifts bounds.
+            // Frozen while the console owns input so typing doesn't walk the cam.
             controller.update(*input, dt);
         }
 
@@ -766,6 +769,7 @@ int main(int argc, char** argv) {
             ui::imm::draw_debug_hud(fb, stats);
         }
 
+        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);
 
         ++frame;

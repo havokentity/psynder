@@ -32,10 +32,12 @@
 #include <filesystem>
 #include <limits.h>
 #include <mutex>
+#include <span>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <vector>
 
 namespace psynder::platform {
 
@@ -115,6 +117,9 @@ struct InputState {
     float mouse_dx_accum = 0.f;
     float mouse_dy_accum = 0.f;
     float wheel_accum = 0.f;
+    // Text-entry codepoints captured this frame (xkb / Xutf8LookupString),
+    // for the software console overlay. Cleared by input_frame_advance().
+    std::vector<u32> text{};
 };
 std::mutex g_input_mu;
 InputState g_input_state;
@@ -126,6 +131,13 @@ void input_push_key(KeyCode k, bool down) noexcept {
         return;
     std::lock_guard lock(g_input_mu);
     g_input_state.down[static_cast<usize>(k)] = down ? 1u : 0u;
+}
+
+void input_push_text(u32 codepoint) noexcept {
+    if (codepoint < 0x20 || codepoint == 0x7F)  // drop C0 controls + DEL
+        return;
+    std::lock_guard lock(g_input_mu);
+    g_input_state.text.push_back(codepoint);
 }
 
 void input_push_mouse_motion(float dx, float dy, float abs_x, float abs_y) noexcept {
@@ -167,6 +179,8 @@ void input_frame_advance() noexcept {
     g_input_state.mouse_dx_accum = 0.f;
     g_input_state.mouse_dy_accum = 0.f;
     g_input_state.wheel_accum = 0.f;
+    // text_input() reports only the codepoints typed since the last advance.
+    g_input_state.text.clear();
     // Promote down→prev so key_pressed() can fire the rising edge once.
     g_input_state.prev = g_input_state.down;
 }
@@ -196,6 +210,15 @@ class LinuxInput final : public Input {
         thread_local MouseState snap{};
         std::lock_guard lock(g_input_mu);
         snap = g_input_state.mouse;
+        return snap;
+    }
+    std::span<const u32> text_input() const override {
+        // Same snapshot idiom as mouse(): copy under the lock so the
+        // returned span points at thread-local storage that stays valid
+        // until this thread's next text_input() call.
+        thread_local std::vector<u32> snap;
+        std::lock_guard lock(g_input_mu);
+        snap = g_input_state.text;
         return snap;
     }
 };

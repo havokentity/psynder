@@ -86,11 +86,14 @@ constexpr f32 kPad = 4.0f;
 constexpr f32 kLineHeight = 10.0f;  // 6x8 font + 2px gutter
 constexpr f32 kPanelW = 220.0f;
 
-constexpr u32 kColourPanelBg = 0x101018C0u;
-constexpr u32 kColourPanelFr = 0x808080FFu;
-constexpr u32 kColourLabel = 0xFFFFFFFFu;
-constexpr u32 kColourFps = 0x80FF80FFu;
-constexpr u32 kColourDiagLine = 0xC0C0C0FFu;
+// Muted palette to match the console overlay — nothing glares over gameplay.
+// Packed via imm::rgba (R in the low byte); raw 0xRRGGBBAA literals would
+// channel-swap against the framebuffer and render wrong (dark blue -> red).
+constexpr u32 kColourPanelBg = rgba(0x0D, 0x11, 0x1A, 0xD8);  // dark slate
+constexpr u32 kColourPanelFr = rgba(0x5A, 0x61, 0x72);        // soft slate frame
+constexpr u32 kColourLabel = rgba(0xE0, 0xE5, 0xEE);          // snow
+constexpr u32 kColourFps = rgba(0xA3, 0xBE, 0x8C);            // muted green
+constexpr u32 kColourDiagLine = rgba(0xAE, 0xB6, 0xC2);       // soft grey
 
 // Formatter for "<value> ms" + FPS right-aligned. Returns the rendered
 // FPS string width in pixels so the caller can position it.

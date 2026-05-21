@@ -8,9 +8,9 @@
 // frame the key transitioned from up→down, so a single edge produces a
 // single `toggle_mode()` call regardless of how long the player holds it.
 //
-// If both Tilde and F2 happen to fire on the same frame (extremely
-// unlikely outside a fuzz harness) we only toggle once — `||` short-
-// circuits on the first edge.
+// Editor toggle is F2 only. The backtick / tilde key is reserved for the
+// software console overlay (psynder::ui::console), matching the classic
+// Quake convention where `~` drops the console, never the dev mode.
 
 #include "HotKey.h"
 
@@ -20,9 +20,7 @@
 namespace psynder::editor {
 
 void handle_input_frame(const platform::Input& input) noexcept {
-    const bool tilde = input.key_pressed(platform::KeyCode::Tilde);
-    const bool f2 = input.key_pressed(platform::KeyCode::F2);
-    if (tilde || f2) {
+    if (input.key_pressed(platform::KeyCode::F2)) {
         toggle_mode();
     }
 }
