@@ -10,6 +10,8 @@
 
 #include "core/console/Completion.h"
 #include "core/console/Console.h"
+#include "core/hardware/CpuFeatures.h"
+#include "jobs/JobSystemHetero.h"
 #include "ui/imm/detail/Font.h"
 #include "ui/imm/DebugHud.h"
 #include "ui/imm/Imm.h"
@@ -24,6 +26,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -134,6 +137,38 @@ struct Line {
     u32 colour = kColText;
 };
 
+struct TerrainTuneCandidate {
+    int cores_hint = 0;
+    int min_rows = 8;
+    int batch_rows = 0;
+};
+
+struct TerrainAutotune {
+    bool active = false;
+    bool have_best = false;
+    usize index = 0;
+    std::vector<TerrainTuneCandidate> candidates;
+
+    TerrainTuneCandidate best{};
+    f32 best_fps = 0.0f;
+
+    f32 elapsed = 0.0f;
+    f32 score_fps_sum = 0.0f;
+    u32 score_frames = 0;
+
+    // 1-second stability windows after the 5s minimum settle period.
+    f32 sec_elapsed = 0.0f;
+    f32 sec_fps_sum = 0.0f;
+    u32 sec_frames = 0;
+    f32 prev_sec_avg = 0.0f;
+    bool has_prev_sec = false;
+    u32 stable_seconds = 0;
+
+    std::string orig_cores;
+    std::string orig_min_rows;
+    std::string orig_batch_rows;
+};
+
 struct State {
     bool open = false;
     f32 anim = 0.0f;  // 0 = closed, 1 = fully dropped
@@ -160,6 +195,8 @@ struct State {
     bool comp_active = false;
     std::string comp_token;  // token the list was built for (detect changes)
     bool comp_suppressed_until_text = false;
+
+    TerrainAutotune terrain_tune;
 
     bool initialised = false;
 };
@@ -204,6 +241,138 @@ const std::string& console_cfg_path() {
 // Defined below (near the autocomplete helpers); used by r_resolution's
 // on_change handler registered in ensure_init.
 bool parse_resolution(std::string_view s, u32& w, u32& h) noexcept;
+
+void apply_terrain_candidate(const TerrainTuneCandidate& c) {
+    auto& con = psynder::console::Console::Get();
+    con.SetCVarOverride("r_terrain_cpu_cores_hint", std::to_string(c.cores_hint));
+    con.SetCVarOverride("r_terrain_min_rows_per_core", std::to_string(c.min_rows));
+    con.SetCVarOverride("r_terrain_batch_rows", std::to_string(c.batch_rows));
+}
+
+std::vector<TerrainTuneCandidate> build_terrain_candidates() {
+    std::vector<TerrainTuneCandidate> out;
+    std::set<std::tuple<int, int, int>> seen;
+    auto add = [&](int cores, int min_rows, int batch_rows) {
+        const auto key = std::make_tuple(cores, min_rows, batch_rows);
+        if (seen.insert(key).second) {
+            out.push_back(TerrainTuneCandidate{cores, min_rows, batch_rows});
+        }
+    };
+
+    const auto hc = jobs::hetero_detected_counts();
+    int perf_like = static_cast<int>(hc.p_cores > 0u ? hc.p_cores : hardware::detect().cores_physical);
+    if (perf_like <= 0)
+        perf_like = 4;
+    const int auto_hint = 0;
+    const int h_half = std::max(1, perf_like / 2);
+    const int h_minus2 = std::max(1, perf_like - 2);
+    const int h_full = std::max(1, perf_like);
+    const std::array<int, 4> hint_opts = {auto_hint, h_half, h_minus2, h_full};
+    const std::array<int, 5> min_opts = {4, 8, 12, 16, 24};
+    const std::array<int, 7> batch_opts = {8, 12, 16, 24, 32, 48, 64};
+
+    // Auto-batch permutations across core hint + min rows.
+    for (int h : hint_opts) {
+        for (int m : min_opts) {
+            add(h, m, 0);
+        }
+    }
+
+    // Explicit-batch probes (keep hint/min fixed to avoid blow-up).
+    for (int b : batch_opts) {
+        add(0, 8, b);
+    }
+    return out;
+}
+
+void terrain_tune_finalize_candidate(State& s) {
+    auto& t = s.terrain_tune;
+    if (!t.active || t.index >= t.candidates.size())
+        return;
+
+    const f32 fps = (t.score_frames > 0u) ? (t.score_fps_sum / static_cast<f32>(t.score_frames)) : 0.0f;
+    const TerrainTuneCandidate cand = t.candidates[t.index];
+    print_line(fmt::format("terrain autotune: [{}/{}] cores={}, min_rows={}, batch_rows={} -> {:.1f} FPS",
+                           t.index + 1,
+                           t.candidates.size(),
+                           cand.cores_hint,
+                           cand.min_rows,
+                           cand.batch_rows,
+                           fps));
+
+    if (!t.have_best || fps > t.best_fps) {
+        t.have_best = true;
+        t.best_fps = fps;
+        t.best = cand;
+    }
+
+    ++t.index;
+    t.elapsed = 0.0f;
+    t.score_fps_sum = 0.0f;
+    t.score_frames = 0;
+    t.sec_elapsed = 0.0f;
+    t.sec_fps_sum = 0.0f;
+    t.sec_frames = 0;
+    t.prev_sec_avg = 0.0f;
+    t.has_prev_sec = false;
+    t.stable_seconds = 0;
+
+    if (t.index < t.candidates.size()) {
+        apply_terrain_candidate(t.candidates[t.index]);
+    } else {
+        t.active = false;
+        if (t.have_best) {
+            apply_terrain_candidate(t.best);
+            print_line(fmt::format(
+                "terrain autotune: best cores={}, min_rows={}, batch_rows={} ({:.1f} FPS)",
+                t.best.cores_hint,
+                t.best.min_rows,
+                t.best.batch_rows,
+                t.best_fps));
+        }
+    }
+}
+
+void terrain_tune_tick(State& s, f32 dt) {
+    auto& t = s.terrain_tune;
+    if (!t.active)
+        return;
+    if (dt <= 1e-6f)
+        return;
+
+    const f32 fps = 1.0f / dt;
+    t.elapsed += dt;
+
+    constexpr f32 kMinSettleSec = 5.0f;
+    constexpr f32 kMaxSettleSec = 10.0f;
+
+    if (t.elapsed >= kMinSettleSec) {
+        t.score_fps_sum += fps;
+        ++t.score_frames;
+
+        t.sec_elapsed += dt;
+        t.sec_fps_sum += fps;
+        ++t.sec_frames;
+        if (t.sec_elapsed >= 1.0f) {
+            const f32 sec_avg =
+                (t.sec_frames > 0u) ? (t.sec_fps_sum / static_cast<f32>(t.sec_frames)) : 0.0f;
+            if (t.has_prev_sec) {
+                const f32 denom = std::max(1e-3f, t.prev_sec_avg);
+                const f32 diff = std::abs(sec_avg - t.prev_sec_avg) / denom;
+                t.stable_seconds = (diff <= 0.02f) ? (t.stable_seconds + 1u) : 0u;
+            }
+            t.prev_sec_avg = sec_avg;
+            t.has_prev_sec = true;
+            t.sec_elapsed = 0.0f;
+            t.sec_fps_sum = 0.0f;
+            t.sec_frames = 0;
+        }
+    }
+
+    if (t.elapsed >= kMaxSettleSec || t.stable_seconds >= 2u) {
+        terrain_tune_finalize_candidate(s);
+    }
+}
 
 bool is_wrap_space(char c) noexcept {
     return c == ' ' || c == '\t';
@@ -398,6 +567,61 @@ void ensure_init(State& s) noexcept {
                      "Copyright (c) Rajesh D'Monte 2026 - MIT License",
                      "Top-right console watermark text.",
                      psynder::console::CVAR_ARCHIVE);
+
+    con.RegisterCommand("r_terrain_autotune",
+                        "Autotune terrain CPU settings (run/status/stop).",
+                        [](std::span<const std::string_view> args, psynder::console::Output& out) {
+                            State& st = state();
+                            auto& t = st.terrain_tune;
+
+                            const std::string_view mode = args.empty() ? "run" : args[0];
+                            if (mode == "status") {
+                                out.FormatLine("terrain autotune: {} ({}/{})",
+                                               t.active ? "running" : "idle",
+                                               t.active ? (t.index + 1u) : 0u,
+                                               t.candidates.size());
+                                return;
+                            }
+                            if (mode == "stop") {
+                                if (t.active) {
+                                    t.active = false;
+                                    auto& c = psynder::console::Console::Get();
+                                    c.SetCVarOverride("r_terrain_cpu_cores_hint", t.orig_cores);
+                                    c.SetCVarOverride("r_terrain_min_rows_per_core", t.orig_min_rows);
+                                    c.SetCVarOverride("r_terrain_batch_rows", t.orig_batch_rows);
+                                    out.PrintLine("terrain autotune: stopped, restored previous settings");
+                                } else {
+                                    out.PrintLine("terrain autotune: not running");
+                                }
+                                return;
+                            }
+
+                            if (t.active) {
+                                out.PrintLine("terrain autotune: already running (use status/stop)");
+                                return;
+                            }
+
+                            auto& c = psynder::console::Console::Get();
+                            if (auto* v = c.FindCVar("r_terrain_cpu_cores_hint"); v != nullptr)
+                                t.orig_cores = v->value;
+                            if (auto* v = c.FindCVar("r_terrain_min_rows_per_core"); v != nullptr)
+                                t.orig_min_rows = v->value;
+                            if (auto* v = c.FindCVar("r_terrain_batch_rows"); v != nullptr)
+                                t.orig_batch_rows = v->value;
+
+                            t = TerrainAutotune{};
+                            t.active = true;
+                            t.candidates = build_terrain_candidates();
+                            if (t.candidates.empty()) {
+                                t.active = false;
+                                out.PrintLine("terrain autotune: no candidates");
+                                return;
+                            }
+                            apply_terrain_candidate(t.candidates[0]);
+                            out.FormatLine(
+                                "terrain autotune: started ({} candidates, 5-10s stabilize each)",
+                                t.candidates.size());
+                        });
 
     push_line(s, "Psynder console.  `~` close   Tab complete   Up/Down history   `help`", kColBannerA);
     push_line(s, "------------------------------------------------------------", kColBannerB);
@@ -791,6 +1015,8 @@ bool update(const platform::Input& input, f32 dt) noexcept {
         process_text(s, input);
         process_edit_keys(s, input, dt);
     }
+
+    terrain_tune_tick(s, dt);
 
     s.blink += dt;
 
