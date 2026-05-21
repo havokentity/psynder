@@ -316,17 +316,44 @@ CameraView make_flyover_camera(f32 t_seconds,
         alt,
         centre.z + std::sin(ang) * radius,
     };
-    // Terrain collision: never let the eye dip into a hill or a tower. Lift it
-    // to sit `kFlyoverClearance` above the terrain directly below; the extra
-    // `kTowerHeight` headroom keeps it clear of a watchtower the orbit may pass
-    // over. The orbit's XZ motion is untouched — we only raise Y when the
-    // scripted `alt` would otherwise clip.
-    // Terrain collision with ASYMMETRIC smoothing: target a height clearing the
-    // terrain below (+ tower headroom), but only RISE to it instantly (never let
-    // the eye clip a hill); DESCEND at a limited rate so the eye eases back down
-    // off a peak instead of snapping straight through the mountain.
-    const f32 ground = terrain_height(hm, eye.x, eye.z);
-    const f32 target_y = std::max(eye.y, ground + kTowerHeight + kFlyoverClearance);
+    // Terrain collision. Sampling only the eye's own column is not enough: as
+    // the orbit looks inward, the central ridge can rise BETWEEN the eye and the
+    // map centre — taller than the eye — so the eye sits above its own ground yet
+    // still ploughs into that in-front crest. Worst of all near ang≈0, where the
+    // eye drifts a few metres off the +X map edge: its own column then reads as
+    // flat (terrain_height → 0 off-map) while the ~30m ridge sits just ahead, so
+    // the unclamped eye grazes straight along the crest. Clamp instead above the
+    // MAX terrain found over three sets of samples:
+    //   * the eye's own column,
+    //   * a look-ahead fan toward the view target (catches the in-front ridge),
+    //   * a small ring around the eye (catches a crest the orbit is about to
+    //     pass — motion is tangential, not toward the target — and any sharp tip
+    //     the bilinear at the exact column would miss).
+    // `+kTowerHeight` keeps the headroom that clears a watchtower the orbit may
+    // carry the eye over.
+    f32 max_ground = terrain_height(hm, eye.x, eye.z);
+    {
+        // Horizontal direction toward the look target (centre); y is irrelevant.
+        const f32 dx = centre.x - eye.x;
+        const f32 dz = centre.z - eye.z;
+        const f32 dlen = std::sqrt(dx * dx + dz * dz);
+        const f32 fx = dlen > 1e-4f ? dx / dlen : 0.0f;
+        const f32 fz = dlen > 1e-4f ? dz / dlen : 0.0f;
+        for (f32 d = 8.0f; d <= 56.0f; d += 8.0f) {
+            max_ground = std::max(max_ground, terrain_height(hm, eye.x + fx * d, eye.z + fz * d));
+        }
+        constexpr f32 kRingR = 14.0f;
+        for (u32 k = 0; k < 8; ++k) {
+            const f32 a = static_cast<f32>(k) * (math::kPi * 0.25f);
+            max_ground = std::max(
+                max_ground,
+                terrain_height(hm, eye.x + std::cos(a) * kRingR, eye.z + std::sin(a) * kRingR));
+        }
+    }
+    // ASYMMETRIC smoothing: RISE to the target instantly (never clip a crest);
+    // DESCEND at a limited rate so the eye eases back down off a peak instead of
+    // snapping straight through the mountain.
+    const f32 target_y = std::max(eye.y, max_ground + kTowerHeight + kFlyoverClearance);
     if (target_y >= smoothed_eye_y) {
         smoothed_eye_y = target_y;  // instant rise — clear the terrain at once
     } else {
