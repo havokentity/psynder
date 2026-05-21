@@ -21,6 +21,7 @@
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
+#include "editor/core/SampleHook.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -132,6 +133,12 @@ int main(int argc, char** argv) {
                          (static_cast<u32>(b) << 16) | (0xFFu << 24);
 
         render::raster::clear_framebuffer(fb, rgba);
+
+        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
+        if (auto* in = platform::input()) {
+            editor::frame_overlays(*in, fb);
+        }
+
         window->present(fb);
 
         if (smoke_frames > 0 && ++frame >= smoke_frames) {

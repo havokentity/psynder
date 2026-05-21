@@ -10,6 +10,7 @@ add_executable(sample_01_triangle ${SRC})
 target_link_libraries(sample_01_triangle PRIVATE
     psynder_core psynder_math psynder_simd psynder_jobs
     psynder_render_raster psynder_platform
+    psynder_editor_core
     psynder_samples_common
 )
 

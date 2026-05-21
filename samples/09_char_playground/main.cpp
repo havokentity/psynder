@@ -58,6 +58,7 @@
 #include "math/Math.h"
 #include "physics/Physics.h"
 #include "physics/Character.h"  // detail::character_world() — resolved pose read-back
+#include "editor/core/SampleHook.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -517,7 +518,8 @@ int main(int argc, char** argv) {
     while (!window->should_close()) {
         window->poll_events();
 
-        if (args.smoke_frames == 0 && input != nullptr && input->key_down(platform::KeyCode::Escape)) {
+        if (args.smoke_frames == 0 && input != nullptr &&
+            input->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             PSY_LOG_INFO("sample_09: escape pressed, exiting");
             break;
         }
@@ -543,9 +545,10 @@ int main(int argc, char** argv) {
             const f32 cy = std::cos(math::kHalfPi);
             const f32 sy = std::sin(math::kHalfPi);
             walk = v3(sy, 0.0f, -cy);  // == (+1, 0, 0)
-        } else {
-            // Live: mouse-look + WASD intent from the shared controller. We
-            // read its yaw to build a yaw-relative basis but apply the motion
+        } else if (!editor::overlays_capturing()) {
+            // Live: mouse-look + WASD intent (frozen while the console owns
+            // input so typing doesn't walk the capsule). We read the controller
+            // yaw to build a yaw-relative basis but apply the motion
             // through physics::character::move (NOT the controller's own
             // clamp-walk), so step-up + slope-slide come from the engine.
             look.update(*input, dt);
@@ -614,6 +617,11 @@ int main(int argc, char** argv) {
         }
 
         rasterizer.end_frame();
+
+        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
+        if (input != nullptr) {
+            editor::frame_overlays(*input, fb);
+        }
         window->present(fb);
 
         if (args.smoke_frames > 0) {
