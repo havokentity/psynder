@@ -4,9 +4,12 @@
 // Covers two scenarios that the Wave C `handle_input_frame()` watcher
 // promises:
 //
-//   1. Tilde edge fires the toggle exactly once.
-//   2. Holding Tilde across multiple frames does NOT keep toggling
+//   1. F2 edge fires the toggle exactly once.
+//   2. Holding F2 across multiple frames does NOT keep toggling
 //      (i.e. we read `key_pressed`, not `key_down`).
+//
+// (The `~` / backtick key used to be a second toggle but is now reserved
+// for the software console overlay, so the editor toggle is F2 only.)
 //
 // We exercise the production function via a fake `platform::Input` that
 // distinguishes "pressed this frame" (edge) from "held this frame"
@@ -69,7 +72,7 @@ class FakeInput final : public Input {
 
 }  // namespace
 
-TEST_CASE("editor hot-key: Tilde edge toggles mode exactly once", "[editor][hotkey]") {
+TEST_CASE("editor hot-key: F2 edge toggles mode exactly once", "[editor][hotkey]") {
     FakeInput in;
 
     // Reset to a known starting mode by toggling until we're at Play.
@@ -80,7 +83,7 @@ TEST_CASE("editor hot-key: Tilde edge toggles mode exactly once", "[editor][hotk
     REQUIRE(start == editor::Mode::Play);
 
     // Single press → exactly one flip → mode flips to Edit.
-    in.press_edge(KeyCode::Tilde);
+    in.press_edge(KeyCode::F2);
     editor::handle_input_frame(in);
     REQUIRE(editor::current_mode() == editor::Mode::Edit);
 
@@ -95,7 +98,7 @@ TEST_CASE("editor hot-key: Tilde edge toggles mode exactly once", "[editor][hotk
     }
 }
 
-TEST_CASE("editor hot-key: holding Tilde does not retrigger the toggle", "[editor][hotkey]") {
+TEST_CASE("editor hot-key: holding F2 does not retrigger the toggle", "[editor][hotkey]") {
     FakeInput in;
 
     // Force Play start.
@@ -105,13 +108,13 @@ TEST_CASE("editor hot-key: holding Tilde does not retrigger the toggle", "[edito
     REQUIRE(editor::current_mode() == editor::Mode::Play);
 
     // Frame 1: edge — flip to Edit.
-    in.press_edge(KeyCode::Tilde);
+    in.press_edge(KeyCode::F2);
     editor::handle_input_frame(in);
     REQUIRE(editor::current_mode() == editor::Mode::Edit);
 
     // Frames 2..N: key still down but no new edge. Mode must NOT flip.
     for (int i = 0; i < 5; ++i) {
-        in.hold(KeyCode::Tilde);
+        in.hold(KeyCode::F2);
         editor::handle_input_frame(in);
         REQUIRE(editor::current_mode() == editor::Mode::Edit);
     }
@@ -122,7 +125,7 @@ TEST_CASE("editor hot-key: holding Tilde does not retrigger the toggle", "[edito
     REQUIRE(editor::current_mode() == editor::Mode::Edit);
 
     // A SECOND edge later (e.g. player taps again) flips back to Play.
-    in.press_edge(KeyCode::Tilde);
+    in.press_edge(KeyCode::F2);
     editor::handle_input_frame(in);
     REQUIRE(editor::current_mode() == editor::Mode::Play);
 }

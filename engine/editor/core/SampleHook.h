@@ -26,6 +26,7 @@
 #include "platform/Platform.h"
 #include "ui/imm/Imm.h"
 #include "ui/imm/DebugHud.h"
+#include "ui/console/ConsoleOverlay.h"
 #include "math/Math.h"
 #include "core/Types.h"
 
@@ -43,17 +44,29 @@ namespace psynder::editor {
 // to flip it on this frame's input edge, so the caller's branch sees
 // the same mode that was just rendered to the badge.
 inline Mode sample_step(const platform::Input& input, render::Framebuffer& fb) noexcept {
-    handle_input_frame(input);
+    // Software drop-down console (lane 16 + core/console). Owns the backtick /
+    // tilde key and, while open, swallows keystrokes so typing a command never
+    // leaks into the editor toggle, the HUD cycle, or gameplay. update() runs
+    // first (input capture); the matching draw() is a per-sample late call
+    // before present() so the panel composites over the rendered scene.
+    // Fixed 1/60 dt is fine — samples run at ~60 FPS and it only paces the
+    // slide animation, caret blink, and key auto-repeat.
+    const bool console_capturing = ui::console::update(input, 1.0f / 60.0f);
 
-    // F1 cycles the debug HUD: Off -> Compact -> Full -> Off. (F2 / `~` are the
-    // editor Play/Edit toggle, handled above.) Centralised here so every sample
-    // that calls sample_step() gets the toggle with no per-sample input wiring.
-    if (input.key_pressed(platform::KeyCode::F1)) {
-        using ui::imm::DebugHudMode;
-        const DebugHudMode m = ui::imm::debug_hud_mode();
-        ui::imm::set_debug_hud_mode(m == DebugHudMode::Off       ? DebugHudMode::Compact
-                                    : m == DebugHudMode::Compact ? DebugHudMode::Full
-                                                                 : DebugHudMode::Off);
+    if (!console_capturing) {
+        handle_input_frame(input);
+
+        // F1 cycles the debug HUD: Off -> Compact -> Full -> Off. (F2 is the
+        // editor Play/Edit toggle, handled above; `~` is the console.)
+        // Centralised here so every sample that calls sample_step() gets the
+        // toggle with no per-sample input wiring.
+        if (input.key_pressed(platform::KeyCode::F1)) {
+            using ui::imm::DebugHudMode;
+            const DebugHudMode m = ui::imm::debug_hud_mode();
+            ui::imm::set_debug_hud_mode(m == DebugHudMode::Off       ? DebugHudMode::Compact
+                                        : m == DebugHudMode::Compact ? DebugHudMode::Full
+                                                                     : DebugHudMode::Off);
+        }
     }
 
     const Mode mode = current_mode();
