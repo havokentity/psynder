@@ -195,6 +195,37 @@ TEST_CASE("console: r_debug_hud cvar drives the debug HUD mode", "[ui][console]"
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: r_resolution / r_fullscreen are registered with presets", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);  // first update registers the built-in cvars
+
+    auto& con = psynder::console::Console::Get();
+    const psynder::console::CVar* res = con.FindCVar("r_resolution");
+    REQUIRE(res != nullptr);
+    REQUIRE_FALSE(res->allowed_values.empty());
+    // The preset list feeds the autocomplete; 1080p must be one of them.
+    REQUIRE(std::find(res->allowed_values.begin(), res->allowed_values.end(), "1920x1080") !=
+            res->allowed_values.end());
+
+    const psynder::console::CVar* fsv = con.FindCVar("r_fullscreen");
+    REQUIRE(fsv != nullptr);
+    REQUIRE(fsv->allowed_values.size() == 2);  // {"0","1"}
+
+    // Setting a preset updates the cvar (the platform call is a no-op with no
+    // window open, but the value must take).
+    in.type("r_resolution 1920x1080");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("r_resolution")->value == "1920x1080");
+
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: draw into a framebuffer paints the panel without crashing", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(true);

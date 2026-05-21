@@ -137,6 +137,10 @@ void push_blob(State& s, std::string_view blob, u32 colour) noexcept {
     }
 }
 
+// Defined below (near the autocomplete helpers); used by r_resolution's
+// on_change handler registered in ensure_init.
+bool parse_resolution(std::string_view s, u32& w, u32& h) noexcept;
+
 // ─── Built-in overlay commands ──────────────────────────────────────────────
 // Registered once. `clear` wipes the scrollback; `help` lists every command +
 // cvar the backend knows. Output goes through the ExecuteResult, which the
@@ -202,6 +206,39 @@ void ensure_init(State& s) noexcept {
                                                      : v.value == "compact" ? DebugHudMode::Compact
                                                                             : DebugHudMode::Off);
                      });
+
+    // ── Display control (drives the platform's active window) ──────────────
+    // r_resolution carries a preset list so `r_resolution <Tab>` lists the
+    // modes; on change it resizes the window (the framebuffer is unchanged —
+    // present stretches it to fit). r_fullscreen flips borderless full-screen.
+    if (auto* res = con.RegisterCVar("r_resolution",
+                                     "1280x720",
+                                     "Window resolution (windowed): WIDTHxHEIGHT.",
+                                     0,
+                                     [](const psynder::console::CVar& v) {
+                                         u32 w = 0, h = 0;
+                                         if (parse_resolution(v.value, w, h))
+                                             platform::request_window_size(w, h);
+                                     })) {
+        res->allowed_values = {"640x360", "1280x720", "1600x900", "1920x1080", "2560x1440"};
+    }
+    if (auto* fsv =
+            con.RegisterCVar("r_fullscreen",
+                             "0",
+                             "Borderless full-screen (frame stretched to fit): 0 | 1.",
+                             0,
+                             [](const psynder::console::CVar& v) {
+                                 platform::request_fullscreen(v.value == "1" || v.value == "true");
+                             })) {
+        fsv->allowed_values = {"0", "1"};
+    }
+    con.RegisterCommand("fullscreen",
+                        "Toggle borderless full-screen.",
+                        [](std::span<const std::string_view>, psynder::console::Output& out) {
+                            platform::toggle_fullscreen();
+                            out.PrintLine(platform::is_fullscreen() ? "fullscreen: on"
+                                                                    : "fullscreen: off");
+                        });
 
     push_line(s, "Psynder console.  `~` close   Tab complete   Up/Down history   `help`", kColBannerA);
     push_line(s, "------------------------------------------------------------", kColBannerB);
@@ -293,9 +330,53 @@ std::string longest_common_prefix(const std::vector<std::string>& v) noexcept {
     return p;
 }
 
-// Gather command + cvar names matching the cursor token.
+// Parse "WIDTHxHEIGHT" (e.g. "1920x1080"). Returns false if malformed.
+bool parse_resolution(std::string_view s, u32& w, u32& h) noexcept {
+    const usize x = s.find_first_of("xX");
+    if (x == std::string_view::npos)
+        return false;
+    auto to_u = [](std::string_view t, u32& out) noexcept {
+        if (t.empty())
+            return false;
+        u32 v = 0;
+        for (char c : t) {
+            if (c < '0' || c > '9')
+                return false;
+            v = v * 10u + static_cast<u32>(c - '0');
+        }
+        out = v;
+        return true;
+    };
+    return to_u(s.substr(0, x), w) && to_u(s.substr(x + 1), h);
+}
+
+// Candidate completions for the cursor token. If the line's first token is a
+// cvar with a preset list (allowed_values) and the cursor sits on a later
+// (value) token, we complete from those presets — so `r_resolution <Tab>`
+// lists the modes. Otherwise we complete command + cvar names.
 std::vector<std::string> gather_matches(const State& s) noexcept {
     std::vector<std::string> matches;
+
+    const std::string_view line{s.input};
+    usize i = 0;
+    while (i < line.size() && line[i] == ' ')
+        ++i;
+    const usize first_begin = i;
+    while (i < line.size() && line[i] != ' ')
+        ++i;
+    const std::string_view first = line.substr(first_begin, i - first_begin);
+    if (!first.empty() && s.cursor > i) {  // cursor is on a value token
+        if (auto* cv = psynder::console::Console::Get().FindCVar(first);
+            cv != nullptr && !cv->allowed_values.empty()) {
+            const std::string_view vtok = token_at_cursor(s);
+            for (const std::string& av : cv->allowed_values)
+                if (av.size() >= vtok.size() && std::string_view{av}.substr(0, vtok.size()) == vtok)
+                    matches.push_back(av);
+            std::sort(matches.begin(), matches.end());
+            return matches;
+        }
+    }
+
     const std::string_view tok = token_at_cursor(s);
     if (tok.empty())
         return matches;

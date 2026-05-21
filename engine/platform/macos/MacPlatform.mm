@@ -437,6 +437,21 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
 }
 @end
 
+// NSWindow subclass that can become key / main even when borderless. A vanilla
+// borderless NSWindow returns NO for -canBecomeKeyWindow and goes deaf to the
+// keyboard — so our borderless full-screen mode would kill console + gameplay
+// input. Overriding keeps the key path alive in every style.
+@interface PsynderNSWindow : NSWindow
+@end
+@implementation PsynderNSWindow
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+- (BOOL)canBecomeMainWindow {
+    return YES;
+}
+@end
+
 // ─── Window impl ─────────────────────────────────────────────────────────
 namespace psynder::platform {
 namespace {
@@ -454,7 +469,7 @@ public:
                 NSWindowStyleMaskMiniaturizable;
             if (desc.resizable) style |= NSWindowStyleMaskResizable;
 
-            ns_window_ = [[NSWindow alloc]
+            ns_window_ = [[PsynderNSWindow alloc]
                 initWithContentRect:frame
                           styleMask:style
                             backing:NSBackingStoreBuffered
@@ -742,6 +757,43 @@ public:
         return static_cast<u32>(sz.height);
     }
 
+    // ─── Runtime display control ─────────────────────────────────────────
+    // Borderless full-screen: drop the chrome, cover the screen. present()
+    // already stretches the CPU framebuffer to the (now full-screen) view, so
+    // the frame fills the display with no framebuffer realloc here.
+    void set_fullscreen(bool on) override {
+        if (!ns_window_ || on == fullscreen_) return;
+        @autoreleasepool {
+            if (on) {
+                saved_frame_ = [ns_window_ frame];
+                saved_style_ = [ns_window_ styleMask];
+                NSScreen* screen = [ns_window_ screen] ?: [NSScreen mainScreen];
+                [ns_window_ setStyleMask:NSWindowStyleMaskBorderless];
+                [ns_window_ setFrame:[screen frame] display:YES];
+                fullscreen_ = true;
+            } else {
+                [ns_window_ setStyleMask:saved_style_];
+                [ns_window_ setFrame:saved_frame_ display:YES];
+                fullscreen_ = false;
+            }
+            [ns_window_ makeFirstResponder:metal_view_];
+            [ns_window_ makeKeyAndOrderFront:nil];
+        }
+    }
+    bool is_fullscreen() const override { return fullscreen_; }
+
+    void set_window_size(u32 w, u32 h) override {
+        if (!ns_window_ || w == 0 || h == 0) return;
+        @autoreleasepool {
+            if (fullscreen_) set_fullscreen(false);  // leave full-screen first
+            [ns_window_ setContentSize:NSMakeSize(static_cast<CGFloat>(w), static_cast<CGFloat>(h))];
+            [ns_window_ center];
+            [ns_window_ makeFirstResponder:metal_view_];
+        }
+        desc_.window_width  = w;
+        desc_.window_height = h;
+    }
+
 private:
     // ─── Metal pipeline / sampler setup ──────────────────────────────────
     void build_pipeline_() {
@@ -849,6 +901,11 @@ private:
     ScanoutState                  scanout_{};
     CGFloat                       backing_scale_   = 1.0;
     std::atomic<bool>             should_close_{false};
+
+    // Borderless full-screen state: saved windowed frame + style to restore.
+    bool                          fullscreen_      = false;
+    NSRect                        saved_frame_     = NSZeroRect;
+    NSWindowStyleMask             saved_style_     = 0;
 };
 
 }  // anonymous namespace

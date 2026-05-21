@@ -57,10 +57,33 @@ class Window {
     virtual void set_title(std::string_view title) = 0;
     virtual u32 window_width() const = 0;
     virtual u32 window_height() const = 0;
+
+    // ── Runtime display control ──────────────────────────────────────────
+    // Optional; the default is a no-op so a backend opts in when it can. The
+    // CPU framebuffer is NOT touched by these — present() simply stretches it
+    // to fill the new window / screen size (the existing scaled blit).
+    //   set_fullscreen(true)  → borderless full-screen (frame stretched to fit)
+    //   set_window_size(w,h)  → windowed content size in pixels
+    virtual void set_fullscreen(bool on) { (void)on; }
+    virtual bool is_fullscreen() const { return false; }
+    virtual void set_window_size(u32 width, u32 height) {
+        (void)width;
+        (void)height;
+    }
 };
 
 Window* create_window(const WindowDesc& desc);
 void destroy_window(Window* w);
+
+// ─── Display control on the active window ────────────────────────────────
+// Single window per process (DESIGN §11), so these target the live window
+// without the caller holding a Window* — the software console drives them.
+// Must be called on the main thread (where poll_events() / present() run);
+// no-op if no window is open or the backend doesn't implement the mode.
+void request_fullscreen(bool on);
+void toggle_fullscreen();
+bool is_fullscreen();
+void request_window_size(u32 width, u32 height);
 
 // ─── Input ───────────────────────────────────────────────────────────────
 enum class KeyCode : u16 {
