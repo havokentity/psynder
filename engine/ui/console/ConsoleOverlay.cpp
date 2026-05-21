@@ -35,9 +35,9 @@ using platform::KeyCode;
 
 // ─── Look & layout ─────────────────────────────────────────────────────────
 // imm's 5x7 glyph sits in a 6x8 cell; draw_text advances 6 px / char. We add
-// 2 px of leading for legibility. Colours are 0xRRGGBBAA. The panel is a soft
-// vertical gradient with faint scanlines (a procedural CRT-terminal texture,
-// no asset); the palette is a muted "Nord"-ish set so nothing glares.
+// 2 px of leading for legibility. Colours are packed via rgba() below
+// (0xAABBGGRR, the live framebuffer byte order). The panel is a top-lit
+// slate-blue gradient + blueprint grid; the palette is a muted "Nord"-ish set.
 constexpr i32 kCharW = 6;
 constexpr i32 kLineH = 10;
 constexpr f32 kPad = 6.0f;
@@ -54,37 +54,48 @@ constexpr f32 kBgTopR = 38.0f, kBgTopG = 48.0f, kBgTopB = 68.0f;  // #263044 (to
 constexpr f32 kBgBotR = 16.0f, kBgBotG = 21.0f, kBgBotB = 32.0f;  // #101520 (bottom)
 constexpr u32 kGridSpacing = 32u;                                 // faint grid cell size in px
 
-constexpr u32 kColBorder = 0x7FB3C4FFu;  // soft frost cyan (bottom edge + prompt)
-constexpr u32 kColInput = 0xE0E5EEFFu;   // prompt text (snow, slightly dimmed)
-constexpr u32 kColGhost = 0x4C566AFFu;   // dim slate autocomplete ghost
-constexpr u32 kColText = 0xBFC6D2FFu;    // scrollback grey
-constexpr u32 kColEcho = 0x8FBCBBFFu;    // echoed "] command" lines (frost teal)
-constexpr u32 kColError = 0xBF616AFFu;   // muted aurora red (was a glaring red)
-constexpr u32 kColBannerA = 0x7FB3C4FFu;
-constexpr u32 kColBannerB = 0xB48EADFFu;  // soft muted purple
+// The live framebuffer stores pixels as 0xAABBGGRR (R in the LOW byte) — the
+// same packing clear_framebuffer, the samples, and the platform present use.
+// (imm's own rgba() literals are the opposite byte order, which is why a flat
+// fill came out red — the alpha byte landed in red.) We pack our colours the
+// right way and hand the u32s straight to imm::label / filled_rect, which
+// write them verbatim, so the console renders true colour.
+constexpr u32 rgba(u8 r, u8 g, u8 b, u8 a = 0xFFu) noexcept {
+    return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
+           (static_cast<u32>(a) << 24);
+}
+
+constexpr u32 kColBorder = rgba(0x7F, 0xB3, 0xC4);  // soft frost cyan (edge + prompt)
+constexpr u32 kColInput = rgba(0xE0, 0xE5, 0xEE);   // prompt text (snow)
+constexpr u32 kColGhost = rgba(0x4C, 0x56, 0x6A);   // dim slate autocomplete ghost
+constexpr u32 kColText = rgba(0xBF, 0xC6, 0xD2);    // scrollback grey
+constexpr u32 kColEcho = rgba(0x8F, 0xBC, 0xBB);    // echoed "] command" lines (teal)
+constexpr u32 kColError = rgba(0xBF, 0x61, 0x6A);   // muted aurora red
+constexpr u32 kColBannerA = rgba(0x7F, 0xB3, 0xC4);
+constexpr u32 kColBannerB = rgba(0xB4, 0x8E, 0xAD);  // soft muted purple
 
 constexpr usize kMaxScrollback = 512;
 
 // Draw the panel background straight into the framebuffer (per-pixel work the
 // imm row-fills can't do): slate-blue vertical gradient + a gentle 2D vignette
 // that focuses the centre so text pops + faint scanlines + a little hash
-// dither to kill banding. Uses the same 0xRRGGBBAA packing as imm so it
-// composites identically to the text drawn on top.
+// dither to kill banding. Packs via rgba() (0xAABBGGRR — the live framebuffer
+// byte order), so colours come out true rather than channel-swapped.
 void draw_panel_bg(render::Framebuffer& fb, f32 panel_h) noexcept {
     if (fb.format != render::PixelFormat::RGBA8 && fb.format != render::PixelFormat::BGRA8) {
         // Non-32-bit target: flat fill via the public API and bail.
         imm::filled_rect(math::Vec2{0.0f, 0.0f},
                          math::Vec2{static_cast<f32>(fb.width), panel_h},
-                         0x1A2030FFu);
+                         rgba(0x1A, 0x20, 0x30));
         return;
     }
     const u32 ph = std::min(static_cast<u32>(panel_h), fb.height);
     const u32 w = fb.width;
     const f32 inv_w = (w > 1u) ? 1.0f / static_cast<f32>(w - 1u) : 1.0f;
     const f32 inv_h = (panel_h > 1.0f) ? 1.0f / panel_h : 1.0f;
-    auto clamp8 = [](f32 v) noexcept -> u32 {
+    auto clamp8 = [](f32 v) noexcept -> u8 {
         const i32 i = static_cast<i32>(v + 0.5f);
-        return static_cast<u32>(i < 0 ? 0 : (i > 255 ? 255 : i));
+        return static_cast<u8>(i < 0 ? 0 : (i > 255 ? 255 : i));
     };
     for (u32 y = 0; y < ph; ++y) {
         const f32 ty = static_cast<f32>(y) * inv_h;  // 0..1 top -> bottom
@@ -107,8 +118,9 @@ void draw_panel_bg(render::Framebuffer& fb, f32 panel_h) noexcept {
             const f32 dith = static_cast<f32>(hsh & 3u) - 1.5f;  // ~ -1.5..+1.5
             const f32 m = vig * scan;
             const f32 add = grid + lip + dith;
-            row[x] = (clamp8(baseR * m + add) << 24) | (clamp8(baseG * m + add * 1.1f) << 16) |
-                     (clamp8(baseB * m + add * 1.3f) << 8) | 0xFFu;
+            row[x] = rgba(clamp8(baseR * m + add),
+                          clamp8(baseG * m + add * 1.1f),
+                          clamp8(baseB * m + add * 1.3f));
         }
     }
 }
@@ -769,7 +781,7 @@ void draw(render::Framebuffer& fb) noexcept {
         const f32 box_x = text_x + static_cast<f32>(token_start(s)) * static_cast<f32>(kCharW);
         const f32 box_y = std::max(kPad, prompt_y - box_h - 3.0f);
 
-        imm::filled_rect(math::Vec2{box_x, box_y}, math::Vec2{box_w, box_h}, 0x0E1320F4u);
+        imm::filled_rect(math::Vec2{box_x, box_y}, math::Vec2{box_w, box_h}, rgba(0x0E, 0x13, 0x20));
         imm::rect_outline(math::Vec2{box_x, box_y}, math::Vec2{box_w, box_h}, kColBorder);
         for (int i = 0; i < vis; ++i) {
             const int idx = first + i;
@@ -778,7 +790,7 @@ void draw(render::Framebuffer& fb) noexcept {
             if (idx == s.comp_sel) {
                 imm::filled_rect(math::Vec2{box_x + 1.0f, iy - 1.0f},
                                  math::Vec2{box_w - 2.0f, static_cast<f32>(kLineH)},
-                                 0x2A3A5AFFu);  // selection highlight
+                                 rgba(0x2A, 0x3A, 0x5A));  // selection highlight
                 imm::label(math::Vec2{box_x + 4.0f, iy}, item, kColInput);
             } else {
                 imm::label(math::Vec2{box_x + 4.0f, iy}, item, kColText);
