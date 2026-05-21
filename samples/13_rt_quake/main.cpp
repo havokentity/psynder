@@ -35,6 +35,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
+#include "render/rt/FrameRenderer.h"
 #include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
@@ -359,55 +360,9 @@ void build_room(RoomGeo& g) {
     g.walk_volumes[2] = math::Aabb{{kRoomX0, kFloorY, kRoomBZ0}, {kRoomX1, kCeilY, kRoomBZ1}};
 }
 
-// ─── Camera ──────────────────────────────────────────────────────────────
-struct Camera {
-    math::Vec3 origin;
-    math::Vec3 forward;
-    math::Vec3 right;
-    math::Vec3 up;
-    f32 fov_tan;  // tan(half-fov-vertical)
-    f32 aspect;
-};
-
-// Build the camera basis from the controller's eye + view matrix. The view
-// matrix is world->view (rows = right / up / -forward), so we read the basis
-// straight back out of it; this keeps the primary rays consistent with the
-// controller's look direction.
-Camera make_camera(const samples::CharacterController& cc, f32 fov_y_rad, f32 aspect) {
-    Camera c{};
-    c.origin = cc.eye();
-    c.forward = cc.forward();
-    c.right = math::normalize(math::cross(c.forward, math::Vec3{0, 1, 0}));
-    c.up = math::cross(c.right, c.forward);
-    c.fov_tan = std::tan(fov_y_rad * 0.5f);
-    c.aspect = aspect;
-    return c;
-}
-
-// Build a primary ray from a [0,1]^2 NDC pixel coordinate.
-render::rt::Ray primary_ray(const Camera& cam, f32 nx, f32 ny) {
-    const f32 sx = (2.0f * nx - 1.0f) * cam.aspect * cam.fov_tan;
-    const f32 sy = (1.0f - 2.0f * ny) * cam.fov_tan;
-    math::Vec3 dir{};
-    dir.x = cam.forward.x + cam.right.x * sx + cam.up.x * sy;
-    dir.y = cam.forward.y + cam.right.y * sx + cam.up.y * sy;
-    dir.z = cam.forward.z + cam.right.z * sx + cam.up.z * sy;
-    dir = math::normalize(dir);
-    render::rt::Ray r{};
-    r.origin = cam.origin;
-    r.direction = dir;
-    r.t_min = 1e-3f;
-    r.t_max = 1e3f;
-    return r;
-}
-
 // ─── Lights ──────────────────────────────────────────────────────────────
-struct Light {
-    math::Vec3 position;
-    f32 intensity;
-    f32 r, g, b;  // 0..1 color
-    f32 range;
-};
+using Camera = render::rt::FrameCamera;
+using Light = render::rt::FrameLight;
 
 // One warm light near the ceiling of each room. Static — the shadows that
 // move are cast by the moving camera's view, but the dividing wall + doorway
@@ -440,53 +395,12 @@ u32 sample_sky(math::Vec3 dir) {
     return pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
 }
 
-// ─── Bilinear upsample (low-res lit pass → final framebuffer) ────────────
-void upsample_bilinear(const u32* src, u32 sw, u32 sh, u32* dst, u32 dw, u32 dh) {
-    const f32 fx_scale = static_cast<f32>(sw) / static_cast<f32>(dw);
-    const f32 fy_scale = static_cast<f32>(sh) / static_cast<f32>(dh);
-    for (u32 y = 0; y < dh; ++y) {
-        const f32 sy = (static_cast<f32>(y) + 0.5f) * fy_scale - 0.5f;
-        const i32 y0 = std::max(0, static_cast<i32>(std::floor(sy)));
-        const i32 y1 = std::min(static_cast<i32>(sh) - 1, y0 + 1);
-        const f32 fy = sy - static_cast<f32>(y0);
-        for (u32 x = 0; x < dw; ++x) {
-            const f32 sx = (static_cast<f32>(x) + 0.5f) * fx_scale - 0.5f;
-            const i32 x0 = std::max(0, static_cast<i32>(std::floor(sx)));
-            const i32 x1 = std::min(static_cast<i32>(sw) - 1, x0 + 1);
-            const f32 fx = sx - static_cast<f32>(x0);
-
-            const u32 p00 = src[static_cast<usize>(y0) * sw + x0];
-            const u32 p10 = src[static_cast<usize>(y0) * sw + x1];
-            const u32 p01 = src[static_cast<usize>(y1) * sw + x0];
-            const u32 p11 = src[static_cast<usize>(y1) * sw + x1];
-
-            auto unpack = [](u32 p, f32& r, f32& g, f32& b) {
-                r = static_cast<f32>(p & 0xFFu);
-                g = static_cast<f32>((p >> 8) & 0xFFu);
-                b = static_cast<f32>((p >> 16) & 0xFFu);
-            };
-            f32 r00, g00, b00, r10, g10, b10, r01, g01, b01, r11, g11, b11;
-            unpack(p00, r00, g00, b00);
-            unpack(p10, r10, g10, b10);
-            unpack(p01, r01, g01, b01);
-            unpack(p11, r11, g11, b11);
-            const f32 w00 = (1.0f - fx) * (1.0f - fy);
-            const f32 w10 = fx * (1.0f - fy);
-            const f32 w01 = (1.0f - fx) * fy;
-            const f32 w11 = fx * fy;
-            const f32 r = r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11;
-            const f32 g = g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11;
-            const f32 b = b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11;
-            dst[static_cast<usize>(y) * dw + x] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
-        }
-    }
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
     const u32 smoke_frames = args.smoke_frames;
+    render::rt::ensure_frame_scheduler_console_registered();
 
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 13 (RT Quake room)";
@@ -617,138 +531,149 @@ int main(int argc, char** argv) {
             controller.update(*input, dt);
         }
 
-        const Camera cam = make_camera(controller, kFovY, aspect);
+        const Camera cam =
+            render::rt::make_frame_camera(controller.eye(), controller.forward(), aspect, kFovY);
+        const render::rt::FrameRowScheduleConfig row_schedule =
+            render::rt::frame_row_schedule_config_from_console();
 
         // ── Pass 1: primary visibility @ low-res. ───────────────────────
-        for (u32 y = 0; y < kLitH; ++y) {
-            for (u32 x = 0; x < kLitW; ++x) {
-                const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kLitW);
-                const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kLitH);
-                const render::rt::Ray ray = primary_ray(cam, nx, ny);
-                const render::rt::Hit h = tlas.intersect(ray);
+        render::rt::parallel_frame_rows(kLitH, row_schedule, [&](u32 y0, u32 y1) {
+            for (u32 y = y0; y < y1; ++y) {
+                for (u32 x = 0; x < kLitW; ++x) {
+                    const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kLitW);
+                    const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kLitH);
+                    const render::rt::Ray ray = render::rt::primary_ray(cam, nx, ny);
+                    const render::rt::Hit h = tlas.intersect(ray);
 
-                const usize idx = static_cast<usize>(y) * kLitW + x;
-                PixelHit ph{};
-                ph.hit = h.hit;
-                if (!h.hit) {
-                    lit_pixels[idx] = sample_sky(ray.direction);
-                } else {
-                    // The triangle's stored inward color (BVH reports the
-                    // hit primitive index into our parallel arrays).
-                    const u32 prim =
-                        std::min<u32>(h.primitive, static_cast<u32>(room.colors.size()) - 1u);
-                    const math::Vec3 col = room.colors[prim];
-                    ph.r = col.x;
-                    ph.g = col.y;
-                    ph.b = col.z;
-                    ph.position = {
-                        ray.origin.x + ray.direction.x * h.t,
-                        ray.origin.y + ray.direction.y * h.t,
-                        ray.origin.z + ray.direction.z * h.t,
-                    };
-                    // Use the geometry's authored inward normal (robust even
-                    // if the BVH's geometric normal sign differs for a face).
-                    ph.normal = room.normals[prim];
+                    const usize idx = static_cast<usize>(y) * kLitW + x;
+                    PixelHit ph{};
+                    ph.hit = h.hit;
+                    if (!h.hit) {
+                        lit_pixels[idx] = sample_sky(ray.direction);
+                    } else {
+                        // The triangle's stored inward color (BVH reports the
+                        // hit primitive index into our parallel arrays).
+                        const u32 prim =
+                            std::min<u32>(h.primitive, static_cast<u32>(room.colors.size()) - 1u);
+                        const math::Vec3 col = room.colors[prim];
+                        ph.r = col.x;
+                        ph.g = col.y;
+                        ph.b = col.z;
+                        ph.position = {
+                            ray.origin.x + ray.direction.x * h.t,
+                            ray.origin.y + ray.direction.y * h.t,
+                            ray.origin.z + ray.direction.z * h.t,
+                        };
+                        // Use the geometry's authored inward normal (robust even
+                        // if the BVH's geometric normal sign differs for a face).
+                        ph.normal = room.normals[prim];
+                    }
+                    hits[idx] = ph;
                 }
-                hits[idx] = ph;
             }
-        }
+        });
 
         // ── Pass 2: per-pixel shadow trace (packets of 8). ──────────────
         std::vector<f32> accum(static_cast<usize>(kLitW) * kLitH * 3, 0.0f);
 
         for (u32 li = 0; li < kNumLights; ++li) {
             const Light& L = lights[li];
-            render::rt::ShadowPacket8 pkt{};
-            u32 in_pkt = 0;
-            u32 pkt_idx[8] = {0};
-            bool pkt_real[8] = {false};
+            render::rt::parallel_frame_rows(kLitH, row_schedule, [&](u32 y0, u32 y1) {
+                render::rt::ShadowPacket8 pkt{};
+                u32 in_pkt = 0;
+                u32 pkt_idx[8] = {0};
+                bool pkt_real[8] = {false};
 
-            auto dispatch = [&]() {
-                for (u32 i = in_pkt; i < 8; ++i) {
-                    pkt.rays[i].origin = {0, 1e6f, 0};
-                    pkt.rays[i].direction = {0, 1, 0};
-                    pkt.rays[i].t_min = 1e-4f;
-                    pkt.rays[i].t_max = 1.0f;
-                    pkt_real[i] = false;
-                }
-                render::rt::trace_shadow_packet(tlas, pkt);
-                for (u32 i = 0; i < 8; ++i) {
-                    if (!pkt_real[i])
-                        continue;
-                    if (pkt.occluded[i])
-                        continue;
-                    const usize px = pkt_idx[i];
+                auto dispatch = [&]() {
+                    for (u32 i = in_pkt; i < 8; ++i) {
+                        pkt.rays[i].origin = {0, 1e6f, 0};
+                        pkt.rays[i].direction = {0, 1, 0};
+                        pkt.rays[i].t_min = 1e-4f;
+                        pkt.rays[i].t_max = 1.0f;
+                        pkt_real[i] = false;
+                    }
+                    render::rt::trace_shadow_packet(tlas, pkt);
+                    for (u32 i = 0; i < 8; ++i) {
+                        if (!pkt_real[i])
+                            continue;
+                        if (pkt.occluded[i])
+                            continue;
+                        const usize px = pkt_idx[i];
+                        const PixelHit& ph = hits[px];
+                        math::Vec3 to_light = math::sub(L.position, ph.position);
+                        const f32 d2 = math::dot(to_light, to_light);
+                        const f32 d = std::sqrt(d2);
+                        if (d > L.range || d < 1e-4f)
+                            continue;
+                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
+                        const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
+                        if (ndotl <= 0.0f)
+                            continue;
+                        const f32 atten = 1.0f / (1.0f + d * d * 0.05f);
+                        const f32 k = ndotl * atten * L.intensity;
+                        accum[px * 3 + 0] += ph.r * L.r * k;
+                        accum[px * 3 + 1] += ph.g * L.g * k;
+                        accum[px * 3 + 2] += ph.b * L.b * k;
+                    }
+                    in_pkt = 0;
+                };
+
+                const usize first_px = static_cast<usize>(y0) * kLitW;
+                const usize last_px = static_cast<usize>(y1) * kLitW;
+                for (usize px = first_px; px < last_px; ++px) {
                     const PixelHit& ph = hits[px];
+                    if (!ph.hit)
+                        continue;
                     math::Vec3 to_light = math::sub(L.position, ph.position);
                     const f32 d2 = math::dot(to_light, to_light);
                     const f32 d = std::sqrt(d2);
                     if (d > L.range || d < 1e-4f)
                         continue;
                     const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                    const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
-                    if (ndotl <= 0.0f)
+                    // Back-face cull: skip if the light is behind the surface.
+                    if (math::dot(ph.normal, ld) <= 0.0f)
                         continue;
-                    const f32 atten = 1.0f / (1.0f + d * d * 0.05f);
-                    const f32 k = ndotl * atten * L.intensity;
-                    accum[px * 3 + 0] += ph.r * L.r * k;
-                    accum[px * 3 + 1] += ph.g * L.g * k;
-                    accum[px * 3 + 2] += ph.b * L.b * k;
+                    // Origin offset along the normal to avoid self-shadowing.
+                    const math::Vec3 origin = {
+                        ph.position.x + ph.normal.x * 1e-3f,
+                        ph.position.y + ph.normal.y * 1e-3f,
+                        ph.position.z + ph.normal.z * 1e-3f,
+                    };
+                    pkt.rays[in_pkt].origin = origin;
+                    pkt.rays[in_pkt].direction = ld;
+                    pkt.rays[in_pkt].t_min = 1e-4f;
+                    pkt.rays[in_pkt].t_max = d - 1e-3f;
+                    pkt_idx[in_pkt] = static_cast<u32>(px);
+                    pkt_real[in_pkt] = true;
+                    ++in_pkt;
+                    if (in_pkt == 8)
+                        dispatch();
                 }
-                in_pkt = 0;
-            };
-
-            for (usize px = 0, n = hits.size(); px < n; ++px) {
-                const PixelHit& ph = hits[px];
-                if (!ph.hit)
-                    continue;
-                math::Vec3 to_light = math::sub(L.position, ph.position);
-                const f32 d2 = math::dot(to_light, to_light);
-                const f32 d = std::sqrt(d2);
-                if (d > L.range || d < 1e-4f)
-                    continue;
-                const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                // Back-face cull: skip if the light is behind the surface.
-                if (math::dot(ph.normal, ld) <= 0.0f)
-                    continue;
-                // Origin offset along the normal to avoid self-shadowing.
-                const math::Vec3 origin = {
-                    ph.position.x + ph.normal.x * 1e-3f,
-                    ph.position.y + ph.normal.y * 1e-3f,
-                    ph.position.z + ph.normal.z * 1e-3f,
-                };
-                pkt.rays[in_pkt].origin = origin;
-                pkt.rays[in_pkt].direction = ld;
-                pkt.rays[in_pkt].t_min = 1e-4f;
-                pkt.rays[in_pkt].t_max = d - 1e-3f;
-                pkt_idx[in_pkt] = static_cast<u32>(px);
-                pkt_real[in_pkt] = true;
-                ++in_pkt;
-                if (in_pkt == 8)
+                if (in_pkt > 0)
                     dispatch();
-            }
-            if (in_pkt > 0)
-                dispatch();
+            });
         }
 
         // ── Combine: write final low-res lit color. ─────────────────────
-        for (u32 y = 0; y < kLitH; ++y) {
-            for (u32 x = 0; x < kLitW; ++x) {
-                const usize idx = static_cast<usize>(y) * kLitW + x;
-                if (!hits[idx].hit)
-                    continue;  // sky already written
-                const PixelHit& ph = hits[idx];
-                // Ambient floor so unlit faces aren't pure black.
-                const f32 amb = 0.12f;
-                const f32 r = ph.r * amb * 60.0f + accum[idx * 3 + 0] * 20.0f;
-                const f32 g = ph.g * amb * 60.0f + accum[idx * 3 + 1] * 20.0f;
-                const f32 b = ph.b * amb * 60.0f + accum[idx * 3 + 2] * 20.0f;
-                lit_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
+        render::rt::parallel_frame_rows(kLitH, row_schedule, [&](u32 y0, u32 y1) {
+            for (u32 y = y0; y < y1; ++y) {
+                for (u32 x = 0; x < kLitW; ++x) {
+                    const usize idx = static_cast<usize>(y) * kLitW + x;
+                    if (!hits[idx].hit)
+                        continue;  // sky already written
+                    const PixelHit& ph = hits[idx];
+                    // Ambient floor so unlit faces aren't pure black.
+                    const f32 amb = 0.12f;
+                    const f32 r = ph.r * amb * 60.0f + accum[idx * 3 + 0] * 20.0f;
+                    const f32 g = ph.g * amb * 60.0f + accum[idx * 3 + 1] * 20.0f;
+                    const f32 b = ph.b * amb * 60.0f + accum[idx * 3 + 2] * 20.0f;
+                    lit_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
+                }
             }
-        }
+        });
 
         // ── Pass 3: bilinear upsample low-res into the final FB. ────────
-        upsample_bilinear(lit_pixels.data(), kLitW, kLitH, final_pixels.data(), kFbW, kFbH);
+        render::rt::upsample_bilinear_rgba8(lit_pixels.data(), kLitW, kLitH, final_pixels.data(), kFbW, kFbH);
 
         // Debug HUD overlay — `r_debug_hud full` enables.
         {

@@ -27,6 +27,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
+#include "render/rt/FrameRenderer.h"
 #include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
@@ -182,14 +183,7 @@ math::Mat4 mat4_trs(math::Vec3 t, f32 scale) {
 }
 
 // ─── Camera ──────────────────────────────────────────────────────────────
-struct Camera {
-    math::Vec3 origin;
-    math::Vec3 forward;
-    math::Vec3 right;
-    math::Vec3 up;
-    f32 fov_tan;  // tan(half-fov-vertical)
-    f32 aspect;
-};
+using Camera = render::rt::FrameCamera;
 
 Camera make_orbit_camera(f32 t_seconds, f32 aspect) {
     const f32 radius = 7.5f;
@@ -197,47 +191,11 @@ Camera make_orbit_camera(f32 t_seconds, f32 aspect) {
     const f32 angle = t_seconds * 0.18f;
     const math::Vec3 eye{std::cos(angle) * radius, height, std::sin(angle) * radius};
     const math::Vec3 target{0.0f, 0.4f, 0.0f};
-    const math::Vec3 world_up{0.0f, 1.0f, 0.0f};
-
-    const math::Vec3 fwd = math::normalize(math::sub(target, eye));
-    const math::Vec3 right = math::normalize(math::cross(fwd, world_up));
-    const math::Vec3 up = math::cross(right, fwd);
-
-    Camera c{};
-    c.origin = eye;
-    c.forward = fwd;
-    c.right = right;
-    c.up = up;
-    c.fov_tan = std::tan(45.0f * math::kDegToRad * 0.5f);
-    c.aspect = aspect;
-    return c;
-}
-
-// Build a primary ray from a [0,1]^2 NDC pixel coordinate.
-render::rt::Ray primary_ray(const Camera& cam, f32 nx, f32 ny) {
-    // Pixel (0,0) is top-left; flip y to point upward in world space.
-    const f32 sx = (2.0f * nx - 1.0f) * cam.aspect * cam.fov_tan;
-    const f32 sy = (1.0f - 2.0f * ny) * cam.fov_tan;
-    math::Vec3 dir{};
-    dir.x = cam.forward.x + cam.right.x * sx + cam.up.x * sy;
-    dir.y = cam.forward.y + cam.right.y * sx + cam.up.y * sy;
-    dir.z = cam.forward.z + cam.right.z * sx + cam.up.z * sy;
-    dir = math::normalize(dir);
-    render::rt::Ray r{};
-    r.origin = cam.origin;
-    r.direction = dir;
-    r.t_min = 1e-3f;
-    r.t_max = 1e3f;
-    return r;
+    return render::rt::make_frame_camera(eye, math::sub(target, eye), aspect, 45.0f * math::kDegToRad);
 }
 
 // ─── Lights ──────────────────────────────────────────────────────────────
-struct Light {
-    math::Vec3 position;
-    f32 intensity;  // per-channel multiplier (already pre-tinted)
-    f32 r, g, b;    // 0..1 color
-    f32 range;
-};
+using Light = render::rt::FrameLight;
 
 void orbit_lights(f32 t_seconds, std::array<Light, kNumLights>& lights) {
     const f32 base_y = 2.6f;
@@ -276,53 +234,12 @@ u32 sample_sky(math::Vec3 dir) {
     return pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
 }
 
-// ─── Bilinear upsample (low-res lit pass → final framebuffer) ────────────
-void upsample_bilinear(const u32* src, u32 sw, u32 sh, u32* dst, u32 dw, u32 dh) {
-    const f32 fx_scale = static_cast<f32>(sw) / static_cast<f32>(dw);
-    const f32 fy_scale = static_cast<f32>(sh) / static_cast<f32>(dh);
-    for (u32 y = 0; y < dh; ++y) {
-        const f32 sy = (static_cast<f32>(y) + 0.5f) * fy_scale - 0.5f;
-        const i32 y0 = std::max(0, static_cast<i32>(std::floor(sy)));
-        const i32 y1 = std::min(static_cast<i32>(sh) - 1, y0 + 1);
-        const f32 fy = sy - static_cast<f32>(y0);
-        for (u32 x = 0; x < dw; ++x) {
-            const f32 sx = (static_cast<f32>(x) + 0.5f) * fx_scale - 0.5f;
-            const i32 x0 = std::max(0, static_cast<i32>(std::floor(sx)));
-            const i32 x1 = std::min(static_cast<i32>(sw) - 1, x0 + 1);
-            const f32 fx = sx - static_cast<f32>(x0);
-
-            const u32 p00 = src[static_cast<usize>(y0) * sw + x0];
-            const u32 p10 = src[static_cast<usize>(y0) * sw + x1];
-            const u32 p01 = src[static_cast<usize>(y1) * sw + x0];
-            const u32 p11 = src[static_cast<usize>(y1) * sw + x1];
-
-            auto unpack = [](u32 p, f32& r, f32& g, f32& b) {
-                r = static_cast<f32>(p & 0xFFu);
-                g = static_cast<f32>((p >> 8) & 0xFFu);
-                b = static_cast<f32>((p >> 16) & 0xFFu);
-            };
-            f32 r00, g00, b00, r10, g10, b10, r01, g01, b01, r11, g11, b11;
-            unpack(p00, r00, g00, b00);
-            unpack(p10, r10, g10, b10);
-            unpack(p01, r01, g01, b01);
-            unpack(p11, r11, g11, b11);
-            const f32 w00 = (1.0f - fx) * (1.0f - fy);
-            const f32 w10 = fx * (1.0f - fy);
-            const f32 w01 = (1.0f - fx) * fy;
-            const f32 w11 = fx * fy;
-            const f32 r = r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11;
-            const f32 g = g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11;
-            const f32 b = b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11;
-            dst[static_cast<usize>(y) * dw + x] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
-        }
-    }
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
     const u32 smoke_frames = args.smoke_frames;
+    render::rt::ensure_frame_scheduler_console_registered();
 
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 05 (hybrid night, RT shadows)";
@@ -441,45 +358,49 @@ int main(int argc, char** argv) {
 
         orbit_lights(static_cast<f32>(t), lights);
         const Camera cam = make_orbit_camera(static_cast<f32>(t), aspect);
+        const render::rt::FrameRowScheduleConfig row_schedule =
+            render::rt::frame_row_schedule_config_from_console();
 
         // ── Pass 1: primary visibility @ low-res (256×144). ─────────────
         // Cast one primary ray per low-res pixel against the TLAS and
         // stash the hit. Pixels that miss draw the sky immediately.
-        for (u32 y = 0; y < kShadowH; ++y) {
-            for (u32 x = 0; x < kShadowW; ++x) {
-                const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kShadowW);
-                const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kShadowH);
-                const render::rt::Ray ray = primary_ray(cam, nx, ny);
-                const render::rt::Hit h = tlas.intersect(ray);
+        render::rt::parallel_frame_rows(kShadowH, row_schedule, [&](u32 y0, u32 y1) {
+            for (u32 y = y0; y < y1; ++y) {
+                for (u32 x = 0; x < kShadowW; ++x) {
+                    const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kShadowW);
+                    const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kShadowH);
+                    const render::rt::Ray ray = render::rt::primary_ray(cam, nx, ny);
+                    const render::rt::Hit h = tlas.intersect(ray);
 
-                const usize idx = static_cast<usize>(y) * kShadowW + x;
-                PixelHit ph{};
-                ph.hit = h.hit;
-                if (!h.hit) {
-                    shadow_pixels[idx] = sample_sky(ray.direction);
-                } else {
-                    // Surface color: cube[idx] tint, or dim grey for ground.
-                    // We don't know which instance was hit without
-                    // h.instance, so we use it directly.
-                    u32 color = pack_rgba8(60, 60, 70);  // ground default
-                    if (h.instance < kNumCubes) {
-                        color = cube_instances[h.instance].color;
+                    const usize idx = static_cast<usize>(y) * kShadowW + x;
+                    PixelHit ph{};
+                    ph.hit = h.hit;
+                    if (!h.hit) {
+                        shadow_pixels[idx] = sample_sky(ray.direction);
+                    } else {
+                        // Surface color: cube[idx] tint, or dim grey for ground.
+                        // We don't know which instance was hit without
+                        // h.instance, so we use it directly.
+                        u32 color = pack_rgba8(60, 60, 70);  // ground default
+                        if (h.instance < kNumCubes) {
+                            color = cube_instances[h.instance].color;
+                        }
+                        ph.r = static_cast<f32>(color & 0xFFu) / 255.0f;
+                        ph.g = static_cast<f32>((color >> 8) & 0xFFu) / 255.0f;
+                        ph.b = static_cast<f32>((color >> 16) & 0xFFu) / 255.0f;
+                        // Hit position with a small ray-direction back-off so
+                        // shadow-ray origins don't self-intersect.
+                        ph.position = {
+                            ray.origin.x + ray.direction.x * h.t,
+                            ray.origin.y + ray.direction.y * h.t,
+                            ray.origin.z + ray.direction.z * h.t,
+                        };
+                        ph.normal = math::normalize(h.normal);
                     }
-                    ph.r = static_cast<f32>(color & 0xFFu) / 255.0f;
-                    ph.g = static_cast<f32>((color >> 8) & 0xFFu) / 255.0f;
-                    ph.b = static_cast<f32>((color >> 16) & 0xFFu) / 255.0f;
-                    // Hit position with a small ray-direction back-off so
-                    // shadow-ray origins don't self-intersect.
-                    ph.position = {
-                        ray.origin.x + ray.direction.x * h.t,
-                        ray.origin.y + ray.direction.y * h.t,
-                        ray.origin.z + ray.direction.z * h.t,
-                    };
-                    ph.normal = math::normalize(h.normal);
+                    hits[idx] = ph;
                 }
-                hits[idx] = ph;
             }
-        }
+        });
 
         // ── Pass 2: per-pixel shadow trace (packets of 8). ──────────────
         // For each light, fill ShadowPacket8 with 8 successive hit-pixels'
@@ -489,101 +410,112 @@ int main(int argc, char** argv) {
 
         for (u32 li = 0; li < kNumLights; ++li) {
             const Light& L = lights[li];
-            render::rt::ShadowPacket8 pkt{};
-            u32 in_pkt = 0;
-            u32 pkt_idx[8] = {0};
-            // Track which lanes are "real" vs. padding.
-            bool pkt_real[8] = {false};
+            render::rt::parallel_frame_rows(kShadowH, row_schedule, [&](u32 y0, u32 y1) {
+                render::rt::ShadowPacket8 pkt{};
+                u32 in_pkt = 0;
+                u32 pkt_idx[8] = {0};
+                // Track which lanes are "real" vs. padding.
+                bool pkt_real[8] = {false};
 
-            auto dispatch = [&]() {
-                // Fill any padding lanes with a guaranteed-miss ray so the
-                // packet kernel has something safe to read.
-                for (u32 i = in_pkt; i < 8; ++i) {
-                    pkt.rays[i].origin = {0, 1e6f, 0};
-                    pkt.rays[i].direction = {0, 1, 0};
-                    pkt.rays[i].t_min = 1e-4f;
-                    pkt.rays[i].t_max = 1.0f;
-                    pkt_real[i] = false;
-                }
-                render::rt::trace_shadow_packet(tlas, pkt);
-                for (u32 i = 0; i < 8; ++i) {
-                    if (!pkt_real[i])
-                        continue;
-                    const usize px = pkt_idx[i];
-                    if (pkt.occluded[i])
-                        continue;
-                    // Lambert + simple inverse-square falloff.
+                auto dispatch = [&]() {
+                    // Fill any padding lanes with a guaranteed-miss ray so the
+                    // packet kernel has something safe to read.
+                    for (u32 i = in_pkt; i < 8; ++i) {
+                        pkt.rays[i].origin = {0, 1e6f, 0};
+                        pkt.rays[i].direction = {0, 1, 0};
+                        pkt.rays[i].t_min = 1e-4f;
+                        pkt.rays[i].t_max = 1.0f;
+                        pkt_real[i] = false;
+                    }
+                    render::rt::trace_shadow_packet(tlas, pkt);
+                    for (u32 i = 0; i < 8; ++i) {
+                        if (!pkt_real[i])
+                            continue;
+                        const usize px = pkt_idx[i];
+                        if (pkt.occluded[i])
+                            continue;
+                        // Lambert + simple inverse-square falloff.
+                        const PixelHit& ph = hits[px];
+                        math::Vec3 to_light = math::sub(L.position, ph.position);
+                        const f32 d2 = math::dot(to_light, to_light);
+                        const f32 d = std::sqrt(d2);
+                        if (d > L.range || d < 1e-4f)
+                            continue;
+                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
+                        const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
+                        if (ndotl <= 0.0f)
+                            continue;
+                        const f32 atten = 1.0f / (1.0f + d * d * 0.08f);
+                        const f32 k = ndotl * atten * L.intensity;
+                        accum[px * 3 + 0] += ph.r * L.r * k;
+                        accum[px * 3 + 1] += ph.g * L.g * k;
+                        accum[px * 3 + 2] += ph.b * L.b * k;
+                    }
+                    in_pkt = 0;
+                };
+
+                const usize first_px = static_cast<usize>(y0) * kShadowW;
+                const usize last_px = static_cast<usize>(y1) * kShadowW;
+                for (usize px = first_px; px < last_px; ++px) {
                     const PixelHit& ph = hits[px];
+                    if (!ph.hit)
+                        continue;
                     math::Vec3 to_light = math::sub(L.position, ph.position);
                     const f32 d2 = math::dot(to_light, to_light);
                     const f32 d = std::sqrt(d2);
                     if (d > L.range || d < 1e-4f)
                         continue;
                     const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                    const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
-                    if (ndotl <= 0.0f)
+                    // Back-face cull cheap-out: skip if light is below the
+                    // surface (saves a shadow ray per backface).
+                    if (math::dot(ph.normal, ld) <= 0.0f)
                         continue;
-                    const f32 atten = 1.0f / (1.0f + d * d * 0.08f);
-                    const f32 k = ndotl * atten * L.intensity;
-                    accum[px * 3 + 0] += ph.r * L.r * k;
-                    accum[px * 3 + 1] += ph.g * L.g * k;
-                    accum[px * 3 + 2] += ph.b * L.b * k;
+                    // Origin offset along the normal to avoid self-shadowing.
+                    const math::Vec3 origin = {
+                        ph.position.x + ph.normal.x * 1e-3f,
+                        ph.position.y + ph.normal.y * 1e-3f,
+                        ph.position.z + ph.normal.z * 1e-3f,
+                    };
+                    pkt.rays[in_pkt].origin = origin;
+                    pkt.rays[in_pkt].direction = ld;
+                    pkt.rays[in_pkt].t_min = 1e-4f;
+                    pkt.rays[in_pkt].t_max = d - 1e-3f;
+                    pkt_idx[in_pkt] = static_cast<u32>(px);
+                    pkt_real[in_pkt] = true;
+                    ++in_pkt;
+                    if (in_pkt == 8)
+                        dispatch();
                 }
-                in_pkt = 0;
-            };
-
-            for (usize px = 0, n = hits.size(); px < n; ++px) {
-                const PixelHit& ph = hits[px];
-                if (!ph.hit)
-                    continue;
-                math::Vec3 to_light = math::sub(L.position, ph.position);
-                const f32 d2 = math::dot(to_light, to_light);
-                const f32 d = std::sqrt(d2);
-                if (d > L.range || d < 1e-4f)
-                    continue;
-                const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                // Back-face cull cheap-out: skip if light is below the
-                // surface (saves a shadow ray per backface).
-                if (math::dot(ph.normal, ld) <= 0.0f)
-                    continue;
-                // Origin offset along the normal to avoid self-shadowing.
-                const math::Vec3 origin = {
-                    ph.position.x + ph.normal.x * 1e-3f,
-                    ph.position.y + ph.normal.y * 1e-3f,
-                    ph.position.z + ph.normal.z * 1e-3f,
-                };
-                pkt.rays[in_pkt].origin = origin;
-                pkt.rays[in_pkt].direction = ld;
-                pkt.rays[in_pkt].t_min = 1e-4f;
-                pkt.rays[in_pkt].t_max = d - 1e-3f;
-                pkt_idx[in_pkt] = static_cast<u32>(px);
-                pkt_real[in_pkt] = true;
-                ++in_pkt;
-                if (in_pkt == 8)
+                if (in_pkt > 0)
                     dispatch();
-            }
-            if (in_pkt > 0)
-                dispatch();
+            });
         }
 
         // ── Combine: write final low-res lit color. ─────────────────────
-        for (u32 y = 0; y < kShadowH; ++y) {
-            for (u32 x = 0; x < kShadowW; ++x) {
-                const usize idx = static_cast<usize>(y) * kShadowW + x;
-                if (!hits[idx].hit)
-                    continue;  // sky already written
-                const PixelHit& ph = hits[idx];
-                // Ambient floor so unlit faces aren't pure black.
-                const f32 amb = 0.10f;
-                const f32 r = ph.r * amb * 30.0f + accum[idx * 3 + 0] * 18.0f;
-                const f32 g = ph.g * amb * 30.0f + accum[idx * 3 + 1] * 18.0f;
-                const f32 b = ph.b * amb * 30.0f + accum[idx * 3 + 2] * 18.0f;
-                shadow_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
+        render::rt::parallel_frame_rows(kShadowH, row_schedule, [&](u32 y0, u32 y1) {
+            for (u32 y = y0; y < y1; ++y) {
+                for (u32 x = 0; x < kShadowW; ++x) {
+                    const usize idx = static_cast<usize>(y) * kShadowW + x;
+                    if (!hits[idx].hit)
+                        continue;  // sky already written
+                    const PixelHit& ph = hits[idx];
+                    // Ambient floor so unlit faces aren't pure black.
+                    const f32 amb = 0.10f;
+                    const f32 r = ph.r * amb * 30.0f + accum[idx * 3 + 0] * 18.0f;
+                    const f32 g = ph.g * amb * 30.0f + accum[idx * 3 + 1] * 18.0f;
+                    const f32 b = ph.b * amb * 30.0f + accum[idx * 3 + 2] * 18.0f;
+                    shadow_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
+                }
             }
-        }
+        });
 
         // ── Pass 3: bilinear upsample low-res into the final FB. ────────
-        upsample_bilinear(shadow_pixels.data(), kShadowW, kShadowH, final_pixels.data(), kFbW, kFbH);
+        render::rt::upsample_bilinear_rgba8(shadow_pixels.data(),
+                                            kShadowW,
+                                            kShadowH,
+                                            final_pixels.data(),
+                                            kFbW,
+                                            kFbH);
 
         // Debug HUD overlay — `r_debug_hud full` enables. Per-frame stats
         // plus an avg over the populated prefix of the ring.

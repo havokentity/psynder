@@ -31,18 +31,15 @@
 #include "common/CharacterController.h"
 #include "common/PngWriter.h"
 
-#include "core/console/Console.h"
-#include "core/hardware/CpuFeatures.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
-#include "jobs/JobSystem.h"
-#include "jobs/JobSystemHetero.h"
 #include "math/Math.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
+#include "render/rt/FrameRenderer.h"
 #include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
@@ -51,7 +48,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,94 +59,6 @@ void ensure_denoise_console_commands_registered();
 }
 
 namespace {
-
-console::CVar* g_rt_parallel = nullptr;
-console::CVar* g_rt_cores_hint = nullptr;
-console::CVar* g_rt_batch_rows = nullptr;
-console::CVar* g_rt_min_rows = nullptr;
-
-void ensure_rt_parallel_cvars() {
-    static bool once = false;
-    if (once)
-        return;
-    once = true;
-    auto& con = console::Console::Get();
-    g_rt_parallel = con.RegisterCVar("r_rt_sample_parallel",
-                                     "1",
-                                     "Enable sample RT pass row-parallel scheduling (0/1)",
-                                     console::CVAR_ARCHIVE);
-    g_rt_cores_hint = con.RegisterCVar("r_rt_sample_cpu_cores_hint",
-                                       "0",
-                                       "Preferred sample RT pass cores (0=auto perf-cores-2)",
-                                       console::CVAR_ARCHIVE);
-    g_rt_batch_rows = con.RegisterCVar("r_rt_sample_batch_rows",
-                                       "0",
-                                       "Rows per sample RT pass chunk (0=auto)",
-                                       console::CVAR_ARCHIVE);
-    g_rt_min_rows = con.RegisterCVar("r_rt_sample_min_rows_per_core",
-                                     "8",
-                                     "Minimum sample RT pass rows per worker chunk in auto mode",
-                                     console::CVAR_ARCHIVE);
-    con.RegisterCommand("r_rt_sample_sched_dump",
-                        "Print sample RT scheduler settings",
-                        [](std::span<const std::string_view>, console::Output& out) {
-                            const int en = g_rt_parallel ? g_rt_parallel->GetInt() : 1;
-                            const int ch = g_rt_cores_hint ? g_rt_cores_hint->GetInt() : 0;
-                            const int br = g_rt_batch_rows ? g_rt_batch_rows->GetInt() : 0;
-                            const int mr = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
-                            const auto hc = jobs::hetero_detected_counts();
-                            out.FormatLine(
-                                "rt_sample_sched: parallel={}, hint_cores={}, batch_rows={}, min_rows={} | "
-                                "workers={} hetero={} (p={}, e={})",
-                                en,
-                                ch,
-                                br,
-                                mr,
-                                jobs::JobSystem::Get().worker_count(),
-                                jobs::hetero_is_active() ? 1 : 0,
-                                hc.p_cores,
-                                hc.e_cores);
-                        });
-}
-
-u32 rt_target_cores() {
-    const int hint = g_rt_cores_hint ? g_rt_cores_hint->GetInt() : 0;
-    const u32 workers = jobs::JobSystem::Get().worker_count();
-    const u32 runtime_max = workers > 0u ? (workers + 1u) : 1u;
-    if (hint > 0)
-        return std::clamp(static_cast<u32>(hint), 1u, runtime_max);
-    const auto hc = jobs::hetero_detected_counts();
-    u32 perf_like = hc.p_cores > 0u ? hc.p_cores : hardware::detect().cores_physical;
-    if (perf_like == 0u)
-        perf_like = 1u;
-    const u32 auto_target = perf_like > 2u ? (perf_like - 2u) : perf_like;
-    return std::clamp(auto_target, 1u, runtime_max);
-}
-
-u32 rt_rows_grain(u32 rows) {
-    const int b = g_rt_batch_rows ? g_rt_batch_rows->GetInt() : 0;
-    if (b > 0)
-        return std::clamp(static_cast<u32>(b), 1u, std::max(1u, rows));
-    const int m = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
-    const u32 min_rows = std::clamp(static_cast<u32>(m > 0 ? m : 8), 1u, std::max(1u, rows));
-    const u32 target = rt_target_cores();
-    const u32 rows_from_cores = std::max(1u, (rows + target - 1u) / target);
-    return std::clamp(std::max(min_rows, rows_from_cores), 1u, std::max(1u, rows));
-}
-
-template <class Fn>
-void rt_parallel_rows(u32 rows, Fn&& body) {
-    if (!(g_rt_parallel && g_rt_parallel->GetBool())) {
-        body(0u, rows);
-        return;
-    }
-    if (jobs::JobSystem::Get().worker_count() == 0u)
-        jobs::JobSystem::Get().start(0);
-    const u32 grain = rt_rows_grain(rows);
-    jobs::JobSystem::Get().parallel_for(0, rows, grain, [&](usize y0, usize y1) {
-        body(static_cast<u32>(y0), static_cast<u32>(y1));
-    });
-}
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────
 struct Args {
@@ -321,67 +229,9 @@ math::Mat4 mat4_trs(math::Vec3 t, f32 scale) {
     return m;
 }
 
-// ─── Camera ──────────────────────────────────────────────────────────────
-struct Camera {
-    math::Vec3 origin;
-    math::Vec3 forward;
-    math::Vec3 right;
-    math::Vec3 up;
-    f32 fov_tan;  // tan(half-fov-vertical)
-    f32 aspect;
-};
-
-// Build the camera basis from the controller's eye + forward.
-Camera make_camera(math::Vec3 eye, math::Vec3 fwd, f32 aspect) {
-    const math::Vec3 world_up{0.0f, 1.0f, 0.0f};
-    fwd = math::normalize(fwd);
-    math::Vec3 right = math::cross(fwd, world_up);
-    // Guard against looking straight up/down (forward ∥ world_up).
-    if (math::dot(right, right) < 1e-6f)
-        right = math::Vec3{1.0f, 0.0f, 0.0f};
-    right = math::normalize(right);
-    const math::Vec3 up = math::cross(right, fwd);
-
-    Camera c{};
-    c.origin = eye;
-    c.forward = fwd;
-    c.right = right;
-    c.up = up;
-    c.fov_tan = std::tan(60.0f * math::kDegToRad * 0.5f);
-    c.aspect = aspect;
-    return c;
-}
-
-// Build a primary ray from a [0,1]^2 NDC pixel coordinate.
-render::rt::Ray primary_ray(const Camera& cam, f32 nx, f32 ny) {
-    const f32 sx = (2.0f * nx - 1.0f) * cam.aspect * cam.fov_tan;
-    const f32 sy = (1.0f - 2.0f * ny) * cam.fov_tan;
-    math::Vec3 dir{};
-    dir.x = cam.forward.x + cam.right.x * sx + cam.up.x * sy;
-    dir.y = cam.forward.y + cam.right.y * sx + cam.up.y * sy;
-    dir.z = cam.forward.z + cam.right.z * sx + cam.up.z * sy;
-    dir = math::normalize(dir);
-    render::rt::Ray r{};
-    r.origin = cam.origin;
-    r.direction = dir;
-    r.t_min = 1e-3f;
-    r.t_max = 1e3f;
-    return r;
-}
-
-// Reflect incident direction `d` about unit normal `n`: d - 2(d·n)n.
-PSY_FORCEINLINE math::Vec3 reflect(math::Vec3 d, math::Vec3 n) noexcept {
-    const f32 k = 2.0f * math::dot(d, n);
-    return {d.x - k * n.x, d.y - k * n.y, d.z - k * n.z};
-}
-
 // ─── Lights ──────────────────────────────────────────────────────────────
-struct Light {
-    math::Vec3 position;
-    f32 intensity;
-    f32 r, g, b;  // 0..1 color
-    f32 range;
-};
+using Camera = render::rt::FrameCamera;
+using Light = render::rt::FrameLight;
 
 void orbit_lights(f32 t_seconds, std::array<Light, kNumLights>& lights) {
     const f32 base_y = kWallHeight - 1.2f;
@@ -419,54 +269,12 @@ math::Vec3 sample_sky_lin(math::Vec3 dir) {
     };
 }
 
-// ─── Bilinear upsample (low-res lit pass → final framebuffer) ────────────
-void upsample_bilinear(const u32* src, u32 sw, u32 sh, u32* dst, u32 dw, u32 dh) {
-    const f32 fx_scale = static_cast<f32>(sw) / static_cast<f32>(dw);
-    const f32 fy_scale = static_cast<f32>(sh) / static_cast<f32>(dh);
-    for (u32 y = 0; y < dh; ++y) {
-        const f32 sy = (static_cast<f32>(y) + 0.5f) * fy_scale - 0.5f;
-        const i32 y0 = std::max(0, static_cast<i32>(std::floor(sy)));
-        const i32 y1 = std::min(static_cast<i32>(sh) - 1, y0 + 1);
-        const f32 fy = sy - static_cast<f32>(y0);
-        for (u32 x = 0; x < dw; ++x) {
-            const f32 sx = (static_cast<f32>(x) + 0.5f) * fx_scale - 0.5f;
-            const i32 x0 = std::max(0, static_cast<i32>(std::floor(sx)));
-            const i32 x1 = std::min(static_cast<i32>(sw) - 1, x0 + 1);
-            const f32 fx = sx - static_cast<f32>(x0);
-
-            const u32 p00 = src[static_cast<usize>(y0) * sw + static_cast<usize>(x0)];
-            const u32 p10 = src[static_cast<usize>(y0) * sw + static_cast<usize>(x1)];
-            const u32 p01 = src[static_cast<usize>(y1) * sw + static_cast<usize>(x0)];
-            const u32 p11 = src[static_cast<usize>(y1) * sw + static_cast<usize>(x1)];
-
-            auto unpack = [](u32 p, f32& r, f32& g, f32& b) {
-                r = static_cast<f32>(p & 0xFFu);
-                g = static_cast<f32>((p >> 8) & 0xFFu);
-                b = static_cast<f32>((p >> 16) & 0xFFu);
-            };
-            f32 r00, g00, b00, r10, g10, b10, r01, g01, b01, r11, g11, b11;
-            unpack(p00, r00, g00, b00);
-            unpack(p10, r10, g10, b10);
-            unpack(p01, r01, g01, b01);
-            unpack(p11, r11, g11, b11);
-            const f32 w00 = (1.0f - fx) * (1.0f - fy);
-            const f32 w10 = fx * (1.0f - fy);
-            const f32 w01 = (1.0f - fx) * fy;
-            const f32 w11 = fx * fy;
-            const f32 r = r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11;
-            const f32 g = g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11;
-            const f32 b = b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11;
-            dst[static_cast<usize>(y) * dw + x] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
-        }
-    }
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
     const u32 smoke_frames = args.smoke_frames;
-    ensure_rt_parallel_cvars();
+    render::rt::ensure_frame_scheduler_console_registered();
     render::rt::ensure_denoise_console_commands_registered();
 
     platform::WindowDesc desc{};
@@ -692,83 +500,90 @@ int main(int argc, char** argv) {
         }
 
         orbit_lights(static_cast<f32>(t), lights);
-        const Camera cam = make_camera(controller.eye(), controller.forward(), aspect);
+        const Camera cam = render::rt::make_frame_camera(controller.eye(),
+                                                         controller.forward(),
+                                                         aspect,
+                                                         60.0f * math::kDegToRad);
+        const render::rt::FrameRowScheduleConfig row_schedule =
+            render::rt::frame_row_schedule_config_from_console();
 
         // ── Pass 1: primary visibility + 1-bounce reflection @ low-res. ─
-        rt_parallel_rows(kTraceH, [&](u32 y0, u32 y1) {
+        render::rt::parallel_frame_rows(kTraceH, row_schedule, [&](u32 y0, u32 y1) {
             for (u32 y = y0; y < y1; ++y) {
                 for (u32 x = 0; x < kTraceW; ++x) {
-                const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kTraceW);
-                const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kTraceH);
-                const render::rt::Ray ray = primary_ray(cam, nx, ny);
-                const render::rt::Hit h = tlas.intersect(ray);
+                    const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kTraceW);
+                    const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kTraceH);
+                    const render::rt::Ray ray = render::rt::primary_ray(cam, nx, ny);
+                    const render::rt::Hit h = tlas.intersect(ray);
 
-                const usize idx = static_cast<usize>(y) * kTraceW + x;
-                PixelHit ph{};
-                ph.hit = h.hit;
-                if (!h.hit) {
-                    const math::Vec3 sky = sample_sky_lin(ray.direction);
-                    trace_pixels[idx] = pack_rgba8(clamp_u8(sky.x * 255.0f),
-                                                   clamp_u8(sky.y * 255.0f),
-                                                   clamp_u8(sky.z * 255.0f));
-                    hits[idx] = ph;
-                    continue;
-                }
-                const u32 inst = h.instance < materials.size() ? h.instance : kRoomInstance;
-                const Material& m = materials[inst];
-                ph.r = m.r;
-                ph.g = m.g;
-                ph.b = m.b;
-                ph.reflectivity = m.reflectivity;
-                ph.position = {
-                    ray.origin.x + ray.direction.x * h.t,
-                    ray.origin.y + ray.direction.y * h.t,
-                    ray.origin.z + ray.direction.z * h.t,
-                };
-                math::Vec3 nrm = math::normalize(h.normal);
-                // Make sure the normal faces the viewer (BLAS winding can give
-                // either side); used for both shading + reflection.
-                if (math::dot(nrm, ray.direction) > 0.0f)
-                    nrm = math::mul(nrm, -1.0f);
-                ph.normal = nrm;
-
-                // 1-bounce mirror reflection: reflect the view direction about
-                // the normal, intersect, and shade that hit. Escaped rays read
-                // the sky. Bounded to a single bounce so it stays real-time.
-                ph.refl_r = ph.refl_g = ph.refl_b = 0.0f;
-                if (m.reflectivity > 0.01f) {
-                    const math::Vec3 rdir = math::normalize(reflect(ray.direction, nrm));
-                    render::rt::Ray rray{};
-                    rray.origin = {ph.position.x + nrm.x * 1e-3f,
-                                   ph.position.y + nrm.y * 1e-3f,
-                                   ph.position.z + nrm.z * 1e-3f};
-                    rray.direction = rdir;
-                    rray.t_min = 1e-3f;
-                    rray.t_max = 1e3f;
-                    const render::rt::Hit rh = tlas.intersect(rray);
-                    if (!rh.hit) {
-                        const math::Vec3 sky = sample_sky_lin(rdir);
-                        ph.refl_r = sky.x;
-                        ph.refl_g = sky.y;
-                        ph.refl_b = sky.z;
-                    } else {
-                        const u32 rinst = rh.instance < materials.size() ? rh.instance : kRoomInstance;
-                        const math::Vec3 rpos = {
-                            rray.origin.x + rray.direction.x * rh.t,
-                            rray.origin.y + rray.direction.y * rh.t,
-                            rray.origin.z + rray.direction.z * rh.t,
-                        };
-                        math::Vec3 rn = math::normalize(rh.normal);
-                        if (math::dot(rn, rray.direction) > 0.0f)
-                            rn = math::mul(rn, -1.0f);
-                        const math::Vec3 rc = shade_direct(rpos, rn, materials[rinst], lights);
-                        ph.refl_r = rc.x;
-                        ph.refl_g = rc.y;
-                        ph.refl_b = rc.z;
+                    const usize idx = static_cast<usize>(y) * kTraceW + x;
+                    PixelHit ph{};
+                    ph.hit = h.hit;
+                    if (!h.hit) {
+                        const math::Vec3 sky = sample_sky_lin(ray.direction);
+                        trace_pixels[idx] = pack_rgba8(clamp_u8(sky.x * 255.0f),
+                                                       clamp_u8(sky.y * 255.0f),
+                                                       clamp_u8(sky.z * 255.0f));
+                        hits[idx] = ph;
+                        continue;
                     }
+                    const u32 inst = h.instance < materials.size() ? h.instance : kRoomInstance;
+                    const Material& m = materials[inst];
+                    ph.r = m.r;
+                    ph.g = m.g;
+                    ph.b = m.b;
+                    ph.reflectivity = m.reflectivity;
+                    ph.position = {
+                        ray.origin.x + ray.direction.x * h.t,
+                        ray.origin.y + ray.direction.y * h.t,
+                        ray.origin.z + ray.direction.z * h.t,
+                    };
+                    math::Vec3 nrm = math::normalize(h.normal);
+                    // Make sure the normal faces the viewer (BLAS winding can give
+                    // either side); used for both shading + reflection.
+                    if (math::dot(nrm, ray.direction) > 0.0f)
+                        nrm = math::mul(nrm, -1.0f);
+                    ph.normal = nrm;
+
+                    // 1-bounce mirror reflection: reflect the view direction about
+                    // the normal, intersect, and shade that hit. Escaped rays read
+                    // the sky. Bounded to a single bounce so it stays real-time.
+                    ph.refl_r = ph.refl_g = ph.refl_b = 0.0f;
+                    if (m.reflectivity > 0.01f) {
+                        const math::Vec3 rdir =
+                            math::normalize(render::rt::reflect(ray.direction, nrm));
+                        render::rt::Ray rray{};
+                        rray.origin = {ph.position.x + nrm.x * 1e-3f,
+                                       ph.position.y + nrm.y * 1e-3f,
+                                       ph.position.z + nrm.z * 1e-3f};
+                        rray.direction = rdir;
+                        rray.t_min = 1e-3f;
+                        rray.t_max = 1e3f;
+                        const render::rt::Hit rh = tlas.intersect(rray);
+                        if (!rh.hit) {
+                            const math::Vec3 sky = sample_sky_lin(rdir);
+                            ph.refl_r = sky.x;
+                            ph.refl_g = sky.y;
+                            ph.refl_b = sky.z;
+                        } else {
+                            const u32 rinst =
+                                rh.instance < materials.size() ? rh.instance : kRoomInstance;
+                            const math::Vec3 rpos = {
+                                rray.origin.x + rray.direction.x * rh.t,
+                                rray.origin.y + rray.direction.y * rh.t,
+                                rray.origin.z + rray.direction.z * rh.t,
+                            };
+                            math::Vec3 rn = math::normalize(rh.normal);
+                            if (math::dot(rn, rray.direction) > 0.0f)
+                                rn = math::mul(rn, -1.0f);
+                            const math::Vec3 rc = shade_direct(rpos, rn, materials[rinst], lights);
+                            ph.refl_r = rc.x;
+                            ph.refl_g = rc.y;
+                            ph.refl_b = rc.z;
+                        }
+                    }
+                    hits[idx] = ph;
                 }
-                hits[idx] = ph;
-            }
             }
         });
 
@@ -777,7 +592,7 @@ int main(int argc, char** argv) {
 
         for (u32 li = 0; li < kNumLights; ++li) {
             const Light& L = lights[li];
-            rt_parallel_rows(kTraceH, [&](u32 y0, u32 y1) {
+            render::rt::parallel_frame_rows(kTraceH, row_schedule, [&](u32 y0, u32 y1) {
                 render::rt::ShadowPacket8 pkt{};
                 u32 in_pkt = 0;
                 u32 pkt_idx[8] = {0};
@@ -853,32 +668,37 @@ int main(int argc, char** argv) {
         }
 
         // ── Combine: direct light + ambient + mirror reflection. ────────
-        rt_parallel_rows(kTraceH, [&](u32 y0, u32 y1) {
+        render::rt::parallel_frame_rows(kTraceH, row_schedule, [&](u32 y0, u32 y1) {
             for (u32 y = y0; y < y1; ++y) {
                 for (u32 x = 0; x < kTraceW; ++x) {
-                const usize idx = static_cast<usize>(y) * kTraceW + x;
-                const PixelHit& ph = hits[idx];
-                if (!ph.hit)
-                    continue;  // sky already written
-                const f32 amb = 0.08f;
-                // Diffuse component = ambient + shadowed direct.
-                f32 dr = ph.r * amb + accum[idx * 3 + 0];
-                f32 dg = ph.g * amb + accum[idx * 3 + 1];
-                f32 db = ph.b * amb + accum[idx * 3 + 2];
-                // Lerp toward the reflected colour by the surface reflectivity.
-                const f32 k = ph.reflectivity;
-                const f32 r = dr * (1.0f - k) + ph.refl_r * k;
-                const f32 g = dg * (1.0f - k) + ph.refl_g * k;
-                const f32 bb = db * (1.0f - k) + ph.refl_b * k;
-                // Tone-scale the linear HDR result into 0..255.
-                trace_pixels[idx] =
-                    pack_rgba8(clamp_u8(r * 255.0f), clamp_u8(g * 255.0f), clamp_u8(bb * 255.0f));
-            }
+                    const usize idx = static_cast<usize>(y) * kTraceW + x;
+                    const PixelHit& ph = hits[idx];
+                    if (!ph.hit)
+                        continue;  // sky already written
+                    const f32 amb = 0.08f;
+                    // Diffuse component = ambient + shadowed direct.
+                    f32 dr = ph.r * amb + accum[idx * 3 + 0];
+                    f32 dg = ph.g * amb + accum[idx * 3 + 1];
+                    f32 db = ph.b * amb + accum[idx * 3 + 2];
+                    // Lerp toward the reflected colour by the surface reflectivity.
+                    const f32 k = ph.reflectivity;
+                    const f32 r = dr * (1.0f - k) + ph.refl_r * k;
+                    const f32 g = dg * (1.0f - k) + ph.refl_g * k;
+                    const f32 bb = db * (1.0f - k) + ph.refl_b * k;
+                    // Tone-scale the linear HDR result into 0..255.
+                    trace_pixels[idx] =
+                        pack_rgba8(clamp_u8(r * 255.0f), clamp_u8(g * 255.0f), clamp_u8(bb * 255.0f));
+                }
             }
         });
 
         // ── Pass 3: bilinear upsample low-res into the final FB. ────────
-        upsample_bilinear(trace_pixels.data(), kTraceW, kTraceH, final_pixels.data(), kFbW, kFbH);
+        render::rt::upsample_bilinear_rgba8(trace_pixels.data(),
+                                            kTraceW,
+                                            kTraceH,
+                                            final_pixels.data(),
+                                            kFbW,
+                                            kFbH);
 
         // Debug HUD overlay — `r_debug_hud full` enables.
         {
