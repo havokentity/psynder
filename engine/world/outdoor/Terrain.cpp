@@ -520,71 +520,112 @@ void TerrainRaymarch::render(const math::Mat4& view, const math::Mat4& proj) con
     // Keep source-of-truth scalar hit/depth semantics, but schedule row
     // chunks with latency-pool preference on hetero hosts.
     run_rows_latency_pref(H, batch_rows, [&](u32 y_begin, u32 y_end) {
+        constexpr u32 kBatch = 8;
         for (u32 y = y_begin; y < y_end; ++y) {
-            for (u32 x = 0; x < W; ++x) {
-                const usize idx = static_cast<usize>(y) * W + x;
-                const math::Vec3 dir = primary_ray_dir(cam, x, y, W, H);
+            for (u32 x0 = 0; x0 < W; x0 += kBatch) {
+                const u32 lanes = std::min(kBatch, W - x0);
 
-                // Up-pointing ray from above max terrain: skip the march and
-                // leave the pixel + depth alone (sky is somebody else's job;
-                // we never paint over what we don't own).
-                if (dir.y > 0.005f && cam.eye.y > kMaxTerrainY)
-                    continue;
+                alignas(32) f32 dir_x[8]{};
+                alignas(32) f32 dir_y[8]{};
+                alignas(32) f32 dir_z[8]{};
+                bool lane_active[8]{};
+                bool lane_hit[8]{};
+                alignas(32) f32 hit_t[8]{};
+                alignas(32) f32 prev_t[8]{};
+                alignas(32) f32 prev_ry[8]{};
+                alignas(32) f32 prev_th[8]{};
+                alignas(32) f32 wx[8]{};
+                alignas(32) f32 wz[8]{};
+                alignas(32) f32 th[8]{};
 
-                f32 prev_t = 0.0f;
-                f32 prev_ry = cam.eye.y;
-                f32 prev_th = detail::sample_bilinear(hm, cam.eye.x, cam.eye.z);
+                const f32 origin_th = detail::sample_bilinear(hm, cam.eye.x, cam.eye.z);
+                for (u32 i = 0; i < lanes; ++i) {
+                    const u32 x = x0 + i;
+                    const math::Vec3 dir = primary_ray_dir(cam, x, y, W, H);
+                    dir_x[i] = dir.x;
+                    dir_y[i] = dir.y;
+                    dir_z[i] = dir.z;
 
-                bool hit = false;
-                f32 hit_t = 0.0f;
+                    // Same skip rule as scalar path.
+                    if (dir.y > 0.005f && cam.eye.y > kMaxTerrainY) {
+                        lane_active[i] = false;
+                        continue;
+                    }
+                    lane_active[i] = true;
+                    prev_t[i] = 0.0f;
+                    prev_ry[i] = cam.eye.y;
+                    prev_th[i] = origin_th;
+                }
 
                 f32 t = kStepNear;
                 while (t <= kMaxT) {
-                    const f32 wx = cam.eye.x + dir.x * t;
-                    const f32 wy = cam.eye.y + dir.y * t;
-                    const f32 wz = cam.eye.z + dir.z * t;
-                    const f32 th = detail::sample_bilinear(hm, wx, wz);
-
-                    if (wy <= th) {
-                        const f32 dy_a = prev_ry - prev_th;
-                        const f32 dy_b = wy - th;
-                        const f32 denom = dy_a - dy_b;
-                        f32 frac = denom > 0.0f ? (dy_a / denom) : 0.0f;
-                        if (frac < 0.0f)
-                            frac = 0.0f;
-                        if (frac > 1.0f)
-                            frac = 1.0f;
-                        hit_t = prev_t + (t - prev_t) * frac;
-                        hit = true;
-                        break;
+                    bool any_pending = false;
+                    for (u32 i = 0; i < lanes; ++i) {
+                        if (lane_active[i] && !lane_hit[i]) {
+                            any_pending = true;
+                            wx[i] = cam.eye.x + dir_x[i] * t;
+                            wz[i] = cam.eye.z + dir_z[i] * t;
+                        } else {
+                            wx[i] = cam.eye.x;
+                            wz[i] = cam.eye.z;
+                        }
                     }
-                    prev_t = t;
-                    prev_ry = wy;
-                    prev_th = th;
+                    if (!any_pending)
+                        break;
+
+                    detail::simd_sample_bilinear8(hm, wx, wz, th);
+
+                    for (u32 i = 0; i < lanes; ++i) {
+                        if (!lane_active[i] || lane_hit[i])
+                            continue;
+                        const f32 wy = cam.eye.y + dir_y[i] * t;
+                        const f32 h_i = th[i];
+                        if (wy <= h_i) {
+                            const f32 dy_a = prev_ry[i] - prev_th[i];
+                            const f32 dy_b = wy - h_i;
+                            const f32 denom = dy_a - dy_b;
+                            f32 frac = denom > 0.0f ? (dy_a / denom) : 0.0f;
+                            if (frac < 0.0f)
+                                frac = 0.0f;
+                            if (frac > 1.0f)
+                                frac = 1.0f;
+                            hit_t[i] = prev_t[i] + (t - prev_t[i]) * frac;
+                            lane_hit[i] = true;
+                        } else {
+                            prev_t[i] = t;
+                            prev_ry[i] = wy;
+                            prev_th[i] = h_i;
+                        }
+                    }
+
                     const f32 step = kStepNear + (kStepFar - kStepNear) * std::min(1.0f, t / kStepFalloff);
                     t += step;
                 }
 
-                if (!hit)
-                    continue;
+                for (u32 i = 0; i < lanes; ++i) {
+                    if (!lane_hit[i])
+                        continue;
+                    const u32 x = x0 + i;
+                    const usize idx = static_cast<usize>(y) * W + x;
 
-                const math::Vec3 hit_pos{
-                    cam.eye.x + dir.x * hit_t,
-                    cam.eye.y + dir.y * hit_t,
-                    cam.eye.z + dir.z * hit_t,
-                };
+                    const math::Vec3 hit_pos{
+                        cam.eye.x + dir_x[i] * hit_t[i],
+                        cam.eye.y + dir_y[i] * hit_t[i],
+                        cam.eye.z + dir_z[i] * hit_t[i],
+                    };
 
-                const f32 spacing = hm.spacing > 0.0f ? hm.spacing : 1.0f;
-                const i32 tx = static_cast<i32>(std::floor(hit_pos.x / spacing + 0.5f));
-                const i32 tz = static_cast<i32>(std::floor(hit_pos.z / spacing + 0.5f));
-                const auto splat = detail::splat_at_texel(hm, tx, tz);
-                const math::Vec3 n = detail::normal_at_texel(hm, tx, tz);
-                const f32 ndotl = math::dot(n, sun_dir);
+                    const f32 spacing = hm.spacing > 0.0f ? hm.spacing : 1.0f;
+                    const i32 tx = static_cast<i32>(std::floor(hit_pos.x / spacing + 0.5f));
+                    const i32 tz = static_cast<i32>(std::floor(hit_pos.z / spacing + 0.5f));
+                    const auto splat = detail::splat_at_texel(hm, tx, tz);
+                    const math::Vec3 n = detail::normal_at_texel(hm, tx, tz);
+                    const f32 ndotl = math::dot(n, sun_dir);
 
-                pixels[idx] = splat_to_rgb(splat, ndotl, hit_t);
-                if (fb.depth) {
-                    const f32 z = ndc_z_for_world(view, proj, hit_pos);
-                    fb.depth[idx] = pack_depth_u24(z);
+                    pixels[idx] = splat_to_rgb(splat, ndotl, hit_t[i]);
+                    if (fb.depth) {
+                        const f32 z = ndc_z_for_world(view, proj, hit_pos);
+                        fb.depth[idx] = pack_depth_u24(z);
+                    }
                 }
             }
         }
