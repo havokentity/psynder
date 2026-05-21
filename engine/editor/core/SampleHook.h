@@ -88,14 +88,16 @@ inline void draw_mode_badge(render::Framebuffer& fb, Mode mode) noexcept {
 
     const f32 x = static_cast<f32>(fb.width - kBadgeW - kMargin);
     const f32 y = static_cast<f32>(fb.height - kBadgeH - kMargin);
-    const u32 panel_rgba = (mode == Mode::Edit) ? 0xC07A30B0u   // amber, ~70% alpha
-                                                : 0x2EA04AB0u;  // green, ~70% alpha
+    // Packed via imm::rgba (R in the low byte) so the panel reads true colour;
+    // filled_rect overwrites, so the badge is opaque regardless of alpha.
+    const u32 panel_rgba = (mode == Mode::Edit) ? psynder::ui::imm::rgba(0xC0, 0x7A, 0x30)  // amber
+                                                : psynder::ui::imm::rgba(0x2E, 0xA0, 0x4A);  // green
     psynder::ui::imm::filled_rect(math::Vec2{x, y},
                                   math::Vec2{static_cast<f32>(kBadgeW), static_cast<f32>(kBadgeH)},
                                   panel_rgba);
     psynder::ui::imm::label(math::Vec2{x + 2.0f, y + 2.0f},
                             (mode == Mode::Edit) ? "EDIT" : "PLAY",
-                            0xFFFFFFFFu);
+                            psynder::ui::imm::rgba(0xFF, 0xFF, 0xFF));
 }
 
 // ─── Input + badge primitive ────────────────────────────────────────────────

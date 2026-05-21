@@ -31,10 +31,11 @@ namespace psynder::ui::imm {
 
 namespace heatmap_detail {
 
-// Pack RGBA bytes the same way Pixel.h's `rgba()` does.
+// Pack RGBA bytes the same way Pixel.h's `rgba()` does: R in the LOW byte
+// (the framebuffer's true order — R-in-high 0xRRGGBBAA would channel-swap).
 inline constexpr u32 rgba(u8 r, u8 g, u8 b, u8 a = 0xFFu) noexcept {
-    return (static_cast<u32>(r) << 24) | (static_cast<u32>(g) << 16) | (static_cast<u32>(b) << 8) |
-           static_cast<u32>(a);
+    return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
+           (static_cast<u32>(a) << 24);
 }
 
 inline constexpr u32 kColourGreen = rgba(0x40, 0xC0, 0x40);

@@ -9,15 +9,16 @@
 
 namespace psynder::ui::imm::detail {
 
-// Pack an RGBA8 quadruple. Channel order is the same one Imm.h documents
-// (0xRRGGBBAA in source-literal form; on little-endian memory the byte
-// order ends up A,B,G,R, which matches how lane 07 currently splats pixels
-// via `clear_framebuffer`). We keep the encoding identical to the raster
-// helper so overlays drawn on top of a cleared framebuffer keep their
-// colour intent.
+// Pack an RGBA8 pixel: R in the LOW byte, then G, B, A. On little-endian
+// memory the bytes land as [R, G, B, A] — the standard RGBA8 layout the
+// framebuffer, `clear_framebuffer`, and the platform present all use, so imm
+// overlays composite in true colour. (The old encoding put R in the HIGH byte
+// — 0xRRGGBBAA — which channel-swapped against the framebuffer and rendered,
+// e.g., a dark-blue fill as bright red. Always pack via this helper; never
+// hand-write 0xRRGGBBAA literals.)
 inline constexpr u32 rgba(u8 r, u8 g, u8 b, u8 a = 0xFFu) noexcept {
-    return (static_cast<u32>(r) << 24) | (static_cast<u32>(g) << 16) | (static_cast<u32>(b) << 8) |
-           static_cast<u32>(a);
+    return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
+           (static_cast<u32>(a) << 24);
 }
 
 // Bytes-per-pixel for the pixel formats Lane 16 can draw into. We only
@@ -55,16 +56,15 @@ inline void plot(const render::Framebuffer& fb, i32 x, i32 y, u32 colour) noexce
     pixel_row(fb, static_cast<u32>(y))[static_cast<u32>(x)] = colour;
 }
 
-// Source-over alpha blend; channel-correct for both byte orders (we treat
-// the lane-07 layout as opaque RGBA bytes — A is the low byte). Used by the
-// brush preview + selection-highlight overlays.
+// Source-over alpha blend. Channels match the rgba() packing above: R is the
+// low byte, A the high byte. Used by the brush preview + selection-highlight.
 inline void plot_blend(const render::Framebuffer& fb, i32 x, i32 y, u32 colour) noexcept {
     if (x < 0 || y < 0)
         return;
     if (static_cast<u32>(x) >= fb.width || static_cast<u32>(y) >= fb.height)
         return;
     const u32 src = colour;
-    const u32 src_a = src & 0xFFu;
+    const u32 src_a = (src >> 24) & 0xFFu;
     if (src_a == 0U)
         return;
     u32& dst = pixel_row(fb, static_cast<u32>(y))[static_cast<u32>(x)];
@@ -72,19 +72,19 @@ inline void plot_blend(const render::Framebuffer& fb, i32 x, i32 y, u32 colour) 
         dst = src;
         return;
     }
-    const u32 dst_r = (dst >> 24) & 0xFFu;
-    const u32 dst_g = (dst >> 16) & 0xFFu;
-    const u32 dst_b = (dst >> 8) & 0xFFu;
-    const u32 dst_a = dst & 0xFFu;
-    const u32 src_r = (src >> 24) & 0xFFu;
-    const u32 src_g = (src >> 16) & 0xFFu;
-    const u32 src_b = (src >> 8) & 0xFFu;
+    const u32 dst_r = dst & 0xFFu;
+    const u32 dst_g = (dst >> 8) & 0xFFu;
+    const u32 dst_b = (dst >> 16) & 0xFFu;
+    const u32 dst_a = (dst >> 24) & 0xFFu;
+    const u32 src_r = src & 0xFFu;
+    const u32 src_g = (src >> 8) & 0xFFu;
+    const u32 src_b = (src >> 16) & 0xFFu;
     const u32 inv = 255U - src_a;
     const u32 out_r = (src_r * src_a + dst_r * inv) / 255U;
     const u32 out_g = (src_g * src_a + dst_g * inv) / 255U;
     const u32 out_b = (src_b * src_a + dst_b * inv) / 255U;
     const u32 out_a = src_a + (dst_a * inv) / 255U;
-    dst = (out_r << 24) | (out_g << 16) | (out_b << 8) | out_a;
+    dst = out_r | (out_g << 8) | (out_b << 16) | (out_a << 24);
 }
 
 // Clamp a [lo,hi] integer to an i32. Centralized so the overflow-safe

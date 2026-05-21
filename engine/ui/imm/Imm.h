@@ -12,6 +12,16 @@
 
 namespace psynder::ui::imm {
 
+// Pack an RGBA8 colour for the `rgba` colour params below. R goes in the LOW
+// byte (the framebuffer's true byte order — what clear_framebuffer and the
+// platform present use). Always build colours with this; a hand-written
+// 0xRRGGBBAA hex literal is channel-swapped and renders wrong (e.g. a dark
+// blue comes out bright red).
+inline constexpr u32 rgba(u8 r, u8 g, u8 b, u8 a = 0xFFu) noexcept {
+    return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
+           (static_cast<u32>(a) << 24);
+}
+
 void begin_frame(render::Framebuffer& target);
 void end_frame();
 
