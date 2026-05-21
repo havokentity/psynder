@@ -85,6 +85,14 @@ void toggle_fullscreen();
 bool is_fullscreen();
 void request_window_size(u32 width, u32 height);
 
+// When true, the platform suppresses its default Escape-closes-the-window
+// behaviour because something is capturing text (the software console is
+// open). The console sets this each frame; otherwise Escape behaves as the
+// host wires it. Lets the console own Escape (e.g. clear the prompt) without
+// the window quitting underneath it.
+void set_text_input_capturing(bool capturing);
+bool text_input_capturing();
+
 // ─── Input ───────────────────────────────────────────────────────────────
 enum class KeyCode : u16 {
     Unknown = 0,

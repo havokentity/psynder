@@ -226,6 +226,55 @@ TEST_CASE("console: r_resolution / r_fullscreen are registered with presets", "[
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: Tab accepts the highlighted completion", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.SetCVarOverride("r_fullscreen", "0");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);  // open + register built-ins
+    in.type("r_full");
+    tick(in);  // completion popup -> r_fullscreen
+    in.press(KeyCode::Tab);
+    tick(in);  // accept -> prompt becomes "r_fullscreen "
+    in.type("1");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);  // submit "r_fullscreen 1"
+    REQUIRE(con.FindCVar("r_fullscreen")->value == "1");
+
+    con.SetCVarOverride("r_fullscreen", "0");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: Escape clears the prompt and keeps the console open", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_esc_val", "0", "escape test cvar");
+    con.SetCVarOverride("con_esc_val", "0");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);  // open
+    in.type("garbage text");
+    tick(in);
+    in.press(KeyCode::Escape);
+    tick(in);  // clears the prompt, must NOT close
+    REQUIRE(ui::console::is_open());
+
+    // A cleared prompt means the next line isn't prefixed with the garbage.
+    in.type("con_esc_val 5");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_esc_val")->value == "5");
+
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: draw into a framebuffer paints the panel without crashing", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(true);

@@ -393,7 +393,11 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
         } else {
             i += 1;
         }
-        if (cp >= 0x20 && cp != 0x7F)  // drop C0 controls + DEL
+        // Drop C0 controls + DEL, and AppKit's function-key encodings
+        // (arrows, Delete, Home/End, F-keys, ...) which it reports in the
+        // U+F700..U+F8FF private-use block — those are NOT text and would
+        // otherwise insert missing-glyph boxes into the console prompt.
+        if (cp >= 0x20 && cp != 0x7F && !(cp >= 0xF700 && cp <= 0xF8FF))
             psynder::platform::mac_input().on_text(cp);
     }
 }
@@ -554,8 +558,10 @@ public:
             } while (event);
             [NSApp updateWindows];
 
-            // ESC closes the window per the M0 demo contract
-            if (mac_input().key_down(KeyCode::Escape)) {
+            // ESC closes the window per the M0 demo contract — UNLESS something
+            // is capturing text (the console is open), where Esc is the
+            // console's (clear the prompt / dismiss popup), not a quit.
+            if (mac_input().key_down(KeyCode::Escape) && !text_input_capturing()) {
                 should_close_.store(true, std::memory_order_relaxed);
             }
         }

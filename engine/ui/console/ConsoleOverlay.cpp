@@ -107,6 +107,14 @@ struct State {
     std::array<f32, static_cast<usize>(KeyCode::Count)> held{};
     std::array<f32, static_cast<usize>(KeyCode::Count)> next_fire{};
 
+    // Navigable completion popup (Up/Down select, Tab accepts). Rebuilt each
+    // frame from the cursor token; while it's active Up/Down drive the list
+    // instead of command history.
+    std::vector<std::string> comp_items;
+    int comp_sel = 0;
+    bool comp_active = false;
+    std::string comp_token;  // token the list was built for (detect changes)
+
     bool initialised = false;
 };
 
@@ -423,6 +431,8 @@ void submit(State& s) noexcept {
     s.cursor = 0;
     s.history_pos = -1;
     s.scroll = 0;
+    s.comp_active = false;
+    s.comp_token.clear();
 }
 
 void autocomplete(State& s) noexcept {
@@ -498,17 +508,76 @@ bool key_repeat(State& s, const platform::Input& input, KeyCode k, f32 dt) noexc
     return false;
 }
 
+// Byte offset where the cursor's token begins (for popup placement).
+usize token_start(const State& s) noexcept {
+    usize start = s.cursor;
+    while (start > 0 && is_word_char(s.input[start - 1]))
+        --start;
+    return start;
+}
+
+// Rebuild the completion popup from the current cursor token. Resets the
+// highlighted row when the token changes so a fresh prefix starts at the top.
+void refresh_completion(State& s) noexcept {
+    const std::string_view tok = token_at_cursor(s);
+    s.comp_items = gather_matches(s);
+    s.comp_active = !s.comp_items.empty() && !tok.empty();
+    if (std::string{tok} != s.comp_token) {
+        s.comp_token.assign(tok);
+        s.comp_sel = 0;
+    }
+    const int n = static_cast<int>(s.comp_items.size());
+    if (s.comp_sel >= n)
+        s.comp_sel = n - 1;
+    if (s.comp_sel < 0)
+        s.comp_sel = 0;
+}
+
 void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept {
+    refresh_completion(s);  // popup mirrors the current prompt token
+
     if (input.key_pressed(KeyCode::Enter))
         submit(s);
-    if (input.key_pressed(KeyCode::Escape))
-        s.open = false;
-    if (input.key_pressed(KeyCode::Tab))
-        autocomplete(s);
-    if (input.key_pressed(KeyCode::Up))
-        history_prev(s);
-    if (input.key_pressed(KeyCode::Down))
-        history_next(s);
+    if (input.key_pressed(KeyCode::Escape)) {
+        // Esc never quits while the console owns input: dismiss the popup,
+        // else clear the prompt, else (already empty) close the console.
+        if (s.comp_active)
+            s.comp_active = false;
+        else if (!s.input.empty()) {
+            s.input.clear();
+            s.cursor = 0;
+            s.history_pos = -1;
+        } else {
+            s.open = false;
+        }
+    }
+    if (input.key_pressed(KeyCode::Tab)) {
+        if (s.comp_active && s.comp_sel >= 0 && s.comp_sel < static_cast<int>(s.comp_items.size())) {
+            replace_token_at_cursor(s, s.comp_items[static_cast<usize>(s.comp_sel)] + " ");
+            s.comp_active = false;
+            s.history_pos = -1;
+        } else {
+            autocomplete(s);
+        }
+    }
+    // Up/Down navigate the completion list when it's showing; otherwise they
+    // walk command history.
+    if (input.key_pressed(KeyCode::Up)) {
+        if (s.comp_active) {
+            const int n = static_cast<int>(s.comp_items.size());
+            s.comp_sel = (s.comp_sel > 0) ? s.comp_sel - 1 : n - 1;
+        } else {
+            history_prev(s);
+        }
+    }
+    if (input.key_pressed(KeyCode::Down)) {
+        if (s.comp_active) {
+            const int n = static_cast<int>(s.comp_items.size());
+            s.comp_sel = (n > 0) ? (s.comp_sel + 1) % n : 0;
+        } else {
+            history_next(s);
+        }
+    }
 
     if (key_repeat(s, input, KeyCode::Backspace, dt) && s.cursor > 0) {
         const usize n = utf8_prev_len(s.input, s.cursor);
@@ -578,6 +647,11 @@ bool update(const platform::Input& input, f32 dt) noexcept {
 
     s.blink += dt;
 
+    // Tell the platform we're capturing text while open, so the backend's
+    // default Escape-closes-the-window is suppressed (Esc is ours: clear the
+    // prompt / dismiss the popup). Cleared when the console is shut.
+    platform::set_text_input_capturing(s.open);
+
     // Capturing if the console consumed input this frame: it was open at
     // entry (so it ate the keystrokes) or it is open now (just toggled on).
     // This also makes the Esc-to-close frame report capture, so the host's
@@ -639,12 +713,14 @@ void draw(render::Framebuffer& fb) noexcept {
     const f32 text_x = prompt_x + 2.0f * static_cast<f32>(kCharW);
     imm::label(math::Vec2{text_x, prompt_y}, s.input, kColInput);
 
-    // Ghost: show the remainder of the best single match past the cursor.
-    {
-        const std::vector<std::string> matches = gather_matches(s);
+    // Ghost: remainder of the HIGHLIGHTED completion, inline past the cursor
+    // (so navigating the popup updates the inline hint too).
+    if (s.comp_active && s.cursor == s.input.size() && s.comp_sel >= 0 &&
+        s.comp_sel < static_cast<int>(s.comp_items.size())) {
+        const std::string& sel = s.comp_items[static_cast<usize>(s.comp_sel)];
         const std::string_view tok = token_at_cursor(s);
-        if (!matches.empty() && matches.front().size() > tok.size() && s.cursor == s.input.size()) {
-            const std::string_view ghost = std::string_view{matches.front()}.substr(tok.size());
+        if (sel.size() > tok.size()) {
+            const std::string_view ghost = std::string_view{sel}.substr(tok.size());
             const f32 gx = text_x + static_cast<f32>(s.input.size()) * static_cast<f32>(kCharW);
             imm::label(math::Vec2{gx, prompt_y}, ghost, kColGhost);
         }
@@ -656,6 +732,42 @@ void draw(render::Framebuffer& fb) noexcept {
         imm::filled_rect(math::Vec2{cx, prompt_y - 1.0f},
                          math::Vec2{1.0f, static_cast<f32>(kLineH)},
                          kColBorder);
+    }
+
+    // ── Completion popup: a navigable list above the prompt, anchored under
+    // the token being typed. Up/Down move the highlight; Tab accepts it. ────
+    if (s.comp_active && !s.comp_items.empty()) {
+        const int n = static_cast<int>(s.comp_items.size());
+        constexpr int kMaxVis = 8;
+        const int vis = std::min(kMaxVis, n);
+        int first = 0;
+        if (n > kMaxVis)
+            first = std::clamp(s.comp_sel - kMaxVis / 2, 0, n - kMaxVis);
+
+        usize longest = 0;
+        for (int i = 0; i < vis; ++i)
+            longest = std::max(longest, s.comp_items[static_cast<usize>(first + i)].size());
+
+        const f32 box_w = static_cast<f32>(longest) * static_cast<f32>(kCharW) + 8.0f;
+        const f32 box_h = static_cast<f32>(vis) * static_cast<f32>(kLineH) + 4.0f;
+        const f32 box_x = text_x + static_cast<f32>(token_start(s)) * static_cast<f32>(kCharW);
+        const f32 box_y = std::max(kPad, prompt_y - box_h - 3.0f);
+
+        imm::filled_rect(math::Vec2{box_x, box_y}, math::Vec2{box_w, box_h}, 0x0E1320F4u);
+        imm::rect_outline(math::Vec2{box_x, box_y}, math::Vec2{box_w, box_h}, kColBorder);
+        for (int i = 0; i < vis; ++i) {
+            const int idx = first + i;
+            const f32 iy = box_y + 2.0f + static_cast<f32>(i) * static_cast<f32>(kLineH);
+            const std::string& item = s.comp_items[static_cast<usize>(idx)];
+            if (idx == s.comp_sel) {
+                imm::filled_rect(math::Vec2{box_x + 1.0f, iy - 1.0f},
+                                 math::Vec2{box_w - 2.0f, static_cast<f32>(kLineH)},
+                                 0x2A3A5AFFu);  // selection highlight
+                imm::label(math::Vec2{box_x + 4.0f, iy}, item, kColInput);
+            } else {
+                imm::label(math::Vec2{box_x + 4.0f, iy}, item, kColText);
+            }
+        }
     }
 
     imm::end_frame();
