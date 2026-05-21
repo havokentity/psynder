@@ -71,8 +71,8 @@ struct State {
     std::vector<Line> scrollback;
     u32 scroll = 0;  // lines scrolled up from the newest
 
-    int history_pos = -1;     // -1 = editing live line; else index into backend history
-    std::string saved_live;   // live line stashed while browsing history
+    int history_pos = -1;    // -1 = editing live line; else index into backend history
+    std::string saved_live;  // live line stashed while browsing history
 
     // Per-key auto-repeat bookkeeping for the editing keys.
     std::array<f32, static_cast<usize>(KeyCode::Count)> held{};
@@ -118,28 +118,28 @@ void ensure_init(State& s) noexcept {
     s.initialised = true;
 
     auto& con = psynder::console::Console::Get();
-    con.RegisterCommand("clear", "Clear the console scrollback.",
+    con.RegisterCommand("clear",
+                        "Clear the console scrollback.",
                         [](std::span<const std::string_view>, psynder::console::Output&) {
                             State& st = state();
                             st.scrollback.clear();
                             st.scroll = 0;
                         });
-    con.RegisterCommand(
-        "help", "List all registered commands and cvars.",
-        [](std::span<const std::string_view>, psynder::console::Output& out) {
-            auto& c = psynder::console::Console::Get();
-            out.PrintLine("commands:");
-            c.EnumerateCommands("", [&](psynder::console::Command& cmd) {
-                out.FormatLine("  {:<16} {}", cmd.name, cmd.description);
-            });
-            out.PrintLine("cvars:");
-            c.EnumerateCVars("", [&](psynder::console::CVar& v) {
-                out.FormatLine("  {:<16} = {}", v.name, v.value);
-            });
-        });
+    con.RegisterCommand("help",
+                        "List all registered commands and cvars.",
+                        [](std::span<const std::string_view>, psynder::console::Output& out) {
+                            auto& c = psynder::console::Console::Get();
+                            out.PrintLine("commands:");
+                            c.EnumerateCommands("", [&](psynder::console::Command& cmd) {
+                                out.FormatLine("  {:<16} {}", cmd.name, cmd.description);
+                            });
+                            out.PrintLine("cvars:");
+                            c.EnumerateCVars("", [&](psynder::console::CVar& v) {
+                                out.FormatLine("  {:<16} = {}", v.name, v.value);
+                            });
+                        });
 
-    push_line(s, "Psynder console.  `~` close   Tab complete   Up/Down history   `help`",
-              kColBannerA);
+    push_line(s, "Psynder console.  `~` close   Tab complete   Up/Down history   `help`", kColBannerA);
     push_line(s, "------------------------------------------------------------", kColBannerB);
 }
 
@@ -497,10 +497,8 @@ void draw(render::Framebuffer& fb) noexcept {
     {
         const std::vector<std::string> matches = gather_matches(s);
         const std::string_view tok = token_at_cursor(s);
-        if (!matches.empty() && matches.front().size() > tok.size() &&
-            s.cursor == s.input.size()) {
-            const std::string_view ghost =
-                std::string_view{matches.front()}.substr(tok.size());
+        if (!matches.empty() && matches.front().size() > tok.size() && s.cursor == s.input.size()) {
+            const std::string_view ghost = std::string_view{matches.front()}.substr(tok.size());
             const f32 gx = text_x + static_cast<f32>(s.input.size()) * static_cast<f32>(kCharW);
             imm::label(math::Vec2{gx, prompt_y}, ghost, kColGhost);
         }
@@ -510,7 +508,8 @@ void draw(render::Framebuffer& fb) noexcept {
     if (std::fmod(s.blink, 0.7f) < 0.45f) {
         const f32 cx = text_x + static_cast<f32>(s.cursor) * static_cast<f32>(kCharW);
         imm::filled_rect(math::Vec2{cx, prompt_y - 1.0f},
-                         math::Vec2{1.0f, static_cast<f32>(kLineH)}, kColBorder);
+                         math::Vec2{1.0f, static_cast<f32>(kLineH)},
+                         kColBorder);
     }
 
     imm::end_frame();

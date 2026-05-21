@@ -108,8 +108,7 @@ TEST_CASE("console: tilde toggles open and closed", "[ui][console]") {
     ui::console::set_open(false);
 }
 
-TEST_CASE("console: typing a cvar-set line and Enter runs it via the backend",
-          "[ui][console]") {
+TEST_CASE("console: typing a cvar-set line and Enter runs it via the backend", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(false);
 
@@ -171,8 +170,7 @@ TEST_CASE("console: Up recalls the previous submitted line", "[ui][console]") {
     ui::console::set_open(false);
 }
 
-TEST_CASE("console: draw into a framebuffer paints the panel without crashing",
-          "[ui][console]") {
+TEST_CASE("console: draw into a framebuffer paints the panel without crashing", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(true);
 

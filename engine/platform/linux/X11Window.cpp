@@ -341,8 +341,8 @@ void X11Window::handle_event(const XEvent& ev) noexcept {
             if (ev.type == KeyPress) {
                 char buf[16];
                 KeySym ignored = 0;
-                const int n = XLookupString(
-                    const_cast<XKeyEvent*>(&ev.xkey), buf, sizeof(buf), &ignored, nullptr);
+                const int n =
+                    XLookupString(const_cast<XKeyEvent*>(&ev.xkey), buf, sizeof(buf), &ignored, nullptr);
                 for (int i = 0; i < n; ++i)
                     input_push_text(static_cast<unsigned char>(buf[i]));
             }

@@ -130,8 +130,8 @@ class Win32Input final : public Input {
         mouse_wheel_accum_ = 0.0f;
         mouse_.dx = 0.0f;
         mouse_.dy = 0.0f;
-        text_.clear();                 // text_input() reports only this frame
-        pending_high_surrogate_ = 0;   // don't let a half-pair bleed frames
+        text_.clear();                // text_input() reports only this frame
+        pending_high_surrogate_ = 0;  // don't let a half-pair bleed frames
     }
 
    private:
