@@ -17,6 +17,7 @@
 
 #include "asset/Vfs.h"
 #include "core/Log.h"
+#include "jobs/JobSystem.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
 
@@ -332,83 +333,80 @@ void TerrainRaymarch::render(const math::Mat4& view, const math::Mat4& proj) con
     const u32 W = fb.width;
     const u32 H = fb.height;
 
-    for (u32 y = 0; y < H; ++y) {
-        for (u32 x = 0; x < W; ++x) {
-            const usize idx = static_cast<usize>(y) * W + x;
-            const math::Vec3 dir = primary_ray_dir(cam, x, y, W, H);
+    jobs::JobSystem::Get().parallel_for(0, (W + 7) / 8, 1, [&](usize batch_idx_begin, usize batch_idx_end) {
+        for (usize batch_idx = batch_idx_begin; batch_idx < batch_idx_end; ++batch_idx) {
+            detail::ColumnBatch8 batch{};
+            bool any_active = false;
+            for (u32 i = 0; i < 8; ++i) {
+                const u32 x = static_cast<u32>(batch_idx * 8 + i);
+                batch.column_x[i] = x;
+                if (x < W) {
+                    const math::Vec3 dir = primary_ray_dir(cam, x, H / 2, W, H);
+                    batch.ray_dir_x[i] = dir.x;
+                    batch.ray_dir_z[i] = dir.z;
+                    batch.horizon_y[i] = static_cast<i32>(H);
+                    batch.done_mask &= ~(1u << i);
+                    any_active = true;
+                } else {
+                    batch.done_mask |= (1u << i);
+                }
+            }
 
-            // Up-pointing ray from above max terrain: skip the march and
-            // leave the pixel + depth alone (sky is somebody else's job;
-            // we never paint over what we don't own).
-            if (dir.y > 0.005f && cam.eye.y > kMaxTerrainY)
+            if (!any_active) {
                 continue;
+            }
 
-            // Variable-step march. Same scalar-reference semantics as
-            // `detail::march_ray`, inlined so we can use sample_06's
-            // logarithmic step schedule (the standalone kernel uses a
-            // fixed step).
-            f32 prev_t = 0.0f;
-            f32 prev_ry = cam.eye.y;
-            f32 prev_th = detail::sample_bilinear(hm, cam.eye.x, cam.eye.z);
-
-            bool hit = false;
-            f32 hit_t = 0.0f;
+            const f32 pixels_per_unit = (static_cast<f32>(H) * 0.5f) / cam.fov_tan;
 
             f32 t = kStepNear;
             while (t <= kMaxT) {
-                const f32 wx = cam.eye.x + dir.x * t;
-                const f32 wy = cam.eye.y + dir.y * t;
-                const f32 wz = cam.eye.z + dir.z * t;
-                const f32 th = detail::sample_bilinear(hm, wx, wz);
+                detail::ColumnStepBatch8 step_result{};
+                detail::simd_step_columns8(hm, batch, cam.eye, t, static_cast<i32>(H), pixels_per_unit, step_result);
 
-                if (wy <= th) {
-                    const f32 dy_a = prev_ry - prev_th;  // > 0
-                    const f32 dy_b = wy - th;            // ≤ 0
-                    const f32 denom = dy_a - dy_b;
-                    f32 frac = denom > 0.0f ? (dy_a / denom) : 0.0f;
-                    if (frac < 0.0f)
-                        frac = 0.0f;
-                    if (frac > 1.0f)
-                        frac = 1.0f;
-                    hit_t = prev_t + (t - prev_t) * frac;
-                    hit = true;
+                if (step_result.active_mask != 0) {
+                    for (u32 i = 0; i < 8; ++i) {
+                        if ((step_result.active_mask >> i) & 1u) {
+                            const u32 x = batch.column_x[i];
+                            const f32 spacing = hm.spacing > 0.0f ? hm.spacing : 1.0f;
+                            const f32 wx = cam.eye.x + batch.ray_dir_x[i] * t;
+                            const f32 wz = cam.eye.z + batch.ray_dir_z[i] * t;
+                            const i32 tx = static_cast<i32>(std::floor(wx / spacing + 0.5f));
+                            const i32 tz = static_cast<i32>(std::floor(wz / spacing + 0.5f));
+                            const math::Vec3 n = detail::normal_at_texel(hm, tx, tz);
+                            const f32 ndotl = math::dot(n, sun_dir);
+
+                            detail::SplatWeights splat{};
+                            splat.w[0] = static_cast<f32>(step_result.packed_color[i] & 0xFFu) / 255.0f;
+                            splat.w[1] = static_cast<f32>((step_result.packed_color[i] >> 8) & 0xFFu) / 255.0f;
+                            splat.w[2] = static_cast<f32>((step_result.packed_color[i] >> 16) & 0xFFu) / 255.0f;
+                            splat.w[3] = static_cast<f32>((step_result.packed_color[i] >> 24) & 0xFFu) / 255.0f;
+
+                            const u32 final_color = splat_to_rgb(splat, ndotl, t);
+
+                            for (u32 y = step_result.strip_top_y[i]; y <= step_result.strip_bottom_y[i]; ++y) {
+                                const usize idx = static_cast<usize>(y) * W + x;
+                                pixels[idx] = final_color;
+                                if (fb.depth) {
+                                    const f32 z_ndc = ndc_z_for_world(view, proj, {wx, detail::sample_bilinear(hm, wx, wz), wz});
+                                    fb.depth[idx] = pack_depth_u24(z_ndc);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                detail::simd_advance_batch8(batch, step_result);
+                if (detail::simd_batch_done8(batch)) {
                     break;
                 }
-                prev_t = t;
-                prev_ry = wy;
-                prev_th = th;
-                const f32 step = kStepNear + (kStepFar - kStepNear) * std::min(1.0f, t / kStepFalloff);
-                t += step;
-            }
 
-            if (!hit)
-                continue;
-
-            const math::Vec3 hit_pos{
-                cam.eye.x + dir.x * hit_t,
-                cam.eye.y + dir.y * hit_t,
-                cam.eye.z + dir.z * hit_t,
-            };
-
-            // Texel-snapped splat + normal — used for both the shading and
-            // the bound z. We sample at the nearest texel rather than a
-            // bilinear blend so the silhouette is sharp (matches Wave B
-            // SIMD kernel `simd_step_columns8`'s color path).
-            const f32 spacing = hm.spacing > 0.0f ? hm.spacing : 1.0f;
-            const i32 tx = static_cast<i32>(std::floor(hit_pos.x / spacing + 0.5f));
-            const i32 tz = static_cast<i32>(std::floor(hit_pos.z / spacing + 0.5f));
-            const auto splat = detail::splat_at_texel(hm, tx, tz);
-            const math::Vec3 n = detail::normal_at_texel(hm, tx, tz);
-            const f32 ndotl = math::dot(n, sun_dir);
-
-            pixels[idx] = splat_to_rgb(splat, ndotl, hit_t);
-            if (fb.depth) {
-                const f32 z = ndc_z_for_world(view, proj, hit_pos);
-                fb.depth[idx] = pack_depth_u24(z);
+                const f32 step_size = detail::logstep_size(hm, t, kStepNear, kStepFalloff);
+                t += step_size;
             }
         }
-    }
+    });
 }
+
 
 // ─── set_target (sibling free function from TerrainTarget.h) ────────────
 void set_target(const TerrainRaymarch& rm, render::Framebuffer* fb) noexcept {
