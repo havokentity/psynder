@@ -21,6 +21,12 @@
 //   --smoke-frames N         Space-separated form (matches Goldens.cmake).
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 //   --rt-ao=0|1              Override sample AO CVar for capture/perf checks.
+//   --rt-ao-debug=0|1        Show AO visibility as grayscale when AO is enabled.
+//   --rt-ao-samples=N        Override AO sample count for capture/perf checks.
+//   --rt-ao-radius=F         Override AO radius for capture/perf checks.
+//   --rt-ao-strength=F       Override AO ambient strength for capture/perf checks.
+//   --rt-ao-lit-strength=F   Override AO direct-light strength for capture/perf checks.
+//   --rt-cores=N             Override sample RT worker chunk target for smoke/perf checks.
 
 #include "common/PngWriter.h"
 
@@ -67,7 +73,11 @@ console::CVar* g_rt_ao = nullptr;
 console::CVar* g_rt_ao_samples = nullptr;
 console::CVar* g_rt_ao_radius = nullptr;
 console::CVar* g_rt_ao_strength = nullptr;
+console::CVar* g_rt_ao_lit_strength = nullptr;
 console::CVar* g_rt_ao_denoise = nullptr;
+console::CVar* g_rt_ao_debug = nullptr;
+
+u32 rt_parallel_chunk_limit(u32 work_items);
 
 void ensure_rt_parallel_cvars() {
     static bool once = false;
@@ -97,28 +107,36 @@ void ensure_rt_parallel_cvars() {
                                                    console::CVAR_ARCHIVE);
     g_rt_parallel_max_chunks = con.RegisterCVar("r_rt_sample_parallel_max_chunks",
                                                 "4",
-                                                "Maximum row chunks per RT sample pass",
+                                                 "Maximum auto-mode chunks per RT sample pass (explicit core hint overrides this)",
                                                 console::CVAR_ARCHIVE);
     g_rt_ao = con.RegisterCVar("r_rt_sample_ao",
                                "0",
                                "Enable sample RT ambient occlusion (0/1)",
                                console::CVAR_ARCHIVE);
     g_rt_ao_samples = con.RegisterCVar("r_rt_sample_ao_samples",
-                                       "2",
+                                        "4",
                                        "AO rays per low-res hit pixel (1..8)",
                                        console::CVAR_ARCHIVE);
     g_rt_ao_radius = con.RegisterCVar("r_rt_sample_ao_radius",
-                                      "2.2",
+                                      "3.0",
                                       "AO ray max distance in world units",
                                       console::CVAR_ARCHIVE);
     g_rt_ao_strength = con.RegisterCVar("r_rt_sample_ao_strength",
-                                        "0.70",
+                                        "1.00",
                                         "AO ambient darkening strength (0..1)",
                                         console::CVAR_ARCHIVE);
+    g_rt_ao_lit_strength = con.RegisterCVar("r_rt_sample_ao_lit_strength",
+                                            "0.75",
+                                            "Extra AO multiplier applied to direct lighting for visible contact AO (0..1)",
+                                            console::CVAR_ARCHIVE);
     g_rt_ao_denoise = con.RegisterCVar("r_rt_sample_ao_denoise",
                                        "1",
                                        "Edge-aware denoise sample AO visibility (0/1)",
                                        console::CVAR_ARCHIVE);
+    g_rt_ao_debug = con.RegisterCVar("r_rt_sample_ao_debug",
+                                     "0",
+                                     "Show AO visibility as grayscale when sample AO is enabled (0/1)",
+                                     console::CVAR_ARCHIVE);
     con.RegisterCommand("r_rt_sample_sched_dump",
                         "Print sample RT scheduler settings",
                         [](std::span<const std::string_view>, console::Output& out) {
@@ -128,28 +146,35 @@ void ensure_rt_parallel_cvars() {
                             const int mr = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
                             const int gate = g_rt_parallel_min_rows_gate ? g_rt_parallel_min_rows_gate->GetInt() : 192;
                             const int max_chunks = g_rt_parallel_max_chunks ? g_rt_parallel_max_chunks->GetInt() : 4;
+                            const u32 effective_chunks = rt_parallel_chunk_limit(144u);
                             const int ao = g_rt_ao ? g_rt_ao->GetInt() : 1;
                             const int ao_samples = g_rt_ao_samples ? g_rt_ao_samples->GetInt() : 2;
                             const f32 ao_radius = g_rt_ao_radius ? g_rt_ao_radius->GetFloat() : 2.2f;
                             const f32 ao_strength = g_rt_ao_strength ? g_rt_ao_strength->GetFloat() : 0.7f;
+                            const f32 ao_lit_strength = g_rt_ao_lit_strength ? g_rt_ao_lit_strength->GetFloat() : 0.75f;
                             const int ao_denoise = g_rt_ao_denoise ? g_rt_ao_denoise->GetInt() : 1;
+                            const int ao_debug = g_rt_ao_debug ? g_rt_ao_debug->GetInt() : 0;
                             const auto hc = jobs::hetero_detected_counts();
                             out.FormatLine(
                                 "rt_sample_sched: parallel={}, hint_cores={}, batch_rows={}, min_rows={}, "
-                                "min_parallel_rows={}, max_chunks={} | ao={}, ao_samples={}, ao_radius={}, "
-                                "ao_strength={}, ao_denoise={} | "
+                                "min_parallel_rows={}, max_chunks={}, effective_tile_chunks={} | "
+                                "ao={}, ao_samples={}, ao_radius={}, "
+                                "ao_strength={}, ao_lit_strength={}, ao_denoise={}, ao_debug={} | "
                                 "workers={} hetero={} (p={}, e={})",
                                 en,
                                 ch,
                                 br,
                                 mr,
                                 gate,
-                                max_chunks,
+                                 max_chunks,
+                                 effective_chunks,
                                 ao,
                                 ao_samples,
                                 ao_radius,
                                 ao_strength,
+                                ao_lit_strength,
                                 ao_denoise,
+                                ao_debug,
                                 jobs::JobSystem::Get().worker_count(),
                                 jobs::hetero_is_active() ? 1 : 0,
                                 hc.p_cores,
@@ -158,17 +183,22 @@ void ensure_rt_parallel_cvars() {
 }
 
 u32 rt_ao_sample_count() noexcept {
-    const int samples = g_rt_ao_samples ? g_rt_ao_samples->GetInt() : 2;
-    return std::clamp(static_cast<u32>(samples > 0 ? samples : 2), 1u, 8u);
+    const int samples = g_rt_ao_samples ? g_rt_ao_samples->GetInt() : 4;
+    return std::clamp(static_cast<u32>(samples > 0 ? samples : 4), 1u, 8u);
 }
 
 f32 rt_ao_radius() noexcept {
-    const f32 radius = g_rt_ao_radius ? g_rt_ao_radius->GetFloat() : 2.2f;
+    const f32 radius = g_rt_ao_radius ? g_rt_ao_radius->GetFloat() : 3.0f;
     return std::clamp(radius, 0.05f, 20.0f);
 }
 
 f32 rt_ao_strength() noexcept {
-    const f32 strength = g_rt_ao_strength ? g_rt_ao_strength->GetFloat() : 0.7f;
+    const f32 strength = g_rt_ao_strength ? g_rt_ao_strength->GetFloat() : 1.0f;
+    return std::clamp(strength, 0.0f, 1.0f);
+}
+
+f32 rt_ao_lit_strength() noexcept {
+    const f32 strength = g_rt_ao_lit_strength ? g_rt_ao_lit_strength->GetFloat() : 0.75f;
     return std::clamp(strength, 0.0f, 1.0f);
 }
 
@@ -199,19 +229,35 @@ u32 rt_target_cores() {
     return std::clamp(auto_target, 1u, runtime_max);
 }
 
+bool rt_has_explicit_cores_hint() noexcept {
+    return g_rt_cores_hint && g_rt_cores_hint->GetInt() > 0;
+}
+
+u32 rt_parallel_chunk_limit(u32 work_items) {
+    if (work_items <= 1u)
+        return work_items;
+    u32 chunks = std::clamp(rt_target_cores(), 1u, work_items);
+
+    // The explicit cores hint is a hard cap for sample RT work. The separate
+    // max-chunks CVar is an auto-mode throttle, so it no longer masks runtime
+    // changes like `r_rt_sample_cpu_cores_hint 8` behind the old default of 4.
+    if (!rt_has_explicit_cores_hint()) {
+        const int max_chunks_i = g_rt_parallel_max_chunks ? g_rt_parallel_max_chunks->GetInt() : 4;
+        if (max_chunks_i > 0)
+            chunks = std::min(chunks, static_cast<u32>(max_chunks_i));
+    }
+    return std::clamp(chunks, 1u, work_items);
+}
+
 [[maybe_unused]] u32 rt_rows_grain(u32 rows) {
     const int b = g_rt_batch_rows ? g_rt_batch_rows->GetInt() : 0;
     if (b > 0)
         return std::clamp(static_cast<u32>(b), 1u, std::max(1u, rows));
     const int m = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
     const u32 min_rows = std::clamp(static_cast<u32>(m > 0 ? m : 8), 1u, std::max(1u, rows));
-    const u32 target = rt_target_cores();
-    const u32 rows_from_cores = std::max(1u, (rows + target - 1u) / target);
+    const u32 target_chunks = rt_parallel_chunk_limit(rows);
+    const u32 rows_from_cores = std::max(1u, (rows + target_chunks - 1u) / target_chunks);
     u32 grain = std::clamp(std::max(min_rows, rows_from_cores), 1u, std::max(1u, rows));
-    const int max_chunks_i = g_rt_parallel_max_chunks ? g_rt_parallel_max_chunks->GetInt() : 4;
-    const u32 max_chunks = std::max(1u, static_cast<u32>(max_chunks_i > 0 ? max_chunks_i : 4));
-    const u32 min_grain_for_chunk_cap = std::max(1u, (rows + max_chunks - 1u) / max_chunks);
-    grain = std::max(grain, min_grain_for_chunk_cap);
     return std::clamp(grain, 1u, std::max(1u, rows));
 }
 
@@ -246,7 +292,9 @@ void rt_parallel_tiles(u32 width, u32 height, u32 tile, Fn&& body) {
     }
     if (jobs::JobSystem::Get().worker_count() == 0u)
         jobs::JobSystem::Get().start(0);
-    jobs::JobSystem::Get().parallel_for(0, tile_count, 1, [&](usize ti0, usize ti1) {
+    const u32 chunk_limit = rt_parallel_chunk_limit(tile_count);
+    const u32 grain = std::max(1u, (tile_count + chunk_limit - 1u) / chunk_limit);
+    jobs::JobSystem::Get().parallel_for(0, tile_count, grain, [&](usize ti0, usize ti1) {
         for (usize ti = ti0; ti < ti1; ++ti) {
             const u32 tx = static_cast<u32>(ti % tiles_x);
             const u32 ty = static_cast<u32>(ti / tiles_x);
@@ -264,6 +312,12 @@ struct Args {
     u32 smoke_frames = 0;
     std::string capture_out;
     int rt_ao = -1;
+    int rt_ao_debug = -1;
+    std::string rt_cores_hint;
+    std::string rt_ao_samples;
+    std::string rt_ao_radius;
+    std::string rt_ao_strength;
+    std::string rt_ao_lit_strength;
 };
 
 u32 parse_uint(std::string_view v) noexcept {
@@ -284,6 +338,18 @@ Args parse_args(int argc, char** argv) {
     constexpr std::string_view kCapSp = "--smoke-capture-out";
     constexpr std::string_view kAoEq = "--rt-ao=";
     constexpr std::string_view kAoSp = "--rt-ao";
+    constexpr std::string_view kAoDebugEq = "--rt-ao-debug=";
+    constexpr std::string_view kAoDebugSp = "--rt-ao-debug";
+    constexpr std::string_view kAoSamplesEq = "--rt-ao-samples=";
+    constexpr std::string_view kAoSamplesSp = "--rt-ao-samples";
+    constexpr std::string_view kAoRadiusEq = "--rt-ao-radius=";
+    constexpr std::string_view kAoRadiusSp = "--rt-ao-radius";
+    constexpr std::string_view kAoStrengthEq = "--rt-ao-strength=";
+    constexpr std::string_view kAoStrengthSp = "--rt-ao-strength";
+    constexpr std::string_view kAoLitStrengthEq = "--rt-ao-lit-strength=";
+    constexpr std::string_view kAoLitStrengthSp = "--rt-ao-lit-strength";
+    constexpr std::string_view kRtCoresEq = "--rt-cores=";
+    constexpr std::string_view kRtCoresSp = "--rt-cores";
     for (int i = 1; i < argc; ++i) {
         std::string_view s{argv[i]};
         if (s.starts_with(kFlag)) {
@@ -298,9 +364,57 @@ Args parse_args(int argc, char** argv) {
             a.rt_ao = parse_uint(s.substr(kAoEq.size())) != 0u ? 1 : 0;
         } else if (s == kAoSp && i + 1 < argc) {
             a.rt_ao = parse_uint(std::string_view{argv[++i]}) != 0u ? 1 : 0;
+        } else if (s.starts_with(kAoDebugEq)) {
+            a.rt_ao_debug = parse_uint(s.substr(kAoDebugEq.size())) != 0u ? 1 : 0;
+        } else if (s == kAoDebugSp && i + 1 < argc) {
+            a.rt_ao_debug = parse_uint(std::string_view{argv[++i]}) != 0u ? 1 : 0;
+        } else if (s.starts_with(kAoSamplesEq)) {
+            a.rt_ao_samples = std::string(s.substr(kAoSamplesEq.size()));
+        } else if (s == kAoSamplesSp && i + 1 < argc) {
+            a.rt_ao_samples = argv[++i];
+        } else if (s.starts_with(kAoRadiusEq)) {
+            a.rt_ao_radius = std::string(s.substr(kAoRadiusEq.size()));
+        } else if (s == kAoRadiusSp && i + 1 < argc) {
+            a.rt_ao_radius = argv[++i];
+        } else if (s.starts_with(kAoStrengthEq)) {
+            a.rt_ao_strength = std::string(s.substr(kAoStrengthEq.size()));
+        } else if (s == kAoStrengthSp && i + 1 < argc) {
+            a.rt_ao_strength = argv[++i];
+        } else if (s.starts_with(kAoLitStrengthEq)) {
+            a.rt_ao_lit_strength = std::string(s.substr(kAoLitStrengthEq.size()));
+        } else if (s == kAoLitStrengthSp && i + 1 < argc) {
+            a.rt_ao_lit_strength = argv[++i];
+        } else if (s.starts_with(kRtCoresEq)) {
+            a.rt_cores_hint = std::string(s.substr(kRtCoresEq.size()));
+        } else if (s == kRtCoresSp && i + 1 < argc) {
+            a.rt_cores_hint = argv[++i];
         }
     }
     return a;
+}
+
+void apply_rt_arg_overrides(const Args& args) {
+    if (!args.rt_cores_hint.empty() && g_rt_cores_hint) {
+        g_rt_cores_hint->value = args.rt_cores_hint;
+    }
+    if (args.rt_ao >= 0 && g_rt_ao) {
+        g_rt_ao->value = args.rt_ao != 0 ? "1" : "0";
+    }
+    if (args.rt_ao_debug >= 0 && g_rt_ao_debug) {
+        g_rt_ao_debug->value = args.rt_ao_debug != 0 ? "1" : "0";
+    }
+    if (!args.rt_ao_samples.empty() && g_rt_ao_samples) {
+        g_rt_ao_samples->value = args.rt_ao_samples;
+    }
+    if (!args.rt_ao_radius.empty() && g_rt_ao_radius) {
+        g_rt_ao_radius->value = args.rt_ao_radius;
+    }
+    if (!args.rt_ao_strength.empty() && g_rt_ao_strength) {
+        g_rt_ao_strength->value = args.rt_ao_strength;
+    }
+    if (!args.rt_ao_lit_strength.empty() && g_rt_ao_lit_strength) {
+        g_rt_ao_lit_strength->value = args.rt_ao_lit_strength;
+    }
 }
 
 // ─── Render config ───────────────────────────────────────────────────────
@@ -540,11 +654,14 @@ render::rt::Ray ao_ray(const math::Vec3& position,
     const u32 seed = pixel_index * 0x9e3779b9u + sample_index * 0x85ebca6bu + 0x632be59bu;
     const f32 u1 = hash_unit_float(seed);
     const f32 u2 = hash_unit_float(seed ^ 0xa511e9b3u);
-    const f32 r = std::sqrt(u1);
+    // Contact AO needs horizon/grazing coverage more than pure cosine-weighted
+    // diffuse coverage; otherwise the six direct lights hide the subtle effect.
+    // Bias z toward the tangent plane while still staying safely above it.
+    const f32 z = 0.12f + 0.88f * (u1 * u1);
+    const f32 r = std::sqrt(std::max(0.0f, 1.0f - z * z));
     const f32 phi = math::kTwoPi * u2;
     const f32 x = r * std::cos(phi);
     const f32 y = r * std::sin(phi);
-    const f32 z = std::sqrt(std::max(0.0f, 1.0f - u1));
 
     math::Vec3 dir{};
     dir.x = tangent.x * x + bitangent.x * y + n.x * z;
@@ -662,9 +779,7 @@ int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
     const u32 smoke_frames = args.smoke_frames;
     ensure_rt_parallel_cvars();
-    if (args.rt_ao >= 0 && g_rt_ao) {
-        g_rt_ao->value = args.rt_ao != 0 ? "1" : "0";
-    }
+    apply_rt_arg_overrides(args);
     render::rt::ensure_denoise_console_commands_registered();
 
     platform::WindowDesc desc{};
@@ -736,6 +851,14 @@ int main(int argc, char** argv) {
                                   : std::string{},
                  kNumInstances,
                  kNumLights);
+    PSY_LOG_INFO("sample_12 AO: enabled={}, debug={}, samples={}, radius={}, strength={}, lit_strength={}, denoise={}",
+                 g_rt_ao && g_rt_ao->GetBool() ? 1 : 0,
+                 g_rt_ao_debug && g_rt_ao_debug->GetBool() ? 1 : 0,
+                 rt_ao_sample_count(),
+                 rt_ao_radius(),
+                 rt_ao_strength(),
+                 rt_ao_lit_strength(),
+                 g_rt_ao_denoise && g_rt_ao_denoise->GetBool() ? 1 : 0);
 
     const u64 t0 = platform::Clock::ticks_now();
     u32 frame = 0;
@@ -799,7 +922,9 @@ int main(int argc, char** argv) {
 
         orbit_lights(static_cast<f32>(t), lights);
         const Camera cam = make_orbit_camera(static_cast<f32>(t), aspect);
+        apply_rt_arg_overrides(args);
         const bool ao_enabled = g_rt_ao && g_rt_ao->GetBool();
+        const bool ao_debug = ao_enabled && g_rt_ao_debug && g_rt_ao_debug->GetBool();
         if (ao_enabled && ao_raw.empty()) {
             const usize pixels = static_cast<usize>(kShadowW) * kShadowH;
             ao_raw.assign(pixels, 1.0f);
@@ -858,6 +983,17 @@ int main(int argc, char** argv) {
                 }
             }
         });
+
+        if (smoke_frames > 0 && frame == 0) {
+            const u32 tiles_x = (kShadowW + kRtTile - 1u) / kRtTile;
+            const u32 tiles_y = (kShadowH + kRtTile - 1u) / kRtTile;
+            const u32 tile_count = tiles_x * tiles_y;
+            PSY_LOG_INFO("sample_12 RT scheduler: workers={}, hint={}, target_cores={}, tile_chunks={}",
+                         jobs::JobSystem::Get().worker_count(),
+                         g_rt_cores_hint ? g_rt_cores_hint->GetInt() : 0,
+                         rt_target_cores(),
+                         rt_parallel_chunk_limit(tile_count));
+        }
 
         // ── Pass 1b: short-ray ambient occlusion @ low-res. ─────────────
         // AO is deliberately budgeted: up to 8 deterministic hemisphere
@@ -931,6 +1067,24 @@ int main(int argc, char** argv) {
                 render::rt::denoise_shadows(ao_in, ao_filtered.data());
             } else {
                 ao_filtered = ao_raw;
+            }
+
+            if (smoke_frames > 0 && frame == 0) {
+                usize hit_count = 0;
+                f32 ao_min = 1.0f;
+                f32 ao_sum = 0.0f;
+                for (usize i = 0; i < hits.size(); ++i) {
+                    if (!hits[i].hit)
+                        continue;
+                    const f32 v = std::clamp(ao_filtered[i], 0.0f, 1.0f);
+                    ao_min = std::min(ao_min, v);
+                    ao_sum += v;
+                    ++hit_count;
+                }
+                PSY_LOG_INFO("sample_12 AO stats: hit_pixels={}, ao_min={}, ao_avg={}",
+                             hit_count,
+                             ao_min,
+                             hit_count > 0 ? ao_sum / static_cast<f32>(hit_count) : 1.0f);
             }
         }
 
@@ -1029,20 +1183,28 @@ int main(int argc, char** argv) {
             for (u32 y = y0; y < y1; ++y) {
                 for (u32 x = x0; x < x1; ++x) {
                     const usize idx = static_cast<usize>(y) * kShadowW + x;
+                    if (ao_debug) {
+                        const f32 ao_visibility = std::clamp(ao_filtered[idx], 0.0f, 1.0f);
+                        const u32 v = clamp_u8(ao_visibility * 255.0f);
+                        shadow_pixels[idx] = pack_rgba8(v, v, v);
+                        continue;
+                    }
                     if (!hits[idx].hit)
                         continue;  // sky already written
                     const PixelHit& ph = hits[idx];
                     // Ambient floor so unlit faces aren't pure black.
                     const f32 amb = 0.10f;
                     f32 ambient_scale = amb * 30.0f;
+                    f32 direct_scale = 1.0f;
                     if (ao_enabled) {
                         const f32 ao_visibility = std::clamp(ao_filtered[idx], 0.0f, 1.0f);
                         const f32 ao_term = 1.0f - rt_ao_strength() * (1.0f - ao_visibility);
                         ambient_scale *= ao_term;
+                        direct_scale = 1.0f - rt_ao_lit_strength() * (1.0f - ao_visibility);
                     }
-                    const f32 r = ph.r * ambient_scale + accum[idx * 3 + 0] * 18.0f;
-                    const f32 g = ph.g * ambient_scale + accum[idx * 3 + 1] * 18.0f;
-                    const f32 b = ph.b * ambient_scale + accum[idx * 3 + 2] * 18.0f;
+                    const f32 r = ph.r * ambient_scale + accum[idx * 3 + 0] * 18.0f * direct_scale;
+                    const f32 g = ph.g * ambient_scale + accum[idx * 3 + 1] * 18.0f * direct_scale;
+                    const f32 b = ph.b * ambient_scale + accum[idx * 3 + 2] * 18.0f * direct_scale;
                     shadow_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
                 }
             }
