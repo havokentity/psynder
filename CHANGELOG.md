@@ -1,5 +1,70 @@
 # Changelog
 
+## v1.0.7 — RT frame SDK, AO renderer, terrain scheduling, and console polish
+
+This release turns the post-1.0 RT samples into reusable engine infrastructure,
+adds CPU scheduling controls for heavier rendering paths, and polishes the
+developer console workflow. CI was green on `main` before the release tag was
+published.
+
+### Engine RT / reusable frame renderer
+- Added `render::rt::FrameRenderer`, a reusable CPU raytraced frame renderer
+  that owns primary visibility, direct lighting, 8-wide shadow packets,
+  ambient occlusion, denoising integration, and low-resolution upsampling.
+- Promoted common RT app/sample helpers into the engine RT API:
+  `FrameCamera`, `FrameLight`, `make_frame_camera`, `primary_ray`, `reflect`,
+  `upsample_bilinear_rgba8`, and row scheduling helpers for custom RT passes.
+- Added tile-parallel and row-parallel scheduling paths with CPU-core hints,
+  auto chunk selection, batch controls, and scheduler dump commands.
+- Expanded RT ambient occlusion controls: AO enable/debug, sample count,
+  radius, ambient strength, direct-light strength, and denoise toggle.
+- Optimized BVH/TLAS traversal and denoising code paths used by the heavier RT
+  demos.
+
+### RT samples
+- Refactored `sample_12_rt_showcase` to hand TLAS, camera, lights, and
+  instance materials to the engine `FrameRenderer` instead of carrying a local
+  renderer implementation.
+- Swept the RT-facing samples (`sample_05_hybrid_night`, `sample_11_rt_spheres`,
+  `sample_12_rt_showcase`, and `sample_13_rt_quake`) to use shared engine RT
+  camera/light/helper APIs rather than duplicated sample-local structs and
+  functions.
+- Added row-parallel scheduling to the hand-written RT passes in samples 05,
+  11, and 13 through the shared RT scheduler API.
+- Kept smoke-mode behavior deterministic for the RT samples while improving the
+  runtime tuning surface for interactive/perf testing.
+
+### Scene graph integration
+- Added a lightweight `scene::SceneGraph` path for cached world transforms and
+  analytic sphere instances.
+- Taught the RT frame renderer to trace scene-graph analytic spheres even when
+  no TLAS is supplied, giving tools/samples a simple SDK path for procedural RT
+  content.
+- Added unit coverage for scene graph parent/child transform propagation and
+  analytic sphere gathering.
+
+### Terrain raymarch scheduling
+- Parallelized the outdoor terrain raymarch path through the job system.
+- Added terrain scheduler CVars for CPU core hints, minimum rows per core, and
+  explicit batch rows.
+- Added `r_terrain_sched_dump` plus a developer-console terrain autotune command
+  that evaluates candidate scheduler settings and restores previous values on
+  stop.
+- Added a SIMD-oriented terrain raymarch loop optimization pass.
+
+### Developer console polish
+- Added console config load/save support.
+- Improved autocomplete behavior so Escape suppresses the popup until typing
+  resumes.
+- Added line wrapping, watermark rendering, and configurable visual scrollback.
+
+### Tests and validation
+- Added focused RT frame helper tests for camera construction, primary rays,
+  reflection math, and row scheduler behavior.
+- Added RT analytic-sphere renderer coverage.
+- Applied the CI-required `clang-format-17` formatting pass after the first
+  `main` CI run caught formatting drift.
+
 ## v1.0.0 — DESIGN.md M0–M8 all covered, 632/632 tests 🚀
 
 Wave E closes the parallel-agent push. Psynder hits v1.0.
