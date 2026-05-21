@@ -20,6 +20,7 @@
 //   --smoke-frames=N         Headless CI run for N frames then exit.
 //   --smoke-frames N         Space-separated form (matches Goldens.cmake).
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
+//   --rt-ao=0|1              Override sample AO CVar for capture/perf checks.
 
 #include "common/PngWriter.h"
 
@@ -62,6 +63,11 @@ console::CVar* g_rt_batch_rows = nullptr;
 console::CVar* g_rt_min_rows = nullptr;
 console::CVar* g_rt_parallel_min_rows_gate = nullptr;
 console::CVar* g_rt_parallel_max_chunks = nullptr;
+console::CVar* g_rt_ao = nullptr;
+console::CVar* g_rt_ao_samples = nullptr;
+console::CVar* g_rt_ao_radius = nullptr;
+console::CVar* g_rt_ao_strength = nullptr;
+console::CVar* g_rt_ao_denoise = nullptr;
 
 void ensure_rt_parallel_cvars() {
     static bool once = false;
@@ -93,6 +99,26 @@ void ensure_rt_parallel_cvars() {
                                                 "4",
                                                 "Maximum row chunks per RT sample pass",
                                                 console::CVAR_ARCHIVE);
+    g_rt_ao = con.RegisterCVar("r_rt_sample_ao",
+                               "0",
+                               "Enable sample RT ambient occlusion (0/1)",
+                               console::CVAR_ARCHIVE);
+    g_rt_ao_samples = con.RegisterCVar("r_rt_sample_ao_samples",
+                                       "2",
+                                       "AO rays per low-res hit pixel (1..8)",
+                                       console::CVAR_ARCHIVE);
+    g_rt_ao_radius = con.RegisterCVar("r_rt_sample_ao_radius",
+                                      "2.2",
+                                      "AO ray max distance in world units",
+                                      console::CVAR_ARCHIVE);
+    g_rt_ao_strength = con.RegisterCVar("r_rt_sample_ao_strength",
+                                        "0.70",
+                                        "AO ambient darkening strength (0..1)",
+                                        console::CVAR_ARCHIVE);
+    g_rt_ao_denoise = con.RegisterCVar("r_rt_sample_ao_denoise",
+                                       "1",
+                                       "Edge-aware denoise sample AO visibility (0/1)",
+                                       console::CVAR_ARCHIVE);
     con.RegisterCommand("r_rt_sample_sched_dump",
                         "Print sample RT scheduler settings",
                         [](std::span<const std::string_view>, console::Output& out) {
@@ -102,10 +128,16 @@ void ensure_rt_parallel_cvars() {
                             const int mr = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
                             const int gate = g_rt_parallel_min_rows_gate ? g_rt_parallel_min_rows_gate->GetInt() : 192;
                             const int max_chunks = g_rt_parallel_max_chunks ? g_rt_parallel_max_chunks->GetInt() : 4;
+                            const int ao = g_rt_ao ? g_rt_ao->GetInt() : 1;
+                            const int ao_samples = g_rt_ao_samples ? g_rt_ao_samples->GetInt() : 2;
+                            const f32 ao_radius = g_rt_ao_radius ? g_rt_ao_radius->GetFloat() : 2.2f;
+                            const f32 ao_strength = g_rt_ao_strength ? g_rt_ao_strength->GetFloat() : 0.7f;
+                            const int ao_denoise = g_rt_ao_denoise ? g_rt_ao_denoise->GetInt() : 1;
                             const auto hc = jobs::hetero_detected_counts();
                             out.FormatLine(
                                 "rt_sample_sched: parallel={}, hint_cores={}, batch_rows={}, min_rows={}, "
-                                "min_parallel_rows={}, max_chunks={} | "
+                                "min_parallel_rows={}, max_chunks={} | ao={}, ao_samples={}, ao_radius={}, "
+                                "ao_strength={}, ao_denoise={} | "
                                 "workers={} hetero={} (p={}, e={})",
                                 en,
                                 ch,
@@ -113,11 +145,44 @@ void ensure_rt_parallel_cvars() {
                                 mr,
                                 gate,
                                 max_chunks,
+                                ao,
+                                ao_samples,
+                                ao_radius,
+                                ao_strength,
+                                ao_denoise,
                                 jobs::JobSystem::Get().worker_count(),
                                 jobs::hetero_is_active() ? 1 : 0,
                                 hc.p_cores,
                                 hc.e_cores);
                         });
+}
+
+u32 rt_ao_sample_count() noexcept {
+    const int samples = g_rt_ao_samples ? g_rt_ao_samples->GetInt() : 2;
+    return std::clamp(static_cast<u32>(samples > 0 ? samples : 2), 1u, 8u);
+}
+
+f32 rt_ao_radius() noexcept {
+    const f32 radius = g_rt_ao_radius ? g_rt_ao_radius->GetFloat() : 2.2f;
+    return std::clamp(radius, 0.05f, 20.0f);
+}
+
+f32 rt_ao_strength() noexcept {
+    const f32 strength = g_rt_ao_strength ? g_rt_ao_strength->GetFloat() : 0.7f;
+    return std::clamp(strength, 0.0f, 1.0f);
+}
+
+u32 hash_u32(u32 x) noexcept {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+f32 hash_unit_float(u32 x) noexcept {
+    return static_cast<f32>(hash_u32(x) >> 8) * (1.0f / 16777216.0f);
 }
 
 u32 rt_target_cores() {
@@ -198,6 +263,7 @@ void rt_parallel_tiles(u32 width, u32 height, u32 tile, Fn&& body) {
 struct Args {
     u32 smoke_frames = 0;
     std::string capture_out;
+    int rt_ao = -1;
 };
 
 u32 parse_uint(std::string_view v) noexcept {
@@ -216,6 +282,8 @@ Args parse_args(int argc, char** argv) {
     constexpr std::string_view kFlagSp = "--smoke-frames";
     constexpr std::string_view kCapEq = "--smoke-capture-out=";
     constexpr std::string_view kCapSp = "--smoke-capture-out";
+    constexpr std::string_view kAoEq = "--rt-ao=";
+    constexpr std::string_view kAoSp = "--rt-ao";
     for (int i = 1; i < argc; ++i) {
         std::string_view s{argv[i]};
         if (s.starts_with(kFlag)) {
@@ -226,6 +294,10 @@ Args parse_args(int argc, char** argv) {
             a.capture_out = std::string(s.substr(kCapEq.size()));
         } else if (s == kCapSp && i + 1 < argc) {
             a.capture_out = argv[++i];
+        } else if (s.starts_with(kAoEq)) {
+            a.rt_ao = parse_uint(s.substr(kAoEq.size())) != 0u ? 1 : 0;
+        } else if (s == kAoSp && i + 1 < argc) {
+            a.rt_ao = parse_uint(std::string_view{argv[++i]}) != 0u ? 1 : 0;
         }
     }
     return a;
@@ -454,6 +526,44 @@ render::rt::Ray primary_ray(const Camera& cam, f32 nx, f32 ny) {
     return r;
 }
 
+render::rt::Ray ao_ray(const math::Vec3& position,
+                       const math::Vec3& normal,
+                       u32 pixel_index,
+                       u32 sample_index,
+                       f32 radius) noexcept {
+    const math::Vec3 n = math::normalize(normal);
+    const math::Vec3 up = std::fabs(n.y) < 0.95f ? math::Vec3{0.0f, 1.0f, 0.0f}
+                                                 : math::Vec3{1.0f, 0.0f, 0.0f};
+    const math::Vec3 tangent = math::normalize(math::cross(up, n));
+    const math::Vec3 bitangent = math::cross(n, tangent);
+
+    const u32 seed = pixel_index * 0x9e3779b9u + sample_index * 0x85ebca6bu + 0x632be59bu;
+    const f32 u1 = hash_unit_float(seed);
+    const f32 u2 = hash_unit_float(seed ^ 0xa511e9b3u);
+    const f32 r = std::sqrt(u1);
+    const f32 phi = math::kTwoPi * u2;
+    const f32 x = r * std::cos(phi);
+    const f32 y = r * std::sin(phi);
+    const f32 z = std::sqrt(std::max(0.0f, 1.0f - u1));
+
+    math::Vec3 dir{};
+    dir.x = tangent.x * x + bitangent.x * y + n.x * z;
+    dir.y = tangent.y * x + bitangent.y * y + n.y * z;
+    dir.z = tangent.z * x + bitangent.z * y + n.z * z;
+    dir = math::normalize(dir);
+
+    render::rt::Ray ray{};
+    ray.origin = {
+        position.x + n.x * 2.0e-3f,
+        position.y + n.y * 2.0e-3f,
+        position.z + n.z * 2.0e-3f,
+    };
+    ray.direction = dir;
+    ray.t_min = 1.0e-4f;
+    ray.t_max = radius;
+    return ray;
+}
+
 // ─── Lights ──────────────────────────────────────────────────────────────
 struct Light {
     math::Vec3 position;
@@ -552,6 +662,9 @@ int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
     const u32 smoke_frames = args.smoke_frames;
     ensure_rt_parallel_cvars();
+    if (args.rt_ao >= 0 && g_rt_ao) {
+        g_rt_ao->value = args.rt_ao != 0 ? "1" : "0";
+    }
     render::rt::ensure_denoise_console_commands_registered();
 
     platform::WindowDesc desc{};
@@ -641,6 +754,10 @@ int main(int argc, char** argv) {
     };
     std::vector<PixelHit> hits(static_cast<usize>(kShadowW) * kShadowH);
     std::vector<f32> accum(static_cast<usize>(kShadowW) * kShadowH * 3u, 0.0f);
+    std::vector<f32> ao_raw;
+    std::vector<f32> ao_filtered;
+    std::vector<f32> hit_depth;
+    std::vector<f32> hit_normals;
 
     // 60-sample ring of frame-times (ms) for the debug HUD strip chart.
     constexpr u32 kFrameHistory = 60;
@@ -682,6 +799,14 @@ int main(int argc, char** argv) {
 
         orbit_lights(static_cast<f32>(t), lights);
         const Camera cam = make_orbit_camera(static_cast<f32>(t), aspect);
+        const bool ao_enabled = g_rt_ao && g_rt_ao->GetBool();
+        if (ao_enabled && ao_raw.empty()) {
+            const usize pixels = static_cast<usize>(kShadowW) * kShadowH;
+            ao_raw.assign(pixels, 1.0f);
+            ao_filtered.assign(pixels, 1.0f);
+            hit_depth.assign(pixels, 1.0e6f);
+            hit_normals.assign(pixels * 3u, 0.0f);
+        }
 
         // ── Pass 1: primary visibility @ low-res (256×144). ─────────────
         // Cast one primary ray per low-res pixel against the TLAS and
@@ -699,6 +824,12 @@ int main(int argc, char** argv) {
                     ph.hit = h.hit;
                     if (!h.hit) {
                         shadow_pixels[idx] = sample_sky(ray.direction);
+                        if (ao_enabled) {
+                            hit_depth[idx] = 1.0e6f;
+                            hit_normals[idx * 3u + 0u] = 0.0f;
+                            hit_normals[idx * 3u + 1u] = 1.0f;
+                            hit_normals[idx * 3u + 2u] = 0.0f;
+                        }
                     } else {
                         // Surface color: field[instance] tint, or dim grey for
                         // the ground (the last instance index).
@@ -716,11 +847,92 @@ int main(int argc, char** argv) {
                             ray.origin.z + ray.direction.z * h.t,
                         };
                         ph.normal = math::normalize(h.normal);
+                        if (ao_enabled) {
+                            hit_depth[idx] = h.t;
+                            hit_normals[idx * 3u + 0u] = ph.normal.x;
+                            hit_normals[idx * 3u + 1u] = ph.normal.y;
+                            hit_normals[idx * 3u + 2u] = ph.normal.z;
+                        }
                     }
                     hits[idx] = ph;
                 }
             }
         });
+
+        // ── Pass 1b: short-ray ambient occlusion @ low-res. ─────────────
+        // AO is deliberately budgeted: up to 8 deterministic hemisphere
+        // rays per visible low-res pixel, packetized through the same TLAS
+        // shadow path. It only darkens the ambient term below, so direct
+        // colored light remains crisp.
+        if (ao_enabled) {
+            const u32 ao_samples = rt_ao_sample_count();
+            const f32 ao_radius = rt_ao_radius();
+            std::fill(ao_raw.begin(), ao_raw.end(), 1.0f);
+            std::fill(ao_filtered.begin(), ao_filtered.end(), 1.0f);
+            rt_parallel_tiles(kShadowW, kShadowH, kRtTile, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
+                render::rt::ShadowPacket8 pkt{};
+                u32 in_pkt = 0;
+                u32 pkt_idx[8]{};
+                bool pkt_real[8]{};
+
+                auto dispatch_ao = [&]() {
+                    for (u32 i = in_pkt; i < 8; ++i) {
+                        pkt.rays[i].origin = {0.0f, 1.0e6f, 0.0f};
+                        pkt.rays[i].direction = {0.0f, 1.0f, 0.0f};
+                        pkt.rays[i].t_min = 1.0e-4f;
+                        pkt.rays[i].t_max = 1.0f;
+                        pkt_real[i] = false;
+                    }
+                    render::rt::trace_shadow_packet(tlas, pkt);
+                    const f32 weight = 1.0f / static_cast<f32>(ao_samples);
+                    for (u32 i = 0; i < 8; ++i) {
+                        if (!pkt_real[i])
+                            continue;
+                        if (!pkt.occluded[i])
+                            ao_raw[pkt_idx[i]] += weight;
+                    }
+                    in_pkt = 0;
+                };
+
+                for (u32 y = y0; y < y1; ++y) {
+                    for (u32 x = x0; x < x1; ++x) {
+                        const usize px = static_cast<usize>(y) * kShadowW + x;
+                        const PixelHit& ph = hits[px];
+                        if (!ph.hit)
+                            continue;
+
+                        ao_raw[px] = 0.0f;
+                        for (u32 si = 0; si < ao_samples; ++si) {
+                            u32& idx = in_pkt;
+                            pkt.rays[idx] = ao_ray(ph.position,
+                                                   ph.normal,
+                                                   static_cast<u32>(px),
+                                                   si,
+                                                   ao_radius);
+                            pkt_idx[idx] = static_cast<u32>(px);
+                            pkt_real[idx] = true;
+                            ++idx;
+                            if (idx == 8)
+                                dispatch_ao();
+                        }
+                    }
+                }
+                if (in_pkt > 0)
+                    dispatch_ao();
+            });
+
+            if (g_rt_ao_denoise && g_rt_ao_denoise->GetBool()) {
+                render::rt::DenoiseInput ao_in{};
+                ao_in.shadow_visibility = ao_raw.data();
+                ao_in.depth = hit_depth.data();
+                ao_in.normals = hit_normals.data();
+                ao_in.width = kShadowW;
+                ao_in.height = kShadowH;
+                render::rt::denoise_shadows(ao_in, ao_filtered.data());
+            } else {
+                ao_filtered = ao_raw;
+            }
+        }
 
         // ── Pass 2: per-pixel shadow trace (packets of 8). ──────────────
         // For each light, fill ShadowPacket8 with 8 successive hit-pixels'
@@ -822,9 +1034,15 @@ int main(int argc, char** argv) {
                     const PixelHit& ph = hits[idx];
                     // Ambient floor so unlit faces aren't pure black.
                     const f32 amb = 0.10f;
-                    const f32 r = ph.r * amb * 30.0f + accum[idx * 3 + 0] * 18.0f;
-                    const f32 g = ph.g * amb * 30.0f + accum[idx * 3 + 1] * 18.0f;
-                    const f32 b = ph.b * amb * 30.0f + accum[idx * 3 + 2] * 18.0f;
+                    f32 ambient_scale = amb * 30.0f;
+                    if (ao_enabled) {
+                        const f32 ao_visibility = std::clamp(ao_filtered[idx], 0.0f, 1.0f);
+                        const f32 ao_term = 1.0f - rt_ao_strength() * (1.0f - ao_visibility);
+                        ambient_scale *= ao_term;
+                    }
+                    const f32 r = ph.r * ambient_scale + accum[idx * 3 + 0] * 18.0f;
+                    const f32 g = ph.g * ambient_scale + accum[idx * 3 + 1] * 18.0f;
+                    const f32 b = ph.b * ambient_scale + accum[idx * 3 + 2] * 18.0f;
                     shadow_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
                 }
             }
