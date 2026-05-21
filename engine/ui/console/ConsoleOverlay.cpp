@@ -8,6 +8,7 @@
 
 #include "ConsoleOverlay.h"
 
+#include "core/console/Completion.h"
 #include "core/console/Console.h"
 #include "ui/imm/DebugHud.h"
 #include "ui/imm/Imm.h"
@@ -358,42 +359,18 @@ bool parse_resolution(std::string_view s, u32& w, u32& h) noexcept {
     return to_u(s.substr(0, x), w) && to_u(s.substr(x + 1), h);
 }
 
-// Candidate completions for the cursor token. If the line's first token is a
-// cvar with a preset list (allowed_values) and the cursor sits on a later
-// (value) token, we complete from those presets — so `r_resolution <Tab>`
-// lists the modes. Otherwise we complete command + cvar names.
+// Candidate completions for the cursor token, via the shared dmonte-ported
+// Completion engine: prefix > substring > fuzzy scoring (so `res` matches
+// `r_resolution`), and value-position aware (so once the first token is a
+// cvar with presets, it lists those — e.g. `r_resolution <Tab>`).
 std::vector<std::string> gather_matches(const State& s) noexcept {
-    std::vector<std::string> matches;
-
-    const std::string_view line{s.input};
-    usize i = 0;
-    while (i < line.size() && line[i] == ' ')
-        ++i;
-    const usize first_begin = i;
-    while (i < line.size() && line[i] != ' ')
-        ++i;
-    const std::string_view first = line.substr(first_begin, i - first_begin);
-    if (!first.empty() && s.cursor > i) {  // cursor is on a value token
-        if (auto* cv = psynder::console::Console::Get().FindCVar(first);
-            cv != nullptr && !cv->allowed_values.empty()) {
-            const std::string_view vtok = token_at_cursor(s);
-            for (const std::string& av : cv->allowed_values)
-                if (av.size() >= vtok.size() && std::string_view{av}.substr(0, vtok.size()) == vtok)
-                    matches.push_back(av);
-            std::sort(matches.begin(), matches.end());
-            return matches;
-        }
-    }
-
-    const std::string_view tok = token_at_cursor(s);
-    if (tok.empty())
-        return matches;
-    auto& con = psynder::console::Console::Get();
-    con.EnumerateCommands(tok, [&](psynder::console::Command& c) { matches.push_back(c.name); });
-    con.EnumerateCVars(tok, [&](psynder::console::CVar& v) { matches.push_back(v.name); });
-    std::sort(matches.begin(), matches.end());
-    matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
-    return matches;
+    const auto token = psynder::console::CurrentToken(s.input, s.cursor);
+    const auto ranked = psynder::console::BuildCompletions(token, /*max_results*/ 24);
+    std::vector<std::string> out;
+    out.reserve(ranked.size());
+    for (const auto& m : ranked)
+        out.push_back(m.name);
+    return out;
 }
 
 // ─── Input handling ──────────────────────────────────────────────────────────
@@ -519,11 +496,15 @@ usize token_start(const State& s) noexcept {
 // Rebuild the completion popup from the current cursor token. Resets the
 // highlighted row when the token changes so a fresh prefix starts at the top.
 void refresh_completion(State& s) noexcept {
-    const std::string_view tok = token_at_cursor(s);
+    const auto token = psynder::console::CurrentToken(s.input, s.cursor);
     s.comp_items = gather_matches(s);
-    s.comp_active = !s.comp_items.empty() && !tok.empty();
-    if (std::string{tok} != s.comp_token) {
-        s.comp_token.assign(tok);
+    // Show the popup while typing a token, OR whenever the cursor is in a
+    // value position (so right after "r_resolution " the option list appears
+    // before any value char is typed). Hidden for an empty FIRST token so
+    // merely opening the console doesn't dump the whole registry.
+    s.comp_active = !s.comp_items.empty() && (!token.text.empty() || !token.is_token0);
+    if (token.text != s.comp_token) {
+        s.comp_token = token.text;
         s.comp_sel = 0;
     }
     const int n = static_cast<int>(s.comp_items.size());
@@ -583,6 +564,12 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         const usize n = utf8_prev_len(s.input, s.cursor);
         s.input.erase(s.cursor - n, n);
         s.cursor -= n;
+        s.history_pos = -1;
+    }
+    // Forward delete: remove the char AT the caret (the one to its right).
+    if (key_repeat(s, input, KeyCode::Delete, dt) && s.cursor < s.input.size()) {
+        const usize n = utf8_next_len(s.input, s.cursor);
+        s.input.erase(s.cursor, n);
         s.history_pos = -1;
     }
     if (key_repeat(s, input, KeyCode::Left, dt) && s.cursor > 0)

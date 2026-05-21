@@ -55,6 +55,7 @@ constexpr u16 kVK_ANSI_J = 0x26; constexpr u16 kVK_ANSI_K = 0x28;
 constexpr u16 kVK_ANSI_N = 0x2D; constexpr u16 kVK_ANSI_M = 0x2E;
 constexpr u16 kVK_Return    = 0x24; constexpr u16 kVK_Tab    = 0x30;
 constexpr u16 kVK_Space     = 0x31; constexpr u16 kVK_Delete = 0x33;
+constexpr u16 kVK_ForwardDelete = 0x75;  // Del / fn+Delete (forward delete)
 constexpr u16 kVK_Escape    = 0x35; constexpr u16 kVK_LShift = 0x38;
 constexpr u16 kVK_LControl  = 0x3B; constexpr u16 kVK_LOption= 0x3A;
 constexpr u16 kVK_RShift    = 0x3C; constexpr u16 kVK_RControl=0x3E;
@@ -74,6 +75,7 @@ KeyCode translate_key(unsigned short vk) {
         case kVK_Space:       return KeyCode::Space;
         case kVK_Tab:         return KeyCode::Tab;
         case kVK_Delete:      return KeyCode::Backspace;
+        case kVK_ForwardDelete: return KeyCode::Delete;
         case kVK_LeftArrow:   return KeyCode::Left;
         case kVK_RightArrow:  return KeyCode::Right;
         case kVK_UpArrow:     return KeyCode::Up;

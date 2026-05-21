@@ -101,6 +101,7 @@ enum class KeyCode : u16 {
     Space,
     Tab,
     Backspace,
+    Delete,  // forward delete (Del / fn+Delete) — removes the char AT the caret
     Left,
     Right,
     Up,

@@ -34,6 +34,7 @@ inline constexpr std::uint32_t KEY_0 = 11;
 inline constexpr std::uint32_t KEY_MINUS = 12;
 inline constexpr std::uint32_t KEY_EQUAL = 13;
 inline constexpr std::uint32_t KEY_BACKSPACE = 14;
+inline constexpr std::uint32_t KEY_DELETE = 111;  // forward delete
 inline constexpr std::uint32_t KEY_TAB = 15;
 inline constexpr std::uint32_t KEY_Q = 16;
 inline constexpr std::uint32_t KEY_W = 17;
@@ -100,6 +101,7 @@ inline constexpr std::uint32_t XK_Escape = 0xFF1B;
 inline constexpr std::uint32_t XK_Return = 0xFF0D;
 inline constexpr std::uint32_t XK_Tab = 0xFF09;
 inline constexpr std::uint32_t XK_BackSpace = 0xFF08;
+inline constexpr std::uint32_t XK_Delete = 0xFFFF;  // forward delete
 inline constexpr std::uint32_t XK_space = 0x0020;
 inline constexpr std::uint32_t XK_Left = 0xFF51;
 inline constexpr std::uint32_t XK_Up = 0xFF52;
@@ -143,6 +145,8 @@ constexpr KeyCode keycode_from_evdev(std::uint32_t c) noexcept {
             return KeyCode::Tab;
         case KEY_BACKSPACE:
             return KeyCode::Backspace;
+        case KEY_DELETE:
+            return KeyCode::Delete;
         case KEY_LEFT:
             return KeyCode::Left;
         case KEY_RIGHT:
@@ -258,6 +262,8 @@ constexpr KeyCode keycode_from_xkb(std::uint32_t k) noexcept {
             return KeyCode::Tab;
         case XK_BackSpace:
             return KeyCode::Backspace;
+        case XK_Delete:
+            return KeyCode::Delete;
         case XK_space:
             return KeyCode::Space;
         case XK_Left:

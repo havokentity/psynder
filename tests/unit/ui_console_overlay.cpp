@@ -275,6 +275,74 @@ TEST_CASE("console: Escape clears the prompt and keeps the console open", "[ui][
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: fuzzy 'res' completes to r_resolution", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.SetCVarOverride("r_resolution", "1280x720");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("res");
+    tick(in);  // fuzzy popup -> r_resolution at the top
+    in.press(KeyCode::Tab);
+    tick(in);  // accept -> prompt becomes "r_resolution "
+    in.type("1920x1080");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("r_resolution")->value == "1920x1080");
+
+    con.SetCVarOverride("r_resolution", "1280x720");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: 'res 1920x1080' smart-resolves and executes", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.SetCVarOverride("r_resolution", "1280x720");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("res 1920x1080");  // typed as the abbreviation, never expanded
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("r_resolution")->value == "1920x1080");
+
+    con.SetCVarOverride("r_resolution", "1280x720");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: forward Delete removes the char at the caret", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.SetCVarOverride("r_fullscreen", "0");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("Xr_fullscreen 1");  // leading junk char to forward-delete
+    tick(in);
+    // Walk the caret to the very start (clamps at 0).
+    for (int i = 0; i < 20; ++i) {
+        in.press(KeyCode::Left);
+        tick(in);
+    }
+    in.press(KeyCode::Delete);  // removes the 'X' AT the caret
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("r_fullscreen")->value == "1");
+
+    con.SetCVarOverride("r_fullscreen", "0");
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: draw into a framebuffer paints the panel without crashing", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(true);
