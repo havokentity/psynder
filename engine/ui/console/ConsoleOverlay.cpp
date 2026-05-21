@@ -23,6 +23,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -190,6 +191,16 @@ void push_blob(State& s, std::string_view blob, u32 colour) noexcept {
     }
 }
 
+const std::string& console_cfg_path() {
+    static const std::string path = [] {
+        const std::string base = platform::user_config_dir();
+        if (base.empty())
+            return std::string{"psynder.cfg"};
+        return base + "/psynder.cfg";
+    }();
+    return path;
+}
+
 // Defined below (near the autocomplete helpers); used by r_resolution's
 // on_change handler registered in ensure_init.
 bool parse_resolution(std::string_view s, u32& w, u32& h) noexcept;
@@ -273,6 +284,27 @@ void ensure_init(State& s) noexcept {
     s.initialised = true;
 
     auto& con = psynder::console::Console::Get();
+
+    static bool cfg_loaded = false;
+    if (!cfg_loaded) {
+        cfg_loaded = true;
+        std::error_code ec;
+        if (std::filesystem::exists(console_cfg_path(), ec)) {
+            con.LoadFromFile(console_cfg_path());
+        }
+        static bool cfg_save_registered = false;
+        if (!cfg_save_registered) {
+            cfg_save_registered = true;
+            std::atexit([] {
+                std::error_code mk_ec;
+                const std::filesystem::path p{console_cfg_path()};
+                if (!p.parent_path().empty()) {
+                    std::filesystem::create_directories(p.parent_path(), mk_ec);
+                }
+                psynder::console::Console::Get().SaveArchivedCvars(console_cfg_path());
+            });
+        }
+    }
     con.RegisterCommand("clear",
                         "Clear the console scrollback.",
                         [](std::span<const std::string_view>, psynder::console::Output&) {
@@ -364,7 +396,8 @@ void ensure_init(State& s) noexcept {
 
     con.RegisterCVar("r_console_watermark",
                      "Copyright (c) Rajesh D'Monte 2026 - MIT License",
-                     "Top-right console watermark text.");
+                     "Top-right console watermark text.",
+                     psynder::console::CVAR_ARCHIVE);
 
     push_line(s, "Psynder console.  `~` close   Tab complete   Up/Down history   `help`", kColBannerA);
     push_line(s, "------------------------------------------------------------", kColBannerB);
