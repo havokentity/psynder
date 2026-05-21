@@ -16,8 +16,11 @@
 #include "world/outdoor/Spline_internal.h"
 
 #include "asset/Vfs.h"
+#include "core/console/Console.h"
+#include "core/hardware/CpuFeatures.h"
 #include "core/Log.h"
 #include "jobs/JobSystem.h"
+#include "jobs/JobSystemHetero.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
 
@@ -66,6 +69,179 @@ struct RaySlot {
 constexpr usize kMaxTerrains = 16;
 Slot g_mesh_slots[kMaxTerrains];
 RaySlot g_ray_slots[kMaxTerrains];
+
+PSY_CVAR(r_terrain_cpu_cores_hint,
+         "0",
+         "Preferred terrain CPU cores (0=auto; auto uses perf-cores-2 when possible)",
+         console::CVAR_ARCHIVE);
+PSY_CVAR(r_terrain_batch_rows,
+         "0",
+         "Rows per terrain job batch (0=auto from core hint)",
+         console::CVAR_ARCHIVE);
+PSY_CVAR(r_terrain_min_rows_per_core,
+         "8",
+         "Minimum rows per terrain worker chunk in auto mode",
+         console::CVAR_ARCHIVE);
+
+struct TerrainSchedSnapshot {
+    bool valid = false;
+    u32 rows = 0;
+    i32 core_hint = 0;
+    u32 target_cores = 0;
+    i32 min_rows = 0;
+    u32 batch_rows = 0;
+    u32 chunks = 0;
+    bool hetero = false;
+    u32 p_cores = 0;
+    u32 e_cores = 0;
+    u32 workers = 0;
+    u32 latency_workers = 0;
+    u32 throughput_workers = 0;
+};
+
+TerrainSchedSnapshot g_terrain_sched_snapshot{};
+
+PSY_COMMAND(r_terrain_sched_dump,
+            "Print terrain scheduler core/batch snapshot from the latest frame",
+            [](std::span<const std::string_view> /*args*/, console::Output& out) {
+                if (!g_terrain_sched_snapshot.valid) {
+                    out.PrintLine("terrain_sched: no frame rendered yet");
+                    return;
+                }
+                const auto& s = g_terrain_sched_snapshot;
+                out.FormatLine(
+                    "terrain_sched: rows={}, hint_cores={}, target_cores={}, min_rows={}, batch_rows={}, "
+                    "chunks={}, hetero={} (p={}, e={}), workers={} (latency={}, throughput={})",
+                    s.rows,
+                    s.core_hint,
+                    s.target_cores,
+                    s.min_rows,
+                    s.batch_rows,
+                    s.chunks,
+                    s.hetero ? 1 : 0,
+                    s.p_cores,
+                    s.e_cores,
+                    s.workers,
+                    s.latency_workers,
+                    s.throughput_workers);
+            });
+
+u32 clamp_core_hint_to_runtime(u32 requested) noexcept {
+    const u32 workers = jobs::JobSystem::Get().worker_count();
+    const u32 runtime_max = workers > 0u ? (workers + 1u) : 1u;
+    return std::clamp(requested, 1u, runtime_max);
+}
+
+u32 terrain_target_cores() noexcept {
+    const int hint = r_terrain_cpu_cores_hint ? r_terrain_cpu_cores_hint->GetInt() : 0;
+    if (hint > 0) {
+        return clamp_core_hint_to_runtime(static_cast<u32>(hint));
+    }
+
+    // Auto: prefer perf cores where available (P-cores on hetero hosts),
+    // then leave two cores free for the rest of the frame if we can.
+    u32 perf_like_cores = 0;
+    const jobs::HeteroCounts hetero = jobs::hetero_detected_counts();
+    if (hetero.p_cores > 0u) {
+        perf_like_cores = hetero.p_cores;
+    } else {
+        perf_like_cores = hardware::detect().cores_physical;
+    }
+    if (perf_like_cores == 0u) {
+        perf_like_cores = 1u;
+    }
+    const u32 auto_target = perf_like_cores > 2u ? (perf_like_cores - 2u) : perf_like_cores;
+    return clamp_core_hint_to_runtime(auto_target);
+}
+
+u32 terrain_batch_rows(u32 total_rows, u32 target_cores) noexcept {
+    const int batch_hint = r_terrain_batch_rows ? r_terrain_batch_rows->GetInt() : 0;
+    if (batch_hint > 0) {
+        return std::clamp(static_cast<u32>(batch_hint), 1u, std::max(1u, total_rows));
+    }
+
+    const int min_rows_hint = r_terrain_min_rows_per_core ? r_terrain_min_rows_per_core->GetInt() : 8;
+    const u32 min_rows =
+        std::clamp(static_cast<u32>(min_rows_hint > 0 ? min_rows_hint : 8), 1u, std::max(1u, total_rows));
+
+    const u32 jobs_target = std::clamp(target_cores, 1u, std::max(1u, total_rows));
+    const u32 rows_from_cores = std::max(1u, (total_rows + jobs_target - 1u) / jobs_target);
+    return std::clamp(std::max(min_rows, rows_from_cores), 1u, std::max(1u, total_rows));
+}
+
+template <class Fn>
+void run_rows_latency_pref(u32 total_rows, u32 batch_rows, Fn&& fn) {
+    if (total_rows == 0u) {
+        return;
+    }
+    const u32 grain = std::max(1u, batch_rows);
+    const u32 chunks = (total_rows + grain - 1u) / grain;
+    if (chunks <= 1u) {
+        fn(0u, total_rows);
+        return;
+    }
+
+    if (!jobs::hetero_is_active()) {
+        jobs::JobSystem::Get().parallel_for(0, total_rows, grain, [&](usize y_begin, usize y_end) {
+            fn(static_cast<u32>(y_begin), static_cast<u32>(y_end));
+        });
+        return;
+    }
+
+    struct RowTask {
+        u32 y0 = 0;
+        u32 y1 = 0;
+        void* fn_ptr = nullptr;
+    };
+
+    auto run = +[](void* user) noexcept {
+        auto* t = static_cast<RowTask*>(user);
+        auto* body = static_cast<Fn*>(t->fn_ptr);
+        (*body)(t->y0, t->y1);
+    };
+
+    std::vector<RowTask> tasks(chunks);
+    std::vector<jobs::JobHandle> handles(chunks);
+
+    for (u32 i = 0; i < chunks; ++i) {
+        const u32 y0 = i * grain;
+        const u32 y1 = std::min(total_rows, y0 + grain);
+        tasks[i].y0 = y0;
+        tasks[i].y1 = y1;
+        tasks[i].fn_ptr = &fn;
+
+        jobs::JobDesc d{};
+        d.fn = run;
+        d.user = &tasks[i];
+        d.name = "terrain_rows_latency";
+        handles[i] = jobs::submit_latency(d);
+    }
+
+    auto& js = jobs::JobSystem::Get();
+    for (const jobs::JobHandle h : handles) {
+        js.wait(h);
+    }
+}
+
+void capture_terrain_sched(u32 rows, u32 target_cores, u32 batch_rows) {
+    const jobs::HeteroCounts hetero = jobs::hetero_detected_counts();
+    const u32 chunks = batch_rows > 0u ? ((rows + batch_rows - 1u) / batch_rows) : rows;
+    const int core_hint = r_terrain_cpu_cores_hint ? r_terrain_cpu_cores_hint->GetInt() : 0;
+    const int min_rows_hint = r_terrain_min_rows_per_core ? r_terrain_min_rows_per_core->GetInt() : 8;
+    g_terrain_sched_snapshot.valid = true;
+    g_terrain_sched_snapshot.rows = rows;
+    g_terrain_sched_snapshot.core_hint = core_hint;
+    g_terrain_sched_snapshot.target_cores = target_cores;
+    g_terrain_sched_snapshot.min_rows = min_rows_hint;
+    g_terrain_sched_snapshot.batch_rows = batch_rows;
+    g_terrain_sched_snapshot.chunks = chunks;
+    g_terrain_sched_snapshot.hetero = jobs::hetero_is_active();
+    g_terrain_sched_snapshot.p_cores = hetero.p_cores;
+    g_terrain_sched_snapshot.e_cores = hetero.e_cores;
+    g_terrain_sched_snapshot.workers = jobs::JobSystem::Get().worker_count();
+    g_terrain_sched_snapshot.latency_workers = jobs::hetero_latency_workers();
+    g_terrain_sched_snapshot.throughput_workers = jobs::hetero_throughput_workers();
+}
 
 MeshState* mesh_state_for(const TerrainMesh* tm) noexcept {
     for (auto& s : g_mesh_slots) {
@@ -333,80 +509,87 @@ void TerrainRaymarch::render(const math::Mat4& view, const math::Mat4& proj) con
     const u32 W = fb.width;
     const u32 H = fb.height;
 
-    jobs::JobSystem::Get().parallel_for(0, (W + 7) / 8, 1, [&](usize batch_idx_begin, usize batch_idx_end) {
-        for (usize batch_idx = batch_idx_begin; batch_idx < batch_idx_end; ++batch_idx) {
-            detail::ColumnBatch8 batch{};
-            bool any_active = false;
-            for (u32 i = 0; i < 8; ++i) {
-                const u32 x = static_cast<u32>(batch_idx * 8 + i);
-                batch.column_x[i] = x;
-                if (x < W) {
-                    const math::Vec3 dir = primary_ray_dir(cam, x, H / 2, W, H);
-                    batch.ray_dir_x[i] = dir.x;
-                    batch.ray_dir_z[i] = dir.z;
-                    batch.horizon_y[i] = static_cast<i32>(H);
-                    batch.done_mask &= ~(1u << i);
-                    any_active = true;
-                } else {
-                    batch.done_mask |= (1u << i);
-                }
-            }
+    if (jobs::JobSystem::Get().worker_count() == 0u) {
+        jobs::JobSystem::Get().start(0);
+    }
 
-            if (!any_active) {
-                continue;
-            }
+    const u32 target_cores = terrain_target_cores();
+    const u32 batch_rows = terrain_batch_rows(H, target_cores);
+    capture_terrain_sched(H, target_cores, batch_rows);
 
-            const f32 pixels_per_unit = (static_cast<f32>(H) * 0.5f) / cam.fov_tan;
+    // Keep source-of-truth scalar hit/depth semantics, but schedule row
+    // chunks with latency-pool preference on hetero hosts.
+    run_rows_latency_pref(H, batch_rows, [&](u32 y_begin, u32 y_end) {
+        for (u32 y = y_begin; y < y_end; ++y) {
+            for (u32 x = 0; x < W; ++x) {
+                const usize idx = static_cast<usize>(y) * W + x;
+                const math::Vec3 dir = primary_ray_dir(cam, x, y, W, H);
 
-            f32 t = kStepNear;
-            while (t <= kMaxT) {
-                detail::ColumnStepBatch8 step_result{};
-                detail::simd_step_columns8(hm, batch, cam.eye, t, static_cast<i32>(H), pixels_per_unit, step_result);
+                // Up-pointing ray from above max terrain: skip the march and
+                // leave the pixel + depth alone (sky is somebody else's job;
+                // we never paint over what we don't own).
+                if (dir.y > 0.005f && cam.eye.y > kMaxTerrainY)
+                    continue;
 
-                if (step_result.active_mask != 0) {
-                    for (u32 i = 0; i < 8; ++i) {
-                        if ((step_result.active_mask >> i) & 1u) {
-                            const u32 x = batch.column_x[i];
-                            const f32 spacing = hm.spacing > 0.0f ? hm.spacing : 1.0f;
-                            const f32 wx = cam.eye.x + batch.ray_dir_x[i] * t;
-                            const f32 wz = cam.eye.z + batch.ray_dir_z[i] * t;
-                            const i32 tx = static_cast<i32>(std::floor(wx / spacing + 0.5f));
-                            const i32 tz = static_cast<i32>(std::floor(wz / spacing + 0.5f));
-                            const math::Vec3 n = detail::normal_at_texel(hm, tx, tz);
-                            const f32 ndotl = math::dot(n, sun_dir);
+                f32 prev_t = 0.0f;
+                f32 prev_ry = cam.eye.y;
+                f32 prev_th = detail::sample_bilinear(hm, cam.eye.x, cam.eye.z);
 
-                            detail::SplatWeights splat{};
-                            splat.w[0] = static_cast<f32>(step_result.packed_color[i] & 0xFFu) / 255.0f;
-                            splat.w[1] = static_cast<f32>((step_result.packed_color[i] >> 8) & 0xFFu) / 255.0f;
-                            splat.w[2] = static_cast<f32>((step_result.packed_color[i] >> 16) & 0xFFu) / 255.0f;
-                            splat.w[3] = static_cast<f32>((step_result.packed_color[i] >> 24) & 0xFFu) / 255.0f;
+                bool hit = false;
+                f32 hit_t = 0.0f;
 
-                            const u32 final_color = splat_to_rgb(splat, ndotl, t);
+                f32 t = kStepNear;
+                while (t <= kMaxT) {
+                    const f32 wx = cam.eye.x + dir.x * t;
+                    const f32 wy = cam.eye.y + dir.y * t;
+                    const f32 wz = cam.eye.z + dir.z * t;
+                    const f32 th = detail::sample_bilinear(hm, wx, wz);
 
-                            for (u32 y = step_result.strip_top_y[i]; y <= step_result.strip_bottom_y[i]; ++y) {
-                                const usize idx = static_cast<usize>(y) * W + x;
-                                pixels[idx] = final_color;
-                                if (fb.depth) {
-                                    const f32 z_ndc = ndc_z_for_world(view, proj, {wx, detail::sample_bilinear(hm, wx, wz), wz});
-                                    fb.depth[idx] = pack_depth_u24(z_ndc);
-                                }
-                            }
-                        }
+                    if (wy <= th) {
+                        const f32 dy_a = prev_ry - prev_th;
+                        const f32 dy_b = wy - th;
+                        const f32 denom = dy_a - dy_b;
+                        f32 frac = denom > 0.0f ? (dy_a / denom) : 0.0f;
+                        if (frac < 0.0f)
+                            frac = 0.0f;
+                        if (frac > 1.0f)
+                            frac = 1.0f;
+                        hit_t = prev_t + (t - prev_t) * frac;
+                        hit = true;
+                        break;
                     }
+                    prev_t = t;
+                    prev_ry = wy;
+                    prev_th = th;
+                    const f32 step = kStepNear + (kStepFar - kStepNear) * std::min(1.0f, t / kStepFalloff);
+                    t += step;
                 }
 
-                detail::simd_advance_batch8(batch, step_result);
-                if (detail::simd_batch_done8(batch)) {
-                    break;
-                }
+                if (!hit)
+                    continue;
 
-                const f32 step_size = detail::logstep_size(hm, t, kStepNear, kStepFalloff);
-                t += step_size;
+                const math::Vec3 hit_pos{
+                    cam.eye.x + dir.x * hit_t,
+                    cam.eye.y + dir.y * hit_t,
+                    cam.eye.z + dir.z * hit_t,
+                };
+
+                const f32 spacing = hm.spacing > 0.0f ? hm.spacing : 1.0f;
+                const i32 tx = static_cast<i32>(std::floor(hit_pos.x / spacing + 0.5f));
+                const i32 tz = static_cast<i32>(std::floor(hit_pos.z / spacing + 0.5f));
+                const auto splat = detail::splat_at_texel(hm, tx, tz);
+                const math::Vec3 n = detail::normal_at_texel(hm, tx, tz);
+                const f32 ndotl = math::dot(n, sun_dir);
+
+                pixels[idx] = splat_to_rgb(splat, ndotl, hit_t);
+                if (fb.depth) {
+                    const f32 z = ndc_z_for_world(view, proj, hit_pos);
+                    fb.depth[idx] = pack_depth_u24(z);
+                }
             }
         }
     });
 }
-
 
 // ─── set_target (sibling free function from TerrainTarget.h) ────────────
 void set_target(const TerrainRaymarch& rm, render::Framebuffer* fb) noexcept {
