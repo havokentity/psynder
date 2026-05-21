@@ -50,12 +50,18 @@
 
 using namespace psynder;
 
+namespace psynder::render::rt {
+void ensure_denoise_console_commands_registered();
+}
+
 namespace {
 
 console::CVar* g_rt_parallel = nullptr;
 console::CVar* g_rt_cores_hint = nullptr;
 console::CVar* g_rt_batch_rows = nullptr;
 console::CVar* g_rt_min_rows = nullptr;
+console::CVar* g_rt_parallel_min_rows_gate = nullptr;
+console::CVar* g_rt_parallel_max_chunks = nullptr;
 
 void ensure_rt_parallel_cvars() {
     static bool once = false;
@@ -79,6 +85,14 @@ void ensure_rt_parallel_cvars() {
                                      "8",
                                      "Minimum sample RT pass rows per worker chunk in auto mode",
                                      console::CVAR_ARCHIVE);
+    g_rt_parallel_min_rows_gate = con.RegisterCVar("r_rt_sample_parallel_min_rows",
+                                                   "0",
+                                                   "Disable RT sample row parallelism below this row count (0=always parallel)",
+                                                   console::CVAR_ARCHIVE);
+    g_rt_parallel_max_chunks = con.RegisterCVar("r_rt_sample_parallel_max_chunks",
+                                                "4",
+                                                "Maximum row chunks per RT sample pass",
+                                                console::CVAR_ARCHIVE);
     con.RegisterCommand("r_rt_sample_sched_dump",
                         "Print sample RT scheduler settings",
                         [](std::span<const std::string_view>, console::Output& out) {
@@ -86,14 +100,19 @@ void ensure_rt_parallel_cvars() {
                             const int ch = g_rt_cores_hint ? g_rt_cores_hint->GetInt() : 0;
                             const int br = g_rt_batch_rows ? g_rt_batch_rows->GetInt() : 0;
                             const int mr = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
+                            const int gate = g_rt_parallel_min_rows_gate ? g_rt_parallel_min_rows_gate->GetInt() : 192;
+                            const int max_chunks = g_rt_parallel_max_chunks ? g_rt_parallel_max_chunks->GetInt() : 4;
                             const auto hc = jobs::hetero_detected_counts();
                             out.FormatLine(
-                                "rt_sample_sched: parallel={}, hint_cores={}, batch_rows={}, min_rows={} | "
+                                "rt_sample_sched: parallel={}, hint_cores={}, batch_rows={}, min_rows={}, "
+                                "min_parallel_rows={}, max_chunks={} | "
                                 "workers={} hetero={} (p={}, e={})",
                                 en,
                                 ch,
                                 br,
                                 mr,
+                                gate,
+                                max_chunks,
                                 jobs::JobSystem::Get().worker_count(),
                                 jobs::hetero_is_active() ? 1 : 0,
                                 hc.p_cores,
@@ -115,7 +134,7 @@ u32 rt_target_cores() {
     return std::clamp(auto_target, 1u, runtime_max);
 }
 
-u32 rt_rows_grain(u32 rows) {
+[[maybe_unused]] u32 rt_rows_grain(u32 rows) {
     const int b = g_rt_batch_rows ? g_rt_batch_rows->GetInt() : 0;
     if (b > 0)
         return std::clamp(static_cast<u32>(b), 1u, std::max(1u, rows));
@@ -123,12 +142,23 @@ u32 rt_rows_grain(u32 rows) {
     const u32 min_rows = std::clamp(static_cast<u32>(m > 0 ? m : 8), 1u, std::max(1u, rows));
     const u32 target = rt_target_cores();
     const u32 rows_from_cores = std::max(1u, (rows + target - 1u) / target);
-    return std::clamp(std::max(min_rows, rows_from_cores), 1u, std::max(1u, rows));
+    u32 grain = std::clamp(std::max(min_rows, rows_from_cores), 1u, std::max(1u, rows));
+    const int max_chunks_i = g_rt_parallel_max_chunks ? g_rt_parallel_max_chunks->GetInt() : 4;
+    const u32 max_chunks = std::max(1u, static_cast<u32>(max_chunks_i > 0 ? max_chunks_i : 4));
+    const u32 min_grain_for_chunk_cap = std::max(1u, (rows + max_chunks - 1u) / max_chunks);
+    grain = std::max(grain, min_grain_for_chunk_cap);
+    return std::clamp(grain, 1u, std::max(1u, rows));
 }
 
 template <class Fn>
 void rt_parallel_rows(u32 rows, Fn&& body) {
+    const int gate_i = g_rt_parallel_min_rows_gate ? g_rt_parallel_min_rows_gate->GetInt() : 192;
+    const u32 gate = gate_i > 0 ? static_cast<u32>(gate_i) : 0u;
     if (!(g_rt_parallel && g_rt_parallel->GetBool())) {
+        body(0u, rows);
+        return;
+    }
+    if (gate > 0u && rows < gate) {
         body(0u, rows);
         return;
     }
@@ -137,6 +167,30 @@ void rt_parallel_rows(u32 rows, Fn&& body) {
     const u32 grain = rt_rows_grain(rows);
     jobs::JobSystem::Get().parallel_for(0, rows, grain, [&](usize y0, usize y1) {
         body(static_cast<u32>(y0), static_cast<u32>(y1));
+    });
+}
+
+template <class Fn>
+void rt_parallel_tiles(u32 width, u32 height, u32 tile, Fn&& body) {
+    const u32 tiles_x = (width + tile - 1u) / tile;
+    const u32 tiles_y = (height + tile - 1u) / tile;
+    const u32 tile_count = tiles_x * tiles_y;
+    if (!(g_rt_parallel && g_rt_parallel->GetBool()) || tile_count <= 1u) {
+        body(0u, 0u, width, height);
+        return;
+    }
+    if (jobs::JobSystem::Get().worker_count() == 0u)
+        jobs::JobSystem::Get().start(0);
+    jobs::JobSystem::Get().parallel_for(0, tile_count, 1, [&](usize ti0, usize ti1) {
+        for (usize ti = ti0; ti < ti1; ++ti) {
+            const u32 tx = static_cast<u32>(ti % tiles_x);
+            const u32 ty = static_cast<u32>(ti / tiles_x);
+            const u32 x0 = tx * tile;
+            const u32 y0 = ty * tile;
+            const u32 x1 = std::min(width, x0 + tile);
+            const u32 y1 = std::min(height, y0 + tile);
+            body(x0, y0, x1, y1);
+        }
     });
 }
 
@@ -182,10 +236,11 @@ Args parse_args(int argc, char** argv) {
 // shadow pass runs at a quarter of these dimensions and is bilinear-
 // upsampled into the final image. Same resolution as sample_05 so the
 // per-frame budget stays real-time even with the much larger instance set.
-constexpr u32 kFbW = 512;
-constexpr u32 kFbH = 288;
+constexpr u32 kFbW = 1024;
+constexpr u32 kFbH = 512;
 constexpr u32 kShadowW = kFbW / 2;  // 256
 constexpr u32 kShadowH = kFbH / 2;  // 144
+constexpr u32 kRtTile = 16;
 constexpr u32 kNumLights = 6;
 
 // Field layout: a kFieldDim × kFieldDim grid of pillars on the ground.
@@ -464,10 +519,10 @@ void upsample_bilinear(const u32* src, u32 sw, u32 sh, u32* dst, u32 dw, u32 dh)
             const i32 x1 = std::min(static_cast<i32>(sw) - 1, x0 + 1);
             const f32 fx = sx - static_cast<f32>(x0);
 
-            const u32 p00 = src[static_cast<usize>(y0) * sw + x0];
-            const u32 p10 = src[static_cast<usize>(y0) * sw + x1];
-            const u32 p01 = src[static_cast<usize>(y1) * sw + x0];
-            const u32 p11 = src[static_cast<usize>(y1) * sw + x1];
+            const u32 p00 = src[static_cast<usize>(y0) * sw + static_cast<usize>(x0)];
+            const u32 p10 = src[static_cast<usize>(y0) * sw + static_cast<usize>(x1)];
+            const u32 p01 = src[static_cast<usize>(y1) * sw + static_cast<usize>(x0)];
+            const u32 p11 = src[static_cast<usize>(y1) * sw + static_cast<usize>(x1)];
 
             auto unpack = [](u32 p, f32& r, f32& g, f32& b) {
                 r = static_cast<f32>(p & 0xFFu);
@@ -497,6 +552,7 @@ int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
     const u32 smoke_frames = args.smoke_frames;
     ensure_rt_parallel_cvars();
+    render::rt::ensure_denoise_console_commands_registered();
 
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 12 (raytracing showcase)";
@@ -584,6 +640,7 @@ int main(int argc, char** argv) {
         f32 r, g, b;  // ambient surface color in 0..1
     };
     std::vector<PixelHit> hits(static_cast<usize>(kShadowW) * kShadowH);
+    std::vector<f32> accum(static_cast<usize>(kShadowW) * kShadowH * 3u, 0.0f);
 
     // 60-sample ring of frame-times (ms) for the debug HUD strip chart.
     constexpr u32 kFrameHistory = 60;
@@ -629,39 +686,39 @@ int main(int argc, char** argv) {
         // ── Pass 1: primary visibility @ low-res (256×144). ─────────────
         // Cast one primary ray per low-res pixel against the TLAS and
         // stash the hit. Pixels that miss draw the sky immediately.
-        rt_parallel_rows(kShadowH, [&](u32 y0, u32 y1) {
+        rt_parallel_tiles(kShadowW, kShadowH, kRtTile, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
             for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = 0; x < kShadowW; ++x) {
-                const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kShadowW);
-                const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kShadowH);
-                const render::rt::Ray ray = primary_ray(cam, nx, ny);
-                const render::rt::Hit h = tlas.intersect(ray);
+                for (u32 x = x0; x < x1; ++x) {
+                    const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kShadowW);
+                    const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kShadowH);
+                    const render::rt::Ray ray = primary_ray(cam, nx, ny);
+                    const render::rt::Hit h = tlas.intersect(ray);
 
-                const usize idx = static_cast<usize>(y) * kShadowW + x;
-                PixelHit ph{};
-                ph.hit = h.hit;
-                if (!h.hit) {
-                    shadow_pixels[idx] = sample_sky(ray.direction);
-                } else {
-                    // Surface color: field[instance] tint, or dim grey for
-                    // the ground (the last instance index).
-                    u32 color = pack_rgba8(55, 55, 65);  // ground default
-                    if (h.instance < kFieldCount) {
-                        color = field[h.instance].color;
+                    const usize idx = static_cast<usize>(y) * kShadowW + x;
+                    PixelHit ph{};
+                    ph.hit = h.hit;
+                    if (!h.hit) {
+                        shadow_pixels[idx] = sample_sky(ray.direction);
+                    } else {
+                        // Surface color: field[instance] tint, or dim grey for
+                        // the ground (the last instance index).
+                        u32 color = pack_rgba8(55, 55, 65);  // ground default
+                        if (h.instance < kFieldCount) {
+                            color = field[h.instance].color;
+                        }
+                        ph.r = static_cast<f32>(color & 0xFFu) / 255.0f;
+                        ph.g = static_cast<f32>((color >> 8) & 0xFFu) / 255.0f;
+                        ph.b = static_cast<f32>((color >> 16) & 0xFFu) / 255.0f;
+                        // Hit position along the primary ray.
+                        ph.position = {
+                            ray.origin.x + ray.direction.x * h.t,
+                            ray.origin.y + ray.direction.y * h.t,
+                            ray.origin.z + ray.direction.z * h.t,
+                        };
+                        ph.normal = math::normalize(h.normal);
                     }
-                    ph.r = static_cast<f32>(color & 0xFFu) / 255.0f;
-                    ph.g = static_cast<f32>((color >> 8) & 0xFFu) / 255.0f;
-                    ph.b = static_cast<f32>((color >> 16) & 0xFFu) / 255.0f;
-                    // Hit position along the primary ray.
-                    ph.position = {
-                        ray.origin.x + ray.direction.x * h.t,
-                        ray.origin.y + ray.direction.y * h.t,
-                        ray.origin.z + ray.direction.z * h.t,
-                    };
-                    ph.normal = math::normalize(h.normal);
+                    hits[idx] = ph;
                 }
-                hits[idx] = ph;
-            }
             }
         });
 
@@ -669,56 +726,59 @@ int main(int argc, char** argv) {
         // For each light, fill ShadowPacket8 with 8 successive hit-pixels'
         // shadow rays, dispatch via trace_shadow_packet, accumulate the
         // lit contribution per pixel.
-        std::vector<f32> accum(static_cast<usize>(kShadowW) * kShadowH * 3, 0.0f);
+        std::fill(accum.begin(), accum.end(), 0.0f);
 
-        for (u32 li = 0; li < kNumLights; ++li) {
-            const Light& L = lights[li];
-            rt_parallel_rows(kShadowH, [&](u32 y0, u32 y1) {
-                render::rt::ShadowPacket8 pkt{};
-                u32 in_pkt = 0;
-                u32 pkt_idx[8] = {0};
-                bool pkt_real[8] = {false};
+        rt_parallel_tiles(kShadowW, kShadowH, kRtTile, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
+            render::rt::ShadowPacket8 pkts[kNumLights]{};
+            u32 in_pkt[kNumLights] = {0};
+            u32 pkt_idx[kNumLights][8]{};
+            bool pkt_real[kNumLights][8]{};
 
-                auto dispatch = [&]() {
-                    for (u32 i = in_pkt; i < 8; ++i) {
-                        pkt.rays[i].origin = {0, 1e6f, 0};
-                        pkt.rays[i].direction = {0, 1, 0};
-                        pkt.rays[i].t_min = 1e-4f;
-                        pkt.rays[i].t_max = 1.0f;
-                        pkt_real[i] = false;
-                    }
-                    render::rt::trace_shadow_packet(tlas, pkt);
-                    for (u32 i = 0; i < 8; ++i) {
-                        if (!pkt_real[i])
-                            continue;
-                        const usize px = pkt_idx[i];
-                        if (pkt.occluded[i])
-                            continue;
-                        const PixelHit& ph = hits[px];
-                        math::Vec3 to_light = math::sub(L.position, ph.position);
-                        const f32 d2 = math::dot(to_light, to_light);
-                        const f32 d = std::sqrt(d2);
-                        if (d > L.range || d < 1e-4f)
-                            continue;
-                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                        const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
-                        if (ndotl <= 0.0f)
-                            continue;
-                        const f32 atten = 1.0f / (1.0f + d * d * 0.06f);
-                        const f32 k = ndotl * atten * L.intensity;
-                        accum[px * 3 + 0] += ph.r * L.r * k;
-                        accum[px * 3 + 1] += ph.g * L.g * k;
-                        accum[px * 3 + 2] += ph.b * L.b * k;
-                    }
-                    in_pkt = 0;
-                };
+            auto dispatch = [&](u32 li) {
+                render::rt::ShadowPacket8& pkt = pkts[li];
+                const Light& L = lights[li];
+                for (u32 i = in_pkt[li]; i < 8; ++i) {
+                    pkt.rays[i].origin = {0, 1e6f, 0};
+                    pkt.rays[i].direction = {0, 1, 0};
+                    pkt.rays[i].t_min = 1e-4f;
+                    pkt.rays[i].t_max = 1.0f;
+                    pkt_real[li][i] = false;
+                }
+                render::rt::trace_shadow_packet(tlas, pkt);
+                for (u32 i = 0; i < 8; ++i) {
+                    if (!pkt_real[li][i])
+                        continue;
+                    const usize px = pkt_idx[li][i];
+                    if (pkt.occluded[i])
+                        continue;
+                    const PixelHit& ph = hits[px];
+                    math::Vec3 to_light = math::sub(L.position, ph.position);
+                    const f32 d2 = math::dot(to_light, to_light);
+                    const f32 d = std::sqrt(d2);
+                    if (d > L.range || d < 1e-4f)
+                        continue;
+                    const math::Vec3 ld = math::mul(to_light, 1.0f / d);
+                    const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
+                    if (ndotl <= 0.0f)
+                        continue;
+                    const f32 atten = 1.0f / (1.0f + d * d * 0.06f);
+                    const f32 k = ndotl * atten * L.intensity;
+                    accum[px * 3 + 0] += ph.r * L.r * k;
+                    accum[px * 3 + 1] += ph.g * L.g * k;
+                    accum[px * 3 + 2] += ph.b * L.b * k;
+                }
+                in_pkt[li] = 0;
+            };
 
-                for (u32 y = y0; y < y1; ++y) {
-                    for (u32 x = 0; x < kShadowW; ++x) {
-                        const usize px = static_cast<usize>(y) * kShadowW + x;
-                        const PixelHit& ph = hits[px];
-                        if (!ph.hit)
-                            continue;
+            for (u32 y = y0; y < y1; ++y) {
+                for (u32 x = x0; x < x1; ++x) {
+                    const usize px = static_cast<usize>(y) * kShadowW + x;
+                    const PixelHit& ph = hits[px];
+                    if (!ph.hit)
+                        continue;
+
+                    for (u32 li = 0; li < kNumLights; ++li) {
+                        const Light& L = lights[li];
                         math::Vec3 to_light = math::sub(L.position, ph.position);
                         const f32 d2 = math::dot(to_light, to_light);
                         const f32 d = std::sqrt(d2);
@@ -732,37 +792,41 @@ int main(int argc, char** argv) {
                             ph.position.y + ph.normal.y * 1e-3f,
                             ph.position.z + ph.normal.z * 1e-3f,
                         };
-                        pkt.rays[in_pkt].origin = origin;
-                        pkt.rays[in_pkt].direction = ld;
-                        pkt.rays[in_pkt].t_min = 1e-4f;
-                        pkt.rays[in_pkt].t_max = d - 1e-3f;
-                        pkt_idx[in_pkt] = static_cast<u32>(px);
-                        pkt_real[in_pkt] = true;
-                        ++in_pkt;
-                        if (in_pkt == 8)
-                            dispatch();
+
+                        u32& idx = in_pkt[li];
+                        pkts[li].rays[idx].origin = origin;
+                        pkts[li].rays[idx].direction = ld;
+                        pkts[li].rays[idx].t_min = 1e-4f;
+                        pkts[li].rays[idx].t_max = d - 1e-3f;
+                        pkt_idx[li][idx] = static_cast<u32>(px);
+                        pkt_real[li][idx] = true;
+                        ++idx;
+                        if (idx == 8)
+                            dispatch(li);
                     }
                 }
-                if (in_pkt > 0)
-                    dispatch();
-            });
-        }
+            }
+            for (u32 li = 0; li < kNumLights; ++li) {
+                if (in_pkt[li] > 0)
+                    dispatch(li);
+            }
+        });
 
         // ── Combine: write final low-res lit color. ─────────────────────
-        rt_parallel_rows(kShadowH, [&](u32 y0, u32 y1) {
+        rt_parallel_tiles(kShadowW, kShadowH, kRtTile, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
             for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = 0; x < kShadowW; ++x) {
-                const usize idx = static_cast<usize>(y) * kShadowW + x;
-                if (!hits[idx].hit)
-                    continue;  // sky already written
-                const PixelHit& ph = hits[idx];
-                // Ambient floor so unlit faces aren't pure black.
-                const f32 amb = 0.10f;
-                const f32 r = ph.r * amb * 30.0f + accum[idx * 3 + 0] * 18.0f;
-                const f32 g = ph.g * amb * 30.0f + accum[idx * 3 + 1] * 18.0f;
-                const f32 b = ph.b * amb * 30.0f + accum[idx * 3 + 2] * 18.0f;
-                shadow_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
-            }
+                for (u32 x = x0; x < x1; ++x) {
+                    const usize idx = static_cast<usize>(y) * kShadowW + x;
+                    if (!hits[idx].hit)
+                        continue;  // sky already written
+                    const PixelHit& ph = hits[idx];
+                    // Ambient floor so unlit faces aren't pure black.
+                    const f32 amb = 0.10f;
+                    const f32 r = ph.r * amb * 30.0f + accum[idx * 3 + 0] * 18.0f;
+                    const f32 g = ph.g * amb * 30.0f + accum[idx * 3 + 1] * 18.0f;
+                    const f32 b = ph.b * amb * 30.0f + accum[idx * 3 + 2] * 18.0f;
+                    shadow_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
+                }
             }
         });
 

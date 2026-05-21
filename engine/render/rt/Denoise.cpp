@@ -307,4 +307,8 @@ void denoise_shadows(const DenoiseInput& in, f32* output_visibility) {
     atrous_pass(tmp.data(), output_visibility, in.depth, in.normals, in.width, in.height, 2);
 }
 
+void ensure_denoise_console_commands_registered() {
+    ensure_denoise_console_init();
+}
+
 }  // namespace psynder::render::rt

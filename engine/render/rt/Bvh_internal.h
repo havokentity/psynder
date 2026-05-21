@@ -121,7 +121,7 @@ struct BinaryNode {
 // For leaf:  child_index[i] = offset into prim_indices_;
 //            child_count[i] = prim count.
 
-struct alignas(32) Bvh8Node {
+struct alignas(64) Bvh8Node {
     f32 min_x[8];
     f32 min_y[8];
     f32 min_z[8];
@@ -136,7 +136,7 @@ struct alignas(32) Bvh8Node {
     u8 _pad[7];          // pad to keep alignment
 };
 
-static_assert(sizeof(Bvh8Node) % 32 == 0, "Bvh8Node must keep 32-byte alignment");
+static_assert(sizeof(Bvh8Node) % 64 == 0, "Bvh8Node must keep cache-line alignment");
 
 // ─── SAH config ──────────────────────────────────────────────────────────
 

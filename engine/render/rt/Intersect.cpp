@@ -37,6 +37,12 @@
 #define PSYNDER_RT_HAVE_NEON 0
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define PSYNDER_RT_PREFETCH_RO(ptr) __builtin_prefetch((ptr), 0, 1)
+#else
+#define PSYNDER_RT_PREFETCH_RO(ptr) ((void)0)
+#endif
+
 namespace psynder::render::rt::detail {
 
 namespace {
@@ -227,6 +233,60 @@ math::Vec3 safe_inv(math::Vec3 d) noexcept {
     return {inv(d.x), inv(d.y), inv(d.z)};
 }
 
+struct ChildHit {
+    u32 child = 0;
+    f32 t_entry = 0.0f;
+};
+
+PSY_FORCEINLINE
+u32 sorted_child_hits(const Bvh8Node& n,
+                      u8 mask,
+                      math::Vec3 inv_dir,
+                      math::Vec3 origin,
+                      f32 t_min,
+                      f32 t_max,
+                      ChildHit (&hits)[8]) noexcept {
+    u32 count = 0;
+    for (u32 c = 0; c < 8; ++c) {
+        if ((mask & (1u << c)) == 0)
+            continue;
+        f32 t_entry = 0.0f;
+        if (!node_slab_test(n, c, inv_dir, origin, t_min, t_max, t_entry))
+            continue;
+
+        u32 pos = count++;
+        while (pos > 0 && hits[pos - 1].t_entry > t_entry) {
+            hits[pos] = hits[pos - 1];
+            --pos;
+        }
+        hits[pos] = ChildHit{c, t_entry};
+    }
+    return count;
+}
+
+PSY_FORCEINLINE
+Ray transform_ray(const Ray& ray, const math::Mat4& inv, f32 t_max) noexcept {
+    const math::Vec4 o4{ray.origin.x, ray.origin.y, ray.origin.z, 1.0f};
+    const math::Vec4 d4{ray.direction.x, ray.direction.y, ray.direction.z, 0.0f};
+    const math::Vec4 oo = math::mul(inv, o4);
+    const math::Vec4 dd = math::mul(inv, d4);
+    Ray local;
+    local.origin = {oo.x, oo.y, oo.z};
+    local.direction = {dd.x, dd.y, dd.z};
+    local.t_min = ray.t_min;
+    local.t_max = t_max;
+    return local;
+}
+
+PSY_FORCEINLINE
+math::Vec3 transform_normal_to_world(math::Vec3 n, const math::Mat4& tr) noexcept {
+    return math::normalize(math::Vec3{
+        tr.m[0] * n.x + tr.m[4] * n.y + tr.m[8] * n.z,
+        tr.m[1] * n.x + tr.m[5] * n.y + tr.m[9] * n.z,
+        tr.m[2] * n.x + tr.m[6] * n.y + tr.m[10] * n.z,
+    });
+}
+
 }  // anonymous namespace
 
 // ────────────────────────────────────────────────────────────────────────
@@ -256,9 +316,10 @@ LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
         const u8 mask = ray_vs_8_children_slab(n, inv_dir, ray.origin, ray.t_min, ray.t_max);
         if (mask == 0)
             continue;
-        for (u32 c = 0; c < 8; ++c) {
-            if ((mask & (1u << c)) == 0)
-                continue;
+        ChildHit child_hits[8];
+        const u32 child_count = sorted_child_hits(n, mask, inv_dir, ray.origin, ray.t_min, ray.t_max, child_hits);
+        for (u32 hc = 0; hc < child_count; ++hc) {
+            const u32 c = child_hits[hc].child;
             const u8 kind = n.child_kind[c];
             if (kind == 1) {
                 const u32 first = n.child_index[c];
@@ -279,9 +340,15 @@ LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
                         }
                     }
                 }
-            } else if (kind == 0) {
+            }
+        }
+        for (u32 hc = child_count; hc > 0; --hc) {
+            const u32 c = child_hits[hc - 1].child;
+            if (n.child_kind[c] == 0) {
                 if (top < kStackCap) {
-                    stack[top++] = n.child_index[c];
+                    const u32 child_node = n.child_index[c];
+                    PSYNDER_RT_PREFETCH_RO(&s.wide_nodes[child_node]);
+                    stack[top++] = child_node;
                 }
             }
         }
@@ -323,8 +390,121 @@ bool occluded_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
                     }
                 }
             } else if (kind == 0) {
-                if (top < kStackCap)
-                    stack[top++] = n.child_index[c];
+                if (top < kStackCap) {
+                    const u32 child_node = n.child_index[c];
+                    PSYNDER_RT_PREFETCH_RO(&s.wide_nodes[child_node]);
+                    stack[top++] = child_node;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+Hit traverse_tlas_scalar(const TlasState& s, const Ray& ray_in) noexcept {
+    Hit best;
+    best.hit = false;
+    best.t = ray_in.t_max;
+
+    if (s.instances.empty() || s.wide_nodes.empty())
+        return best;
+
+    const math::Vec3 inv_dir = safe_inv(ray_in.direction);
+    constexpr u32 kStackCap = 128;
+    u32 stack[kStackCap];
+    u32 top = 0;
+    stack[top++] = 0;
+
+    while (top > 0) {
+        const u32 nid = stack[--top];
+        const Bvh8Node& n = s.wide_nodes[nid];
+        const u8 mask = ray_vs_8_children_slab(n, inv_dir, ray_in.origin, ray_in.t_min, best.t);
+        if (mask == 0)
+            continue;
+
+        ChildHit child_hits[8];
+        const u32 child_count = sorted_child_hits(n, mask, inv_dir, ray_in.origin, ray_in.t_min, best.t, child_hits);
+        for (u32 hc = 0; hc < child_count; ++hc) {
+            const u32 c = child_hits[hc].child;
+            const u8 kind = n.child_kind[c];
+            if (kind == 1) {
+                const u32 first = n.child_index[c];
+                const u32 cnt = n.child_count[c];
+                for (u32 k = 0; k < cnt; ++k) {
+                    const u32 inst_i = s.prim_indices[first + k];
+                    if (inst_i >= s.instances.size())
+                        continue;
+                    const Bvh8State* bs = inst_i < s.blas_states.size() ? s.blas_states[inst_i] : nullptr;
+                    if (!bs)
+                        continue;
+
+                    const Ray local = transform_ray(ray_in, s.inv_transform[inst_i], best.t);
+                    const LocalHit lh = traverse_scalar(*bs, local);
+                    if (lh.hit && lh.t < best.t) {
+                        best.hit = true;
+                        best.t = lh.t;
+                        best.primitive = lh.primitive;
+                        best.instance = inst_i;
+                        best.normal = transform_normal_to_world(lh.normal, s.instances[inst_i].transform);
+                    }
+                }
+            }
+        }
+        for (u32 hc = child_count; hc > 0; --hc) {
+            const u32 c = child_hits[hc - 1].child;
+            if (n.child_kind[c] == 0) {
+                if (top < kStackCap) {
+                    const u32 child_node = n.child_index[c];
+                    PSYNDER_RT_PREFETCH_RO(&s.wide_nodes[child_node]);
+                    stack[top++] = child_node;
+                }
+            }
+        }
+    }
+
+    return best;
+}
+
+bool occluded_tlas_scalar(const TlasState& s, const Ray& ray_in) noexcept {
+    if (s.instances.empty() || s.wide_nodes.empty())
+        return false;
+
+    const math::Vec3 inv_dir = safe_inv(ray_in.direction);
+    constexpr u32 kStackCap = 128;
+    u32 stack[kStackCap];
+    u32 top = 0;
+    stack[top++] = 0;
+
+    while (top > 0) {
+        const u32 nid = stack[--top];
+        const Bvh8Node& n = s.wide_nodes[nid];
+        const u8 mask = ray_vs_8_children_slab(n, inv_dir, ray_in.origin, ray_in.t_min, ray_in.t_max);
+        if (mask == 0)
+            continue;
+        for (u32 c = 0; c < 8; ++c) {
+            if ((mask & (1u << c)) == 0)
+                continue;
+            const u8 kind = n.child_kind[c];
+            if (kind == 1) {
+                const u32 first = n.child_index[c];
+                const u32 cnt = n.child_count[c];
+                for (u32 k = 0; k < cnt; ++k) {
+                    const u32 inst_i = s.prim_indices[first + k];
+                    if (inst_i >= s.instances.size())
+                        continue;
+                    const Bvh8State* bs = inst_i < s.blas_states.size() ? s.blas_states[inst_i] : nullptr;
+                    if (!bs)
+                        continue;
+                    const Ray local = transform_ray(ray_in, s.inv_transform[inst_i], ray_in.t_max);
+                    if (occluded_scalar(*bs, local))
+                        return true;
+                }
+            } else if (kind == 0) {
+                if (top < kStackCap) {
+                    const u32 child_node = n.child_index[c];
+                    PSYNDER_RT_PREFETCH_RO(&s.wide_nodes[child_node]);
+                    stack[top++] = child_node;
+                }
             }
         }
     }
@@ -673,6 +853,97 @@ void blas_packet4_occlusion_neon_half(const detail::Bvh8State& bs,
 
 #endif  // PSYNDER_RT_HAVE_NEON && !__AVX2__
 
+namespace {
+
+PSY_FORCEINLINE
+f32 packet_safe_inv(f32 d) noexcept {
+    constexpr f32 kBig = 1e30f;
+    return (std::fabs(d) < 1e-20f) ? kBig : (1.0f / d);
+}
+
+PSY_FORCEINLINE
+bool packet_ray_child_slab(const Ray& ray, const detail::Bvh8Node& n, u32 child) noexcept {
+    const f32 ix = packet_safe_inv(ray.direction.x);
+    const f32 iy = packet_safe_inv(ray.direction.y);
+    const f32 iz = packet_safe_inv(ray.direction.z);
+
+    const f32 tx1 = (n.min_x[child] - ray.origin.x) * ix;
+    const f32 tx2 = (n.max_x[child] - ray.origin.x) * ix;
+    f32 tmin = std::fmin(tx1, tx2);
+    f32 tmax = std::fmax(tx1, tx2);
+
+    const f32 ty1 = (n.min_y[child] - ray.origin.y) * iy;
+    const f32 ty2 = (n.max_y[child] - ray.origin.y) * iy;
+    tmin = std::fmax(tmin, std::fmin(ty1, ty2));
+    tmax = std::fmin(tmax, std::fmax(ty1, ty2));
+
+    const f32 tz1 = (n.min_z[child] - ray.origin.z) * iz;
+    const f32 tz2 = (n.max_z[child] - ray.origin.z) * iz;
+    tmin = std::fmax(tmin, std::fmin(tz1, tz2));
+    tmax = std::fmin(tmax, std::fmax(tz1, tz2));
+
+    return tmax >= std::fmax(tmin, ray.t_min) && tmin <= ray.t_max;
+}
+
+u8 packet_tlas_child_lanes(const ShadowPacket8& pkt,
+                           const detail::Bvh8Node& n,
+                           u32 child,
+                           u8 live) noexcept {
+    u8 out = 0;
+    u8 lane_bit = 1;
+    for (u32 r = 0; r < 8; ++r, lane_bit = static_cast<u8>(lane_bit << 1)) {
+        if ((live & lane_bit) == 0)
+            continue;
+        if (packet_ray_child_slab(pkt.rays[r], n, child))
+            out = static_cast<u8>(out | lane_bit);
+    }
+    return out;
+}
+
+void trace_instance_packet(const detail::TlasState& ts,
+                           u32 inst_i,
+                           const ShadowPacket8& pkt,
+                           u8 live_in,
+                           u8& packed_done) noexcept {
+    const detail::Bvh8State* bs = inst_i < ts.blas_states.size() ? ts.blas_states[inst_i] : nullptr;
+    if (!bs || live_in == 0)
+        return;
+
+    Ray local_rays[8];
+    for (u32 r = 0; r < 8; ++r) {
+        const math::Vec4 o4{pkt.rays[r].origin.x, pkt.rays[r].origin.y, pkt.rays[r].origin.z, 1.0f};
+        const math::Vec4 d4{pkt.rays[r].direction.x, pkt.rays[r].direction.y, pkt.rays[r].direction.z, 0.0f};
+        const math::Vec4 oo = math::mul(ts.inv_transform[inst_i], o4);
+        const math::Vec4 dd = math::mul(ts.inv_transform[inst_i], d4);
+        local_rays[r].origin = {oo.x, oo.y, oo.z};
+        local_rays[r].direction = {dd.x, dd.y, dd.z};
+        local_rays[r].t_min = pkt.rays[r].t_min;
+        local_rays[r].t_max = pkt.rays[r].t_max;
+    }
+
+#if defined(__AVX2__)
+    blas_packet_occlusion_avx2(*bs, local_rays, live_in, packed_done);
+#elif PSYNDER_RT_HAVE_NEON
+    u8 done_lo = static_cast<u8>(packed_done & 0x0F);
+    u8 done_hi = static_cast<u8>((packed_done >> 4) & 0x0F);
+    const u8 live_lo = static_cast<u8>(live_in & 0x0F);
+    const u8 live_hi = static_cast<u8>((live_in >> 4) & 0x0F);
+    blas_packet4_occlusion_neon_half(*bs, &local_rays[0], live_lo, done_lo);
+    blas_packet4_occlusion_neon_half(*bs, &local_rays[4], live_hi, done_hi);
+    packed_done = static_cast<u8>((done_lo & 0x0F) | ((done_hi & 0x0F) << 4));
+#else
+    for (u32 r = 0; r < 8; ++r) {
+        const u8 lane_bit = static_cast<u8>(1u << r);
+        if ((live_in & lane_bit) == 0)
+            continue;
+        if (detail::occluded_scalar(*bs, local_rays[r]))
+            packed_done = static_cast<u8>(packed_done | lane_bit);
+    }
+#endif
+}
+
+}  // namespace
+
 void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
     const auto& ts = detail::state_of(tlas);
     for (u32 i = 0; i < 8; ++i)
@@ -681,56 +952,52 @@ void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
     if (ts.instances.empty())
         return;
 
-    // Walk each instance once. Per instance we transform the 8 rays into
-    // object space and dispatch the packet kernel. Lanes already occluded
-    // by an earlier instance get masked off via the live-mask.
+    // Walk the wide TLAS once. Only leaf instances whose world-space bounds
+    // overlap a live packet lane enter the BLAS packet kernel.
     u8 packed_done = 0;
-
-    for (u32 inst_i = 0; inst_i < ts.instances.size(); ++inst_i) {
-        const auto& inst = ts.instances[inst_i];
-        if (!inst.blas)
-            continue;
-        const auto& bs = detail::state_of(*inst.blas);
-
-        // Build object-space rays for this instance.
-        Ray local_rays[8];
-        for (u32 r = 0; r < 8; ++r) {
-            math::Vec4 o4{pkt.rays[r].origin.x, pkt.rays[r].origin.y, pkt.rays[r].origin.z, 1.0f};
-            math::Vec4 d4{pkt.rays[r].direction.x, pkt.rays[r].direction.y, pkt.rays[r].direction.z, 0.0f};
-            math::Vec4 oo = math::mul(ts.inv_transform[inst_i], o4);
-            math::Vec4 dd = math::mul(ts.inv_transform[inst_i], d4);
-            local_rays[r].origin = {oo.x, oo.y, oo.z};
-            local_rays[r].direction = {dd.x, dd.y, dd.z};
-            local_rays[r].t_min = pkt.rays[r].t_min;
-            local_rays[r].t_max = pkt.rays[r].t_max;
+    if (ts.wide_nodes.empty()) {
+        for (u32 inst_i = 0; inst_i < ts.instances.size() && packed_done != 0xFFu; ++inst_i) {
+            const u8 live_in = static_cast<u8>(static_cast<u32>(~packed_done) & 0xFFu);
+            trace_instance_packet(ts, inst_i, pkt, live_in, packed_done);
         }
-        const u8 live_in = static_cast<u8>(static_cast<u32>(~packed_done) & 0xFFu);
-        if (live_in == 0)
-            break;
+        for (u32 i = 0; i < 8; ++i)
+            pkt.occluded[i] = ((packed_done >> i) & 1u) != 0u;
+        return;
+    }
 
-#if defined(__AVX2__)
-        blas_packet_occlusion_avx2(bs, local_rays, live_in, packed_done);
-#elif PSYNDER_RT_HAVE_NEON
-        // arm64 NEON: two 4-wide halves.
-        u8 done_lo = static_cast<u8>(packed_done & 0x0F);
-        u8 done_hi = static_cast<u8>((packed_done >> 4) & 0x0F);
-        const u8 live_lo = static_cast<u8>(live_in & 0x0F);
-        const u8 live_hi = static_cast<u8>((live_in >> 4) & 0x0F);
-        blas_packet4_occlusion_neon_half(bs, &local_rays[0], live_lo, done_lo);
-        blas_packet4_occlusion_neon_half(bs, &local_rays[4], live_hi, done_hi);
-        packed_done = static_cast<u8>((done_lo & 0x0F) | ((done_hi & 0x0F) << 4));
-#else
-        // Portable scalar fallback.
-        for (u32 r = 0; r < 8; ++r) {
-            if (packed_done & (1u << r))
+    constexpr u32 kStackCap = 128;
+    u32 stack[kStackCap];
+    u32 top = 0;
+    stack[top++] = 0;
+    while (top > 0 && packed_done != 0xFFu) {
+        const u32 nid = stack[--top];
+        const detail::Bvh8Node& n = ts.wide_nodes[nid];
+        const u8 live = static_cast<u8>(static_cast<u32>(~packed_done) & 0xFFu);
+        for (u32 c = 0; c < 8 && packed_done != 0xFFu; ++c) {
+            const u8 kind = n.child_kind[c];
+            if (kind == 2)
                 continue;
-            if (detail::occluded_scalar(bs, local_rays[r])) {
-                packed_done = static_cast<u8>(packed_done | (1u << r));
+            const u8 active = packet_tlas_child_lanes(pkt, n, c, live);
+            if (active == 0)
+                continue;
+            if (kind == 1) {
+                const u32 first = n.child_index[c];
+                const u32 cnt = n.child_count[c];
+                for (u32 k = 0; k < cnt && packed_done != 0xFFu; ++k) {
+                    const u32 inst_i = ts.prim_indices[first + k];
+                    if (inst_i >= ts.instances.size())
+                        continue;
+                    const u8 live_in = static_cast<u8>(active & ~packed_done);
+                    trace_instance_packet(ts, inst_i, pkt, live_in, packed_done);
+                }
+            } else {
+                if (top < kStackCap) {
+                    const u32 child_node = n.child_index[c];
+                    PSYNDER_RT_PREFETCH_RO(&ts.wide_nodes[child_node]);
+                    stack[top++] = child_node;
+                }
             }
         }
-#endif
-        if (packed_done == 0xFFu)
-            break;
     }
 
     for (u32 i = 0; i < 8; ++i) {

@@ -468,6 +468,11 @@ namespace {
 
 template <typename T>
 struct StateRegistry {
+    struct CacheEntry {
+        const void* key = nullptr;
+        T* value = nullptr;
+    };
+
     std::unordered_map<const void*, T*> map;
     std::mutex mu;
 
@@ -488,12 +493,26 @@ struct StateRegistry {
     }
 
     T* find(const void* key) const {
-        // Safe const_cast: the registry is mutated under mu; const lookup
-        // takes the lock too.
+        // Hot intersect paths repeatedly ask for the same few TLAS/BLAS
+        // states from each worker. Keep a tiny per-thread direct cache so
+        // parallel traversal does not serialize on this mutex after the
+        // first lookup on a thread.
+        static thread_local CacheEntry cache[4];
+        static thread_local u32 next_slot = 0;
+        for (const CacheEntry& e : cache) {
+            if (e.key == key)
+                return e.value;
+        }
+
         auto& self = const_cast<StateRegistry<T>&>(*this);
         std::lock_guard<std::mutex> lk(self.mu);
         auto it = self.map.find(key);
-        return (it == self.map.end()) ? nullptr : it->second;
+        T* value = (it == self.map.end()) ? nullptr : it->second;
+        if (value) {
+            cache[next_slot] = CacheEntry{key, value};
+            next_slot = (next_slot + 1u) & 3u;
+        }
+        return value;
     }
 };
 
@@ -671,6 +690,7 @@ bool Bvh8::occluded(const Ray& ray) const {
 void Tlas::build(const InstanceDesc* instances, u32 count) {
     auto& s = detail::state_of(*this);
     s.instances.assign(instances, instances + count);
+    s.blas_states.resize(count);
     s.binary_nodes.clear();
     s.wide_nodes.clear();
     s.world_bounds.resize(count);
@@ -687,10 +707,12 @@ void Tlas::build(const InstanceDesc* instances, u32 count) {
     refs.resize(count);
     for (u32 i = 0; i < count; ++i) {
         const auto& inst = instances[i];
+        const detail::Bvh8State* blas_state = inst.blas ? &detail::state_of(*inst.blas) : nullptr;
+        s.blas_states[i] = blas_state;
         Aabb blas_b;
         blas_b.reset();
-        if (inst.blas && !detail::state_of(*inst.blas).binary_nodes.empty()) {
-            blas_b = detail::state_of(*inst.blas).binary_nodes[0].bounds;
+        if (blas_state && !blas_state->binary_nodes.empty()) {
+            blas_b = blas_state->binary_nodes[0].bounds;
         }
         s.world_bounds[i] = detail::transform_aabb(blas_b, inst.transform);
         s.inv_transform[i] = detail::affine_inverse(inst.transform);
@@ -722,10 +744,13 @@ void Tlas::refit() {
 
     for (u32 i = 0; i < count; ++i) {
         const auto& inst = s.instances[i];
+        const detail::Bvh8State* blas_state = inst.blas ? &detail::state_of(*inst.blas) : nullptr;
+        if (i < s.blas_states.size())
+            s.blas_states[i] = blas_state;
         Aabb blas_b;
         blas_b.reset();
-        if (inst.blas && !detail::state_of(*inst.blas).binary_nodes.empty()) {
-            blas_b = detail::state_of(*inst.blas).binary_nodes[0].bounds;
+        if (blas_state && !blas_state->binary_nodes.empty()) {
+            blas_b = blas_state->binary_nodes[0].bounds;
         }
         s.world_bounds[i] = detail::transform_aabb(blas_b, inst.transform);
         s.inv_transform[i] = detail::affine_inverse(inst.transform);
@@ -760,79 +785,12 @@ void Tlas::refit() {
 
 Hit Tlas::intersect(const Ray& ray) const {
     const auto& s = detail::state_of(*this);
-    Hit best;
-    best.hit = false;
-    best.t = ray.t_max;
-
-    // For Wave A we linearly walk the instances and ask each one (after
-    // its bounds slab-test passes). The wide-tree traversal could short-
-    // circuit instance tests with an outer Bvh8 walk; that lands in Wave B.
-    // Correctness-wise this is identical.
-    for (u32 i = 0; i < s.instances.size(); ++i) {
-        const auto& inst = s.instances[i];
-        if (!inst.blas)
-            continue;
-
-        // Object-space ray = inv(transform) * world ray
-        const math::Mat4& inv = s.inv_transform[i];
-        math::Vec4 o4{ray.origin.x, ray.origin.y, ray.origin.z, 1.0f};
-        math::Vec4 d4{ray.direction.x, ray.direction.y, ray.direction.z, 0.0f};
-        math::Vec4 oo = math::mul(inv, o4);
-        math::Vec4 dd = math::mul(inv, d4);
-
-        Ray local;
-        local.origin = {oo.x, oo.y, oo.z};
-        local.direction = {dd.x, dd.y, dd.z};
-        local.t_min = ray.t_min;
-        local.t_max = best.t;
-
-        const auto& bs = detail::state_of(*inst.blas);
-        detail::LocalHit lh = detail::traverse_scalar(bs, local);
-        if (lh.hit && lh.t < best.t) {
-            best.hit = true;
-            best.t = lh.t;
-            best.primitive = lh.primitive;
-            best.instance = i;
-            // Transform normal back into world space using the upper-3×3
-            // of the instance transform. For pure rotation + uniform scale
-            // this is exact; for non-uniform scale a proper inverse-
-            // transpose would be needed (Wave B).
-            const math::Mat4& tr = inst.transform;
-            math::Vec3 n = lh.normal;
-            math::Vec3 wn{
-                tr.m[0] * n.x + tr.m[4] * n.y + tr.m[8] * n.z,
-                tr.m[1] * n.x + tr.m[5] * n.y + tr.m[9] * n.z,
-                tr.m[2] * n.x + tr.m[6] * n.y + tr.m[10] * n.z,
-            };
-            best.normal = math::normalize(wn);
-        }
-    }
-    return best;
+    return detail::traverse_tlas_scalar(s, ray);
 }
 
 bool Tlas::occluded(const Ray& ray) const {
     const auto& s = detail::state_of(*this);
-    for (u32 i = 0; i < s.instances.size(); ++i) {
-        const auto& inst = s.instances[i];
-        if (!inst.blas)
-            continue;
-
-        const math::Mat4& inv = s.inv_transform[i];
-        math::Vec4 o4{ray.origin.x, ray.origin.y, ray.origin.z, 1.0f};
-        math::Vec4 d4{ray.direction.x, ray.direction.y, ray.direction.z, 0.0f};
-        math::Vec4 oo = math::mul(inv, o4);
-        math::Vec4 dd = math::mul(inv, d4);
-        Ray local;
-        local.origin = {oo.x, oo.y, oo.z};
-        local.direction = {dd.x, dd.y, dd.z};
-        local.t_min = ray.t_min;
-        local.t_max = ray.t_max;
-
-        if (detail::occluded_scalar(detail::state_of(*inst.blas), local)) {
-            return true;
-        }
-    }
-    return false;
+    return detail::occluded_tlas_scalar(s, ray);
 }
 
 namespace detail {

@@ -58,6 +58,10 @@
 
 using namespace psynder;
 
+namespace psynder::render::rt {
+void ensure_denoise_console_commands_registered();
+}
+
 namespace {
 
 console::CVar* g_rt_parallel = nullptr;
@@ -463,6 +467,7 @@ int main(int argc, char** argv) {
     const Args args = parse_args(argc, argv);
     const u32 smoke_frames = args.smoke_frames;
     ensure_rt_parallel_cvars();
+    render::rt::ensure_denoise_console_commands_registered();
 
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 11 (reflective sphere room, CPU RT)";

@@ -4,10 +4,9 @@
 // The public Bvh.h declares Bvh8 and Tlas as empty classes (the public
 // header is FROZEN per the Wave-A bar — we cannot add fields). To carry
 // runtime state without breaking that contract, we keep state in static
-// hash maps keyed by `this`. Lookups happen on build/refit/intersect/
-// occluded paths. The map is mutex-guarded for build/refit (rare) but
-// read-only on intersect (lock-free fast path: we hold a const-ref to the
-// state slot for the lifetime of one ray query).
+// hash maps keyed by `this`. Build/refit paths may touch the maps; hot
+// intersect/occluded paths use per-thread lookup caches and TLAS-cached BLAS
+// state pointers so parallel ray traversal does not serialize on the registry.
 
 #pragma once
 
@@ -31,6 +30,7 @@ struct Bvh8State {
 // ─── TLAS state ──────────────────────────────────────────────────────────
 struct TlasState {
     std::vector<Tlas::InstanceDesc> instances;
+    std::vector<const Bvh8State*> blas_states;  // mirrors instances; cached at build/refit
     std::vector<Aabb> world_bounds;         // per-instance world AABB
     std::vector<math::Mat4> inv_transform;  // for object-space ray xform
     std::vector<u32> prim_indices;
@@ -65,5 +65,7 @@ struct LocalHit {
 };
 LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray) noexcept;
 bool occluded_scalar(const Bvh8State& s, const Ray& ray) noexcept;
+Hit traverse_tlas_scalar(const TlasState& s, const Ray& ray) noexcept;
+bool occluded_tlas_scalar(const TlasState& s, const Ray& ray) noexcept;
 
 }  // namespace psynder::render::rt::detail
