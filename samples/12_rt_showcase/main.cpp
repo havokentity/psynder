@@ -47,6 +47,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -146,7 +147,7 @@ void ensure_rt_parallel_cvars() {
                             const int mr = g_rt_min_rows ? g_rt_min_rows->GetInt() : 8;
                             const int gate = g_rt_parallel_min_rows_gate ? g_rt_parallel_min_rows_gate->GetInt() : 192;
                             const int max_chunks = g_rt_parallel_max_chunks ? g_rt_parallel_max_chunks->GetInt() : 4;
-                            const u32 effective_chunks = rt_parallel_chunk_limit(144u);
+                            const u32 effective_jobs = rt_parallel_chunk_limit(144u);
                             const int ao = g_rt_ao ? g_rt_ao->GetInt() : 1;
                             const int ao_samples = g_rt_ao_samples ? g_rt_ao_samples->GetInt() : 2;
                             const f32 ao_radius = g_rt_ao_radius ? g_rt_ao_radius->GetFloat() : 2.2f;
@@ -157,7 +158,7 @@ void ensure_rt_parallel_cvars() {
                             const auto hc = jobs::hetero_detected_counts();
                             out.FormatLine(
                                 "rt_sample_sched: parallel={}, hint_cores={}, batch_rows={}, min_rows={}, "
-                                "min_parallel_rows={}, max_chunks={}, effective_tile_chunks={} | "
+                                "min_parallel_rows={}, max_chunks={}, effective_tile_jobs={} | "
                                 "ao={}, ao_samples={}, ao_radius={}, "
                                 "ao_strength={}, ao_lit_strength={}, ao_denoise={}, ao_debug={} | "
                                 "workers={} hetero={} (p={}, e={})",
@@ -166,8 +167,8 @@ void ensure_rt_parallel_cvars() {
                                 br,
                                 mr,
                                 gate,
-                                 max_chunks,
-                                 effective_chunks,
+                                max_chunks,
+                                 effective_jobs,
                                 ao,
                                 ao_samples,
                                 ao_radius,
@@ -292,17 +293,24 @@ void rt_parallel_tiles(u32 width, u32 height, u32 tile, Fn&& body) {
     }
     if (jobs::JobSystem::Get().worker_count() == 0u)
         jobs::JobSystem::Get().start(0);
-    const u32 chunk_limit = rt_parallel_chunk_limit(tile_count);
-    const u32 grain = std::max(1u, (tile_count + chunk_limit - 1u) / chunk_limit);
-    jobs::JobSystem::Get().parallel_for(0, tile_count, grain, [&](usize ti0, usize ti1) {
-        for (usize ti = ti0; ti < ti1; ++ti) {
-            const u32 tx = static_cast<u32>(ti % tiles_x);
-            const u32 ty = static_cast<u32>(ti / tiles_x);
-            const u32 x0 = tx * tile;
-            const u32 y0 = ty * tile;
-            const u32 x1 = std::min(width, x0 + tile);
-            const u32 y1 = std::min(height, y0 + tile);
-            body(x0, y0, x1, y1);
+    const u32 active_jobs = rt_parallel_chunk_limit(tile_count);
+    constexpr u32 kTileBatch = 2u;
+    std::atomic<u32> next_tile{0u};
+    jobs::JobSystem::Get().parallel_for(0, active_jobs, 1, [&](usize, usize) {
+        for (;;) {
+            const u32 first_tile = next_tile.fetch_add(kTileBatch, std::memory_order_relaxed);
+            if (first_tile >= tile_count)
+                break;
+            const u32 last_tile = std::min(tile_count, first_tile + kTileBatch);
+            for (u32 ti = first_tile; ti < last_tile; ++ti) {
+                const u32 tx = ti % tiles_x;
+                const u32 ty = ti / tiles_x;
+                const u32 x0 = tx * tile;
+                const u32 y0 = ty * tile;
+                const u32 x1 = std::min(width, x0 + tile);
+                const u32 y1 = std::min(height, y0 + tile);
+                body(x0, y0, x1, y1);
+            }
         }
     });
 }
@@ -988,7 +996,7 @@ int main(int argc, char** argv) {
             const u32 tiles_x = (kShadowW + kRtTile - 1u) / kRtTile;
             const u32 tiles_y = (kShadowH + kRtTile - 1u) / kRtTile;
             const u32 tile_count = tiles_x * tiles_y;
-            PSY_LOG_INFO("sample_12 RT scheduler: workers={}, hint={}, target_cores={}, tile_chunks={}",
+            PSY_LOG_INFO("sample_12 RT scheduler: workers={}, hint={}, target_cores={}, tile_jobs={}",
                          jobs::JobSystem::Get().worker_count(),
                          g_rt_cores_hint ? g_rt_cores_hint->GetInt() : 0,
                          rt_target_cores(),
