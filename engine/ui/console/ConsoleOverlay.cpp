@@ -10,6 +10,7 @@
 
 #include "core/console/Completion.h"
 #include "core/console/Console.h"
+#include "ui/imm/detail/Font.h"
 #include "ui/imm/DebugHud.h"
 #include "ui/imm/Imm.h"
 
@@ -38,7 +39,7 @@ using platform::KeyCode;
 // 2 px of leading for legibility. Colours are packed via rgba() below
 // (0xAABBGGRR, the live framebuffer byte order). The panel is a top-lit
 // slate-blue gradient + blueprint grid; the palette is a muted "Nord"-ish set.
-constexpr i32 kCharW = 6;
+constexpr i32 kCharW = static_cast<i32>(ui::imm::detail::kCellWidth);
 constexpr i32 kLineH = 10;
 constexpr f32 kPad = 6.0f;
 constexpr f32 kPanelFrac = 0.55f;  // fraction of framebuffer height when open
@@ -73,6 +74,7 @@ constexpr u32 kColEcho = rgba(0x8F, 0xBC, 0xBB);    // echoed "] command" lines 
 constexpr u32 kColError = rgba(0xBF, 0x61, 0x6A);   // muted aurora red
 constexpr u32 kColBannerA = rgba(0x7F, 0xB3, 0xC4);
 constexpr u32 kColBannerB = rgba(0xB4, 0x8E, 0xAD);  // soft muted purple
+constexpr u32 kColWatermark = rgba(0x6E, 0x7D, 0x96);  // subtle slate blue-grey
 
 constexpr usize kMaxScrollback = 512;
 
@@ -191,6 +193,75 @@ void push_blob(State& s, std::string_view blob, u32 colour) noexcept {
 // on_change handler registered in ensure_init.
 bool parse_resolution(std::string_view s, u32& w, u32& h) noexcept;
 
+bool is_wrap_space(char c) noexcept {
+    return c == ' ' || c == '\t';
+}
+
+usize trim_right_ws(std::string_view s, usize end) noexcept {
+    while (end > 0 && is_wrap_space(s[end - 1]))
+        --end;
+    return end;
+}
+
+usize max_chars_for_width_px(f32 width_px) noexcept {
+    const i32 px = static_cast<i32>(std::floor(std::max(0.0f, width_px)));
+    if (px <= 0)
+        return 1;
+    const i32 cell = static_cast<i32>(ui::imm::detail::kCellWidth);
+    const i32 glyph = static_cast<i32>(ui::imm::detail::kGlyphWidth);
+    if (px <= glyph)
+        return 1;
+    // N glyphs occupy (N-1)*cell + glyph pixels from left edge to last lit pixel.
+    const i32 n = ((px - glyph) / cell) + 1;
+    return static_cast<usize>(std::max(1, n));
+}
+
+// Return the previous wrapped chunk [start, end) ending at `end` (exclusive).
+// Prefers word boundaries but hard-breaks long tokens when needed.
+std::pair<usize, usize> prev_wrap_chunk(std::string_view s, usize end, usize max_chars) noexcept {
+    end = trim_right_ws(s, end);
+    if (end == 0)
+        return {0, 0};
+
+    // If the remaining slice fits, keep it as one row (don't split on spaces).
+    if (end <= max_chars)
+        return {0, end};
+
+    const usize hard_start = (end > max_chars) ? (end - max_chars) : 0;
+    usize split = end;
+    for (usize i = hard_start; i < end; ++i) {
+        if (is_wrap_space(s[i])) {
+            split = i;  // keep whitespace out of the rendered chunk
+            break;
+        }
+    }
+
+    usize start = hard_start;
+    if (split != end && split > hard_start) {
+        start = split + 1;
+        while (start < end && is_wrap_space(s[start]))
+            ++start;
+    }
+    return {start, end};
+}
+
+u32 wrapped_row_count(std::string_view s, usize max_chars) noexcept {
+    if (max_chars == 0)
+        return 1;
+    usize end = trim_right_ws(s, s.size());
+    if (end == 0)
+        return 1;
+    u32 rows = 0;
+    while (end > 0) {
+        const auto [start, chunk_end] = prev_wrap_chunk(s, end, max_chars);
+        if (chunk_end <= start)
+            break;
+        ++rows;
+        end = trim_right_ws(s, start);
+    }
+    return rows > 0 ? rows : 1;
+}
+
 // ─── Built-in overlay commands ──────────────────────────────────────────────
 // Registered once. `clear` wipes the scrollback; `help` lists every command +
 // cvar the backend knows. Output goes through the ExecuteResult, which the
@@ -289,6 +360,10 @@ void ensure_init(State& s) noexcept {
                             out.PrintLine(platform::is_fullscreen() ? "fullscreen: on"
                                                                     : "fullscreen: off");
                         });
+
+    con.RegisterCVar("r_console_watermark",
+                     "Copyright (c) Rajesh D'Monte 2026 - MIT License",
+                     "Top-right console watermark text.");
 
     push_line(s, "Psynder console.  `~` close   Tab complete   Up/Down history   `help`", kColBannerA);
     push_line(s, "------------------------------------------------------------", kColBannerB);
@@ -707,6 +782,17 @@ void draw(render::Framebuffer& fb) noexcept {
     draw_panel_bg(fb, panel_h);
     imm::filled_rect(math::Vec2{0.0f, panel_h - 2.0f}, math::Vec2{fw, 2.0f}, kColBorder);
 
+    // Top-right watermark (configurable via r_console_watermark).
+    if (auto* wm = psynder::console::Console::Get().FindCVar("r_console_watermark"); wm != nullptr) {
+        const std::string_view text = wm->value;
+        if (!text.empty()) {
+            const f32 tw = static_cast<f32>(ui::imm::detail::text_width(text));
+            const f32 wx = std::max(kPad, fw - kPad - tw);
+            const f32 wy = kPad;
+            imm::label(math::Vec2{wx, wy}, text, kColWatermark);
+        }
+    }
+
     // Prompt sits on the bottom row of the panel; scrollback fills above it.
     const f32 prompt_y = panel_h - static_cast<f32>(kLineH) - kPad;
     const f32 prompt_x = kPad;
@@ -716,20 +802,54 @@ void draw(render::Framebuffer& fb) noexcept {
     const i32 area_bot = static_cast<i32>(prompt_y) - 4;
     const i32 rows = (area_bot - area_top) / kLineH;
     if (rows > 0 && !s.scrollback.empty()) {
-        const u32 total = static_cast<u32>(s.scrollback.size());
-        const u32 max_scroll = (total > static_cast<u32>(rows)) ? total - static_cast<u32>(rows) : 0u;
+        const usize max_chars = max_chars_for_width_px(fw - 2.0f * kPad);
+
+        u32 total_visual_rows = 0;
+        for (const Line& ln : s.scrollback) {
+            total_visual_rows += wrapped_row_count(ln.text, max_chars);
+        }
+
+        const u32 max_scroll = (total_visual_rows > static_cast<u32>(rows))
+                                   ? (total_visual_rows - static_cast<u32>(rows))
+                                   : 0u;
         s.scroll = std::min(s.scroll, max_scroll);
-        // Bottom visible line index = last - scroll.
-        const i32 bottom_idx = static_cast<i32>(total) - 1 - static_cast<i32>(s.scroll);
-        for (i32 r = 0; r < rows; ++r) {
-            const i32 idx = bottom_idx - r;
-            if (idx < 0)
-                break;
+
+        u32 skipped = 0;
+        i32 drawn = 0;
+        for (i32 idx = static_cast<i32>(s.scrollback.size()) - 1; idx >= 0 && drawn < rows; --idx) {
             const Line& ln = s.scrollback[static_cast<usize>(idx)];
-            const f32 y = prompt_y - 4.0f - static_cast<f32>((r + 1) * kLineH);
-            if (y < static_cast<f32>(area_top))
-                break;
-            imm::label(math::Vec2{prompt_x, y}, ln.text, ln.colour);
+            const std::string_view text = ln.text;
+            usize end = trim_right_ws(text, text.size());
+
+            if (end == 0) {
+                if (skipped < s.scroll) {
+                    ++skipped;
+                    continue;
+                }
+                const f32 y = prompt_y - 4.0f - static_cast<f32>((drawn + 1) * kLineH);
+                if (y < static_cast<f32>(area_top))
+                    break;
+                ++drawn;
+                continue;
+            }
+
+            while (end > 0 && drawn < rows) {
+                const auto [start, chunk_end] = prev_wrap_chunk(text, end, max_chars);
+                if (chunk_end <= start)
+                    break;
+
+                if (skipped < s.scroll) {
+                    ++skipped;
+                } else {
+                    const f32 y = prompt_y - 4.0f - static_cast<f32>((drawn + 1) * kLineH);
+                    if (y < static_cast<f32>(area_top))
+                        break;
+                    imm::label(math::Vec2{prompt_x, y}, text.substr(start, chunk_end - start), ln.colour);
+                    ++drawn;
+                }
+
+                end = trim_right_ws(text, start);
+            }
         }
         // "more below" hint when scrolled up.
         if (s.scroll > 0)
