@@ -30,6 +30,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -143,6 +144,7 @@ public:
         return slot.exchange(false, std::memory_order_relaxed);
     }
     const MouseState& mouse() const override { return mouse_state_; }
+    std::span<const u32> text_input() const override { return text_; }
 
     // ─── Internal event injection (used by NSView delegates) ─────────────
     void on_key(KeyCode k, bool is_down) {
@@ -169,13 +171,24 @@ public:
         }
     }
     void on_mouse_wheel(f32 dy) { mouse_state_.wheel += dy; }
-    void begin_frame()          { mouse_state_.dx = 0; mouse_state_.dy = 0; mouse_state_.wheel = 0; }
+    void on_text(u32 codepoint) { text_.push_back(codepoint); }
+    void begin_frame() {
+        mouse_state_.dx = 0;
+        mouse_state_.dy = 0;
+        mouse_state_.wheel = 0;
+        text_.clear();  // text_input() reports only this frame's codepoints
+    }
 
 private:
     static constexpr usize kKeyCount = static_cast<usize>(KeyCode::Count);
     std::array<std::atomic<bool>, kKeyCount> down_{};
     std::array<std::atomic<bool>, kKeyCount> pressed_{};
     MouseState mouse_state_{};
+    // Text-entry codepoints captured this frame. Filled by keyDown: (main
+    // thread, inside poll_events) and read after the pump returns — same
+    // thread, so no atomics needed (unlike the key arrays, which the design
+    // keeps atomic for defensive single-window safety).
+    std::vector<u32> text_{};
 };
 
 MacInput& mac_input() {
@@ -355,6 +368,34 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
 - (void)keyDown:(NSEvent*)event {
     psynder::platform::mac_input().on_key(
         psynder::platform::translate_key([event keyCode]), true);
+
+    // Text entry for the software console overlay. -characters is already
+    // mapped through the active keyboard layout + Shift, so we get '@' for
+    // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command
+    // chords (those are shortcuts, not text) and C0/DEL control codes — the
+    // console reads Enter/Backspace/arrows via key_pressed instead.
+    if (([event modifierFlags] & NSEventModifierFlagCommand) != 0) return;
+    NSString* chars = [event characters];
+    const NSUInteger n = [chars length];
+    for (NSUInteger i = 0; i < n;) {
+        const unichar c = [chars characterAtIndex:i];
+        uint32_t cp = c;
+        // Recombine a UTF-16 surrogate pair into one scalar value.
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+            const unichar lo = [chars characterAtIndex:i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000u + ((static_cast<uint32_t>(c) - 0xD800u) << 10) +
+                     (static_cast<uint32_t>(lo) - 0xDC00u);
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+        if (cp >= 0x20 && cp != 0x7F)  // drop C0 controls + DEL
+            psynder::platform::mac_input().on_text(cp);
+    }
 }
 - (void)keyUp:(NSEvent*)event {
     psynder::platform::mac_input().on_key(

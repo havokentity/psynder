@@ -10,6 +10,7 @@
 #include "core/Types.h"
 #include "render/Framebuffer.h"
 
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -134,6 +135,18 @@ class Input {
     virtual bool key_down(KeyCode k) const = 0;
     virtual bool key_pressed(KeyCode k) const = 0;
     virtual const MouseState& mouse() const = 0;
+
+    // Unicode codepoints typed this frame, in input order. Empty unless the
+    // platform captures character events (text entry for the software console
+    // overlay). Refreshed every poll_events(); the returned span stays valid
+    // until the next poll. Non-pure with an empty default so backends that
+    // don't capture text — and test doubles — need not implement it.
+    //
+    // Codepoints are already layout- and modifier-mapped by the OS (so Shift+2
+    // yields '@' on a US layout). Control characters (Enter, Backspace, Tab,
+    // Escape, arrows) are NOT delivered here — query those via key_pressed so
+    // the console can bind them to editing actions rather than literal text.
+    virtual std::span<const u32> text_input() const { return {}; }
 };
 
 Input* input();
