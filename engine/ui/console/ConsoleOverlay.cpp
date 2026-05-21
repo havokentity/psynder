@@ -46,12 +46,13 @@ constexpr f32 kAnimSpeed = 9.0f;   // open/close slide, units of "anim" per sec
 constexpr f32 kRepeatDelay = 0.40f;
 constexpr f32 kRepeatRate = 0.045f;
 
-// Background: a soft slate-blue vertical gradient (top -> bottom) shaped by a
-// gentle vignette + faint scanlines + a touch of dither. Milder than the old
-// near-black so it reads as a real panel, still dark enough that the light
-// text stays crisp.
-constexpr f32 kBgTopR = 24.0f, kBgTopG = 30.0f, kBgTopB = 42.0f;  // #181E2A
-constexpr f32 kBgBotR = 34.0f, kBgBotG = 42.0f, kBgBotB = 60.0f;  // #222A3C
+// Background: a top-lit slate-blue gradient (brighter at the top edge, fading
+// darker toward the prompt) shaped by a vignette, a faint blueprint grid, a
+// bright top "lip", scanlines, and dither. Milder + clearly textured vs the
+// old near-black, still dark enough that the light text stays crisp.
+constexpr f32 kBgTopR = 38.0f, kBgTopG = 48.0f, kBgTopB = 68.0f;  // #263044 (top, lit)
+constexpr f32 kBgBotR = 16.0f, kBgBotG = 21.0f, kBgBotB = 32.0f;  // #101520 (bottom)
+constexpr u32 kGridSpacing = 32u;                                 // faint grid cell size in px
 
 constexpr u32 kColBorder = 0x7FB3C4FFu;  // soft frost cyan (bottom edge + prompt)
 constexpr u32 kColInput = 0xE0E5EEFFu;   // prompt text (snow, slightly dimmed)
@@ -92,16 +93,22 @@ void draw_panel_bg(render::Framebuffer& fb, f32 panel_h) noexcept {
         const f32 baseB = kBgTopB + (kBgBotB - kBgTopB) * ty;
         const f32 dy = ty * 2.0f - 1.0f;                 // -1..1 (vertical)
         const f32 scan = (y % 3u == 0u) ? 0.96f : 1.0f;  // very faint scanline
+        const bool grid_h = (y % kGridSpacing) == 0u;
+        // Bright lip on the top 2 rows so the drawer reads as catching light.
+        const f32 lip = (y < 2u) ? 26.0f : 0.0f;
         u32* row = reinterpret_cast<u32*>(fb.pixels + static_cast<usize>(fb.pitch) * y);
         for (u32 x = 0; x < w; ++x) {
             const f32 dx = static_cast<f32>(x) * inv_w * 2.0f - 1.0f;  // -1..1
-            const f32 vig = 1.0f - 0.22f * (dx * dx * 0.6f + dy * dy * 0.4f);
+            const f32 vig = 1.0f - 0.26f * (dx * dx * 0.55f + dy * dy * 0.45f);
+            // Faint blueprint grid (slightly brighter on cell lines).
+            const f32 grid = (grid_h || (x % kGridSpacing) == 0u) ? 8.0f : 0.0f;
             u32 hsh = (x * 374761393u) ^ (y * 668265263u);
             hsh ^= hsh >> 13;
             const f32 dith = static_cast<f32>(hsh & 3u) - 1.5f;  // ~ -1.5..+1.5
             const f32 m = vig * scan;
-            row[x] = (clamp8(baseR * m + dith) << 24) | (clamp8(baseG * m + dith) << 16) |
-                     (clamp8(baseB * m + dith) << 8) | 0xFFu;
+            const f32 add = grid + lip + dith;
+            row[x] = (clamp8(baseR * m + add) << 24) | (clamp8(baseG * m + add * 1.1f) << 16) |
+                     (clamp8(baseB * m + add * 1.3f) << 8) | 0xFFu;
         }
     }
 }
