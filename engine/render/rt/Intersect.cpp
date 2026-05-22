@@ -946,7 +946,16 @@ void trace_instance_packet(const detail::TlasState& ts,
 
 }  // namespace
 
-void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
+namespace {
+
+PSY_FORCEINLINE bool instance_casts_shadow(const u8* mask, u32 mask_count, u32 instance) noexcept {
+    return mask == nullptr || instance >= mask_count || mask[instance] != 0u;
+}
+
+void trace_shadow_packet_impl(const Tlas& tlas,
+                              ShadowPacket8& pkt,
+                              const u8* instance_shadow_mask,
+                              u32 instance_shadow_mask_count) {
     const auto& ts = detail::state_of(tlas);
     for (u32 i = 0; i < 8; ++i)
         pkt.occluded[i] = false;
@@ -959,6 +968,8 @@ void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
     u8 packed_done = 0;
     if (ts.wide_nodes.empty()) {
         for (u32 inst_i = 0; inst_i < ts.instances.size() && packed_done != 0xFFu; ++inst_i) {
+            if (!instance_casts_shadow(instance_shadow_mask, instance_shadow_mask_count, inst_i))
+                continue;
             const u8 live_in = static_cast<u8>(static_cast<u32>(~packed_done) & 0xFFu);
             trace_instance_packet(ts, inst_i, pkt, live_in, packed_done);
         }
@@ -989,6 +1000,8 @@ void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
                     const u32 inst_i = ts.prim_indices[first + k];
                     if (inst_i >= ts.instances.size())
                         continue;
+                    if (!instance_casts_shadow(instance_shadow_mask, instance_shadow_mask_count, inst_i))
+                        continue;
                     const u8 live_in = static_cast<u8>(active & ~packed_done);
                     trace_instance_packet(ts, inst_i, pkt, live_in, packed_done);
                 }
@@ -1005,6 +1018,19 @@ void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
     for (u32 i = 0; i < 8; ++i) {
         pkt.occluded[i] = ((packed_done >> i) & 1u) != 0u;
     }
+}
+
+}  // namespace
+
+void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt) {
+    trace_shadow_packet_impl(tlas, pkt, nullptr, 0);
+}
+
+void trace_shadow_packet_masked(const Tlas& tlas,
+                                ShadowPacket8& pkt,
+                                const u8* instance_casts_shadow,
+                                u32 instance_casts_shadow_count) {
+    trace_shadow_packet_impl(tlas, pkt, instance_casts_shadow, instance_casts_shadow_count);
 }
 
 }  // namespace psynder::render::rt

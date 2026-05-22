@@ -286,12 +286,22 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         {&room_blas, {0.0f, 0.0f, 0.0f}, 1.0f, {0.42f, 0.42f, 0.46f, 0.04f}});  // matte floor/walls
 
     std::vector<render::rt::Tlas::InstanceDesc> insts(scene.size());
-    std::vector<Material> materials(scene.size());
+    render::MaterialLibrary material_library;
+    material_library.reserve(static_cast<u32>(scene.size()));
+    std::vector<render::MaterialId> instance_materials(scene.size());
     for (usize i = 0; i < scene.size(); ++i) {
         insts[i].blas = scene[i].blas;
         insts[i].transform =
             (i == kRoomInstance) ? math::identity4() : mat4_trs(scene[i].center, scene[i].scale);
-        materials[i] = scene[i].mat;
+
+        const Material& m = scene[i].mat;
+        render::MaterialDesc material{};
+        material.albedo_rgba8 =
+            pack_rgba8(clamp_u8(m.r * 255.0f), clamp_u8(m.g * 255.0f), clamp_u8(m.b * 255.0f));
+        material.reflectivity = m.reflectivity;
+        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
+                         render::Material_ReceivesRtShadow;
+        instance_materials[i] = material_library.create(material);
     }
 
     render::rt::Tlas tlas;
@@ -302,15 +312,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     render::Framebuffer& fb = app_host.framebuffer();
     render::SceneRenderer renderer;
     ui::imm::DebugHudFrameHistory hud_history{};
-
-    std::vector<u32> instance_colors(materials.size());
-    std::vector<f32> instance_reflectivity(materials.size());
-    for (usize i = 0; i < materials.size(); ++i) {
-        const Material& m = materials[i];
-        instance_colors[i] =
-            pack_rgba8(clamp_u8(m.r * 255.0f), clamp_u8(m.g * 255.0f), clamp_u8(m.b * 255.0f));
-        instance_reflectivity[i] = m.reflectivity;
-    }
 
     // -- Shared first-person / free-cam controller (samples/common). ------
     samples::CharacterControllerConfig cc_cfg{};
@@ -394,11 +395,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.camera = cam;
         rt_input.lights = lights.data();
         rt_input.light_count = static_cast<u32>(lights.size());
-        rt_input.materials.instance_rgba8 = instance_colors.data();
-        rt_input.materials.instance_count = static_cast<u32>(instance_colors.size());
-        rt_input.materials.instance_reflectivity = instance_reflectivity.data();
-        rt_input.materials.instance_reflectivity_count =
-            static_cast<u32>(instance_reflectivity.size());
+        rt_input.materials.library = &material_library;
+        rt_input.materials.instance_materials = instance_materials.data();
+        rt_input.materials.instance_material_count = static_cast<u32>(instance_materials.size());
         rt_input.materials.default_rgba8 = pack_rgba8(70, 70, 80);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 

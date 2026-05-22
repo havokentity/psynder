@@ -135,6 +135,22 @@ void Rasterizer::submit(const DrawItem& draw) {
     fs.draw_items[fs.draw_count++] = draw;
 }
 
+DrawItem make_projected_shadow_draw(const ProjectedShadowDesc& shadow) noexcept {
+    DrawItem d{};
+    d.vertices = shadow.vertices;
+    d.vertex_count = shadow.vertex_count;
+    d.indices = shadow.indices;
+    d.index_count = shadow.index_count;
+    d.model = shadow.model;
+    d.cull = shadow.cull;
+    d.blend = DrawBlendMode::Multiply;
+    d.blend_opacity = std::clamp(shadow.opacity, 0.0f, 1.0f);
+    d.lightmap_texels = shadow.mask_texels;
+    d.lightmap_w = shadow.mask_w;
+    d.lightmap_h = shadow.mask_h;
+    return d;
+}
+
 void Rasterizer::end_frame() {
     auto& fs = frame_state();
     if (!fs.in_frame)
@@ -364,6 +380,8 @@ void Rasterizer::end_frame() {
         cmd.material_id = d.material.raw;
         cmd.flags = d.flags;
         cmd.aniso_max = frame_aniso_max;
+        cmd.blend_mode = static_cast<u8>(d.blend);
+        cmd.blend_opacity = static_cast<u8>(std::clamp(d.blend_opacity, 0.0f, 1.0f) * 255.0f + 0.5f);
         // ── Surface-cache classify (DESIGN.md §7.6 / ADR-001) ───────────
         SurfaceDesc sd{};
         sd.surface_id = d.material.raw;

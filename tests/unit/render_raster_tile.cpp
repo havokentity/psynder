@@ -122,6 +122,59 @@ TEST_CASE("tile size is invariant: 32 / 64 / 128 produce identical output",
     REQUIRE(img_64.pixels == img_128.pixels);
 }
 
+TEST_CASE("rasterizer supports multiplicative decal draws for projected shadows",
+          "[raster][shadow]") {
+    console::Console::Get().RegisterCVar("r_tile_size", "64", "", 0);
+    console::Console::Get().SetCVarOverride("r_tile_size", "64");
+
+    Image base(128, 128);
+    Image shadowed(128, 128);
+    auto mesh = test_mesh::colored_triangle();
+
+    ViewState v{};
+    v.view = math::look_at_rh(math::Vec3{0, 0, 2}, math::Vec3{0, 0, 0}, math::Vec3{0, 1, 0});
+    v.projection =
+        math::perspective_rh(60.0f * math::kDegToRad,
+                             static_cast<f32>(base.fb.width) / static_cast<f32>(base.fb.height),
+                             0.1f,
+                             100.0f);
+    v.tile_w = 64;
+    v.tile_h = 64;
+
+    DrawItem color{};
+    color.vertices = mesh.vertices;
+    color.vertex_count = mesh.vertex_count;
+    color.indices = mesh.indices;
+    color.index_count = mesh.index_count;
+    color.model = math::identity4();
+
+    clear_framebuffer(base.fb, 0xFF000000u);
+    v.target = base.fb;
+    Rasterizer::Get().begin_frame(v);
+    Rasterizer::Get().submit(color);
+    Rasterizer::Get().end_frame();
+
+    DrawItem decal = color;
+    decal.blend = DrawBlendMode::Multiply;
+    decal.blend_opacity = 0.5f;
+
+    clear_framebuffer(shadowed.fb, 0xFF000000u);
+    v.target = shadowed.fb;
+    Rasterizer::Get().begin_frame(v);
+    Rasterizer::Get().submit(color);
+    Rasterizer::Get().submit(decal);
+    Rasterizer::Get().end_frame();
+
+    const u32 idx = 64u * 128u + 64u;
+    const u32 base_sum = (base.pixels[idx] & 0xFFu) + ((base.pixels[idx] >> 8) & 0xFFu) +
+                         ((base.pixels[idx] >> 16) & 0xFFu);
+    const u32 shadow_sum = (shadowed.pixels[idx] & 0xFFu) + ((shadowed.pixels[idx] >> 8) & 0xFFu) +
+                           ((shadowed.pixels[idx] >> 16) & 0xFFu);
+    REQUIRE(base.pixels[idx] != 0xFF000000u);
+    REQUIRE(shadow_sum < base_sum);
+    REQUIRE((shadowed.pixels[idx] >> 24) == (base.pixels[idx] >> 24));
+}
+
 TEST_CASE("submit before begin_frame is a no-op (no crash)", "[raster][lifecycle]") {
     auto& r = Rasterizer::Get();
     auto tri = test_mesh::colored_triangle();

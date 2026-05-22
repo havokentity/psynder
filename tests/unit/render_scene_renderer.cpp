@@ -114,6 +114,63 @@ TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene
     REQUIRE(scene.destroy_entity(entity));
 }
 
+TEST_CASE("scene renderer filters static baked and projected raster shadow queues",
+          "[render][scene_renderer]") {
+    auto& world = scene::World::Get();
+    world.set_structural_deferred(false);
+    scene::RuntimeScene scene{world};
+    render::SceneRenderer renderer;
+
+    render::MaterialDesc static_desc{};
+    static_desc.flags = render::Material_RasterVisible | render::Material_CastsRasterShadow |
+                        render::Material_ReceivesRasterShadow | render::Material_BakeVisible |
+                        render::Material_CastsBakedShadow | render::Material_ReceivesBakedShadow;
+    static_desc.raster_shadow_mode = render::MaterialRasterShadowMode::ProjectedDecal;
+    const render::MaterialId static_material = scene.materials().create(static_desc);
+
+    render::MaterialDesc dynamic_bake_desc{};
+    dynamic_bake_desc.flags = render::Material_RasterVisible | render::Material_BakeVisible |
+                              render::Material_CastsBakedShadow;
+    const render::MaterialId dynamic_bake_material = scene.materials().create(dynamic_bake_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    const render::MeshId mesh_a = renderer.meshes().create_mesh(mesh_desc);
+    const render::MeshId mesh_b = renderer.meshes().create_mesh(mesh_desc);
+
+    const Entity static_entity =
+        scene.create_renderable(renderer.make_mesh_renderable(mesh_a,
+                                                              static_material,
+                                                              scene::Renderable_DefaultFlags,
+                                                              mesh_desc.local_bounds,
+                                                              scene::ObjectMobility::Static));
+    const Entity dynamic_entity =
+        scene.create_renderable(renderer.make_mesh_renderable(mesh_b, dynamic_bake_material));
+
+    const render::SceneRenderStats stats = renderer.build(scene);
+    REQUIRE(stats.submitted == 2u);
+    REQUIRE(stats.raster_shadow_casters == 1u);
+    REQUIRE(stats.raster_shadow_receivers == 1u);
+    REQUIRE(stats.bake_static == 1u);
+    REQUIRE(stats.bake_shadow_casters == 1u);
+    REQUIRE(stats.bake_shadow_receivers == 1u);
+    REQUIRE(stats.dynamic_bake_rejected == 1u);
+    REQUIRE(renderer.queues().item(renderer.queues().raster_shadow_casters[0]).entity == static_entity);
+    REQUIRE(renderer.queues().item(renderer.queues().bake_shadow_casters[0]).entity == static_entity);
+
+    std::vector<render::SceneRenderPolicyIssue> issues;
+    REQUIRE(render::collect_scene_render_policy_issues(scene, issues) == 1u);
+    REQUIRE(issues[0].entity == dynamic_entity);
+    REQUIRE((issues[0].material_flags & render::Material_BakedLightingMask) != 0u);
+
+    REQUIRE(scene.destroy_entity(static_entity));
+    REQUIRE(scene.destroy_entity(dynamic_entity));
+}
+
 TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_renderer]") {
     auto& world = scene::World::Get();
     world.set_structural_deferred(false);

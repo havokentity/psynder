@@ -210,15 +210,25 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     ground_blas.build(ground_tris.data(), static_cast<u32>(ground_tris.size()));
 
     std::array<render::rt::Tlas::InstanceDesc, kNumCubes + 1> insts{};
-    std::array<u32, kNumCubes + 1> instance_colors{};
+    render::MaterialLibrary materials;
+    materials.reserve(kNumCubes + 1);
+    std::array<render::MaterialId, kNumCubes + 1> instance_materials{};
     for (u32 i = 0; i < kNumCubes; ++i) {
         insts[i].blas = &cube_blas;
         insts[i].transform = mat4_trs(cube_instances[i].center, cube_instances[i].size);
-        instance_colors[i] = cube_instances[i].color;
+
+        render::MaterialDesc material{};
+        material.albedo_rgba8 = cube_instances[i].color;
+        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
+                         render::Material_ReceivesRtShadow;
+        instance_materials[i] = materials.create(material);
     }
     insts[kNumCubes].blas = &ground_blas;
     insts[kNumCubes].transform = math::identity4();
-    instance_colors[kNumCubes] = pack_rgba8(60, 60, 70);
+    render::MaterialDesc ground_material{};
+    ground_material.albedo_rgba8 = pack_rgba8(60, 60, 70);
+    ground_material.flags = render::Material_RtVisible | render::Material_ReceivesRtShadow;
+    instance_materials[kNumCubes] = materials.create(ground_material);
 
     render::rt::Tlas tlas;
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
@@ -274,8 +284,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.camera = cam;
         rt_input.lights = lights.data();
         rt_input.light_count = static_cast<u32>(lights.size());
-        rt_input.materials.instance_rgba8 = instance_colors.data();
-        rt_input.materials.instance_count = static_cast<u32>(instance_colors.size());
+        rt_input.materials.library = &materials;
+        rt_input.materials.instance_materials = instance_materials.data();
+        rt_input.materials.instance_material_count = static_cast<u32>(instance_materials.size());
         rt_input.materials.default_rgba8 = pack_rgba8(60, 60, 70);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 

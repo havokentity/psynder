@@ -31,8 +31,13 @@ TEST_CASE("render material library stores editable raster and RT state in SoA co
     desc.roughness = 0.25f;
     desc.winding = render::MaterialWinding::DoubleSided;
     desc.blend = render::MaterialBlendMode::AlphaBlend;
+    desc.raster_shadow_mode = render::MaterialRasterShadowMode::ProjectedDecal;
+    desc.shadow_alpha = render::MaterialShadowAlphaMode::AlphaTest;
+    desc.shadow_opacity = 0.75f;
+    desc.shadow_softness = 0.25f;
     desc.flags = render::Material_RasterVisible | render::Material_RtVisible |
-                 render::Material_CastsRtShadow | render::Material_Editable;
+                 render::Material_CastsRtShadow | render::Material_Editable |
+                 render::Material_BakeVisible | render::Material_CastsBakedShadow;
 
     const render::MaterialId id = library.create(desc);
     REQUIRE(library.valid(id));
@@ -45,7 +50,12 @@ TEST_CASE("render material library stores editable raster and RT state in SoA co
     REQUIRE_THAT(static_cast<double>(view.reflectivity[0]), Catch::Matchers::WithinAbs(0.75, 1e-6));
     REQUIRE(view.winding[0] == render::MaterialWinding::DoubleSided);
     REQUIRE(view.blend[0] == render::MaterialBlendMode::AlphaBlend);
+    REQUIRE(view.raster_shadow_mode[0] == render::MaterialRasterShadowMode::ProjectedDecal);
+    REQUIRE(view.shadow_alpha[0] == render::MaterialShadowAlphaMode::AlphaTest);
+    REQUIRE_THAT(static_cast<double>(view.shadow_opacity[0]), Catch::Matchers::WithinAbs(0.75, 1e-6));
+    REQUIRE_THAT(static_cast<double>(view.shadow_softness[0]), Catch::Matchers::WithinAbs(0.25, 1e-6));
     REQUIRE((view.flags[0] & render::Material_CastsRtShadow) != 0u);
+    REQUIRE((view.flags[0] & render::Material_CastsBakedShadow) != 0u);
 }
 
 TEST_CASE("runtime scene creates transform-backed renderable entities for shared renderers",
@@ -64,6 +74,7 @@ TEST_CASE("runtime scene creates transform-backed renderable entities for shared
     renderable.geometry = scene::GeometryKind::AnalyticSphere;
     renderable.geometry_id = 7u;
     renderable.material = material;
+    renderable.mobility = scene::ObjectMobility::Static;
     renderable.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
 
     const Entity entity = scene.create_renderable(renderable, translate({3.0f, 4.0f, 5.0f}));
@@ -82,6 +93,7 @@ TEST_CASE("runtime scene creates transform-backed renderable entities for shared
     REQUIRE(items[0].geometry == scene::GeometryKind::AnalyticSphere);
     REQUIRE(items[0].geometry_id == 7u);
     REQUIRE(items[0].material == material);
+    REQUIRE(items[0].mobility == scene::ObjectMobility::Static);
     REQUIRE_THAT(static_cast<double>(items[0].world_bounds.min.x),
                  Catch::Matchers::WithinAbs(2.0, 1e-5));
     REQUIRE_THAT(static_cast<double>(items[0].world_bounds.max.z),

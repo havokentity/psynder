@@ -404,6 +404,9 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
     // TLAS: kFieldCount field instances + 1 ground.
     std::array<render::rt::Tlas::InstanceDesc, kNumInstances> insts{};
+    render::MaterialLibrary material_library;
+    material_library.reserve(kNumInstances);
+    std::array<render::MaterialId, kNumInstances> instance_materials{};
     for (u32 i = 0; i < kFieldCount; ++i) {
         const FieldInstance& fi = field[i];
         insts[i].blas = fi.sphere ? &sphere_blas : &cube_blas;
@@ -411,19 +414,25 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
         // spheres scale uniformly so they stay round.
         const f32 scale_y = fi.sphere ? fi.size : (fi.center.y * 2.0f);
         insts[i].transform = mat4_trs(fi.center, fi.size, scale_y);
+
+        render::MaterialDesc material{};
+        material.albedo_rgba8 = fi.color;
+        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
+                         render::Material_ReceivesRtShadow;
+        instance_materials[i] = material_library.create(material);
     }
     insts[kFieldCount].blas = &ground_blas;
     insts[kFieldCount].transform = math::identity4();
+    render::MaterialDesc ground_material{};
+    ground_material.albedo_rgba8 = pack_rgba8(55, 55, 65);
+    ground_material.flags = render::Material_RtVisible | render::Material_ReceivesRtShadow;
+    instance_materials[kFieldCount] = material_library.create(ground_material);
 
     render::rt::Tlas tlas;
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
     // ── CPU framebuffers. ───────────────────────────────────────────────
     std::vector<u32>& final_pixels = app_host.pixels();
-    std::array<u32, kNumInstances> instance_colors{};
-    for (u32 i = 0; i < kFieldCount; ++i)
-        instance_colors[i] = field[i].color;
-    instance_colors[kFieldCount] = pack_rgba8(55, 55, 65);
     render::SceneRenderer renderer;
 
     render::Framebuffer& fb = app_host.framebuffer();
@@ -498,8 +507,9 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
         rt_input.camera = cam;
         rt_input.lights = lights.data();
         rt_input.light_count = static_cast<u32>(lights.size());
-        rt_input.materials.instance_rgba8 = instance_colors.data();
-        rt_input.materials.instance_count = static_cast<u32>(instance_colors.size());
+        rt_input.materials.library = &material_library;
+        rt_input.materials.instance_materials = instance_materials.data();
+        rt_input.materials.instance_material_count = static_cast<u32>(instance_materials.size());
         rt_input.materials.default_rgba8 = pack_rgba8(55, 55, 65);
 
         const render::rt::FrameRenderConfig rt_config =

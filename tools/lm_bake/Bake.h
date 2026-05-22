@@ -33,15 +33,32 @@
 
 namespace psynder::tools::bake {
 
+inline constexpr u32 BakeMaterial_CastBakedShadow = 1u << 0;
+inline constexpr u32 BakeMaterial_ReceiveBakedLight = 1u << 1;
+inline constexpr u32 BakeMaterial_EmitBakedLight = 1u << 2;
+inline constexpr u32 BakeMaterial_DefaultFlags =
+    BakeMaterial_CastBakedShadow | BakeMaterial_ReceiveBakedLight;
+inline constexpr u32 kInvalidBakeMaterialId = 0xFFFFFFFFu;
+
+struct BakeMaterial {
+    math::Vec3 albedo{0.5f, 0.5f, 0.5f};  // diffuse albedo in [0,1]
+    math::Vec3 emissive_color{1.0f, 1.0f, 1.0f};
+    f32 emissive = 0.0f;  // radiance scale when EmitBakedLight is set
+    f32 roughness = 1.0f;
+    u32 flags = BakeMaterial_DefaultFlags;
+};
+
 struct BakeTriangle {
     math::Vec3 v0;
     math::Vec3 v1;
     math::Vec3 v2;
-    math::Vec3 normal;                    // shading normal (we'll renormalize)
-    math::Vec3 albedo{0.5f, 0.5f, 0.5f};  // diffuse albedo in [0,1] (Wave-B)
-    f32 emissive = 0.0f;                  // self-illumination Wm-2sr-1 (kept for Wave-B)
+    math::Vec3 normal;                            // shading normal (we'll renormalize)
+    math::Vec3 albedo{0.5f, 0.5f, 0.5f};          // fallback when material_id is unresolved
+    math::Vec3 emissive_color{1.0f, 1.0f, 1.0f};  // fallback when material_id is unresolved
+    f32 emissive = 0.0f;                          // fallback radiance scale
     f32 roughness = 1.0f;
-    u32 material_id = 0;
+    u32 material_id = kInvalidBakeMaterialId;  // index into BakeScene::materials when present
+    u32 material_flags = BakeMaterial_DefaultFlags;
 };
 
 enum class LightKind : u32 {
@@ -59,6 +76,7 @@ struct BakeLight {
 };
 
 struct BakeScene {
+    std::vector<BakeMaterial> materials;
     std::vector<BakeTriangle> triangles;
     std::vector<BakeLight> lights;
 };
