@@ -31,21 +31,27 @@ and before ending a session so crash recovery has a concrete resume point.
 
 - Code-writing worktrees prepared from `origin/integration/wave-hybrid-material-shadows`:
   - `codex/agent-asset-async-texture`
+    - agent: `019e4f6d-dbbb-7850-b66f-676828e5eac8`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-asset-async-texture`
     - owns `engine/asset/`
   - `codex/agent-rt-material-bounces`
+    - agent: `019e4f5e-2a6d-7130-aabc-560b806db969`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-rt-material-bounces`
     - owns `engine/render/rt/`
   - `codex/agent-raster-projected-shadows`
+    - agent: `019e4f5e-4446-7c92-b0b5-bda7eeb67060`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-raster-projected-shadows`
     - owns `engine/render/raster/`
   - `codex/agent-lmbake-material-policy`
+    - agent: `019e4f5e-5378-7773-8125-bc9f82121a1e`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-lmbake-material-policy`
     - owns `tools/`
   - `codex/agent-samples-hybrid-migration`
+    - agent: `019e4f5e-63c9-7ba2-9016-75ac61719901`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-samples-hybrid-migration`
     - owns `samples/` and `tests/`
   - `codex/agent-scene-validation`
+    - agent: `019e4f5e-10ad-73e0-8494-8ae43823cec7`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-scene-validation`
     - owns `engine/scene/`
 - The earlier read-only scouts have completed:
