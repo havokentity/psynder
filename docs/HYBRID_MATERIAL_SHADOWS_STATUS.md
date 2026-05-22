@@ -151,6 +151,22 @@ and before ending a session so crash recovery has a concrete resume point.
 - Math/SIMD finding for this wave: `engine/simd` has real SIMD support and
   runtime dispatch, but `engine/math` Mat4/quaternion/batch helpers are still
   largely scalar; batch transform helpers are the first lane-02 target.
+- Flat-frame local integration complete in orchestrator worktree:
+  - merged core alloc guard, RT telemetry, scene prewarm, math hotpath, and
+    samples perf graph branches into `codex/flat-frame-orchestrator`
+  - `git diff --check` passed
+  - `cmake --preset mac-release` passed in the fresh orchestrator worktree
+  - `cmake --build --preset mac-release --target psynder_unit
+    sample_12_rt_showcase psynder_bench_math_hotpath` passed
+  - focused tests passed: `[core][alloc][frame_guard]`, `[render_rt]`,
+    `[scene]`, `[math]`
+  - `build/mac-release/bin/sample_12_rt_showcase --smoke-frames=120
+    --debug-hud=compact` passed
+  - `build/mac-release/bin/psynder_unit` passed: 692 test cases, 248352
+    assertions
+  - `build/mac-release/bin/psynder_bench_math_hotpath --smoke` passed
+  - `ctest --test-dir build/mac-release -R sample_ --output-on-failure`
+    passed after building the sample targets: 13/13
 
 ## Next Multi-Agent Step
 
