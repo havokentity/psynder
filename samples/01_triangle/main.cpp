@@ -17,26 +17,28 @@ struct TriangleSample {
 
     render::TextureAsset crate{};
 
-    scene::Scene scene{};
+    scene::Scene* scene = nullptr;
     Entity triangle_entity{};
 
     void started(app::WindowApp& app) {
-        scene.environment().set_clear_color(0xFF202028u);
+        scene = &app.loaded_scene(0);
+        scene->environment().set_clear_color(0xFF202028u);
         crate.load_ppm("assets/crate.ppm");
 
         render::MaterialDesc triangle_material{};
         triangle_material.flags = render::MaterialFlags::RasterVisible;
-        const render::MaterialId triangle_material_id = scene.materials().create(triangle_material);
+        const render::MaterialId triangle_material_id = scene->materials().create(triangle_material);
         const render::MeshDesc triangle_mesh_desc = render::geometry_tools::textured_triangle(&crate);
-        triangle_entity = app.create_mesh_entity(scene, triangle_mesh_desc, triangle_material_id).entity;
-        app.set_scene(scene);
+        triangle_entity = app.create_mesh_entity(*scene, triangle_mesh_desc, triangle_material_id).entity;
     }
 
     void frame(app::WindowFrameContext& ctx) {
+        if (!scene)
+            return;
         scene::LocalTransform triangle_transform{};
         triangle_transform.rotation =
             math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(ctx.seconds) * 0.8f);
-        scene.set_transform(triangle_entity, triangle_transform);
+        scene->set_transform(triangle_entity, triangle_transform);
     }
 };
 

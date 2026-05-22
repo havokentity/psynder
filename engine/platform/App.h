@@ -22,6 +22,7 @@
 #include <concepts>
 #include <cstdlib>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -32,6 +33,7 @@ namespace psynder::app {
 
 struct WindowAppOptions {
     bool depth_buffer = false;
+    bool has_default_scene = true;
     bool has_default_camera = true;
 };
 
@@ -88,6 +90,9 @@ class WindowApp {
         framebuffer_.format = render::PixelFormat::RGBA8;
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
+
+        if (options.has_default_scene)
+            set_scene(default_scene_);
     }
 
     WindowApp(const WindowApp&) = delete;
@@ -123,6 +128,23 @@ class WindowApp {
     [[nodiscard]] const render::RenderingSystem& rendering_system() const noexcept {
         return rendering_system_;
     }
+    [[nodiscard]] scene::Scene& default_scene() noexcept { return default_scene_; }
+    [[nodiscard]] const scene::Scene& default_scene() const noexcept { return default_scene_; }
+    [[nodiscard]] scene::Scene* active_scene() noexcept { return active_scene_; }
+    [[nodiscard]] const scene::Scene* active_scene() const noexcept { return active_scene_; }
+    [[nodiscard]] u32 loaded_scene_count() const noexcept { return loaded_scene_count_; }
+    [[nodiscard]] std::span<scene::Scene* const> loaded_scenes() noexcept {
+        return {loaded_scenes_.data(), loaded_scene_count_};
+    }
+    [[nodiscard]] std::span<scene::Scene* const> loaded_scenes() const noexcept {
+        return {loaded_scenes_.data(), loaded_scene_count_};
+    }
+    [[nodiscard]] scene::Scene& loaded_scene(u32 index = 0u) noexcept {
+        return *loaded_scenes_[index];
+    }
+    [[nodiscard]] const scene::Scene& loaded_scene(u32 index = 0u) const noexcept {
+        return *loaded_scenes_[index];
+    }
 
     [[nodiscard]] render::raster::ViewState default_raster_view() noexcept {
         render::raster::ViewState view{};
@@ -134,10 +156,22 @@ class WindowApp {
         return view;
     }
 
+    bool load_scene(scene::Scene& scene) noexcept {
+        for (u32 i = 0; i < loaded_scene_count_; ++i) {
+            if (loaded_scenes_[i] == &scene)
+                return true;
+        }
+        if (loaded_scene_count_ >= kMaxLoadedScenes)
+            return false;
+        loaded_scenes_[loaded_scene_count_++] = &scene;
+        return true;
+    }
+
     void set_scene(scene::Scene& scene) noexcept {
-        active_scene_ = &scene;
-        if (has_default_camera_)
-            (void)scene.ensure_default_camera(render_target_aspect());
+        if (load_scene(scene)) {
+            active_scene_ = &scene;
+            active_scene_rendered_ = false;
+        }
     }
 
     void clear_scene() noexcept {
@@ -193,6 +227,8 @@ class WindowApp {
     render::SceneRenderStats engine_frame_render() {
         if (active_scene_ == nullptr || active_scene_rendered_)
             return {};
+        if (has_default_camera_)
+            (void)active_scene_->ensure_default_camera(render_target_aspect());
         scene::SceneCameraView camera{};
         if (!active_scene_->active_camera_view(render_target_aspect(), camera)) {
             draw_no_camera_notice();
@@ -300,6 +336,7 @@ class WindowApp {
     }
 
     void move_from(WindowApp& other) noexcept {
+        const bool active_was_default_scene = other.active_scene_ == &other.default_scene_;
         args_ = other.args_;
         window_ = other.window_;
         width_ = other.width_;
@@ -309,7 +346,14 @@ class WindowApp {
         engine_frame_ms_ring_ = other.engine_frame_ms_ring_;
         engine_frame_ms_head_ = other.engine_frame_ms_head_;
         engine_frame_ms_count_ = other.engine_frame_ms_count_;
-        active_scene_ = other.active_scene_;
+        default_scene_ = std::move(other.default_scene_);
+        loaded_scene_count_ = other.loaded_scene_count_;
+        for (u32 i = 0; i < loaded_scene_count_; ++i) {
+            loaded_scenes_[i] = other.loaded_scenes_[i] == &other.default_scene_
+                                    ? &default_scene_
+                                    : other.loaded_scenes_[i];
+        }
+        active_scene_ = active_was_default_scene ? &default_scene_ : other.active_scene_;
         active_scene_rendered_ = other.active_scene_rendered_;
         has_default_camera_ = other.has_default_camera_;
         pixels_ = std::move(other.pixels_);
@@ -326,9 +370,13 @@ class WindowApp {
         other.engine_frame_ms_count_ = 0;
         other.active_scene_ = nullptr;
         other.active_scene_rendered_ = false;
+        other.loaded_scenes_ = {};
+        other.loaded_scene_count_ = 0;
         other.has_default_camera_ = true;
         other.framebuffer_ = {};
     }
+
+    static constexpr u32 kMaxLoadedScenes = 8u;
 
     AppArgs args_{};
     platform::Window* window_ = nullptr;
@@ -339,6 +387,9 @@ class WindowApp {
     std::array<f32, 120> engine_frame_ms_ring_{};
     u32 engine_frame_ms_head_ = 0;
     u32 engine_frame_ms_count_ = 0;
+    scene::Scene default_scene_{};
+    std::array<scene::Scene*, kMaxLoadedScenes> loaded_scenes_{};
+    u32 loaded_scene_count_ = 0;
     scene::Scene* active_scene_ = nullptr;
     bool active_scene_rendered_ = false;
     bool has_default_camera_ = true;
