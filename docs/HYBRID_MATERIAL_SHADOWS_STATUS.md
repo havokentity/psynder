@@ -107,6 +107,8 @@ and before ending a session so crash recovery has a concrete resume point.
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-core-frame-alloc-guard`
     - owns `engine/core/`
     - task: frame allocation guard/telemetry foundation
+    - status: complete; commit `7b21321`; additive frame allocation guard
+      telemetry in core allocator with focused core allocation tests
   - `codex/agent-rt-frame-telemetry`
     - agent: `019e4fc0-d26c-7062-b37b-c9f01553e328`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-rt-frame-telemetry`
@@ -122,6 +124,11 @@ and before ending a session so crash recovery has a concrete resume point.
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-math-hotpath`
     - owns `engine/math/`
     - task: math hot-path tightening within lane 02
+    - status: complete; commit `2aa0bbf`; scalar batch transform and Mat4
+      hot paths tightened with hoisted matrix values, restricted locals,
+      4-wide unrolled loops, and math hotpath smoke bench
+    - integration note: touched math remains scalar-backed; a true SIMD batch
+      transform requires a coordinated lane-03 `engine/simd/` follow-up
   - `codex/agent-samples-perf-graph`
     - agent: `019e4fc0-d33a-7761-a655-9cd7fa49577f`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-samples-perf-graph`
