@@ -307,7 +307,9 @@ inline void gather_scene_render_items(World& world,
 
 class RuntimeScene {
    public:
-    explicit RuntimeScene(World& world = World::Get()) noexcept : world_(&world) {}
+    explicit RuntimeScene(World& world = World::Get()) noexcept : world_(&world) {
+        world_->set_structural_deferred(false);
+    }
 
     [[nodiscard]] World& world() noexcept { return *world_; }
     [[nodiscard]] const World& world() const noexcept { return *world_; }
@@ -317,6 +319,9 @@ class RuntimeScene {
     [[nodiscard]] const ::psynder::render::MaterialLibrary& materials() const noexcept {
         return materials_;
     }
+
+    void set_structural_deferred(bool on) noexcept { world_->set_structural_deferred(on); }
+    void apply_structural_changes() { world_->apply_structural_changes(); }
 
     void prewarm_capacity(const ScenePrewarmConfig& config) {
         prewarm_scene_capacity(*world_, graph_, config);

@@ -32,8 +32,7 @@ struct TriangleSample {
 
     render::TextureAsset crate{};
 
-    scene::World world{};
-    scene::RuntimeScene scene{world};
+    scene::RuntimeScene scene{};
     render::SceneRenderer renderer{};
     render::MeshId triangle_mesh{};
     Entity triangle_entity{};
@@ -43,8 +42,6 @@ struct TriangleSample {
     }
 
     void started(app::WindowApp&) {
-        world.set_structural_deferred(false);
-
         crate.load_ppm("assets/crate.ppm");
 
         render::MeshDesc triangle_mesh_desc{};
