@@ -32,17 +32,14 @@
 #include "math/Math.h"
 #include "platform/App.h"
 #include "platform/Platform.h"
-#include "render/EntityHelpers.h"
 #include "render/Framebuffer.h"
 #include "render/GeometryTools.h"
-#include "render/raster/Raster.h"
 #include "render/Texture.h"
 #include "scene/SceneEcs.h"
 
 #include <array>
 #include <cmath>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -182,20 +179,6 @@ const std::array<math::Vec3, 4> kCratePositions{{
     {0.7f, 1.2f, -5.5f},
 }};
 
-void clear_depth_far(render::Framebuffer& fb) noexcept {
-    if (!fb.depth)
-        return;
-    // 1.0 packed the same way pack_depth() does inside TileRaster.cpp —
-    // the top 24 bits of the f32 1.0 representation, low byte zeroed.
-    u32 packed_far = 0;
-    const f32 one = 1.0f;
-    std::memcpy(&packed_far, &one, sizeof(packed_far));
-    packed_far &= 0xFFFFFF00u;
-    const usize n = static_cast<usize>(fb.width) * fb.height;
-    for (usize i = 0; i < n; ++i)
-        fb.depth[i] = packed_far;
-}
-
 }  // namespace
 
 platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
@@ -214,18 +197,19 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
-    render::Framebuffer& fb = app_host.framebuffer();
-
     // Procedural wooden-crate texture, built once and owned here so its
     // storage outlives every hybrid renderer submission that samples it.
     const render::Texture2D crate_tex = build_crate_texture();
     const render::TextureView crate_view = crate_tex.view();
 
-    scene::Scene scene{};
+    auto& scene = app_host.loaded_scene();
+    scene.prewarm_capacity({.scene_entities = 8u, .renderables = 4u, .cameras = 1u, .render_items = 4u});
+    app_host.reserve_scene_capacity(4u, 1u);
+    scene.environment().set_clear_color(0xFF182030u);
 
     render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
     cube_mesh_desc.base_color = crate_view;
-    const render::MeshId cube_mesh = app_host.rendering_system().meshes().create_mesh(cube_mesh_desc);
+    const render::MeshId cube_mesh = app_host.rendering_system().cached_mesh(cube_mesh_desc);
 
     render::MaterialDesc crate_material{};
     crate_material.flags = render::MaterialFlags::RasterVisible;
@@ -246,12 +230,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     scene.set_active_camera(camera_entity);
 
     std::array<Entity, kCratePositions.size()> crates{};
-    for (Entity& crate : crates)
-        crate = scene.create_renderable(render::entity_helpers::make_mesh_renderable(
-            app_host.rendering_system(),
-            cube_mesh,
-            crate_material_id));
-    app_host.set_scene(scene);
+    std::array<scene::LocalTransform, kCratePositions.size()> crate_transforms{};
+    for (usize i = 0; i < kCratePositions.size(); ++i)
+        crate_transforms[i].translation = kCratePositions[i];
+    scene.spawn_mesh_batch(cube_mesh, crate_material_id, crate_transforms, crates);
 
     PSY_LOG_INFO("Psynder sample 02 running{}{}",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -284,9 +266,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
 
-        // Clear colour + depth.
-        render::raster::clear_framebuffer(fb, 0xFF182030u);
-        clear_depth_far(fb);
+        app_host.engine_frame_begin(app::FrameClear::depth_only());
 
         // Drive the spin off the wall clock so non-smoke runs animate; for
         // smoke runs we use a fixed phase (per-frame * step) so frame N is
@@ -344,7 +324,7 @@ struct TexturedQuadSample {
     }
 
     static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
-        return {.depth_buffer = true, .has_default_scene = false};
+        return {.depth_buffer = true};
     }
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {

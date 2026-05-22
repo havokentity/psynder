@@ -692,7 +692,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     const auto towers = make_watchtowers(hm_desc);
 
-    render::RenderingSystem renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 06 running{}",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)

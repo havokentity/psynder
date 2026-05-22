@@ -388,7 +388,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     controller.set_look(0.0f, 0.0f);
 
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::RenderingSystem renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 13 running{}",
                  smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)

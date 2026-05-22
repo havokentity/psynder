@@ -311,7 +311,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     // -- CPU framebuffer + shared RT renderer. -----------------------------
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::RenderingSystem renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     // -- Shared first-person / free-cam controller (samples/common). ------
     samples::CharacterControllerConfig cc_cfg{};

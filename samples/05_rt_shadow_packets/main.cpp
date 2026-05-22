@@ -234,7 +234,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::RenderingSystem renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 05 running{}",
                  smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)

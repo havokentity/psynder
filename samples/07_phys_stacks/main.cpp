@@ -277,7 +277,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::RenderingSystem renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     // ─── Physics world ──────────────────────────────────────────────────
     auto& world = physics::World::Get();

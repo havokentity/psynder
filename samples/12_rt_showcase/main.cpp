@@ -457,7 +457,7 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
     // ── CPU framebuffers. ───────────────────────────────────────────────
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::RenderingSystem renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 12 running{} — {} TLAS instances, {} lights",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)

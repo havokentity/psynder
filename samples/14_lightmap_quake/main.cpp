@@ -920,7 +920,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     // CPU framebuffer + depth.
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::RenderingSystem renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 14 running{} — B toggles baked/unbaked",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)

@@ -609,7 +609,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::RenderingSystem renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     // ─── Track build ────────────────────────────────────────────────────
     const auto track_segs = build_oval_track();
