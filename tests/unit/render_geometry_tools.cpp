@@ -58,8 +58,9 @@ void require_height_variation(const render::MeshDesc& mesh) {
 }  // namespace
 
 TEST_CASE("geometry tools expose valid primitive mesh descriptors", "[render][geometry_tools]") {
-    constexpr std::array<MeshFactory, 7> factories{{
+    constexpr std::array<MeshFactory, 8> factories{{
         render::geometry_tools::textured_triangle,
+        render::geometry_tools::unit_cube,
         render::geometry_tools::pyramid,
         render::geometry_tools::cone,
         render::geometry_tools::uv_sphere,
@@ -73,16 +74,38 @@ TEST_CASE("geometry tools expose valid primitive mesh descriptors", "[render][ge
 }
 
 TEST_CASE("geometry tools expose varied terrain mesh descriptors", "[render][geometry_tools]") {
-    constexpr std::array<MeshFactory, 5> factories{{
+    constexpr std::array<MeshFactory, 7> factories{{
         render::geometry_tools::island_terrain,
         render::geometry_tools::mountainous_terrain,
         render::geometry_tools::desert_terrain,
         render::geometry_tools::rolling_hills_terrain,
         render::geometry_tools::canyon_terrain,
+        render::geometry_tools::volcanic_terrain,
+        render::geometry_tools::arctic_terrain,
     }};
 
     for (const MeshFactory factory : factories) {
         const render::MeshDesc mesh = factory(nullptr);
+        require_mesh_desc(mesh);
+        require_height_variation(mesh);
+    }
+}
+
+TEST_CASE("geometry tools terrain presets dispatch by enum", "[render][geometry_tools]") {
+    using render::geometry_tools::TerrainPreset;
+    constexpr std::array<TerrainPreset, 7> presets{{
+        TerrainPreset::Island,
+        TerrainPreset::Mountainous,
+        TerrainPreset::Desert,
+        TerrainPreset::RollingHills,
+        TerrainPreset::Canyon,
+        TerrainPreset::Volcanic,
+        TerrainPreset::Arctic,
+    }};
+
+    for (const TerrainPreset preset : presets) {
+        REQUIRE(render::geometry_tools::terrain_preset_name(preset)[0] != '\0');
+        const render::MeshDesc mesh = render::geometry_tools::terrain(preset);
         require_mesh_desc(mesh);
         require_height_variation(mesh);
     }

@@ -24,7 +24,6 @@
 //                            psynder_add_golden_cell() ctest cells to
 //                            produce the actual-image-this-run output.
 
-#include "common/MeshWinding.h"
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
@@ -34,7 +33,6 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/Geometry.h"
 #include "render/raster/Raster.h"
 #include "render/Texture.h"
 #include "scene/SceneEcs.h"
@@ -52,55 +50,10 @@ using namespace psynder;
 
 namespace {
 
-// Unit cube — 24 verts (4 per face × 6 faces). Every vertex colour is white
-// so the surface_cached path's `vertexColor × chunk` reduces to the crate
-// texture itself (the chunk dominates; see kCrateWhite + build_crate_texture
-// below). Each face's `uv` spans the full 0..1 range, so the whole crate
-// chunk maps across every face. Z faces forward (-Z), so the front of each
-// crate faces the camera at angle 0.
 constexpr u32 pack_rgba(u8 r, u8 g, u8 b, u8 a = 255) noexcept {
     return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
            (static_cast<u32>(a) << 24);
 }
-
-// White ⇒ out = texture. The rasterizer multiplies the interpolated vertex
-// colour by the sampled chunk, so a flat white vertex colour lets the
-// procedural crate texture come through unmodulated.
-constexpr u32 kCrateWhite = 0xFFFFFFFFu;
-
-// 24 vertices for a unit cube centered at origin, ±0.5 on each axis.
-const std::array<render::raster::Vertex, 24> kCubeVerts{{
-    // +X face (BL → TL → TR → BR in face-local space)
-    {{0.5f, -0.5f, -0.5f}, {1, 0, 0}, {0, 1}, {0, 0}, kCrateWhite},
-    {{0.5f, 0.5f, -0.5f}, {1, 0, 0}, {0, 0}, {0, 0}, kCrateWhite},
-    {{0.5f, 0.5f, 0.5f}, {1, 0, 0}, {1, 0}, {0, 0}, kCrateWhite},
-    {{0.5f, -0.5f, 0.5f}, {1, 0, 0}, {1, 1}, {0, 0}, kCrateWhite},
-    // -X face
-    {{-0.5f, -0.5f, 0.5f}, {-1, 0, 0}, {0, 1}, {0, 0}, kCrateWhite},
-    {{-0.5f, 0.5f, 0.5f}, {-1, 0, 0}, {0, 0}, {0, 0}, kCrateWhite},
-    {{-0.5f, 0.5f, -0.5f}, {-1, 0, 0}, {1, 0}, {0, 0}, kCrateWhite},
-    {{-0.5f, -0.5f, -0.5f}, {-1, 0, 0}, {1, 1}, {0, 0}, kCrateWhite},
-    // +Y face (top)
-    {{-0.5f, 0.5f, -0.5f}, {0, 1, 0}, {0, 1}, {0, 0}, kCrateWhite},
-    {{-0.5f, 0.5f, 0.5f}, {0, 1, 0}, {0, 0}, {0, 0}, kCrateWhite},
-    {{0.5f, 0.5f, 0.5f}, {0, 1, 0}, {1, 0}, {0, 0}, kCrateWhite},
-    {{0.5f, 0.5f, -0.5f}, {0, 1, 0}, {1, 1}, {0, 0}, kCrateWhite},
-    // -Y face (bottom)
-    {{-0.5f, -0.5f, 0.5f}, {0, -1, 0}, {0, 1}, {0, 0}, kCrateWhite},
-    {{-0.5f, -0.5f, -0.5f}, {0, -1, 0}, {0, 0}, {0, 0}, kCrateWhite},
-    {{0.5f, -0.5f, -0.5f}, {0, -1, 0}, {1, 0}, {0, 0}, kCrateWhite},
-    {{0.5f, -0.5f, 0.5f}, {0, -1, 0}, {1, 1}, {0, 0}, kCrateWhite},
-    // +Z face
-    {{-0.5f, -0.5f, 0.5f}, {0, 0, 1}, {0, 1}, {0, 0}, kCrateWhite},
-    {{0.5f, -0.5f, 0.5f}, {0, 0, 1}, {1, 1}, {0, 0}, kCrateWhite},
-    {{0.5f, 0.5f, 0.5f}, {0, 0, 1}, {1, 0}, {0, 0}, kCrateWhite},
-    {{-0.5f, 0.5f, 0.5f}, {0, 0, 1}, {0, 0}, {0, 0}, kCrateWhite},
-    // -Z face (front when camera looks down -Z)
-    {{0.5f, -0.5f, -0.5f}, {0, 0, -1}, {0, 1}, {0, 0}, kCrateWhite},
-    {{-0.5f, -0.5f, -0.5f}, {0, 0, -1}, {1, 1}, {0, 0}, kCrateWhite},
-    {{-0.5f, 0.5f, -0.5f}, {0, 0, -1}, {1, 0}, {0, 0}, kCrateWhite},
-    {{0.5f, 0.5f, -0.5f}, {0, 0, -1}, {0, 0}, {0, 0}, kCrateWhite},
-}};
 
 // ─── Procedural wooden-crate texture ─────────────────────────────────────
 // Deterministic RGBA8 chunk (kCrateTexDim², pitch == width) that reads as a
@@ -218,13 +171,6 @@ render::Texture2D build_crate_texture() {
     return render::Texture2D::from_rgba8(dim, dim, std::move(tex));
 }
 
-// 36 indices — two triangles per face, wound CCW in the post-flip screen
-// frame (matches the front-face convention in TriSetup.cpp).
-constexpr std::array<u32, 36> kCubeIndices{
-    0,  1,  2,  0,  2,  3,  4,  5,  6,  4,  6,  7,  8,  9,  10, 8,  10, 11,
-    12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
-};
-
 // Crate placements inside the room. Four cubes form a small clump in front
 // of the camera; the camera looks down -Z so all four are visible.
 const std::array<math::Vec3, 4> kCratePositions{{
@@ -273,25 +219,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const render::Texture2D crate_tex = build_crate_texture();
     const render::TextureView crate_view = crate_tex.view();
 
-    // The rasterizer now back-face culls by default, so the cube must be
-    // wound consistently with its per-vertex normals or faces drop out as a
-    // crate spins (the old two-sided path hid this). Rewind once from the
-    // shared normals; the per-face crate palette is left untouched.
-    std::array<u32, kCubeIndices.size()> cube_idx = kCubeIndices;
-    samples::fix_winding(kCubeVerts.data(),
-                         static_cast<u32>(kCubeVerts.size()),
-                         cube_idx.data(),
-                         static_cast<u32>(cube_idx.size()));
-
     scene::Scene scene{};
 
-    render::MeshDesc cube_mesh_desc{};
-    cube_mesh_desc.vertices = kCubeVerts.data();
-    cube_mesh_desc.vertex_count = static_cast<u32>(kCubeVerts.size());
-    cube_mesh_desc.indices = cube_idx.data();
-    cube_mesh_desc.index_count = static_cast<u32>(cube_idx.size());
+    render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
     cube_mesh_desc.base_color = crate_view;
-    cube_mesh_desc.local_bounds = math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}};
     const render::MeshId cube_mesh = app_host.create_mesh(cube_mesh_desc);
 
     render::MaterialDesc crate_material{};

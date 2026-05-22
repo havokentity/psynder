@@ -162,7 +162,29 @@ enum class TerrainKind : u8 {
     Desert,
     RollingHills,
     Canyon,
+    Volcanic,
+    Arctic,
 };
+
+TerrainKind to_kind(TerrainPreset preset) noexcept {
+    switch (preset) {
+        case TerrainPreset::Island:
+            return TerrainKind::Island;
+        case TerrainPreset::Mountainous:
+            return TerrainKind::Mountainous;
+        case TerrainPreset::Desert:
+            return TerrainKind::Desert;
+        case TerrainPreset::RollingHills:
+            return TerrainKind::RollingHills;
+        case TerrainPreset::Canyon:
+            return TerrainKind::Canyon;
+        case TerrainPreset::Volcanic:
+            return TerrainKind::Volcanic;
+        case TerrainPreset::Arctic:
+            return TerrainKind::Arctic;
+    }
+    return TerrainKind::Island;
+}
 
 void emit_carpet_tile(CarpetStorage& out, u32& tile, f32 x, f32 y, f32 s) noexcept {
     const f32 z = 0.0f;
@@ -237,6 +259,19 @@ f32 terrain_height(TerrainKind kind, f32 x, f32 z) noexcept {
             const f32 shelves = 0.08f * std::floor(4.0f * std::abs(river)) / 4.0f;
             return 0.18f + shelves - 0.60f * cut + 0.04f * std::sin(10.0f * z);
         }
+        case TerrainKind::Volcanic: {
+            const f32 r = std::sqrt(x * x + z * z);
+            const f32 cone = std::max(0.0f, 0.72f - r * 0.58f);
+            const f32 crater = 0.52f * std::exp(-28.0f * (r - 0.34f) * (r - 0.34f));
+            const f32 lava = 0.05f * std::sin(18.0f * std::atan2(z, x) + 7.0f * r);
+            return cone - crater + lava - 0.18f;
+        }
+        case TerrainKind::Arctic: {
+            const f32 shelf = 0.10f * std::sin(2.0f * x) + 0.10f * std::cos(2.6f * z);
+            const f32 drift = 0.05f * std::sin(12.0f * (x * 0.4f - z * 0.7f));
+            const f32 ridge = 0.24f * std::exp(-10.0f * (z + 0.18f) * (z + 0.18f));
+            return shelf + drift + ridge - 0.05f;
+        }
     }
     return 0.0f;
 }
@@ -253,6 +288,10 @@ u32 terrain_color(TerrainKind kind, f32 y) noexcept {
             return y > 0.18f ? 0xFFB7D88Du : 0xFF6FA85Fu;
         case TerrainKind::Canyon:
             return y < -0.12f ? 0xFF5A87A0u : (y > 0.22f ? 0xFFC48755u : 0xFF9C5F3Du);
+        case TerrainKind::Volcanic:
+            return y < -0.04f ? 0xFF2A2220u : (y > 0.22f ? 0xFF7A3730u : 0xFF3A3432u);
+        case TerrainKind::Arctic:
+            return y > 0.16f ? 0xFFFFFFFFu : (y > 0.02f ? 0xFFE4F1F7u : 0xFFA9CDE1u);
     }
     return kWhite;
 }
@@ -308,6 +347,45 @@ MeshDesc textured_triangle(const TextureAsset* base_color_asset) noexcept {
     };
     static constexpr u32 kIndices[] = {0, 2, 1};
     return describe(kVertices, 3u, kIndices, 3u, {{-0.6f, -0.4f, 0.0f}, {0.6f, 0.6f, 0.0f}}, base_color_asset);
+}
+
+MeshDesc unit_cube(const TextureAsset* base_color_asset) noexcept {
+    static constexpr Vertex kVertices[] = {
+        {{0.5f, -0.5f, -0.5f}, {1, 0, 0}, {0, 1}, {0, 0}, kWhite},
+        {{0.5f, 0.5f, -0.5f}, {1, 0, 0}, {0, 0}, {0, 0}, kWhite},
+        {{0.5f, 0.5f, 0.5f}, {1, 0, 0}, {1, 0}, {0, 0}, kWhite},
+        {{0.5f, -0.5f, 0.5f}, {1, 0, 0}, {1, 1}, {0, 0}, kWhite},
+        {{-0.5f, -0.5f, 0.5f}, {-1, 0, 0}, {0, 1}, {0, 0}, kWhite},
+        {{-0.5f, 0.5f, 0.5f}, {-1, 0, 0}, {0, 0}, {0, 0}, kWhite},
+        {{-0.5f, 0.5f, -0.5f}, {-1, 0, 0}, {1, 0}, {0, 0}, kWhite},
+        {{-0.5f, -0.5f, -0.5f}, {-1, 0, 0}, {1, 1}, {0, 0}, kWhite},
+        {{-0.5f, 0.5f, -0.5f}, {0, 1, 0}, {0, 1}, {0, 0}, kWhite},
+        {{-0.5f, 0.5f, 0.5f}, {0, 1, 0}, {0, 0}, {0, 0}, kWhite},
+        {{0.5f, 0.5f, 0.5f}, {0, 1, 0}, {1, 0}, {0, 0}, kWhite},
+        {{0.5f, 0.5f, -0.5f}, {0, 1, 0}, {1, 1}, {0, 0}, kWhite},
+        {{-0.5f, -0.5f, 0.5f}, {0, -1, 0}, {0, 1}, {0, 0}, kWhite},
+        {{-0.5f, -0.5f, -0.5f}, {0, -1, 0}, {0, 0}, {0, 0}, kWhite},
+        {{0.5f, -0.5f, -0.5f}, {0, -1, 0}, {1, 0}, {0, 0}, kWhite},
+        {{0.5f, -0.5f, 0.5f}, {0, -1, 0}, {1, 1}, {0, 0}, kWhite},
+        {{-0.5f, -0.5f, 0.5f}, {0, 0, 1}, {0, 1}, {0, 0}, kWhite},
+        {{0.5f, -0.5f, 0.5f}, {0, 0, 1}, {1, 1}, {0, 0}, kWhite},
+        {{0.5f, 0.5f, 0.5f}, {0, 0, 1}, {1, 0}, {0, 0}, kWhite},
+        {{-0.5f, 0.5f, 0.5f}, {0, 0, 1}, {0, 0}, {0, 0}, kWhite},
+        {{0.5f, -0.5f, -0.5f}, {0, 0, -1}, {0, 1}, {0, 0}, kWhite},
+        {{-0.5f, -0.5f, -0.5f}, {0, 0, -1}, {1, 1}, {0, 0}, kWhite},
+        {{-0.5f, 0.5f, -0.5f}, {0, 0, -1}, {1, 0}, {0, 0}, kWhite},
+        {{0.5f, 0.5f, -0.5f}, {0, 0, -1}, {0, 0}, {0, 0}, kWhite},
+    };
+    static constexpr u32 kIndices[] = {
+        0,  2,  1,  0,  3,  2,  4,  6,  5,  4,  7,  6,  8,  10, 9,  8,  11, 10,
+        12, 14, 13, 12, 15, 14, 16, 18, 17, 16, 19, 18, 20, 22, 21, 20, 23, 22,
+    };
+    return describe(kVertices,
+                    24u,
+                    kIndices,
+                    36u,
+                    {{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}},
+                    base_color_asset);
 }
 
 MeshDesc pyramid(const TextureAsset* base_color_asset) noexcept {
@@ -418,6 +496,46 @@ MeshDesc sierpinski_carpet(const TextureAsset* base_color_asset) noexcept {
                     base_color_asset);
 }
 
+const char* terrain_preset_name(TerrainPreset preset) noexcept {
+    switch (preset) {
+        case TerrainPreset::Island:
+            return "island";
+        case TerrainPreset::Mountainous:
+            return "mountainous";
+        case TerrainPreset::Desert:
+            return "desert";
+        case TerrainPreset::RollingHills:
+            return "rolling_hills";
+        case TerrainPreset::Canyon:
+            return "canyon";
+        case TerrainPreset::Volcanic:
+            return "volcanic";
+        case TerrainPreset::Arctic:
+            return "arctic";
+    }
+    return "island";
+}
+
+MeshDesc terrain(TerrainPreset preset, const TextureAsset* base_color_asset) noexcept {
+    switch (to_kind(preset)) {
+        case TerrainKind::Island:
+            return island_terrain(base_color_asset);
+        case TerrainKind::Mountainous:
+            return mountainous_terrain(base_color_asset);
+        case TerrainKind::Desert:
+            return desert_terrain(base_color_asset);
+        case TerrainKind::RollingHills:
+            return rolling_hills_terrain(base_color_asset);
+        case TerrainKind::Canyon:
+            return canyon_terrain(base_color_asset);
+        case TerrainKind::Volcanic:
+            return volcanic_terrain(base_color_asset);
+        case TerrainKind::Arctic:
+            return arctic_terrain(base_color_asset);
+    }
+    return island_terrain(base_color_asset);
+}
+
 MeshDesc island_terrain(const TextureAsset* base_color_asset) noexcept {
     static const TerrainStorage storage = make_terrain_storage(TerrainKind::Island);
     return describe(storage.vertices.data(),
@@ -465,6 +583,26 @@ MeshDesc canyon_terrain(const TextureAsset* base_color_asset) noexcept {
                     storage.indices.data(),
                     static_cast<u32>(storage.indices.size()),
                     {{-3.0f, -0.45f, -3.0f}, {3.0f, 0.40f, 3.0f}},
+                    base_color_asset);
+}
+
+MeshDesc volcanic_terrain(const TextureAsset* base_color_asset) noexcept {
+    static const TerrainStorage storage = make_terrain_storage(TerrainKind::Volcanic);
+    return describe(storage.vertices.data(),
+                    static_cast<u32>(storage.vertices.size()),
+                    storage.indices.data(),
+                    static_cast<u32>(storage.indices.size()),
+                    {{-3.0f, -0.45f, -3.0f}, {3.0f, 0.55f, 3.0f}},
+                    base_color_asset);
+}
+
+MeshDesc arctic_terrain(const TextureAsset* base_color_asset) noexcept {
+    static const TerrainStorage storage = make_terrain_storage(TerrainKind::Arctic);
+    return describe(storage.vertices.data(),
+                    static_cast<u32>(storage.vertices.size()),
+                    storage.indices.data(),
+                    static_cast<u32>(storage.indices.size()),
+                    {{-3.0f, -0.25f, -3.0f}, {3.0f, 0.35f, 3.0f}},
                     base_color_asset);
 }
 
