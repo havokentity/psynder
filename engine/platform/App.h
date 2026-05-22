@@ -10,6 +10,8 @@
 #include "render/Framebuffer.h"
 #include "render/PngWriter.h"
 
+#include <concepts>
+#include <cstdlib>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -121,4 +123,153 @@ class WindowApp {
     render::Framebuffer framebuffer_{};
 };
 
+enum class FrameAction {
+    Continue,
+    Exit,
+};
+
+struct WindowFrameContext {
+    WindowApp& app;
+    platform::Window& window;
+    render::Framebuffer& framebuffer;
+    const AppArgs& args;
+    u32 frame_index = 0;
+    f64 seconds = 0.0;
+};
+
+namespace detail {
+
+template <class Sample>
+AppArgs parse_sample_args(int argc, char** argv) {
+    if constexpr (requires { Sample::parse_args(argc, argv); }) {
+        return Sample::parse_args(argc, argv);
+    } else {
+        return parse_common_args(argc, argv).args;
+    }
+}
+
+template <class Sample>
+std::string_view sample_log_name(const Sample& sample) noexcept {
+    if constexpr (requires { sample.log_name(); }) {
+        return sample.log_name();
+    } else if constexpr (requires { Sample::log_name(); }) {
+        return Sample::log_name();
+    } else {
+        return "app";
+    }
+}
+
+template <class Sample>
+std::string_view sample_display_name(const Sample& sample) noexcept {
+    if constexpr (requires { sample.display_name(); }) {
+        return sample.display_name();
+    } else if constexpr (requires { Sample::display_name(); }) {
+        return Sample::display_name();
+    } else {
+        return sample_log_name(sample);
+    }
+}
+
+template <class Sample>
+WindowAppOptions sample_window_options(const Sample& sample, const AppArgs& args) noexcept {
+    if constexpr (requires { sample.window_options(args); }) {
+        return sample.window_options(args);
+    } else if constexpr (requires { Sample::window_options(args); }) {
+        return Sample::window_options(args);
+    } else {
+        return {};
+    }
+}
+
+template <class Sample>
+void sample_started(Sample& sample, WindowApp& app) {
+    if constexpr (requires { sample.started(app); }) {
+        sample.started(app);
+    }
+}
+
+template <class Sample>
+void sample_stopped(Sample& sample, WindowApp& app) {
+    if constexpr (requires { sample.stopped(app); }) {
+        sample.stopped(app);
+    }
+}
+
+template <class Sample>
+FrameAction run_sample_frame(Sample& sample, WindowFrameContext& ctx) {
+    if constexpr (requires { sample.frame(ctx); }) {
+        if constexpr (requires {
+                          { sample.frame(ctx) } -> std::same_as<FrameAction>;
+                      }) {
+            return sample.frame(ctx);
+        } else {
+            sample.frame(ctx);
+            return FrameAction::Continue;
+        }
+    } else {
+        return FrameAction::Continue;
+    }
+}
+
+}  // namespace detail
+
+template <class Sample>
+int run_window_sample(int argc, char** argv) {
+    const AppArgs args = detail::parse_sample_args<Sample>(argc, argv);
+    Sample sample{};
+    const std::string_view log_name = detail::sample_log_name(sample);
+    const std::string_view display_name = detail::sample_display_name(sample);
+
+    WindowApp app{args, sample.window_desc(args), detail::sample_window_options(sample, args)};
+    if (!app) {
+        PSY_LOG_ERROR("{}: failed to create window", log_name);
+        return EXIT_FAILURE;
+    }
+
+    detail::sample_started(sample, app);
+
+    if (args.smoke_frames > 0) {
+        PSY_LOG_INFO("{} — smoke mode, {} frames", display_name, args.smoke_frames);
+    } else {
+        PSY_LOG_INFO("{} running", display_name);
+    }
+
+    const u64 t0 = platform::Clock::ticks_now();
+    u32 frame = 0;
+    while (!app.window().should_close()) {
+        app.window().poll_events();
+
+        WindowFrameContext ctx{
+            app,
+            app.window(),
+            app.framebuffer(),
+            args,
+            frame,
+            args.smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
+                                  : platform::Clock::seconds(platform::Clock::ticks_now() - t0),
+        };
+
+        const FrameAction action = detail::run_sample_frame(sample, ctx);
+        app.present();
+
+        ++frame;
+        if (action == FrameAction::Exit) {
+            break;
+        }
+        if (args.smoke_frames > 0 && frame >= args.smoke_frames) {
+            PSY_LOG_INFO("{}: smoke target reached ({}); exiting", log_name, args.smoke_frames);
+            break;
+        }
+    }
+
+    const bool capture_ok = app.write_capture_if_requested(log_name);
+    detail::sample_stopped(sample, app);
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
 }  // namespace psynder::app
+
+#define PSYNDER_WINDOW_SAMPLE_MAIN(SampleType)                            \
+    int main(int argc, char** argv) {                                     \
+        return ::psynder::app::run_window_sample<SampleType>(argc, argv); \
+    }
