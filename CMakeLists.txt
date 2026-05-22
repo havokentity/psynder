@@ -31,6 +31,10 @@ set(CMAKE_CXX_EXTENSIONS        OFF)
 set(CMAKE_C_STANDARD            11)
 set(CMAKE_C_STANDARD_REQUIRED   ON)
 
+# Psynder does not use C++20 modules today. CMake 3.28+ may otherwise add a
+# per-TU module dependency scan edge under Ninja/MSVC, which bloats CI builds.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 # Always-on per-target compile features
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS   ON)
