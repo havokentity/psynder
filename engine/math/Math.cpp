@@ -80,24 +80,36 @@ Mat4 rotate_quat(Quat q) {
 
 Mat4 mul(const Mat4& a, const Mat4& b) {
     Mat4 r{};
+
+    const f32 a00 = a.m[0], a01 = a.m[4], a02 = a.m[8], a03 = a.m[12];
+    const f32 a10 = a.m[1], a11 = a.m[5], a12 = a.m[9], a13 = a.m[13];
+    const f32 a20 = a.m[2], a21 = a.m[6], a22 = a.m[10], a23 = a.m[14];
+    const f32 a30 = a.m[3], a31 = a.m[7], a32 = a.m[11], a33 = a.m[15];
+
     for (int c = 0; c < 4; ++c) {
-        for (int rrow = 0; rrow < 4; ++rrow) {
-            f32 s = 0;
-            for (int k = 0; k < 4; ++k) {
-                s += a.m[k * 4 + rrow] * b.m[c * 4 + k];
-            }
-            r.m[c * 4 + rrow] = s;
-        }
+        const f32 b0 = b.m[c * 4 + 0];
+        const f32 b1 = b.m[c * 4 + 1];
+        const f32 b2 = b.m[c * 4 + 2];
+        const f32 b3 = b.m[c * 4 + 3];
+
+        r.m[c * 4 + 0] = a00 * b0 + a01 * b1 + a02 * b2 + a03 * b3;
+        r.m[c * 4 + 1] = a10 * b0 + a11 * b1 + a12 * b2 + a13 * b3;
+        r.m[c * 4 + 2] = a20 * b0 + a21 * b1 + a22 * b2 + a23 * b3;
+        r.m[c * 4 + 3] = a30 * b0 + a31 * b1 + a32 * b2 + a33 * b3;
     }
     return r;
 }
 
 Vec4 mul(const Mat4& m, Vec4 v) {
+    const f32 x = v.x;
+    const f32 y = v.y;
+    const f32 z = v.z;
+    const f32 w = v.w;
     return {
-        m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z + m.m[12] * v.w,
-        m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z + m.m[13] * v.w,
-        m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z + m.m[14] * v.w,
-        m.m[3] * v.x + m.m[7] * v.y + m.m[11] * v.z + m.m[15] * v.w,
+        m.m[0] * x + m.m[4] * y + m.m[8] * z + m.m[12] * w,
+        m.m[1] * x + m.m[5] * y + m.m[9] * z + m.m[13] * w,
+        m.m[2] * x + m.m[6] * y + m.m[10] * z + m.m[14] * w,
+        m.m[3] * x + m.m[7] * y + m.m[11] * z + m.m[15] * w,
     };
 }
 
