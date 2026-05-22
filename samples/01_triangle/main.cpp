@@ -22,7 +22,7 @@ struct TriangleSample {
     Entity triangle_entity{};
 
     void started(app::WindowApp& app) {
-        scene::Scene& scene = app.loaded_scene(0);
+        auto& scene = app.loaded_scene();
         scene.environment().set_clear_color(0xFF202028u);
         crate.load_ppm("assets/crate.ppm");
 
@@ -33,10 +33,10 @@ struct TriangleSample {
     }
 
     void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {
-        scene::LocalTransform triangle_transform{};
-        triangle_transform.rotation =
-            math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(ctx.seconds) * 0.8f);
-        cr.scene().set_transform(triangle_entity, triangle_transform);
+        cr.scene().set_transform(
+            triangle_entity,
+            {.rotation =
+                 math::quat_from_axis_angle({0, 0, 1}, static_cast<f32>(ctx.seconds) * 0.8f)});
     }
 };
 
