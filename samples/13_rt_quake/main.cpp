@@ -36,7 +36,6 @@
 #include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <algorithm>
@@ -390,7 +389,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     controller.set_look(0.0f, 0.0f);
 
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::Framebuffer& fb = app_host.framebuffer();
     render::SceneRenderer renderer;
     ui::imm::DebugHudFrameHistory hud_history{};
 
@@ -421,7 +419,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         hud_history.push(frame_ms);
 
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             PSY_LOG_INFO("sample_13: escape pressed, exiting");
             break;
         }
@@ -433,13 +431,13 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now_ticks - last_ticks)));
         last_ticks = now_ticks;
 
-        const editor::Mode edit_mode = input ? editor::sample_step(*input, fb, dt) : editor::Mode::Play;
+        const editor::Mode edit_mode = app_host.engine_frame_update(dt);
         if (smoke_frames > 0) {
             const f32 phase = static_cast<f32>(frame) / 60.0f;
             const f32 t01 = std::clamp(phase, 0.0f, 1.0f);
             controller.set_position({0.0f, room.floor_y + cc_cfg.eye_height, -5.0f + 8.0f * t01});
             controller.set_look(0.0f, 0.0f);
-        } else if (edit_mode != editor::Mode::Edit && input && !ui::console::is_open()) {
+        } else if (edit_mode != editor::Mode::Edit && input && !editor::overlays_capturing()) {
             controller.update(*input, dt);
         }
 
@@ -462,11 +460,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(140, 140, 150);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
-            ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
-        }
-        ui::console::draw(fb);
-        window->present(fb);
+        app_host.engine_frame_post(hud_history.make_stats(frame_ms, 1, 0, 0));
+        app_host.present();
 
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {

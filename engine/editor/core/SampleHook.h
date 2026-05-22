@@ -169,6 +169,26 @@ struct FrameOverlayStats {
     usize active_voices = 0;
 };
 
+inline ui::imm::DebugHudStats make_debug_hud_stats(f32 frame_ms,
+                                                   f32 avg_frame_ms,
+                                                   const FrameOverlayStats& stats = {}) noexcept {
+    ui::imm::DebugHudStats hud{};
+    hud.frame_ms = frame_ms;
+    hud.avg_frame_ms = avg_frame_ms;
+    hud.draw_calls = stats.draw_calls;
+    hud.triangles = stats.triangles;
+    hud.active_voices = stats.active_voices;
+    return hud;
+}
+
+inline void draw_frame_overlays(render::Framebuffer& fb, const ui::imm::DebugHudStats& hud) noexcept {
+    if (!overlays_enabled())
+        return;
+    draw_mode_badge(fb, current_mode());
+    ui::imm::draw_debug_hud(fb, hud);  // early-returns when the HUD is Off
+    ui::console::draw(fb);             // drop-down console composites on top
+}
+
 // THE host entry point. Call once near the end of the loop (after the scene
 // is rendered, before present). Internally measures frame_ms from the wall
 // clock between calls, drives the console + F1 HUD + F2 toggle, and draws the
@@ -201,16 +221,7 @@ inline Mode frame_overlays(const platform::Input& input,
     avg = (st.count > 0u) ? avg / static_cast<f32>(st.count) : frame_ms;
 
     const Mode mode = sample_step(input, fb, frame_ms / 1000.0f);
-
-    ui::imm::DebugHudStats hud{};
-    hud.frame_ms = frame_ms;
-    hud.avg_frame_ms = avg;
-    hud.draw_calls = stats.draw_calls;
-    hud.triangles = stats.triangles;
-    hud.active_voices = stats.active_voices;
-    ui::imm::draw_debug_hud(fb, hud);  // early-returns when the HUD is Off
-
-    ui::console::draw(fb);  // drop-down console composites on top
+    draw_frame_overlays(fb, make_debug_hud_stats(frame_ms, avg, stats));
     return mode;
 }
 

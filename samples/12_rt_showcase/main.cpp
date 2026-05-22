@@ -41,7 +41,6 @@
 #include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <algorithm>
@@ -460,8 +459,6 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
     std::vector<u32>& final_pixels = app_host.pixels();
     render::SceneRenderer renderer;
 
-    render::Framebuffer& fb = app_host.framebuffer();
-
     PSY_LOG_INFO("Psynder sample 12 running{} — {} TLAS instances, {} lights",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
                                   : std::string{},
@@ -507,15 +504,14 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
         // Editor F2/~ toggle + PLAY/EDIT badge bottom-right. EDIT mode
         // pins time so the user can inspect the BVH with a frozen scene.
         const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb, frame_ms * 0.001f)
-                              : editor::Mode::Play;
+            app_host.engine_frame_update(frame_ms * 0.001f);
 
         // Smoke runs pin time to frame index so the captured PNG is
         // deterministic across hosts.
@@ -556,12 +552,8 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
             }
         }
 
-        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
-            ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
-        }
-
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
-        window->present(fb);
+        app_host.engine_frame_post(hud_history.make_stats(frame_ms, 1, 0, 0));
+        app_host.present();
 
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {

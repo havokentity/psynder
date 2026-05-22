@@ -818,13 +818,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // Engine overlay suite (lane 18): `~` drop-down console + F1 debug HUD
-        // + F2 Play/Edit badge. One call, drawn over the rendered scene.
-        if (auto* in = platform::input()) {
-            editor::frame_overlays(*in, fb, {towers.size() + 5u, 0, 0});
-        }
-
-        window->present(fb);
+        app_host.engine_frame_post(editor::FrameOverlayStats{towers.size() + 5u, 0, 0});
+        app_host.present();
 
         if (smoke_frames > 0 && ++frame >= smoke_frames) {
             PSY_LOG_INFO("sample_06: smoke target reached ({}); exiting", smoke_frames);

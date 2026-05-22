@@ -572,11 +572,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
-        if (input != nullptr) {
-            editor::frame_overlays(*input, fb);
-        }
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (args.smoke_frames > 0) {
             const bool bad =

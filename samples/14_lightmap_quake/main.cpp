@@ -90,7 +90,6 @@
 #include "render/SceneRenderer.h"
 #include "render/Texture.h"
 #include "render/raster/Raster.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 #include "world/bsp/Bsp.h"
 #include "world/bsp/BspFormat.h"
@@ -944,9 +943,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         last_ticks = now;
         frame_ms_ring[frame % 60u] = frame_ms;
 
-        // Run console capture before gameplay hotkeys so toggle/escape/B frames
+        // Run overlay input before gameplay hotkeys so toggle/escape/B frames
         // never leak into game controls.
-        (void)editor::sample_update(*input, dt);
+        (void)app_host.engine_frame_update(dt);
 
         if (!bake_integrated && bake_state && bake_state->done.load(std::memory_order_acquire)) {
             bake_integrated = true;
@@ -1024,25 +1023,17 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // PLAY/EDIT badge.
-        editor::sample_draw(fb);
-
-        // Debug HUD overlay (`r_debug_hud full`).
-        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
-            ui::imm::DebugHudStats stats{};
-            stats.frame_ms = frame_ms;
-            const u32 n = std::min<u32>(frame + 1u, 60u);
-            f32 sum = 0.0f;
-            for (u32 i = 0; i < n; ++i)
-                sum += frame_ms_ring[i];
-            stats.avg_frame_ms = n ? sum / static_cast<f32>(n) : frame_ms;
-            stats.draw_calls = ctx.draw_count;
-            stats.triangles = ctx.tri_count;
-            ui::imm::draw_debug_hud(fb, stats);
-        }
-
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
-        window->present(fb);
+        ui::imm::DebugHudStats stats{};
+        stats.frame_ms = frame_ms;
+        const u32 n = std::min<u32>(frame + 1u, 60u);
+        f32 sum = 0.0f;
+        for (u32 i = 0; i < n; ++i)
+            sum += frame_ms_ring[i];
+        stats.avg_frame_ms = n ? sum / static_cast<f32>(n) : frame_ms;
+        stats.draw_calls = ctx.draw_count;
+        stats.triangles = ctx.tri_count;
+        app_host.engine_frame_post(stats);
+        app_host.present();
 
         if (args.smoke_frames > 0) {
             PSY_LOG_INFO("sample_14: frame {} — eye ({:.2f},{:.2f},{:.2f}) baked={} draws={}",

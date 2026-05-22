@@ -37,7 +37,6 @@
 #include "render/SceneRenderer.h"
 #include "render/Texture.h"
 #include "scene/SceneEcs.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <array>
@@ -332,7 +331,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         window->poll_events();
 
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
@@ -358,8 +357,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         // golden gate is deterministic. Frozen in EDIT mode so the user
         // sees a stable scene while inspecting / spawning props.
         const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb, frame_ms * 0.001f)
-                              : editor::Mode::Play;
+            app_host.engine_frame_update(frame_ms * 0.001f);
         // EDIT mode pins `t` to a constant so the scene is frozen for
         // inspection. Smoke mode advances per frame for deterministic
         // captures; otherwise we tick off the wall clock.
@@ -397,29 +395,23 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         // Debug HUD overlay — toggle via `r_debug_hud full` console var.
         // The HUD reads the per-frame stats we filled at the top of the
-        // loop; if the cvar is `off` the call early-returns. Stays drawn
-        // after the rasterizer so it composites on top of the scene.
-        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
-            ui::imm::DebugHudStats stats{};
-            stats.frame_ms = frame_ms;
-            stats.avg_frame_ms = [&]() noexcept {
-                // Walk only the populated prefix of the ring. `n` matches
-                // `kFrameHistory`'s `u32` type so we don't mix domains.
-                const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
-                if (n == 0u)
-                    return 0.0f;
-                f32 sum = 0.0f;
-                for (u32 i = 0; i < n; ++i)
-                    sum += frame_ms_ring[i];
-                return sum / static_cast<f32>(n);
-            }();
-            stats.draw_calls = render_stats.raster_draws;
-            stats.triangles = render_stats.raster_triangles;
-            stats.active_voices = 0;
-            ui::imm::draw_debug_hud(fb, stats);
-        }
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
-        window->present(fb);
+        ui::imm::DebugHudStats stats{};
+        stats.frame_ms = frame_ms;
+        stats.avg_frame_ms = [&]() noexcept {
+            // Walk only the populated prefix of the ring. `n` matches
+            // `kFrameHistory`'s `u32` type so we don't mix domains.
+            const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
+            if (n == 0u)
+                return 0.0f;
+            f32 sum = 0.0f;
+            for (u32 i = 0; i < n; ++i)
+                sum += frame_ms_ring[i];
+            return sum / static_cast<f32>(n);
+        }();
+        stats.draw_calls = render_stats.raster_draws;
+        stats.triangles = render_stats.raster_triangles;
+        app_host.engine_frame_post(stats);
+        app_host.present();
 
         ++frame;
         if (args.smoke_frames > 0 && frame >= args.smoke_frames) {

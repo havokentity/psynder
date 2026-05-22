@@ -35,7 +35,6 @@
 #include "render/Framebuffer.h"
 #include "render/SceneRenderer.h"
 #include "render/raster/Raster.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "world/bsp/Bsp.h"
 #include "world/bsp/BspFormat.h"
 
@@ -593,9 +592,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now - last_ticks)));
         last_ticks = now;
 
-        // Run console capture before gameplay hotkeys so toggle/escape frames
+        // Run overlay input before gameplay hotkeys so toggle/escape frames
         // never leak into the controller or host quit path.
-        (void)editor::sample_update(*input, dt);
+        (void)app_host.engine_frame_update(dt);
 
         // ── Input integration ────────────────────────────────────────────
         if (!editor::overlays_capturing() && input->key_down(platform::KeyCode::Escape)) {
@@ -648,15 +647,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // PLAY/EDIT badge bottom-right (lane 18). Drawn after the rasterizer so
-        // the badge composites on top of the scene.
-        editor::sample_draw(fb);
-
-        // Drop-down developer console (`~`). Drawn last so the panel +
-        // scrollback composite over the scene, badge, and HUD.
-        ui::console::draw(fb);
-
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (args.smoke_frames > 0) {
             PSY_LOG_INFO(

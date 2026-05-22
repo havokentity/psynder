@@ -27,7 +27,6 @@
 #include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <algorithm>
@@ -236,7 +235,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::Framebuffer& fb = app_host.framebuffer();
     render::SceneRenderer renderer;
     ui::imm::DebugHudFrameHistory hud_history{};
 
@@ -263,13 +261,12 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         hud_history.push(frame_ms);
 
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
         const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb, frame_ms * 0.001f)
-                              : editor::Mode::Play;
+            app_host.engine_frame_update(frame_ms * 0.001f);
         const f64 t = (edit_mode == editor::Mode::Edit) ? 0.0
                       : smoke_frames > 0
                           ? static_cast<f64>(frame) * (1.0 / 60.0)
@@ -292,11 +289,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(60, 60, 70);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
-            ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
-        }
-        ui::console::draw(fb);
-        window->present(fb);
+        app_host.engine_frame_post(hud_history.make_stats(frame_ms, 1, 0, 0));
+        app_host.present();
 
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {

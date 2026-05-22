@@ -18,12 +18,11 @@
 
 #include "core/Log.h"
 #include "core/Types.h"
-#include "math/Math.h"
-#include "editor/core/SampleHook.h"
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/raster/Raster.h"
 
+#include <cmath>
 #include <string_view>
 
 using namespace psynder;
@@ -57,11 +56,6 @@ struct ClearSample {
                          (static_cast<u32>(b) << 16) | (0xFFu << 24);
 
         render::raster::clear_framebuffer(ctx.framebuffer, rgba);
-
-        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
-        if (auto* in = platform::input()) {
-            editor::frame_overlays(*in, ctx.framebuffer);
-        }
     }
 };
 

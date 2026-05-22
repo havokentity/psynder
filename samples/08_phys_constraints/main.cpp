@@ -42,7 +42,6 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "ui/console/ConsoleOverlay.h"
 
 #include <algorithm>
 #include <array>
@@ -514,7 +513,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         scene.graph.size());
 
     std::vector<u32>& pixels = app_host.pixels();
-    render::Framebuffer& fb = app_host.framebuffer();
 
     const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
 
@@ -531,15 +529,13 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
         // Editor F2/~ toggle + PLAY/EDIT badge. EDIT mode freezes the sim so
         // the hanging pose can be inspected.
-        const editor::Mode edit_mode = platform::input()
-                                           ? editor::sample_step(*platform::input(), fb, kFixedDt)
-                                           : editor::Mode::Play;
+        const editor::Mode edit_mode = app_host.engine_frame_update(kFixedDt);
 
         if (edit_mode != editor::Mode::Edit) {
             // Advance both the engine world (exercises step) and the PBD
@@ -558,8 +554,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         const Camera cam = make_orbit_camera(t, aspect);
 
         render_scene(pixels, scene, cam);
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (smoke_frames > 0) {
             // Read the static anchor pose back THROUGH the engine to prove the

@@ -34,7 +34,6 @@
 #include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <algorithm>
@@ -313,7 +312,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     // -- CPU framebuffer + shared RT renderer. -----------------------------
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::Framebuffer& fb = app_host.framebuffer();
     render::SceneRenderer renderer;
     ui::imm::DebugHudFrameHistory hud_history{};
 
@@ -352,7 +350,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         prev_frame_ticks = now_ticks;
         hud_history.push(frame_ms);
 
-        if (input && input->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+        if (input && input->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             PSY_LOG_INFO("sample_11: escape pressed, exiting");
             break;
         }
@@ -363,7 +361,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now_ticks - last_ticks)));
         last_ticks = now_ticks;
 
-        const editor::Mode edit_mode = input ? editor::sample_step(*input, fb, dt) : editor::Mode::Play;
+        const editor::Mode edit_mode = app_host.engine_frame_update(dt);
 
         f64 t;
         if (edit_mode == editor::Mode::Edit) {
@@ -377,7 +375,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             controller.set_look(yaw, -0.18f);
         } else {
             t = platform::Clock::seconds(now_ticks - t0);
-            if (input && !ui::console::is_open())
+            if (input && !editor::overlays_capturing())
                 controller.update(*input, dt);
         }
 
@@ -405,11 +403,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(70, 70, 80);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
-            ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
-        }
-        ui::console::draw(fb);
-        window->present(fb);
+        app_host.engine_frame_post(hud_history.make_stats(frame_ms, 1, 0, 0));
+        app_host.present();
 
         if (smoke_frames > 0) {
             const math::Vec3 eye = controller.eye();

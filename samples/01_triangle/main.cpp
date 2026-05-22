@@ -22,7 +22,6 @@
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
-#include "editor/core/SampleHook.h"
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
@@ -255,12 +254,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         }
         raster_triangle_nearest(fb, a, b, c, crate.view());
 
-        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
-        if (auto* in = platform::input()) {
-            editor::frame_overlays(*in, fb);
-        }
-
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (smoke_frames > 0 && ++frame >= smoke_frames) {
             PSY_LOG_INFO("sample_01: smoke target reached ({}); exiting", smoke_frames);

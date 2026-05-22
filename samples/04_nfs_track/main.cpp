@@ -947,13 +947,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             psynder::ui::rml::render(fb);
         }
 
-        // Engine overlay suite: `~` drop-down console + F1 debug HUD + F2
-        // Play/Edit badge. The car is PID auto-driven, so no movement gate.
-        if (auto* in = platform::input()) {
-            editor::frame_overlays(*in, fb);
-        }
-
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         // In smoke mode, log the chassis position each frame so CI (and the
         // suspension fix verification) can confirm the car rests on the track

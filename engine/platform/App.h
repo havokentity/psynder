@@ -6,6 +6,7 @@
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
+#include "editor/core/SampleHook.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/PngWriter.h"
@@ -76,6 +77,48 @@ class WindowApp {
     [[nodiscard]] std::vector<u32>& depth() noexcept { return depth_; }
     [[nodiscard]] const std::vector<u32>& depth() const noexcept { return depth_; }
 
+    editor::Mode engine_frame_update(f32 dt) noexcept {
+        engine_frame_update_ran_ = true;
+        if (auto* input = platform::input()) {
+            return editor::sample_update(*input, dt);
+        }
+        return editor::current_mode();
+    }
+
+    void engine_frame_post() noexcept {
+        if (auto* input = platform::input()) {
+            if (engine_frame_update_ran_) {
+                editor::draw_frame_overlays(framebuffer_, {});
+            } else {
+                editor::frame_overlays(*input, framebuffer_);
+            }
+        }
+        engine_frame_update_ran_ = false;
+    }
+
+    void engine_frame_post(const editor::FrameOverlayStats& stats) noexcept {
+        if (auto* input = platform::input()) {
+            if (engine_frame_update_ran_) {
+                editor::draw_frame_overlays(framebuffer_,
+                                            editor::make_debug_hud_stats(0.0f, 0.0f, stats));
+            } else {
+                editor::frame_overlays(*input, framebuffer_, stats);
+            }
+        }
+        engine_frame_update_ran_ = false;
+    }
+
+    void engine_frame_post(const ui::imm::DebugHudStats& hud) noexcept {
+        if (!engine_frame_update_ran_) {
+            if (auto* input = platform::input()) {
+                editor::sample_update(*input, hud.frame_ms > 0.0f ? hud.frame_ms * 0.001f
+                                                                  : 1.0f / 60.0f);
+            }
+        }
+        editor::draw_frame_overlays(framebuffer_, hud);
+        engine_frame_update_ran_ = false;
+    }
+
     void present() { window().present(framebuffer_); }
 
     [[nodiscard]] bool write_capture_if_requested(std::string_view log_name) const {
@@ -106,12 +149,14 @@ class WindowApp {
         window_ = other.window_;
         width_ = other.width_;
         height_ = other.height_;
+        engine_frame_update_ran_ = other.engine_frame_update_ran_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         framebuffer_ = other.framebuffer_;
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
         other.window_ = nullptr;
+        other.engine_frame_update_ran_ = false;
         other.framebuffer_ = {};
     }
 
@@ -119,6 +164,7 @@ class WindowApp {
     platform::Window* window_ = nullptr;
     u32 width_ = 0;
     u32 height_ = 0;
+    bool engine_frame_update_ran_ = false;
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
@@ -215,6 +261,30 @@ FrameAction run_sample_frame(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
     }
 }
 
+template <class Sample>
+constexpr bool engine_frame_post_enabled() noexcept {
+    if constexpr (requires {
+                      { Sample::engine_frame_post_enabled() } -> std::convertible_to<bool>;
+                  }) {
+        return Sample::engine_frame_post_enabled();
+    } else if constexpr (requires {
+                             { Sample::engine_frame_post_enabled } -> std::convertible_to<bool>;
+                         }) {
+        return Sample::engine_frame_post_enabled;
+    } else {
+        return true;
+    }
+}
+
+template <class Sample, class ArgsT>
+void run_engine_frame_post(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
+    if constexpr (requires { sample.frame_post(ctx); }) {
+        sample.frame_post(ctx);
+    } else if constexpr (engine_frame_post_enabled<Sample>()) {
+        ctx.app.engine_frame_post();
+    }
+}
+
 }  // namespace detail
 
 template <class Sample>
@@ -260,6 +330,7 @@ int run_window_sample(int argc, char** argv) {
         };
 
         const FrameAction action = detail::run_sample_frame(sample, ctx);
+        detail::run_engine_frame_post(sample, ctx);
         app.present();
 
         ++frame;
