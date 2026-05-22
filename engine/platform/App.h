@@ -79,6 +79,7 @@ class WindowApp {
 
     editor::Mode engine_frame_update(f32 dt) noexcept {
         engine_frame_update_ran_ = true;
+        engine_frame_ms_ = dt > 0.0f ? dt * 1000.0f : 1000.0f / 60.0f;
         if (auto* input = platform::input()) {
             return editor::sample_update(*input, dt);
         }
@@ -88,7 +89,8 @@ class WindowApp {
     void engine_frame_post() noexcept {
         if (auto* input = platform::input()) {
             if (engine_frame_update_ran_) {
-                editor::draw_frame_overlays(framebuffer_, {});
+                editor::draw_frame_overlays(framebuffer_,
+                                            editor::make_debug_hud_stats(engine_frame_ms_, engine_frame_ms_));
             } else {
                 editor::frame_overlays(*input, framebuffer_);
             }
@@ -100,7 +102,9 @@ class WindowApp {
         if (auto* input = platform::input()) {
             if (engine_frame_update_ran_) {
                 editor::draw_frame_overlays(framebuffer_,
-                                            editor::make_debug_hud_stats(0.0f, 0.0f, stats));
+                                            editor::make_debug_hud_stats(engine_frame_ms_,
+                                                                         engine_frame_ms_,
+                                                                         stats));
             } else {
                 editor::frame_overlays(*input, framebuffer_, stats);
             }
@@ -150,6 +154,7 @@ class WindowApp {
         width_ = other.width_;
         height_ = other.height_;
         engine_frame_update_ran_ = other.engine_frame_update_ran_;
+        engine_frame_ms_ = other.engine_frame_ms_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         framebuffer_ = other.framebuffer_;
@@ -157,6 +162,7 @@ class WindowApp {
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
         other.window_ = nullptr;
         other.engine_frame_update_ran_ = false;
+        other.engine_frame_ms_ = 1000.0f / 60.0f;
         other.framebuffer_ = {};
     }
 
@@ -165,6 +171,7 @@ class WindowApp {
     u32 width_ = 0;
     u32 height_ = 0;
     bool engine_frame_update_ran_ = false;
+    f32 engine_frame_ms_ = 1000.0f / 60.0f;
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};

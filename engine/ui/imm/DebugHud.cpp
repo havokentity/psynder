@@ -94,6 +94,9 @@ constexpr u32 kColourPanelFr = rgba(0x5A, 0x61, 0x72);        // soft slate fram
 constexpr u32 kColourLabel = rgba(0xE0, 0xE5, 0xEE);          // snow
 constexpr u32 kColourFps = rgba(0xA3, 0xBE, 0x8C);            // muted green
 constexpr u32 kColourDiagLine = rgba(0xAE, 0xB6, 0xC2);       // soft grey
+constexpr u32 kColourSection = rgba(0x8F, 0xBC, 0xD8);        // cool blue
+constexpr u32 kColourValue = rgba(0xD8, 0xDE, 0xE9);          // bright slate
+constexpr u32 kColourWarn = rgba(0xE0, 0xBC, 0x60);           // warm amber
 
 // Formatter for "<value> ms" + FPS right-aligned. Returns the rendered
 // FPS string width in pixels so the caller can position it.
@@ -101,6 +104,11 @@ void format_frame_stats(f32 frame_ms, char* out_ms, usize out_ms_cap, char* out_
     const f32 fps = (frame_ms > 0.0001f) ? (1000.0f / frame_ms) : 0.0f;
     std::snprintf(out_ms, out_ms_cap, "frame %.2fms", static_cast<double>(frame_ms));
     std::snprintf(out_fps, out_fps_cap, "%.2f fps", static_cast<double>(fps));
+}
+
+void draw_stat_row(math::Vec2 pos, std::string_view label_text, std::string_view value_text) noexcept {
+    label(pos, label_text, kColourSection);
+    label(math::Vec2{pos.x + 56.0f, pos.y}, value_text, kColourValue);
 }
 
 }  // namespace
@@ -243,7 +251,7 @@ usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexce
               /*max_ms*/ 33.3f,
               std::string_view{});
     } else {
-        // Full mode: strip chart + alloc heatmap + diag log.
+        // Full mode: strip chart + concrete stats + alloc heatmap + diag log.
         const f32 chart_y = panel_origin.y + 4.0f + 2.0f * kLineHeight + 2.0f;
         const math::Vec2 chart_origin{panel_origin.x + 4.0f, chart_y};
         const math::Vec2 chart_size{panel_size.x - 8.0f, 36.0f};
@@ -253,20 +261,57 @@ usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexce
               /*max_ms*/ 33.3f,
               std::string_view{"frame ms"});
 
-        const f32 heat_y = chart_y + chart_size.y + 4.0f;
-        const math::Vec2 heat_origin{panel_origin.x + 4.0f, heat_y};
-        const math::Vec2 heat_size{panel_size.x - 8.0f, 48.0f};
+        char row0[64]{};
+        char row1[64]{};
+        char row2[64]{};
+        const f32 avg_fps = (stats.avg_frame_ms > 0.0001f) ? (1000.0f / stats.avg_frame_ms) : 0.0f;
+        const f32 budget_delta = stats.frame_ms - 16.6667f;
+        std::snprintf(row0,
+                      sizeof(row0),
+                      "%zu draws / %zu tris",
+                      static_cast<size_t>(stats.draw_calls),
+                      static_cast<size_t>(stats.triangles));
+        std::snprintf(row1,
+                      sizeof(row1),
+                      "%.2f avg ms / %.1f fps",
+                      static_cast<double>(stats.avg_frame_ms),
+                      static_cast<double>(avg_fps));
+        std::snprintf(row2,
+                      sizeof(row2),
+                      "%+.2f ms vs 60Hz, %zu voices",
+                      static_cast<double>(budget_delta),
+                      static_cast<size_t>(stats.active_voices));
+
+        const f32 stats_y = chart_y + chart_size.y + 5.0f;
+        label(math::Vec2{panel_origin.x + 4.0f, stats_y}, "render", kColourSection);
+        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + kLineHeight}, "work", row0);
+        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + 2.0f * kLineHeight}, "pace", row1);
+        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + 3.0f * kLineHeight}, "budget", row2);
+
+        const f32 heat_y = stats_y + 4.0f * kLineHeight + 4.0f;
+        label(math::Vec2{panel_origin.x + 4.0f, heat_y}, "alloc heatmap", kColourSection);
+        const math::Vec2 heat_origin{panel_origin.x + 4.0f, heat_y + kLineHeight};
+        const math::Vec2 heat_size{panel_size.x - 8.0f, 34.0f};
         alloc_heatmap(heat_origin, heat_size);
 
         // Diag log lines (oldest first, newest at bottom).
-        const f32 log_y = heat_y + heat_size.y + 4.0f;
+        const f32 log_y = heat_origin.y + heat_size.y + 4.0f;
+        label(math::Vec2{panel_origin.x + 4.0f, log_y}, "diag", kColourSection);
         const u32 visible = std::min(g_diag.count, kDiagRingCapacity);
         const u32 start = (g_diag.head + kDiagRingCapacity - visible) % kDiagRingCapacity;
-        for (u32 i = 0; i < visible; ++i) {
-            const DiagLine& dl = g_diag.lines[(start + i) % kDiagRingCapacity];
-            label(math::Vec2{panel_origin.x + 4.0f, log_y + static_cast<f32>(i) * kLineHeight},
-                  std::string_view{dl.buf, dl.len},
-                  kColourDiagLine);
+        if (visible == 0u) {
+            label(math::Vec2{panel_origin.x + 4.0f, log_y + kLineHeight},
+                  "no diag lines",
+                  kColourWarn);
+        } else {
+            const u32 max_lines = std::min(visible, 3u);
+            for (u32 i = 0; i < max_lines; ++i) {
+                const u32 src = visible - max_lines + i;
+                const DiagLine& dl = g_diag.lines[(start + src) % kDiagRingCapacity];
+                label(math::Vec2{panel_origin.x + 4.0f, log_y + (1.0f + static_cast<f32>(i)) * kLineHeight},
+                      std::string_view{dl.buf, dl.len},
+                      kColourDiagLine);
+            }
         }
     }
 

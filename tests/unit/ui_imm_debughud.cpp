@@ -90,6 +90,10 @@ TEST_CASE("ui_imm::DebugHud: Full mode paints pixels in the top-left panel", "[u
     // Panel frame outline at (4,4) → outline pixel at (4,4) must be set.
     REQUIRE(t.at(4U, 4U) != 0U);
 
+    // Full mode should not be a mostly empty tall panel when no diagnostics
+    // have been pushed; it still owns render stats, memory, and diag labels.
+    REQUIRE(t.count_nonzero(8U, 72U, 210U, 180U) > 0U);
+
     // Region clearly *outside* the panel must remain untouched. The
     // panel is at most 224 px wide / 204 px tall. Pick a pixel well
     // outside that and assert it's still zero.
