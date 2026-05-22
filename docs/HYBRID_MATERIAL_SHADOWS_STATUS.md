@@ -114,6 +114,11 @@ and before ending a session so crash recovery has a concrete resume point.
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-rt-frame-telemetry`
     - owns `engine/render/rt/`
     - task: RT frame-stage timing/counters without render-loop allocation
+    - status: complete; commit `062ac21`; fixed-id RT frame-stage
+      telemetry/counters for graphing scene/refit/shadow/bounce/denoise/tile
+      costs without render-loop formatting
+    - integration note: sample/UI labels should be mapped outside the render
+      loop from the fixed telemetry ids
   - `codex/agent-scene-prewarm-pools`
     - agent: `019e4fc0-d2a8-7d70-8da2-a4a293fde698`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-scene-prewarm-pools`
