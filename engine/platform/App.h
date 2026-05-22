@@ -32,13 +32,7 @@ namespace psynder::app {
 
 struct WindowAppOptions {
     bool depth_buffer = false;
-};
-
-struct Camera {
-    math::Mat4 view = math::identity4();
-    math::Mat4 projection = math::identity4();
-    u32 tile_w = 64;
-    u32 tile_h = 64;
+    bool has_default_camera = true;
 };
 
 struct FrameClear {
@@ -75,7 +69,10 @@ inline platform::WindowDesc default_window_desc(std::string_view title = "Psynde
 class WindowApp {
    public:
     WindowApp(const AppArgs& args, const platform::WindowDesc& desc, WindowAppOptions options = {})
-        : args_(args), width_(desc.render_width), height_(desc.render_height) {
+        : args_(args)
+        , width_(desc.render_width)
+        , height_(desc.render_height)
+        , has_default_camera_(options.has_default_camera) {
         render::reset_frame_stats();
         window_ = platform::create_window(desc);
         if (!window_)
@@ -130,8 +127,8 @@ class WindowApp {
     [[nodiscard]] render::raster::ViewState default_raster_view() noexcept {
         render::raster::ViewState view{};
         view.target = framebuffer_;
-        view.view = Camera{}.view;
-        view.projection = Camera{}.projection;
+        view.view = math::identity4();
+        view.projection = math::identity4();
         view.tile_w = 64;
         view.tile_h = 64;
         return view;
@@ -139,30 +136,13 @@ class WindowApp {
 
     void set_scene(scene::Scene& scene) noexcept {
         active_scene_ = &scene;
-        if (!active_camera_set_)
-            set_camera(Camera{});
+        if (has_default_camera_)
+            (void)scene.ensure_default_camera(render_target_aspect());
     }
 
     void clear_scene() noexcept {
         active_scene_ = nullptr;
         active_scene_rendered_ = false;
-    }
-
-    void set_camera(const Camera& camera) noexcept {
-        active_camera_ = camera;
-        active_camera_set_ = true;
-    }
-
-    [[nodiscard]] bool has_camera() const noexcept {
-        return active_camera_set_;
-    }
-
-    void clear_camera() noexcept {
-        active_camera_set_ = false;
-    }
-
-    void delete_camera() noexcept {
-        clear_camera();
     }
 
     void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
@@ -213,17 +193,18 @@ class WindowApp {
     render::SceneRenderStats engine_frame_render() {
         if (active_scene_ == nullptr || active_scene_rendered_)
             return {};
-        if (!active_camera_set_) {
+        scene::SceneCameraView camera{};
+        if (!active_scene_->active_camera_view(render_target_aspect(), camera)) {
             draw_no_camera_notice();
             active_scene_rendered_ = true;
             return {};
         }
         render::raster::ViewState view{};
         view.target = framebuffer_;
-        view.view = active_camera_.view;
-        view.projection = active_camera_.projection;
-        view.tile_w = active_camera_.tile_w;
-        view.tile_h = active_camera_.tile_h;
+        view.view = camera.view;
+        view.projection = camera.projection;
+        view.tile_w = camera.tile_w;
+        view.tile_h = camera.tile_h;
         return render_scene(*active_scene_, view);
     }
 
@@ -327,9 +308,8 @@ class WindowApp {
         engine_frame_ms_head_ = other.engine_frame_ms_head_;
         engine_frame_ms_count_ = other.engine_frame_ms_count_;
         active_scene_ = other.active_scene_;
-        active_camera_ = other.active_camera_;
-        active_camera_set_ = other.active_camera_set_;
         active_scene_rendered_ = other.active_scene_rendered_;
+        has_default_camera_ = other.has_default_camera_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         rendering_system_ = std::move(other.rendering_system_);
@@ -343,9 +323,8 @@ class WindowApp {
         other.engine_frame_ms_head_ = 0;
         other.engine_frame_ms_count_ = 0;
         other.active_scene_ = nullptr;
-        other.active_camera_ = {};
-        other.active_camera_set_ = false;
         other.active_scene_rendered_ = false;
+        other.has_default_camera_ = true;
         other.framebuffer_ = {};
     }
 
@@ -359,9 +338,8 @@ class WindowApp {
     u32 engine_frame_ms_head_ = 0;
     u32 engine_frame_ms_count_ = 0;
     scene::Scene* active_scene_ = nullptr;
-    Camera active_camera_{};
-    bool active_camera_set_ = false;
     bool active_scene_rendered_ = false;
+    bool has_default_camera_ = true;
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
@@ -382,6 +360,10 @@ class WindowApp {
         for (u32 i = 0; i < engine_frame_ms_count_; ++i)
             sum += engine_frame_ms_ring_[i];
         return sum / static_cast<f32>(engine_frame_ms_count_);
+    }
+
+    [[nodiscard]] f32 render_target_aspect() const noexcept {
+        return height_ == 0u ? 1.0f : static_cast<f32>(width_) / static_cast<f32>(height_);
     }
 
     void draw_no_camera_notice() noexcept {

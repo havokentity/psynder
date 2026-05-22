@@ -5,6 +5,7 @@
 
 #include "core/Types.h"
 #include "math/Bounds.h"
+#include "math/MathExt.h"
 #include "render/Material.h"
 #include "scene/SceneGraph.h"
 #include "scene/EcsRegistry.h"
@@ -102,6 +103,17 @@ PSYNDER_COMPONENT(SceneNodeComponent) {
     Entity entity{};
 };
 
+PSYNDER_COMPONENT(CameraComponent) {
+    f32 fov_y_rad = 60.0f * math::kDegToRad;
+    f32 aspect = 0.0f;  // <= 0 means use the active render target aspect.
+    f32 near_z = 0.1f;
+    f32 far_z = 100.0f;
+    u32 tile_w = 64;
+    u32 tile_h = 64;
+    u8 active = 1;
+    u8 _pad[3] = {};
+};
+
 PSYNDER_COMPONENT(RenderableComponent) {
     GeometryKind geometry = GeometryKind::None;
     u32 geometry_id = 0u;
@@ -126,9 +138,19 @@ struct SceneRenderItem {
 struct ScenePrewarmConfig {
     u32 scene_entities = 0u;
     u32 renderables = 0u;
+    u32 cameras = 0u;
     u32 analytic_spheres = 0u;
     u32 render_items = 0u;
     u32 deferred_structural_changes = 0u;
+};
+
+struct SceneCameraView {
+    Entity entity{};
+    SceneNode node{};
+    math::Mat4 view{};
+    math::Mat4 projection{};
+    u32 tile_w = 64;
+    u32 tile_h = 64;
 };
 
 inline bool renderable_is_visible(const RenderableComponent& renderable) noexcept {
@@ -271,6 +293,10 @@ inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, con
     registry.reserve_entities(scene_entity_count);
     registry.reserve_archetype<TransformComponent>(scene_entity_count);
     registry.reserve_archetype<SceneNodeComponent, TransformComponent>(scene_entity_count);
+    if (config.cameras != 0u) {
+        registry.reserve_archetype<CameraComponent, SceneNodeComponent, TransformComponent>(
+            config.cameras);
+    }
     if (config.renderables != 0u) {
         registry.reserve_archetype<RenderableComponent, SceneNodeComponent, TransformComponent>(
             config.renderables);
@@ -307,6 +333,55 @@ inline bool set_scene_entity_transform(EcsRegistry& registry,
     transform->local = local;
     graph.set_local_transform(node->node, local);
     return true;
+}
+
+inline bool find_active_camera(EcsRegistry& registry,
+                               SceneGraph& graph,
+                               f32 render_target_aspect,
+                               SceneCameraView& out) {
+    bool found = false;
+    registry.query<reads<SceneNodeComponent, CameraComponent>, writes<>>(
+        [&](std::span<const SceneNodeComponent> nodes, std::span<const CameraComponent> cameras) {
+            if (found)
+                return;
+            const usize n = std::min(nodes.size(), cameras.size());
+            for (usize i = 0; i < n; ++i) {
+                const CameraComponent& camera = cameras[i];
+                const SceneNode node = nodes[i].node;
+                if (camera.active == 0u || !graph.alive(node))
+                    continue;
+                const f32 aspect = camera.aspect > 0.0f ? camera.aspect : render_target_aspect;
+                out.entity = nodes[i].entity;
+                out.node = node;
+                out.view = math::inverse_affine(graph.world_matrix(node));
+                out.projection = math::perspective_rh(camera.fov_y_rad,
+                                                      aspect > 0.0f ? aspect : 1.0f,
+                                                      camera.near_z,
+                                                      camera.far_z);
+                out.tile_w = camera.tile_w;
+                out.tile_h = camera.tile_h;
+                found = true;
+                return;
+            }
+        });
+    return found;
+}
+
+inline Entity find_active_camera_entity(EcsRegistry& registry) {
+    Entity out{};
+    registry.query<reads<SceneNodeComponent, CameraComponent>, writes<>>(
+        [&](std::span<const SceneNodeComponent> nodes, std::span<const CameraComponent> cameras) {
+            if (out.valid())
+                return;
+            const usize n = std::min(nodes.size(), cameras.size());
+            for (usize i = 0; i < n; ++i) {
+                if (cameras[i].active == 0u)
+                    continue;
+                out = nodes[i].entity;
+                return;
+            }
+        });
+    return out;
 }
 
 inline void gather_scene_render_items(EcsRegistry& registry,
@@ -381,6 +456,20 @@ class Scene {
         return create_scene_entity(*registry_, graph_, parent, local);
     }
 
+    [[nodiscard]] SceneNode node(Entity entity) const noexcept {
+        if (auto* node_component = registry_->get<SceneNodeComponent>(entity))
+            return node_component->node;
+        return kInvalidSceneNode;
+    }
+
+    [[nodiscard]] Entity create_camera(const CameraComponent& camera = {},
+                                       const LocalTransform& local = {},
+                                       SceneNode parent = kInvalidSceneNode) {
+        const Entity entity = create_entity(local, parent);
+        attach_camera(entity, camera);
+        return entity;
+    }
+
     [[nodiscard]] Entity create_renderable(const RenderableComponent& renderable,
                                            const LocalTransform& local = {},
                                            SceneNode parent = kInvalidSceneNode) {
@@ -399,6 +488,27 @@ class Scene {
 
     bool set_transform(Entity entity, const LocalTransform& local) {
         return set_scene_entity_transform(*registry_, graph_, entity, local);
+    }
+
+    bool attach_camera(Entity entity, const CameraComponent& camera = {}) {
+        if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
+            return false;
+        registry_->add<CameraComponent>(entity, camera);
+        return true;
+    }
+
+    bool set_active_camera(Entity entity) {
+        if (!registry_->alive(entity) || !registry_->get<CameraComponent>(entity))
+            return false;
+        registry_->query<reads<>, writes<CameraComponent>>(
+            [](std::span<CameraComponent> cameras) {
+                for (CameraComponent& camera : cameras)
+                    camera.active = 0u;
+            });
+        CameraComponent updated = *registry_->get<CameraComponent>(entity);
+        updated.active = 1u;
+        registry_->add<CameraComponent>(entity, updated);
+        return true;
     }
 
     bool attach_renderable(Entity entity, const RenderableComponent& renderable) {
@@ -439,6 +549,30 @@ class Scene {
         return graph_.update_world_transforms(parallel_threshold);
     }
 
+    [[nodiscard]] bool active_camera_view(f32 render_target_aspect, SceneCameraView& out) {
+        update_transforms();
+        return find_active_camera(*registry_, graph_, render_target_aspect, out);
+    }
+
+    [[nodiscard]] Entity active_camera_entity() {
+        return find_active_camera_entity(*registry_);
+    }
+
+    [[nodiscard]] Entity ensure_default_camera(f32 render_target_aspect) {
+        SceneCameraView view{};
+        if (active_camera_view(render_target_aspect, view))
+            return view.entity;
+        if (registry_->alive(default_camera_entity_) &&
+            registry_->get<CameraComponent>(default_camera_entity_)) {
+            set_active_camera(default_camera_entity_);
+            return default_camera_entity_;
+        }
+        CameraComponent camera{};
+        camera.aspect = render_target_aspect;
+        default_camera_entity_ = create_camera(camera);
+        return default_camera_entity_;
+    }
+
     void gather_render_items(std::vector<SceneRenderItem>& out) {
         reserve_render_items(out);
         gather_scene_render_items(*registry_, graph_, out);
@@ -448,6 +582,7 @@ class Scene {
     EcsRegistry* registry_ = nullptr;
     SceneGraph graph_{};
     ::psynder::render::MaterialLibrary materials_{};
+    Entity default_camera_entity_{};
     u32 render_item_capacity_ = 0u;
 };
 

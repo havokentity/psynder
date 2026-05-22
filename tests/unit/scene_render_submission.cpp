@@ -102,6 +102,41 @@ TEST_CASE("scene creates transform-backed renderable entities for shared rendere
     REQUIRE(scene.destroy_entity(entity));
 }
 
+TEST_CASE("scene camera is a transform-backed hierarchy entity",
+          "[scene][render_submission][camera]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    scene::Scene scene{registry};
+    const Entity camera_rig = scene.create_entity(translate({0.0f, 2.0f, 0.0f}));
+
+    scene::CameraComponent camera{};
+    camera.aspect = 2.0f;
+    camera.tile_w = 32u;
+    camera.tile_h = 32u;
+    const Entity camera_entity =
+        scene.create_camera(camera, translate({0.0f, 0.0f, 5.0f}), scene.node(camera_rig));
+
+    REQUIRE(registry.get<scene::TransformComponent>(camera_entity) != nullptr);
+    REQUIRE(registry.get<scene::SceneNodeComponent>(camera_entity) != nullptr);
+    REQUIRE(registry.get<scene::CameraComponent>(camera_entity) != nullptr);
+    REQUIRE(scene.graph().parent(scene.node(camera_entity)) == scene.node(camera_rig));
+    REQUIRE(scene.active_camera_entity() == camera_entity);
+
+    scene::SceneCameraView camera_view{};
+    REQUIRE(scene.active_camera_view(1.0f, camera_view));
+    REQUIRE(camera_view.entity == camera_entity);
+    REQUIRE(camera_view.node == scene.node(camera_entity));
+    REQUIRE(camera_view.tile_w == 32u);
+    REQUIRE(camera_view.tile_h == 32u);
+
+    REQUIRE(scene.destroy_entity(camera_entity));
+    REQUIRE(scene.destroy_entity(camera_rig));
+
+    scene::SceneCameraView empty_view{};
+    REQUIRE_FALSE(scene.active_camera_view(1.0f, empty_view));
+}
+
 TEST_CASE("scene prewarm preserves capacity through dynamic renderable updates",
           "[scene][render_submission][prewarm]") {
     auto& registry = scene::EcsRegistry::Get();

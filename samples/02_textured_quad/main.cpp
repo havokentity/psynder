@@ -229,6 +229,20 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     crate_material.flags = render::MaterialFlags::RasterVisible;
     const render::MaterialId crate_material_id = scene.materials().create(crate_material);
 
+    scene::LocalTransform camera_rig_transform{};
+    camera_rig_transform.translation = math::Vec3{0.0f, 1.5f, 1.5f};
+    const Entity camera_rig = scene.create_entity(camera_rig_transform);
+
+    scene::CameraComponent camera_component{};
+    camera_component.aspect =
+        static_cast<f32>(desc.render_width) / static_cast<f32>(desc.render_height);
+    scene::LocalTransform camera_transform{};
+    camera_transform.rotation =
+        math::quat_from_axis_angle(math::Vec3{1.0f, 0.0f, 0.0f}, -std::atan2(1.5f, 4.5f));
+    const Entity camera_entity =
+        scene.create_camera(camera_component, camera_transform, scene.node(camera_rig));
+    scene.set_active_camera(camera_entity);
+
     std::array<Entity, kCratePositions.size()> crates{};
     for (Entity& crate : crates)
         crate = scene.create_renderable(app_host.make_mesh_renderable(cube_mesh, crate_material_id));
@@ -285,17 +299,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             : args.smoke_frames > 0
                 ? static_cast<f32>(frame) * 0.05f
                 : static_cast<f32>(platform::Clock::seconds(platform::Clock::ticks_now() - t0));
-
-        app::Camera camera{};
-        camera.view = math::look_at_rh(math::Vec3{0, 1.5f, 1.5f},   // eye
-                                       math::Vec3{0, 0.0f, -3.0f},  // target
-                                       math::Vec3{0, 1.0f, 0.0f});  // up
-        camera.projection = math::perspective_rh(60.0f * math::kDegToRad,
-                                                 static_cast<f32>(desc.render_width) /
-                                                     static_cast<f32>(desc.render_height),
-                                                 0.1f,
-                                                 100.0f);
-        app_host.set_camera(camera);
 
         for (usize i = 0; i < kCratePositions.size(); ++i) {
             const math::Vec3 pos = kCratePositions[i];
