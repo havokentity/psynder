@@ -113,3 +113,40 @@ TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene
 
     scene.destroy_entity(entity);
 }
+
+TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_renderer]") {
+    auto& world = scene::World::Get();
+    world.set_structural_deferred(false);
+    scene::RuntimeScene scene{world};
+    render::SceneRenderer renderer;
+    renderer.reserve_scene_capacity(8u);
+
+    render::MaterialDesc material_desc{};
+    material_desc.flags = render::Material_RasterVisible;
+    const render::MaterialId material = scene.materials().create(material_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+
+    const render::SceneMeshEntity first = renderer.create_mesh_entity(scene, mesh_desc, material);
+    REQUIRE(first.entity.valid());
+    REQUIRE(first.mesh.valid());
+    REQUIRE(renderer.meshes().live_count() == 1u);
+
+    REQUIRE(renderer.meshes().destroy(first.mesh));
+    REQUIRE(renderer.meshes().live_count() == 0u);
+    REQUIRE(renderer.meshes().free_count() == 1u);
+
+    const render::SceneMeshEntity second = renderer.create_mesh_entity(scene, mesh_desc, material);
+    REQUIRE(second.entity.valid());
+    REQUIRE(second.mesh.valid());
+    REQUIRE((second.mesh.raw & 0x00FFFFFFu) == (first.mesh.raw & 0x00FFFFFFu));
+    REQUIRE(second.mesh.raw != first.mesh.raw);
+
+    scene.destroy_entity(first.entity);
+    scene.destroy_entity(second.entity);
+}

@@ -66,6 +66,20 @@ struct MaterialView {
 
 class MaterialLibrary {
    public:
+    void reserve(u32 count) {
+        generation_.reserve(count);
+        alive_.reserve(count);
+        albedo_rgba8_.reserve(count);
+        base_color_texture_.reserve(count);
+        alpha_cutoff_.reserve(count);
+        reflectivity_.reserve(count);
+        roughness_.reserve(count);
+        emissive_.reserve(count);
+        winding_.reserve(count);
+        blend_.reserve(count);
+        flags_.reserve(count);
+    }
+
     void clear() {
         generation_.clear();
         alive_.clear();
@@ -170,6 +184,7 @@ class MaterialLibrary {
     }
 
     [[nodiscard]] u32 slot_count() const noexcept { return static_cast<u32>(generation_.size()); }
+    [[nodiscard]] u32 free_count() const noexcept { return static_cast<u32>(free_.size()); }
     [[nodiscard]] u32 live_count() const noexcept {
         u32 count = 0;
         for (u8 alive : alive_)

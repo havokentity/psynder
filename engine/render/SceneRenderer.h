@@ -71,11 +71,27 @@ struct SceneRenderStats {
     u32 rt_shadow_casters = 0;
 };
 
+struct SceneMeshEntity {
+    Entity entity{};
+    MeshId mesh{};
+    MaterialId material{};
+};
+
 class SceneRenderer {
    public:
     [[nodiscard]] MeshLibrary& meshes() noexcept { return meshes_; }
     [[nodiscard]] const MeshLibrary& meshes() const noexcept { return meshes_; }
     [[nodiscard]] const SceneRenderQueues& queues() const noexcept { return queues_; }
+
+    void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
+        const u32 mesh_capacity = meshes == 0u ? renderables : meshes;
+        meshes_.reserve(mesh_capacity);
+        queues_.all.reserve(renderables);
+        queues_.raster_opaque.reserve(renderables);
+        queues_.raster_transparent.reserve(renderables / 4u);
+        queues_.rt_visible.reserve(renderables);
+        queues_.rt_shadow_casters.reserve(renderables);
+    }
 
     [[nodiscard]] scene::RenderableComponent make_mesh_renderable(
         MeshId mesh,
@@ -94,6 +110,18 @@ class SceneRenderer {
             out.local_bounds = desc.local_bounds;
         }
         return out;
+    }
+
+    [[nodiscard]] SceneMeshEntity create_mesh_entity(scene::RuntimeScene& scene,
+                                                     const MeshDesc& mesh_desc,
+                                                     MaterialId material,
+                                                     const scene::LocalTransform& local = {},
+                                                     scene::SceneNode parent = scene::kInvalidSceneNode,
+                                                     u32 flags = scene::Renderable_DefaultFlags) {
+        const MeshId mesh = meshes_.create_mesh(mesh_desc);
+        const Entity entity =
+            scene.create_renderable(make_mesh_renderable(mesh, material, flags), local, parent);
+        return {entity, mesh, material};
     }
 
     SceneRenderStats build(scene::RuntimeScene& scene) {

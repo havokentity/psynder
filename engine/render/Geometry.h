@@ -39,6 +39,18 @@ struct MeshView {
 
 class MeshLibrary {
    public:
+    void reserve(u32 count) {
+        generation_.reserve(count);
+        alive_.reserve(count);
+        vertices_.reserve(count);
+        vertex_count_.reserve(count);
+        indices_.reserve(count);
+        index_count_.reserve(count);
+        base_color_.reserve(count);
+        cull_.reserve(count);
+        local_bounds_.reserve(count);
+    }
+
     void clear() {
         generation_.clear();
         alive_.clear();
@@ -134,6 +146,13 @@ class MeshLibrary {
     }
 
     [[nodiscard]] u32 slot_count() const noexcept { return static_cast<u32>(generation_.size()); }
+    [[nodiscard]] u32 live_count() const noexcept {
+        u32 count = 0;
+        for (u8 alive : alive_)
+            count += alive != 0u ? 1u : 0u;
+        return count;
+    }
+    [[nodiscard]] u32 free_count() const noexcept { return static_cast<u32>(free_.size()); }
 
    private:
     static constexpr u32 handle_index(MeshId id) noexcept { return (id.raw & 0x00FFFFFFu) - 1u; }
