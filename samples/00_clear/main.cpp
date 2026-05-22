@@ -16,7 +16,7 @@ u32 animated_clear_color(double seconds) noexcept {
                          render::sine_channel8(seconds, 0.9, 2.0));
 }
 
-struct ClearSample {
+struct ClearSample : app::BasicSceneSample {
     static constexpr const char* log_name = "sample_00";
     static constexpr const char* display_name = "Psynder sample 00 (clear)";
 

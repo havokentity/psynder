@@ -10,7 +10,7 @@ using namespace psynder;
 
 namespace {
 
-struct TriangleSample {
+struct TriangleSample : app::BasicSceneSample {
     static constexpr const char* log_name = "sample_01";
     static constexpr const char* display_name = "Psynder sample 01 (textured triangle)";
     static constexpr const char* asset_root = "samples/01_triangle";
@@ -20,7 +20,7 @@ struct TriangleSample {
     Entity triangle_entity{};
 
     void started(app::WindowApp& app) {
-        auto& scene = app.loaded_scene();
+        auto& scene = basic_scene();
         scene.environment().set_clear_color(0xFF202028u);
         (void)scene.spawn_camera();
         crate.load_ppm("assets/crate.ppm");

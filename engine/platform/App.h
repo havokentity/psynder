@@ -22,6 +22,7 @@
 #include <concepts>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -33,7 +34,7 @@ namespace psynder::app {
 
 struct WindowAppOptions {
     bool depth_buffer = true;
-    bool has_default_scene = true;
+    bool scene_notices = true;
 };
 
 struct FrameClear {
@@ -90,7 +91,8 @@ class WindowApp {
     WindowApp(const AppArgs& args, const platform::WindowDesc& desc, WindowAppOptions options = {})
         : args_(args)
         , width_(desc.render_width)
-        , height_(desc.render_height) {
+        , height_(desc.render_height)
+        , scene_notices_(options.scene_notices) {
         render::reset_frame_stats();
         window_ = platform::create_window(desc);
         if (!window_)
@@ -108,9 +110,6 @@ class WindowApp {
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
 
         rendering_system_.prewarm_builtin_meshes();
-
-        if (options.has_default_scene)
-            set_scene(default_scene_);
     }
 
     WindowApp(const WindowApp&) = delete;
@@ -146,8 +145,6 @@ class WindowApp {
     [[nodiscard]] const render::RenderingSystem& rendering_system() const noexcept {
         return rendering_system_;
     }
-    [[nodiscard]] scene::Scene& default_scene() noexcept { return default_scene_; }
-    [[nodiscard]] const scene::Scene& default_scene() const noexcept { return default_scene_; }
     [[nodiscard]] scene::Scene& scene() noexcept { return *active_scene_; }
     [[nodiscard]] const scene::Scene& scene() const noexcept { return *active_scene_; }
     [[nodiscard]] scene::Scene* active_scene() noexcept { return active_scene_; }
@@ -165,6 +162,24 @@ class WindowApp {
     [[nodiscard]] const scene::Scene& loaded_scene(u32 index = 0u) const noexcept {
         return *loaded_scenes_[index];
     }
+
+    [[nodiscard]] scene::Scene& create_scene() noexcept {
+        if (owned_scene_count_ >= kMaxLoadedScenes) {
+            PSY_LOG_ERROR("app: cannot create scene; capacity {} exhausted", kMaxLoadedScenes);
+            return *owned_scenes_[kMaxLoadedScenes - 1u];
+        }
+        owned_scenes_[owned_scene_count_].emplace();
+        scene::Scene& scene = *owned_scenes_[owned_scene_count_++];
+        (void)load_scene(scene);
+        return scene;
+    }
+
+    [[nodiscard]] scene::Scene& create_active_scene() noexcept {
+        scene::Scene& scene = create_scene();
+        set_scene(scene);
+        return scene;
+    }
+
     [[nodiscard]] WindowFrameCacheReady cache_ready() noexcept {
         WindowFrameCacheReady cr{};
         cr.scene_ptr = active_scene_;
@@ -228,11 +243,17 @@ class WindowApp {
     }
 
     render::SceneRenderStats engine_frame_render() {
-        if (active_scene_ == nullptr || active_scene_rendered_)
+        if (active_scene_rendered_)
             return {};
+        if (active_scene_ == nullptr) {
+            if (scene_notices_)
+                draw_notice("No Scene Loaded");
+            active_scene_rendered_ = true;
+            return {};
+        }
         scene::SceneCameraView camera{};
         if (!active_scene_->active_camera_view(render_target_aspect(), camera)) {
-            draw_no_camera_notice();
+            draw_notice("No Camera Rendering");
             active_scene_rendered_ = true;
             return {};
         }
@@ -341,26 +362,37 @@ class WindowApp {
     }
 
     void move_from(WindowApp& other) noexcept {
-        const bool active_was_default_scene = other.active_scene_ == &other.default_scene_;
         args_ = other.args_;
         window_ = other.window_;
         width_ = other.width_;
         height_ = other.height_;
+        scene_notices_ = other.scene_notices_;
         engine_frame_update_ran_ = other.engine_frame_update_ran_;
         engine_frame_ms_ = other.engine_frame_ms_;
         engine_frame_ms_ring_ = other.engine_frame_ms_ring_;
         engine_frame_ms_head_ = other.engine_frame_ms_head_;
         engine_frame_ms_count_ = other.engine_frame_ms_count_;
-        default_scene_ = std::move(other.default_scene_);
+        owned_scene_count_ = other.owned_scene_count_;
+        for (u32 i = 0; i < owned_scene_count_; ++i) {
+            if (other.owned_scenes_[i])
+                owned_scenes_[i].emplace(std::move(*other.owned_scenes_[i]));
+        }
         loaded_scene_count_ = other.loaded_scene_count_;
+        const auto remap_scene = [&](scene::Scene* scene) noexcept -> scene::Scene* {
+            if (!scene)
+                return nullptr;
+            for (u32 i = 0; i < other.owned_scene_count_; ++i) {
+                if (other.owned_scenes_[i] && scene == &*other.owned_scenes_[i])
+                    return owned_scenes_[i] ? &*owned_scenes_[i] : nullptr;
+            }
+            return scene;
+        };
         for (u32 i = 0; i < loaded_scene_count_; ++i) {
-            loaded_scenes_[i] = other.loaded_scenes_[i] == &other.default_scene_
-                                    ? &default_scene_
-                                    : other.loaded_scenes_[i];
+            loaded_scenes_[i] = remap_scene(other.loaded_scenes_[i]);
             if (loaded_scenes_[i])
                 bind_scene_authoring(*loaded_scenes_[i]);
         }
-        active_scene_ = active_was_default_scene ? &default_scene_ : other.active_scene_;
+        active_scene_ = remap_scene(other.active_scene_);
         active_runtime_ = active_scene_ ? &active_scene_->runtime() : nullptr;
         active_scene_rendered_ = other.active_scene_rendered_;
         pixels_ = std::move(other.pixels_);
@@ -375,11 +407,15 @@ class WindowApp {
         other.engine_frame_ms_ring_ = {};
         other.engine_frame_ms_head_ = 0;
         other.engine_frame_ms_count_ = 0;
+        other.scene_notices_ = true;
         other.active_scene_ = nullptr;
         other.active_runtime_ = nullptr;
         other.active_scene_rendered_ = false;
         other.loaded_scenes_ = {};
         other.loaded_scene_count_ = 0;
+        for (u32 i = 0; i < other.owned_scene_count_; ++i)
+            other.owned_scenes_[i].reset();
+        other.owned_scene_count_ = 0;
         other.framebuffer_ = {};
     }
 
@@ -389,12 +425,14 @@ class WindowApp {
     platform::Window* window_ = nullptr;
     u32 width_ = 0;
     u32 height_ = 0;
+    bool scene_notices_ = true;
     bool engine_frame_update_ran_ = false;
     f32 engine_frame_ms_ = 1000.0f / 60.0f;
     std::array<f32, 120> engine_frame_ms_ring_{};
     u32 engine_frame_ms_head_ = 0;
     u32 engine_frame_ms_count_ = 0;
-    scene::Scene default_scene_{};
+    std::array<std::optional<scene::Scene>, kMaxLoadedScenes> owned_scenes_{};
+    u32 owned_scene_count_ = 0;
     std::array<scene::Scene*, kMaxLoadedScenes> loaded_scenes_{};
     u32 loaded_scene_count_ = 0;
     scene::Scene* active_scene_ = nullptr;
@@ -488,14 +526,13 @@ class WindowApp {
             render::clear_framebuffer_depth(framebuffer_);
     }
 
-    void draw_no_camera_notice() noexcept {
+    void draw_notice(std::string_view text) noexcept {
         if (framebuffer_.width == 0u || framebuffer_.height == 0u || framebuffer_.pixels == nullptr)
             return;
 
-        constexpr std::string_view kText = "No Camera Rendering";
         constexpr f32 kCellW = 6.0f;
         constexpr f32 kCellH = 8.0f;
-        const f32 text_w = static_cast<f32>(kText.size()) * kCellW;
+        const f32 text_w = static_cast<f32>(text.size()) * kCellW;
         const f32 panel_w = text_w + 16.0f;
         const f32 panel_h = kCellH + 12.0f;
         const f32 x = (static_cast<f32>(framebuffer_.width) - panel_w) * 0.5f;
@@ -509,7 +546,7 @@ class WindowApp {
                               math::Vec2{panel_w, panel_h},
                               ui::imm::rgba(0x71, 0x82, 0x99));
         ui::imm::label(math::Vec2{x + 8.0f, y + 6.0f},
-                       kText,
+                       text,
                        ui::imm::rgba(0xFF, 0xD2, 0x66));
         ui::imm::end_frame();
     }
@@ -554,6 +591,18 @@ struct WindowFrameContextT {
 
 using WindowFrameContext = WindowFrameContextT<AppArgs>;
 static_assert(sizeof(WindowFrameContext) <= kCacheLine);
+
+class BasicSceneSample {
+   public:
+    void basic_scene_started(WindowApp& app) noexcept { scene_ = &app.create_active_scene(); }
+
+   protected:
+    [[nodiscard]] scene::Scene& basic_scene() noexcept { return *scene_; }
+    [[nodiscard]] const scene::Scene& basic_scene() const noexcept { return *scene_; }
+
+   private:
+    scene::Scene* scene_ = nullptr;
+};
 
 namespace detail {
 
@@ -602,13 +651,13 @@ constexpr bool sample_has_custom_run() noexcept {
 template <class Sample, class ArgsT>
 WindowAppOptions sample_window_options(const Sample& sample, const ArgsT& args) noexcept {
     WindowAppOptions options{};
-    if constexpr (sample_has_custom_run<Sample, ArgsT>())
-        options.has_default_scene = false;
     if constexpr (requires { sample.window_options(args); }) {
         options = sample.window_options(args);
     } else if constexpr (requires { Sample::window_options(args); }) {
         options = Sample::window_options(args);
     }
+    if constexpr (sample_has_custom_run<Sample, ArgsT>())
+        options.scene_notices = false;
     return options;
 }
 
@@ -625,6 +674,9 @@ platform::WindowDesc sample_window_desc(const Sample& sample, const ArgsT& args)
 
 template <class Sample>
 void sample_started(Sample& sample, WindowApp& app) {
+    if constexpr (std::derived_from<Sample, BasicSceneSample>) {
+        sample.basic_scene_started(app);
+    }
     if constexpr (requires { sample.started(app); }) {
         sample.started(app);
     }

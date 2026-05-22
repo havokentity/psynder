@@ -24,7 +24,7 @@ const std::array<math::Vec3, 4> kCratePositions{{
     {0.7f, 1.2f, -5.5f},
 }};
 
-struct TexturedQuadSample {
+struct TexturedQuadSample : app::BasicSceneSample {
     static constexpr const char* log_name = "sample_02";
     static constexpr const char* display_name = "Psynder sample 02 (crate room)";
 
@@ -34,7 +34,7 @@ struct TexturedQuadSample {
     void started(app::WindowApp& app) {
         crate_texture = render::texture_generators::wooden_crate();
 
-        auto& scene = app.loaded_scene();
+        auto& scene = basic_scene();
         scene.prewarm_capacity(
             {.scene_entities = 8u, .renderables = 4u, .cameras = 1u, .render_items = 4u});
         app.reserve_scene_capacity(4u, 1u);
