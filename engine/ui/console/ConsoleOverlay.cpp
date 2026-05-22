@@ -187,13 +187,15 @@ struct State {
     std::array<f32, static_cast<usize>(KeyCode::Count)> held{};
     std::array<f32, static_cast<usize>(KeyCode::Count)> next_fire{};
 
-    // Navigable completion popup (Up/Down select, Tab accepts). Rebuilt each
-    // frame from the cursor token; while it's active Up/Down drive the list
-    // instead of command history.
+    // Navigable completion popup (Up/Down select, Tab accepts). Rebuilt only
+    // when the prompt/cursor key changes; while it's active Up/Down drive the
+    // list instead of command history.
     std::vector<std::string> comp_items;
     int comp_sel = 0;
     bool comp_active = false;
     std::string comp_token;  // token the list was built for (detect changes)
+    std::string comp_input_key;
+    usize comp_cursor_key = static_cast<usize>(-1);
     bool comp_suppressed_until_text = false;
 
     TerrainAutotune terrain_tune;
@@ -517,9 +519,8 @@ void ensure_init(State& s) noexcept {
                             std::exit(0);
                         });
 
-    // The debug HUD cvar everything documents but nothing actually registered:
-    // off | compact | full, wired straight to the lane-16 HUD mode (the same
-    // state F1 cycles). Lets `r_debug_hud full` work from the prompt.
+    // Debug HUD cvar: off | compact | full, wired straight to the lane-16 HUD
+    // mode (the same state F1 cycles). Lets `r_debug_hud full` work from the prompt.
     con.RegisterCVar("r_debug_hud",
                      "off",
                      "Debug HUD overlay: off | compact | full.",
@@ -753,7 +754,7 @@ void process_text(State& s, const platform::Input& input) noexcept {
     for (u32 cp : input.text_input()) {
         if (cp == 0x60u || cp == 0x7Eu)  // '`' / '~' are the toggle key glyphs
             continue;
-        if (cp < 0x20u || cp == 0x7Fu)  // controls (defensive — backends filter too)
+        if (cp < 0x20u || cp > 0x7Eu)  // controls/non-ASCII; imm fixed font is ASCII-only
             continue;
         char tmp[4];
         const int n = utf8_encode(cp, tmp);
@@ -786,6 +787,8 @@ void submit(State& s) noexcept {
     s.scroll = 0;
     s.comp_active = false;
     s.comp_token.clear();
+    s.comp_input_key.clear();
+    s.comp_cursor_key = static_cast<usize>(-1);
     s.comp_suppressed_until_text = false;
 }
 
@@ -881,13 +884,20 @@ void refresh_completion(State& s) noexcept {
         s.comp_active = false;
         s.comp_items.clear();
         s.comp_token = token.text;
+        s.comp_input_key = s.input;
+        s.comp_cursor_key = s.cursor;
         return;
     }
 
-    s.comp_items = gather_matches(s);
+    const bool changed = s.input != s.comp_input_key || s.cursor != s.comp_cursor_key;
+    if (changed) {
+        s.comp_items = gather_matches(s);
+        s.comp_input_key = s.input;
+        s.comp_cursor_key = s.cursor;
+    }
     // Show only when actual token chars exist.
     s.comp_active = !s.comp_items.empty();
-    if (token.text != s.comp_token) {
+    if (changed || token.text != s.comp_token) {
         s.comp_token = token.text;
         s.comp_sel = 0;
     }

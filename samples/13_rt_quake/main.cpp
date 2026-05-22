@@ -427,7 +427,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now_ticks - last_ticks)));
         last_ticks = now_ticks;
 
-        const editor::Mode edit_mode = input ? editor::sample_step(*input, fb) : editor::Mode::Play;
+        const editor::Mode edit_mode = input ? editor::sample_step(*input, fb, dt) : editor::Mode::Play;
         if (smoke_frames > 0) {
             const f32 phase = static_cast<f32>(frame) / 60.0f;
             const f32 t01 = std::clamp(phase, 0.0f, 1.0f);

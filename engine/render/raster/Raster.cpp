@@ -214,7 +214,13 @@ void Rasterizer::end_frame() {
         // count, and under-allocating is unsafe: alloc_array returns nullptr on
         // overflow, which silently drops the entire draw. The +1 keeps a tiny
         // headroom and a non-zero request when tri_count == 0.
-        TriSetup* tris = fs.arena.alloc_array<TriSetup>(tri_count * 7 + 1);
+        constexpr usize kMaxTriSetups = FrameState::kArenaBytes / sizeof(TriSetup);
+        if (static_cast<usize>(tri_count) > (kMaxTriSetups - 1u) / 7u) {
+            fs.draw_cmds[di] = DrawCmd{};
+            continue;
+        }
+        const usize tri_setup_count = static_cast<usize>(tri_count) * 7u + 1u;
+        TriSetup* tris = fs.arena.alloc_array<TriSetup>(tri_setup_count);
         if (!tris) {
             fs.draw_cmds[di] = DrawCmd{};
             continue;

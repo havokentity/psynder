@@ -27,8 +27,12 @@ bool consume_common_arg_impl(int argc, Argv argv, int& index, AppArgs& args, App
         return false;
     const std::string_view s = arg_at(argv, index);
     if (s.starts_with(kSmokeEq)) {
+        const std::string_view value = s.substr(kSmokeEq.size());
         u32 frames = 0;
-        if (!parse_u32_decimal(s.substr(kSmokeEq.size()), frames)) {
+        if (value.empty()) {
+            if (diagnostics)
+                diagnostics->missing_smoke_frames_value = true;
+        } else if (!parse_u32_decimal(value, frames)) {
             if (diagnostics)
                 diagnostics->malformed_smoke_frames = true;
             frames = 0;
@@ -54,7 +58,14 @@ bool consume_common_arg_impl(int argc, Argv argv, int& index, AppArgs& args, App
         return true;
     }
     if (s.starts_with(kCaptureEq)) {
-        args.capture_out = std::string{s.substr(kCaptureEq.size())};
+        const std::string_view value = s.substr(kCaptureEq.size());
+        if (value.empty()) {
+            if (diagnostics)
+                diagnostics->missing_capture_out_value = true;
+            args.capture_out.clear();
+            return true;
+        }
+        args.capture_out = std::string{value};
         return true;
     }
     if (s == kCaptureSp) {

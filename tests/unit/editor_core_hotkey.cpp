@@ -17,10 +17,16 @@
 
 #include "editor/core/Editor.h"
 #include "editor/core/HotKey.h"
+#include "editor/core/SampleHook.h"
 
 #include "platform/Platform.h"
+#include "render/Framebuffer.h"
+#include "ui/console/ConsoleOverlay.h"
+#include "ui/imm/DebugHud.h"
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <vector>
 
 using namespace psynder;
 using psynder::platform::Input;
@@ -128,4 +134,38 @@ TEST_CASE("editor hot-key: holding F2 does not retrigger the toggle", "[editor][
     in.press_edge(KeyCode::F2);
     editor::handle_input_frame(in);
     REQUIRE(editor::current_mode() == editor::Mode::Play);
+}
+
+TEST_CASE("editor sample hook: F1 edge cycles debug HUD exactly once", "[editor][hotkey]") {
+    FakeInput in;
+    std::vector<u32> pixels(64u * 32u, 0u);
+    render::Framebuffer fb{};
+    fb.width = 64;
+    fb.height = 32;
+    fb.pitch = fb.width * sizeof(u32);
+    fb.pixels = reinterpret_cast<u8*>(pixels.data());
+
+    editor::set_overlays_enabled(true);
+    ui::console::reset();
+    ui::console::set_open(false);
+    ui::imm::reset_debug_hud();
+    REQUIRE(ui::imm::debug_hud_mode() == ui::imm::DebugHudMode::Off);
+
+    in.press_edge(KeyCode::F1);
+    editor::sample_step(in, fb, 1.0f / 60.0f);
+    REQUIRE(ui::imm::debug_hud_mode() == ui::imm::DebugHudMode::Compact);
+
+    in.hold(KeyCode::F1);
+    editor::sample_step(in, fb, 1.0f / 60.0f);
+    REQUIRE(ui::imm::debug_hud_mode() == ui::imm::DebugHudMode::Compact);
+
+    in.press_edge(KeyCode::F1);
+    editor::sample_step(in, fb, 1.0f / 60.0f);
+    REQUIRE(ui::imm::debug_hud_mode() == ui::imm::DebugHudMode::Full);
+
+    in.press_edge(KeyCode::F1);
+    editor::sample_step(in, fb, 1.0f / 60.0f);
+    REQUIRE(ui::imm::debug_hud_mode() == ui::imm::DebugHudMode::Off);
+
+    ui::console::set_open(false);
 }

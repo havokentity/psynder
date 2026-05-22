@@ -48,6 +48,7 @@ namespace psynder::editor {
 namespace detail {
 struct OverlayState {
     bool enabled = true;          // master switch for the whole overlay suite
+    bool capturing = false;       // input was consumed by overlays this frame
     u64 last_tick = 0;            // for the internal frame-time measurement
     std::array<f32, 120> ring{};  // ~2 s rolling window for avg frame ms
     u32 head = 0;
@@ -64,7 +65,10 @@ inline bool overlays_enabled() noexcept {
     return detail::overlay_state().enabled;
 }
 inline void set_overlays_enabled(bool enabled) noexcept {
-    detail::overlay_state().enabled = enabled;
+    auto& st = detail::overlay_state();
+    st.enabled = enabled;
+    if (!enabled)
+        st.capturing = false;
     if (!enabled)
         ui::console::set_open(false);  // don't strand an open console
 }
@@ -72,7 +76,7 @@ inline void set_overlays_enabled(bool enabled) noexcept {
 // True while the console is capturing keystrokes. Hosts gate their gameplay
 // input (camera, fire, escape-to-quit) on `!overlays_capturing()`.
 inline bool overlays_capturing() noexcept {
-    return overlays_enabled() && ui::console::is_open();
+    return overlays_enabled() && (detail::overlay_state().capturing || ui::console::is_open());
 }
 
 // ─── Badge ──────────────────────────────────────────────────────────────────
@@ -100,32 +104,58 @@ inline void draw_mode_badge(render::Framebuffer& fb, Mode mode) noexcept {
                             psynder::ui::imm::rgba(0xFF, 0xFF, 0xFF));
 }
 
-// ─── Input + badge primitive ────────────────────────────────────────────────
-// Drives the console (input capture), the F2 editor toggle, the F1 HUD cycle,
-// and draws the PLAY/EDIT badge. Returns the resolved mode. `dt` paces the
-// console slide / caret blink / key auto-repeat. Most hosts call the
-// higher-level `frame_overlays` instead of this directly.
-inline Mode sample_step(const platform::Input& input,
-                        render::Framebuffer& fb,
-                        f32 dt = 1.0f / 60.0f) noexcept {
+namespace detail {
+inline ui::imm::DebugHudMode next_debug_hud_mode(ui::imm::DebugHudMode mode) noexcept {
+    using ui::imm::DebugHudMode;
+    switch (mode) {
+        case DebugHudMode::Off:
+            return DebugHudMode::Compact;
+        case DebugHudMode::Compact:
+            return DebugHudMode::Full;
+        case DebugHudMode::Full:
+            return DebugHudMode::Off;
+    }
+    return DebugHudMode::Off;
+}
+}  // namespace detail
+
+inline Mode sample_update(const platform::Input& input, f32 dt) noexcept {
+    auto& st = detail::overlay_state();
+    if (!st.enabled) {
+        st.capturing = false;
+        return current_mode();
+    }
+
     // The console owns the backtick/tilde key and, while open, swallows
     // keystrokes so typing a command never leaks into the toggles or gameplay.
     const bool console_capturing = ui::console::update(input, dt);
+    st.capturing = console_capturing;
 
     if (!console_capturing) {
         handle_input_frame(input);  // F2 Play/Edit toggle
 
         // F1 cycles the debug HUD: Off -> Compact -> Full -> Off.
         if (input.key_pressed(platform::KeyCode::F1)) {
-            using ui::imm::DebugHudMode;
-            const DebugHudMode m = ui::imm::debug_hud_mode();
-            ui::imm::set_debug_hud_mode(m == DebugHudMode::Off       ? DebugHudMode::Compact
-                                        : m == DebugHudMode::Compact ? DebugHudMode::Full
-                                                                     : DebugHudMode::Off);
+            ui::imm::set_debug_hud_mode(detail::next_debug_hud_mode(ui::imm::debug_hud_mode()));
         }
     }
 
-    const Mode mode = current_mode();
+    return current_mode();
+}
+
+inline void sample_draw(render::Framebuffer& fb) noexcept {
+    if (!overlays_enabled())
+        return;
+    draw_mode_badge(fb, current_mode());
+}
+
+// ─── Input + badge primitive ────────────────────────────────────────────────
+// Drives the console (input capture), the F2 editor toggle, the F1 HUD cycle,
+// and draws the PLAY/EDIT badge. Returns the resolved mode. `dt` paces the
+// console slide / caret blink / key auto-repeat. Most hosts call the
+// higher-level `frame_overlays` instead of this directly.
+inline Mode sample_step(const platform::Input& input, render::Framebuffer& fb, f32 dt) noexcept {
+    const Mode mode = sample_update(input, dt);
     draw_mode_badge(fb, mode);
     return mode;
 }
