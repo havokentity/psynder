@@ -25,11 +25,8 @@ struct TriangleSample {
         scene->environment().set_clear_color(0xFF202028u);
         crate.load_ppm("assets/crate.ppm");
 
-        render::MaterialDesc triangle_material{};
-        triangle_material.flags = render::MaterialFlags::RasterVisible;
-        const render::MaterialId triangle_material_id = scene->materials().create(triangle_material);
         const render::MeshDesc triangle_mesh_desc = render::geometry_tools::textured_triangle(&crate);
-        triangle_entity = app.create_mesh_entity(*scene, triangle_mesh_desc, triangle_material_id).entity;
+        triangle_entity = app.create_raster_mesh_entity(*scene, triangle_mesh_desc).entity;
     }
 
     void frame(app::WindowFrameContext& ctx) {

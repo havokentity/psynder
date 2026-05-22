@@ -206,8 +206,16 @@ TEST_CASE("rendering system mesh entities use pooled handles", "[render][renderi
     REQUIRE((second.mesh.raw & 0x00FFFFFFu) == (first.mesh.raw & 0x00FFFFFFu));
     REQUIRE(second.mesh.raw != first.mesh.raw);
 
+    const render::SceneMeshEntity third =
+        renderer.create_mesh_entity(scene, mesh_desc, material_desc);
+    REQUIRE(third.entity.valid());
+    REQUIRE(third.mesh.valid());
+    REQUIRE(third.material.valid());
+    REQUIRE(scene.materials().valid(third.material));
+
     REQUIRE(scene.destroy_entity(first.entity));
     REQUIRE(scene.destroy_entity(second.entity));
+    REQUIRE(scene.destroy_entity(third.entity));
 }
 
 TEST_CASE("rendering system builds material batches for CPU effects", "[render][rendering_system]") {
