@@ -51,14 +51,14 @@
 #include "common/CharacterController.h"
 #include "common/Lighting.h"
 #include "common/MeshWinding.h"
-#include "common/PngWriter.h"
-
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
 #include "physics/Character.h"  // detail::character_world() — resolved pose read-back
 #include "editor/core/SampleHook.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -75,43 +75,6 @@
 using namespace psynder;
 
 namespace {
-
-// ─── CLI ─────────────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kSmoke = "--smoke-frames=";
-    constexpr std::string_view kSmokeSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kSmoke)) {
-            a.smoke_frames = parse_uint(s.substr(kSmoke.size()));
-        } else if (s == kSmokeSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
 
 // ─── Math helpers ────────────────────────────────────────────────────────
 constexpr u32 pack_rgba(u8 r, u8 g, u8 b, u8 a = 255) noexcept {
@@ -307,10 +270,7 @@ void submit_block(render::raster::Rasterizer& r, const Block& b, const u32* cube
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-
-    // ─── Platform / framebuffer ─────────────────────────────────────────
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 09 (capsule playground)";
     desc.window_width = 1280;
@@ -318,24 +278,17 @@ int main(int argc, char** argv) {
     desc.render_width = 640;
     desc.render_height = 360;
     desc.scale_mode = platform::ScaleMode::Integer;
+    return desc;
+}
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("sample_09: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const platform::WindowDesc desc = make_window_desc(args);
+    auto* window = &app_host.window();
 
     auto* input = platform::input();
 
-    std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    std::vector<u32> depth(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    render::Framebuffer fb{};
-    fb.width = desc.render_width;
-    fb.height = desc.render_height;
-    fb.pitch = desc.render_width * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
-    fb.depth = depth.data();
+    render::Framebuffer& fb = app_host.framebuffer();
 
     auto& rasterizer = render::raster::Rasterizer::Get();
 
@@ -646,25 +599,29 @@ int main(int argc, char** argv) {
     }
 
     // ─── Capture (optional). ────────────────────────────────────────────
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_09: failed to write capture to {}", args.capture_out);
-            physics::character::destroy(character);
-            for (const Block& b : course)
-                world.destroy_body(b.id);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_09: wrote capture to {}", args.capture_out);
-    }
+    const bool capture_ok = app_host.write_capture_if_requested("sample_09");
 
     physics::character::destroy(character);
     for (const Block& b : course)
         world.destroy_body(b.id);
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+
+struct CharPlaygroundSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_09"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 09"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
+    }
+
+    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
+        return {.depth_buffer = true};
+    }
+
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(CharPlaygroundSample)

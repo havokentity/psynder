@@ -118,6 +118,34 @@ void push_diag_line(std::string_view line) noexcept {
     diag_push(line);
 }
 
+void DebugHudFrameHistory::push(f32 frame_ms) noexcept {
+    samples[frame_index % kCapacity] = frame_ms;
+    ++frame_index;
+}
+
+f32 DebugHudFrameHistory::average_ms() const noexcept {
+    const u32 n = std::min(frame_index, kCapacity);
+    if (n == 0u)
+        return 0.0f;
+    f32 sum = 0.0f;
+    for (u32 i = 0; i < n; ++i)
+        sum += samples[i];
+    return sum / static_cast<f32>(n);
+}
+
+DebugHudStats DebugHudFrameHistory::make_stats(f32 frame_ms,
+                                               usize draw_calls,
+                                               usize triangles,
+                                               usize active_voices) const noexcept {
+    DebugHudStats stats{};
+    stats.frame_ms = frame_ms;
+    stats.avg_frame_ms = average_ms();
+    stats.draw_calls = draw_calls;
+    stats.triangles = triangles;
+    stats.active_voices = active_voices;
+    return stats;
+}
+
 void reset_debug_hud() noexcept {
     g_diag = DiagRing{};
     g_strip = StripRing{};
@@ -147,7 +175,6 @@ usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexce
     for (u32 y = 0; y < y1; ++y) {
         const u32* row = reinterpret_cast<const u32*>(fb.pixels + static_cast<usize>(fb.pitch) * y);
         for (u32 x = 0; x < x1; ++x) {
-            const u32 idx = y * fb.width + x;
             // Aux snapshot is indexed densely (panel-local) to bound size.
             const usize sidx = static_cast<usize>(y) * x1 + x;
             if (sidx < snapshot_cap)

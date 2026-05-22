@@ -131,7 +131,7 @@ light indices; the shading stage loops only over those.
   Rayleigh-only approximation, no precomputed LUTs needed at our
   scale.
 
-## What the `samples/05_hybrid_night/` demo exercises
+## What the `samples/05_rt_shadow_packets/` demo exercises
 
 The M5 demo wires the runtime raytracer end-to-end:
 

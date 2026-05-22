@@ -20,20 +20,20 @@
 //                            as a valid 24-bit RGB PNG. Used by the
 //                            psynder_add_golden_cell() ctest cells.
 
-#include "common/PngWriter.h"
-
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
 #include "editor/core/SampleHook.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/Texture.h"
 #include "render/raster/Raster.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -43,50 +43,6 @@
 using namespace psynder;
 
 namespace {
-
-// ─── CLI parsing ─────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
-
-// ─── Tiny PPM (P6) loader — RGB8, no comments ────────────────────────────
-struct Texture {
-    u32 width = 0;
-    u32 height = 0;
-    std::vector<u32> pixels;  // RGBA8, alpha = 0xFF
-};
 
 // Search for the asset file in a few well-known relative paths so the
 // sample works whether you launch from build/bin, the source tree, or a
@@ -112,52 +68,16 @@ std::string find_asset(std::string_view rel) {
     return std::string{rel};
 }
 
-bool load_ppm(const std::string& path, Texture& out) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f)
-        return false;
-    char magic[3] = {0, 0, 0};
-    if (std::fread(magic, 1, 2, f) != 2 || magic[0] != 'P' || magic[1] != '6') {
-        std::fclose(f);
-        return false;
-    }
-    int w = 0, h = 0, maxv = 0;
-    if (std::fscanf(f, "%d %d %d", &w, &h, &maxv) != 3 || maxv != 255 || w <= 0 || h <= 0) {
-        std::fclose(f);
-        return false;
-    }
-    // Skip exactly one whitespace byte before binary payload.
-    std::fgetc(f);
-    const usize uw = static_cast<usize>(w);
-    const usize uh = static_cast<usize>(h);
-    std::vector<u8> rgb(uw * uh * 3);
-    if (std::fread(rgb.data(), 1, rgb.size(), f) != rgb.size()) {
-        std::fclose(f);
-        return false;
-    }
-    std::fclose(f);
-    out.width = static_cast<u32>(w);
-    out.height = static_cast<u32>(h);
-    out.pixels.resize(uw * uh);
-    for (usize i = 0, n = uw * uh; i < n; ++i) {
-        u32 r = rgb[i * 3 + 0], g = rgb[i * 3 + 1], b = rgb[i * 3 + 2];
-        out.pixels[i] = r | (g << 8) | (b << 16) | (0xFFu << 24);
-    }
-    return true;
-}
-
 // Fallback texture if asset load fails — magenta/black checkerboard so the
 // failure is loud, not silent.
-Texture make_fallback_texture() {
-    Texture t;
-    t.width = t.height = 16;
-    t.pixels.resize(16 * 16);
+render::Texture2D make_fallback_texture() {
+    std::vector<u32> pixels(16 * 16);
     for (u32 y = 0; y < 16; ++y)
         for (u32 x = 0; x < 16; ++x) {
             const bool magenta = ((x ^ y) & 1u) != 0u;
-            t.pixels[static_cast<usize>(y) * 16u + x] = magenta ? 0xFFFF00FFu : 0xFF000000u;
+            pixels[static_cast<usize>(y) * 16u + x] = magenta ? 0xFFFF00FFu : 0xFF000000u;
         }
-    return t;
+    return render::Texture2D::from_rgba8(16, 16, std::move(pixels));
 }
 
 // ─── Self-contained nearest-filter triangle walker ───────────────────────
@@ -171,7 +91,7 @@ struct V2 {
 };
 
 void raster_triangle_nearest(
-    render::Framebuffer& fb, const V2& a, const V2& b, const V2& c, const Texture& tex) {
+    render::Framebuffer& fb, const V2& a, const V2& b, const V2& c, const render::TextureView& tex) {
     const f32 area = edge(a.x, a.y, b.x, b.y, c.x, c.y);
     if (std::abs(area) < 1e-4f)
         return;
@@ -209,17 +129,14 @@ void raster_triangle_nearest(
             const u32 tx = std::min(tw - 1, static_cast<u32>(uu * static_cast<f32>(tw)));
             const u32 ty = std::min(th - 1, static_cast<u32>(vv * static_cast<f32>(th)));
             pixels[static_cast<usize>(y) * fb.width + static_cast<usize>(x)] =
-                tex.pixels[static_cast<usize>(ty) * tex.width + tx];
+                tex.texels[static_cast<usize>(ty) * tex.pitch + tx];
         }
     }
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-    const u32 smoke_frames = args.smoke_frames;
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 01 (textured triangle)";
     desc.window_width = 1280;
@@ -227,32 +144,25 @@ int main(int argc, char** argv) {
     desc.render_width = 640;
     desc.render_height = 360;
     desc.scale_mode = platform::ScaleMode::Integer;
+    return desc;
+}
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("sample_01: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const u32 smoke_frames = args.smoke_frames;
+    const platform::WindowDesc desc = make_window_desc(args);
+    auto* window = &app_host.window();
 
     // Load the crate texture (procedurally-generated 32×32 PPM committed
     // alongside the sample).
-    Texture crate{};
+    render::Texture2D crate = make_fallback_texture();
     const std::string tex_path = find_asset("assets/crate.ppm");
-    if (!load_ppm(tex_path, crate)) {
-        PSY_LOG_WARN("sample_01: failed to load {} — using fallback checker", tex_path);
-        crate = make_fallback_texture();
-    } else {
-        PSY_LOG_INFO("sample_01: loaded crate texture {} ({}x{})", tex_path, crate.width, crate.height);
-    }
+    render::TextureLoad crate_request = render::load_ppm_texture_async(tex_path);
+    bool crate_resolved = false;
+    bool crate_failed = false;
+    PSY_LOG_INFO("sample_01: queued async texture load {}", tex_path);
 
-    // CPU-side framebuffer at the internal render resolution.
-    std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    render::Framebuffer fb{};
-    fb.width = desc.render_width;
-    fb.height = desc.render_height;
-    fb.pitch = desc.render_width * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
+    render::Framebuffer& fb = app_host.framebuffer();
 
     // Triangle vertices in mesh-local space (XY plane, Z forward, UV in [0,1]).
     const std::array<render::raster::Vertex, 3> verts{{
@@ -324,7 +234,17 @@ int main(int argc, char** argv) {
         project(verts[0], a);
         project(verts[1], b);
         project(verts[2], c);
-        raster_triangle_nearest(fb, a, b, c, crate);
+        if (!crate_resolved && crate_request.take_if_ready(crate)) {
+            crate_resolved = true;
+            PSY_LOG_INFO("sample_01: async texture ready {} ({}x{})",
+                         tex_path,
+                         crate.width(),
+                         crate.height());
+        } else if (!crate_failed && crate_request.status() == render::TextureLoadStatus::Failed) {
+            crate_failed = true;
+            PSY_LOG_WARN("sample_01: failed to load {} — using fallback checker", tex_path);
+        }
+        raster_triangle_nearest(fb, a, b, c, crate.view());
 
         // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
         if (auto* in = platform::input()) {
@@ -339,19 +259,23 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_01: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_01: wrote capture to {}", args.capture_out);
-    }
+    if (!app_host.write_capture_if_requested("sample_01"))
+        return EXIT_FAILURE;
 
-    platform::destroy_window(window);
     return EXIT_SUCCESS;
 }
+
+struct TriangleSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_01"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 01"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
+    }
+
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(TriangleSample)

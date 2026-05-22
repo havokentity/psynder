@@ -68,11 +68,11 @@ Lane focus per DESIGN.md §13 M4-M5:
 - 13-physics: full Pacejka tire model, drivetrain (engine torque curve
   → clutch → gearbox → differential → wheels), aero drag + downforce,
   damage model
-- 25-samples-tests: sample 04 (NFS track lap), sample 05 (night raytraced
-  headlights)
+- 25-samples-tests: sample 04 (NFS track lap), sample 05 (RT shadow-packet
+  colored-light scene)
 
-Demo target: **one lap of a test track with headlights raytracing
-shadows onto wet asphalt at night** (sample 05).
+Demo target: **colored dynamic lights casting raytraced packet shadows
+across a small night scene** (sample 05).
 
 ## Wave D — M6 + M7 (tactical FPS + RmlUi + networking)
 

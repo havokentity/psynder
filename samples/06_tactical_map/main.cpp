@@ -34,14 +34,15 @@
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
 #include "common/MeshWinding.h"
-#include "common/PngWriter.h"
-
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/Texture.h"
 #include "render/raster/Raster.h"
 #include "world/outdoor/Terrain.h"
 #include "world/outdoor/TerrainTarget.h"
@@ -54,48 +55,12 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace psynder;
 
 namespace {
-
-// ─── CLI ─────────────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
 
 // ─── Render config ───────────────────────────────────────────────────────
 constexpr u32 kFbW = 512;
@@ -409,8 +374,6 @@ void fill_sky(render::Framebuffer& fb) noexcept {
 // ─── Box mesh helpers ────────────────────────────────────────────────────
 // Unit cube spanning [-0.5, +0.5]³ — per-face flat-shaded by colour.
 
-constexpr u32 kColTowerBody = pack_rgba8(82, 70, 52);
-constexpr u32 kColTowerRoof = pack_rgba8(48, 38, 32);
 constexpr u32 kColHeliBody = pack_rgba8(60, 70, 56);
 constexpr u32 kColHeliTrim = pack_rgba8(36, 44, 36);
 constexpr u32 kColRotor = pack_rgba8(32, 32, 32);
@@ -436,7 +399,7 @@ PSY_FORCEINLINE f32 facade_hash2(u32 x, u32 y) noexcept {
     return static_cast<f32>(h & 0xFFFFFFu) / static_cast<f32>(0x1000000u);
 }
 
-std::vector<u32> build_facade_texture() {
+render::Texture2D build_facade_texture() {
     const u32 dim = kFacadeDim;
     std::vector<u32> tex(static_cast<usize>(dim) * dim, 0u);
 
@@ -501,7 +464,7 @@ std::vector<u32> build_facade_texture() {
                                                               255u);
         }
     }
-    return tex;
+    return render::Texture2D::from_rgba8(dim, dim, std::move(tex));
 }
 
 // Build a cube with a single per-face colour; populates `verts`/`indices`
@@ -644,11 +607,7 @@ math::Mat4 yaw_mat4(f32 yaw_rad) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-    const u32 smoke_frames = args.smoke_frames;
-
-    // ─── Platform / framebuffer ──────────────────────────────────────────
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 06 (tactical map flyover, M6)";
     desc.window_width = 1280;
@@ -656,23 +615,17 @@ int main(int argc, char** argv) {
     desc.render_width = kFbW;
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
+    return desc;
+}
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("sample_06: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const u32 smoke_frames = args.smoke_frames;
+    const platform::WindowDesc desc = make_window_desc(args);
+    auto* window = &app_host.window();
 
-    std::vector<u32> pixels(static_cast<usize>(kFbW) * kFbH, 0u);
-    std::vector<u32> depth(static_cast<usize>(kFbW) * kFbH, 0u);
-
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
-    fb.depth = depth.data();
+    render::Framebuffer& fb = app_host.framebuffer();
+    std::vector<u32>& depth = app_host.depth();
 
     // ─── Heightmap + raymarcher state ────────────────────────────────────
     const std::vector<u16> heights = build_heightmap();
@@ -695,7 +648,8 @@ int main(int argc, char** argv) {
     // ─── Building facade texture ─────────────────────────────────────────
     // Owned here so its storage outlives every end_frame() that samples it;
     // each tower's DrawItem points `lightmap_texels` at this buffer.
-    const std::vector<u32> facade_tex = build_facade_texture();
+    const render::Texture2D facade_tex = build_facade_texture();
+    const render::TextureView facade_view = facade_tex.view();
 
     // ─── Scene props ─────────────────────────────────────────────────────
     // Towers wear the facade texture, so their verts are white — the
@@ -796,9 +750,9 @@ int main(int argc, char** argv) {
             // Bind the procedural facade chunk: forces the surface_cached path
             // so each pixel is white × facade(uv). Buffer owned by `facade_tex`
             // above and outlives this loop.
-            item.lightmap_texels = facade_tex.data();
-            item.lightmap_w = kFacadeDim;
-            item.lightmap_h = kFacadeDim;
+            item.lightmap_texels = facade_view.texels;
+            item.lightmap_w = facade_view.width;
+            item.lightmap_h = facade_view.height;
             rasterizer.submit(item);
         }
 
@@ -864,19 +818,26 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_06: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_06: wrote capture to {}", args.capture_out);
+    const bool capture_ok = app_host.write_capture_if_requested("sample_06");
+
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+struct TacticalMapSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_06"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 06"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
     }
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
-}
+    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
+        return {.depth_buffer = true};
+    }
+
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(TacticalMapSample)

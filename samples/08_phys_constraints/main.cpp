@@ -32,14 +32,14 @@
 //   --smoke-frames N         Space-separated form (matches Goldens.cmake).
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
-#include "common/PngWriter.h"
-
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Constraints.h"
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "ui/console/ConsoleOverlay.h"
@@ -56,43 +56,6 @@
 using namespace psynder;
 
 namespace {
-
-// ─── CLI parsing ─────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
 
 // ─── Render config ───────────────────────────────────────────────────────
 constexpr u32 kFbW = 640;
@@ -518,10 +481,7 @@ void render_scene(std::vector<u32>& px, const Scene& s, const Camera& cam) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-    const u32 smoke_frames = args.smoke_frames;
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 08 (constraints / ragdoll)";
     desc.window_width = 1280;
@@ -529,12 +489,14 @@ int main(int argc, char** argv) {
     desc.render_width = kFbW;
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
+    return desc;
+}
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("sample_08: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const u32 smoke_frames = args.smoke_frames;
+    const platform::WindowDesc desc = make_window_desc(args);
+    auto* window = &app_host.window();
 
     // Earth gravity into the engine world (it integrates the bodies; we mirror
     // the same vector into our PBD step so both stay consistent).
@@ -551,13 +513,8 @@ int main(int argc, char** argv) {
         scene.nodes.size(),
         scene.graph.size());
 
-    std::vector<u32> pixels(static_cast<usize>(kFbW) * kFbH, 0u);
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
+    std::vector<u32>& pixels = app_host.pixels();
+    render::Framebuffer& fb = app_host.framebuffer();
 
     const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
 
@@ -634,19 +591,22 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_08: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_08: wrote capture to {}", args.capture_out);
+    const bool capture_ok = app_host.write_capture_if_requested("sample_08");
+
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+struct PhysConstraintsSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_08"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 08"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
     }
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
-}
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(PhysConstraintsSample)

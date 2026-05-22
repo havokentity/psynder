@@ -16,150 +16,55 @@
 //                            the actual-image-this-run output for the
 //                            clear-color golden.
 
-#include "common/PngWriter.h"
-
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
 #include "editor/core/SampleHook.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
-#include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
 
-#include <cstdlib>
-#include <string>
 #include <string_view>
-#include <vector>
 
 using namespace psynder;
 
 namespace {
 
-// Parse --smoke-frames=N (or --smoke-frames N) from argv. Returns 0 when
-// the flag is absent ("run until the user closes the window"). Returns a
-// positive int when the caller wants a fixed-frame headless run. Malformed
-// values fall back to 0 with a warning so CI still gets a clean process
-// exit even on operator typos.
-u32 parse_uint(std::string_view v) {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
+struct ClearSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_00"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 00"; }
 
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            const u32 n = parse_uint(s.substr(kFlag.size()));
-            if (n == 0 && s.size() > kFlag.size()) {
-                PSY_LOG_WARN("sample_00: ignoring malformed --smoke-frames value");
-            }
-            a.smoke_frames = n;
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
-
-}  // namespace
-
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-    const u32 smoke_frames = args.smoke_frames;
-
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 00 (clear)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = 640;
-    desc.render_height = 360;
-    desc.scale_mode = platform::ScaleMode::Integer;
-
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("failed to create window");
-        return EXIT_FAILURE;
+    static platform::WindowDesc window_desc(const app::AppArgs&) noexcept {
+        platform::WindowDesc desc{};
+        desc.title = "Psynder — sample 00 (clear)";
+        desc.window_width = 1280;
+        desc.window_height = 720;
+        desc.render_width = 640;
+        desc.render_height = 360;
+        desc.scale_mode = platform::ScaleMode::Integer;
+        return desc;
     }
 
-    // CPU-side framebuffer at internal render resolution
-    std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    render::Framebuffer fb{};
-    fb.width = desc.render_width;
-    fb.height = desc.render_height;
-    fb.pitch = desc.render_width * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
-
-    if (smoke_frames > 0) {
-        PSY_LOG_INFO("Psynder sample 00 — smoke mode, {} frames", smoke_frames);
-    } else {
-        PSY_LOG_INFO("Psynder sample 00 running");
-    }
-
-    const u64 t0 = platform::Clock::ticks_now();
-    u32 frame = 0;
-
-    while (!window->should_close()) {
-        window->poll_events();
-
+    void frame(app::WindowFrameContext& ctx) {
         // Drive the colour off frame index in smoke mode so the captured
         // frame is identical across hosts (golden-image determinism). Real
-        // runs use wall-clock time so the animation looks smooth.
-        const f64 t = smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
-                                       : platform::Clock::seconds(platform::Clock::ticks_now() - t0);
+        // runs use elapsed wall-clock time so the animation looks smooth.
+        const f64 t = ctx.seconds;
         const u8 r = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.7));
         const u8 g = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.1 + 1.0));
         const u8 b = static_cast<u8>(127.0 + 127.0 * std::sin(t * 0.9 + 2.0));
         const u32 rgba = (static_cast<u32>(r)) | (static_cast<u32>(g) << 8) |
                          (static_cast<u32>(b) << 16) | (0xFFu << 24);
 
-        render::raster::clear_framebuffer(fb, rgba);
+        render::raster::clear_framebuffer(ctx.framebuffer, rgba);
 
         // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
         if (auto* in = platform::input()) {
-            editor::frame_overlays(*in, fb);
-        }
-
-        window->present(fb);
-
-        if (smoke_frames > 0 && ++frame >= smoke_frames) {
-            PSY_LOG_INFO("sample_00: smoke target reached ({}); exiting", smoke_frames);
-            break;
+            editor::frame_overlays(*in, ctx.framebuffer);
         }
     }
+};
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_00: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_00: wrote capture to {}", args.capture_out);
-    }
+}  // namespace
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
-}
+PSYNDER_WINDOW_SAMPLE_MAIN(ClearSample)

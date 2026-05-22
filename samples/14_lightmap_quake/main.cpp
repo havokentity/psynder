@@ -76,16 +76,18 @@
 
 #include "common/CharacterController.h"
 #include "common/MeshWinding.h"
-#include "common/PngWriter.h"
-
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "core/console/Console.h"
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
+#include "jobs/JobSystem.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/Texture.h"
 #include "render/raster/Raster.h"
 #include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
@@ -95,6 +97,7 @@
 #include "Bake.h"  // tools/lm_bake — bake(), write_lmlight(), read_lmlight()
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -102,51 +105,16 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace psynder;
 namespace bake = psynder::tools::bake;
 
 namespace {
-
-// ─── CLI parsing ─────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
 
 constexpr u32 pack_rgba(u8 r, u8 g, u8 b, u8 a = 255) noexcept {
     return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
@@ -188,9 +156,7 @@ struct Vertex {
 // face's quad through the base uv (0,0)-(1,1). Owned by World so its bytes
 // outlive the render loop (the rasterizer holds the raw pointer per frame).
 struct FaceChunk {
-    std::vector<u32> texels;  // kChunkRes × kChunkRes RGBA8, row-major
-    u32 width = 0;
-    u32 height = 0;
+    render::Texture2D texture;            // kChunkRes × kChunkRes RGBA8, row-major
     math::Vec3 albedo{0.7f, 0.7f, 0.7f};  // flat fallback when baked is off
 };
 
@@ -558,13 +524,13 @@ void build_world(World& w) {
 // Returns the RELOADED atlas (so the render path only ever sees bytes that
 // survived the on-disk format). On any failure we return an empty atlas and
 // the render falls back to flat albedo.
-bake::BakedAtlas bake_and_roundtrip(const World& w, u32 resolution, u32 bounces) {
+bake::BakedAtlas bake_and_roundtrip(const bake::BakeScene& scene, u32 resolution, u32 bounces) {
     bake::BakeOptions opt{};
     opt.lightmap_resolution = resolution;
     opt.max_indirect_bounces = bounces;
     opt.indirect_samples_per_bounce = 8;
 
-    const bake::BakedAtlas baked = bake::bake(w.scene, opt);
+    const bake::BakedAtlas baked = bake::bake(scene, opt);
 
     std::vector<u8> bytes;
     bake::write_lmlight(baked, bytes);
@@ -602,6 +568,44 @@ bake::BakedAtlas bake_and_roundtrip(const World& w, u32 resolution, u32 bounces)
     }
     PSY_LOG_INFO("sample_14: reloaded {} surfaces from .lmlight", loaded.surfaces.size());
     return loaded;
+}
+
+struct AsyncBakeState {
+    std::atomic<bool> done{false};
+    bool ok = false;
+    bake::BakedAtlas atlas;
+};
+
+struct AsyncBakePayload {
+    std::shared_ptr<AsyncBakeState> state;
+    bake::BakeScene scene;
+    u32 resolution = 0;
+    u32 bounces = 0;
+};
+
+void bake_and_roundtrip_job(void* user) noexcept {
+    std::unique_ptr<AsyncBakePayload> payload{static_cast<AsyncBakePayload*>(user)};
+    try {
+        payload->state->atlas =
+            bake_and_roundtrip(payload->scene, payload->resolution, payload->bounces);
+        payload->state->ok = !payload->state->atlas.surfaces.empty();
+    } catch (...) {
+        payload->state->atlas = {};
+        payload->state->ok = false;
+    }
+    payload->state->done.store(true, std::memory_order_release);
+}
+
+std::shared_ptr<AsyncBakeState> kick_async_bake(bake::BakeScene scene, u32 resolution, u32 bounces) {
+    auto state = std::make_shared<AsyncBakeState>();
+    auto* payload = new AsyncBakePayload{state, std::move(scene), resolution, bounces};
+
+    jobs::JobDesc desc{};
+    desc.fn = &bake_and_roundtrip_job;
+    desc.user = payload;
+    desc.name = "sample_14.bake_lightmap";
+    jobs::JobSystem::Get().submit(desc);
+    return state;
 }
 
 // Chunk resolution: each face's baked irradiance is rasterised into a
@@ -698,10 +702,8 @@ void build_face_chunks(World& w, const bake::BakedAtlas& atlas, f32 exposure) {
 
     for (usize fi = 0; fi < face_count; ++fi) {
         FaceChunk& chunk = w.face_chunks[fi];
-        chunk.width = kChunkRes;
-        chunk.height = kChunkRes;
         chunk.albedo = w.verts[w.map.faces[fi].first_vertex].albedo;
-        chunk.texels.assign(static_cast<usize>(kChunkRes) * kChunkRes, 0xFFFFFFFFu);
+        std::vector<u32> texels(static_cast<usize>(kChunkRes) * kChunkRes, 0xFFFFFFFFu);
         if (!atlas_ok)
             continue;
 
@@ -741,9 +743,10 @@ void build_face_chunks(World& w, const bake::BakedAtlas& atlas, f32 exposure) {
                 const u8 r = tonemap_channel(irr.x, exposure);
                 const u8 g = tonemap_channel(irr.y, exposure);
                 const u8 bl = tonemap_channel(irr.z, exposure);
-                chunk.texels[static_cast<usize>(j) * kChunkRes + i] = pack_rgba(r, g, bl);
+                texels[static_cast<usize>(j) * kChunkRes + i] = pack_rgba(r, g, bl);
             }
         }
+        chunk.texture = render::Texture2D::from_rgba8(kChunkRes, kChunkRes, std::move(texels));
     }
 }
 
@@ -798,11 +801,12 @@ void emit_leaf_faces(const world::bsp::BspLeaf& leaf, void* user) {
         // Baked mode: hand this face's lightmap chunk to the rasterizer so the
         // surface_cached path computes albedo × chunk per pixel. Flat mode:
         // leave it null so the room renders as plain albedo (toggle proof).
-        if (ctx->show_baked && fi < w.face_chunks.size() && !w.face_chunks[fi].texels.empty()) {
+        if (ctx->show_baked && fi < w.face_chunks.size() && w.face_chunks[fi].texture.valid()) {
             const FaceChunk& chunk = w.face_chunks[fi];
-            item.lightmap_texels = chunk.texels.data();
-            item.lightmap_w = chunk.width;
-            item.lightmap_h = chunk.height;
+            const render::TextureView chunk_view = chunk.texture.view();
+            item.lightmap_texels = chunk_view.texels;
+            item.lightmap_w = chunk_view.width;
+            item.lightmap_h = chunk_view.height;
         }
         ctx->rasterizer->submit(item);
         ++ctx->draw_count;
@@ -812,9 +816,7 @@ void emit_leaf_faces(const world::bsp::BspLeaf& leaf, void* user) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 14 (baked lightmap room)";
     desc.window_width = 1280;
@@ -822,12 +824,13 @@ int main(int argc, char** argv) {
     desc.render_width = 640;
     desc.render_height = 360;
     desc.scale_mode = platform::ScaleMode::Integer;
+    return desc;
+}
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("sample_14: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const platform::WindowDesc desc = make_window_desc(args);
+    auto* window = &app_host.window();
     auto* input = platform::input();
 
     // Build the room + parallel bake scene once.
@@ -855,32 +858,33 @@ int main(int argc, char** argv) {
                  w.scene.triangles.size(),
                  w.scene.lights.size());
 
-    // Bake the lightmap and round-trip it through .lmlight. The two-room scene
-    // is ~36 triangles, several of them large (8x6 m floors, 8x3 m walls), so
-    // we bump the per-triangle resolution to 40 lumels: a coarser grid leaves
-    // visible blotches on the big surfaces once the chunk upsamples it. Even at
-    // 40, direct + 1 bounce stays comfortably under the 30 s smoke budget.
-    // Direct + 1 bounce so indirect fill is visible in the corners and the
-    // doorway shadow stays soft.
-    const bake::BakedAtlas atlas = bake_and_roundtrip(w, /*resolution=*/40, /*bounces=*/1);
-    const bool have_bake = !atlas.surfaces.empty();
-
     // Exposure for the per-texel tonemap: chunk channel = 1 - exp(-irr * k).
     // Tuned for this room + the two 11 W/sr ceiling lights so each room's
     // hotspot is bright without flat-clipping to white and the shadowed
     // doorway / far corners stay readable.
     constexpr f32 kExposure = 2.2f;
 
+    // Bake the lightmap and round-trip it through .lmlight on a worker. The
+    // render loop starts immediately in flat mode, then atomically adopts the
+    // reloaded atlas once the job is done. The scene is ~36 triangles, several
+    // of them large (8x6 m floors, 8x3 m walls), so we bake 40 lumels per
+    // triangle and one indirect bounce for readable corners.
+    std::shared_ptr<AsyncBakeState> bake_state =
+        kick_async_bake(w.scene, /*resolution=*/40, /*bounces=*/1);
+    bool bake_integrated = false;
+    bool have_bake = false;
+    PSY_LOG_INFO("sample_14: queued async lightmap bake");
+
     // Baked vs. unbaked toggle. Mirrors CharacterController's lazy-cvar
-    // pattern: `r_lightmap_baked` (bool, default 1) plus the B key for an
-    // edge-triggered runtime flip. The cvar is the source of truth; B just
-    // flips it.
+    // pattern: `r_lightmap_baked` (bool, starts flat until async bake completes)
+    // plus the B key for an edge-triggered runtime flip. The cvar is the source
+    // of truth; B just flips it.
     auto& console = console::Console::Get();
     console::CVar* baked_cvar = console.FindCVar("r_lightmap_baked");
     if (!baked_cvar) {
         baked_cvar =
             console.RegisterCVar("r_lightmap_baked",
-                                 have_bake ? "1" : "0",
+                                 "0",
                                  "Render the room lit by the baked lightmap (1) or flat unbaked "
                                  "albedo (0). Toggle with the B key in sample_14.");
     }
@@ -890,8 +894,6 @@ int main(int argc, char** argv) {
     // buffer is constant across the toggle — only DrawItem::lightmap_texels
     // differs (the surface_cached path multiplies albedo × chunk per pixel).
     set_quad_uvs_and_albedo(w);
-    if (have_bake)
-        build_face_chunks(w, atlas, kExposure);
     std::vector<render::raster::Vertex> verts(w.verts.size());
     for (usize i = 0; i < w.verts.size(); ++i)
         verts[i] = w.verts[i].r;
@@ -916,15 +918,7 @@ int main(int argc, char** argv) {
     controller.set_look(0.0f, 0.0f);
 
     // CPU framebuffer + depth.
-    std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    std::vector<u32> depth(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    render::Framebuffer fb{};
-    fb.width = desc.render_width;
-    fb.height = desc.render_height;
-    fb.pitch = desc.render_width * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
-    fb.depth = depth.data();
+    render::Framebuffer& fb = app_host.framebuffer();
 
     auto& rasterizer = render::raster::Rasterizer::Get();
 
@@ -947,6 +941,23 @@ int main(int argc, char** argv) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now - last_ticks)));
         last_ticks = now;
         frame_ms_ring[frame % 60u] = frame_ms;
+
+        if (!bake_integrated && bake_state && bake_state->done.load(std::memory_order_acquire)) {
+            bake_integrated = true;
+            have_bake = bake_state->ok;
+            if (have_bake) {
+                build_face_chunks(w, bake_state->atlas, kExposure);
+                if (baked_cvar)
+                    console.SetCVarOverride("r_lightmap_baked", "1");
+                PSY_LOG_INFO("sample_14: async lightmap ready ({} surfaces)",
+                             bake_state->atlas.surfaces.size());
+            } else {
+                if (baked_cvar)
+                    console.SetCVarOverride("r_lightmap_baked", "0");
+                PSY_LOG_WARN("sample_14: async lightmap bake failed; staying flat");
+            }
+            bake_state->atlas = {};
+        }
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (input->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
@@ -1043,19 +1054,26 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_14: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_14: wrote capture to {}", args.capture_out);
+    const bool capture_ok = app_host.write_capture_if_requested("sample_14");
+
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+struct LightmapQuakeSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_14"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 14"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
     }
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
-}
+    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
+        return {.depth_buffer = true};
+    }
+
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(LightmapQuakeSample)

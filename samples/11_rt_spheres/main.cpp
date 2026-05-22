@@ -4,16 +4,9 @@
 // The scene: an enclosed room (floor + four walls, each a triangle mesh) of
 // mirror and saturated-diffuse spheres plus a couple of boxes, all built as
 // `render::rt::Bvh8` BLAS instances inside one `render::rt::Tlas`. Two point
-// lights orbit the room. Per pixel we cast a primary ray against the TLAS,
-// shade the hit with Lambert + an 8-wide shadow-ray packet, and — for the
-// mirror surfaces — add a single bounce of reflection: reflect the view
-// direction about the surface normal, `tlas.intersect` that reflected ray,
-// and shade whatever it hits (sky if it escapes the room).
-//
-// The RT core (engine/render/rt/Bvh.h) exposes only primary `intersect` +
-// `trace_shadow_packet` — there is no native recursive/reflection ray — so
-// the mirror bounce is implemented here in the sample's shading and kept to
-// exactly one bounce so the trace stays real-time.
+// lights orbit the room. The sample hands its TLAS, materials, reflectivity,
+// camera, and lights to `render::rt::FrameRenderer`, which owns the primary
+// pass, shadow packets, optional single-bounce reflections, and upsample.
 //
 // Navigation is the shared `psynder::samples::CharacterController`: FreeCam by
 // default so you can fly around the spheres (press V for grounded FPS, `noclip
@@ -29,13 +22,13 @@
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
 #include "common/CharacterController.h"
-#include "common/PngWriter.h"
-
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
@@ -59,43 +52,6 @@ void ensure_denoise_console_commands_registered();
 }
 
 namespace {
-
-// ─── CLI parsing ─────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
 
 // ─── Render config ───────────────────────────────────────────────────────
 // Internal framebuffer (small — raytracing per pixel is expensive). The lit
@@ -255,28 +211,9 @@ void orbit_lights(f32 t_seconds, std::array<Light, kNumLights>& lights) {
     }
 }
 
-// ─── Skybox / background ─────────────────────────────────────────────────
-// Vertical gradient: warm horizon fading to a deep blue zenith. Sampled by
-// ray-direction Y; used for both primary misses and escaped reflection rays.
-math::Vec3 sample_sky_lin(math::Vec3 dir) {
-    const f32 t = std::clamp(0.5f * (dir.y + 1.0f), 0.0f, 1.0f);
-    const f32 horizon[3] = {0.55f, 0.60f, 0.78f};
-    const f32 zenith[3] = {0.10f, 0.18f, 0.42f};
-    return {
-        horizon[0] * (1.0f - t) + zenith[0] * t,
-        horizon[1] * (1.0f - t) + zenith[1] * t,
-        horizon[2] * (1.0f - t) + zenith[2] * t,
-    };
-}
-
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-    const u32 smoke_frames = args.smoke_frames;
-    render::rt::ensure_frame_scheduler_console_registered();
-    render::rt::ensure_denoise_console_commands_registered();
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 11 (reflective sphere room, CPU RT)";
     desc.window_width = 1280;
@@ -284,12 +221,16 @@ int main(int argc, char** argv) {
     desc.render_width = kFbW;
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
+    return desc;
+}
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("sample_11: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const u32 smoke_frames = args.smoke_frames;
+    render::rt::ensure_frame_scheduler_console_registered();
+    render::rt::ensure_denoise_console_commands_registered();
+    const platform::WindowDesc desc = make_window_desc(args);
+    auto* window = &app_host.window();
 
     // ── Build the static scene geometry. ────────────────────────────────
     // One Bvh8 each for the shared unit sphere, the shared unit cube, and the
@@ -355,20 +296,22 @@ int main(int argc, char** argv) {
     render::rt::Tlas tlas;
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
-    // ── CPU framebuffers. ───────────────────────────────────────────────
-    std::vector<u32> final_pixels(static_cast<usize>(kFbW) * kFbH, 0u);
-    std::vector<u32> trace_pixels(static_cast<usize>(kTraceW) * kTraceH, 0u);
+    // -- CPU framebuffer + shared RT renderer. -----------------------------
+    std::vector<u32>& final_pixels = app_host.pixels();
+    render::Framebuffer& fb = app_host.framebuffer();
+    render::rt::FrameRenderer rt_frame_renderer;
+    ui::imm::DebugHudFrameHistory hud_history{};
 
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(final_pixels.data());
+    std::vector<u32> instance_colors(materials.size());
+    std::vector<f32> instance_reflectivity(materials.size());
+    for (usize i = 0; i < materials.size(); ++i) {
+        const Material& m = materials[i];
+        instance_colors[i] =
+            pack_rgba8(clamp_u8(m.r * 255.0f), clamp_u8(m.g * 255.0f), clamp_u8(m.b * 255.0f));
+        instance_reflectivity[i] = m.reflectivity;
+    }
 
-    // ── Shared first-person / free-cam controller (samples/common). ─────
-    // FreeCam by default so you fly around the spheres; V toggles grounded
-    // FPS, `noclip 1` lifts the bounds clamp. Bounds = the room interior.
+    // -- Shared first-person / free-cam controller (samples/common). ------
     samples::CharacterControllerConfig cc_cfg{};
     cc_cfg.floor_y = 0.0f;
     cc_cfg.eye_height = 1.6f;
@@ -380,75 +323,17 @@ int main(int argc, char** argv) {
     controller.set_look(0.0f, -0.12f);
 
     PSY_LOG_INFO("Psynder sample 11 running{}",
-                 smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
+                 smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)
                                   : std::string{});
 
     auto* input = platform::input();
     const u64 t0 = platform::Clock::ticks_now();
     u64 last_ticks = t0;
-    u32 frame = 0;
-
-    const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
-
-    std::array<Light, kNumLights> lights{};
-
-    // Per-pixel primary-hit info so we can drive shadow packets in row-major
-    // batches of 8 (mirrors sample_05).
-    struct PixelHit {
-        bool hit;
-        math::Vec3 position;
-        math::Vec3 normal;
-        f32 r, g, b;                 // direct-lit accumulation
-        f32 reflectivity;            // 0..1
-        f32 refl_r, refl_g, refl_b;  // 1-bounce reflected colour (linear)
-    };
-    std::vector<PixelHit> hits(static_cast<usize>(kTraceW) * kTraceH);
-
-    constexpr u32 kFrameHistory = 60;
-    std::array<f32, kFrameHistory> frame_ms_ring{};
     u64 prev_frame_ticks = t0;
+    u32 frame = 0;
+    const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
     constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
-
-    // Shade a single (already-found) hit's direct lighting (ambient + Lambert
-    // + per-light shadow ray). Used for the reflected-ray hit so mirrors show
-    // a lit scene, not a flat albedo. Deliberately does NOT recurse another
-    // reflection, which bounds the whole trace to a single mirror bounce.
-    auto shade_direct = [&](math::Vec3 pos,
-                            math::Vec3 nrm,
-                            const Material& m,
-                            const std::array<Light, kNumLights>& L) -> math::Vec3 {
-        math::Vec3 c{0.0f, 0.0f, 0.0f};
-        const f32 amb = 0.08f;
-        c.x += m.r * amb;
-        c.y += m.g * amb;
-        c.z += m.b * amb;
-        for (u32 li = 0; li < kNumLights; ++li) {
-            math::Vec3 to_light = math::sub(L[li].position, pos);
-            const f32 d2 = math::dot(to_light, to_light);
-            const f32 d = std::sqrt(d2);
-            if (d > L[li].range || d < 1e-4f)
-                continue;
-            const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-            const f32 ndotl = std::max(0.0f, math::dot(nrm, ld));
-            if (ndotl <= 0.0f)
-                continue;
-            // Shadow test for the reflected hit (scalar; the primary pass uses
-            // packets). Offset the origin off the surface to avoid acne.
-            render::rt::Ray sray{};
-            sray.origin = {pos.x + nrm.x * 1e-3f, pos.y + nrm.y * 1e-3f, pos.z + nrm.z * 1e-3f};
-            sray.direction = ld;
-            sray.t_min = 1e-4f;
-            sray.t_max = d - 1e-3f;
-            if (tlas.occluded(sray))
-                continue;
-            const f32 atten = 1.0f / (1.0f + d * d * 0.05f);
-            const f32 k = ndotl * atten * L[li].intensity;
-            c.x += m.r * L[li].r * k;
-            c.y += m.g * L[li].g * k;
-            c.z += m.b * L[li].b * k;
-        }
-        return c;
-    };
+    std::array<Light, kNumLights> lights{};
 
     while (!window->should_close()) {
         window->poll_events();
@@ -459,9 +344,8 @@ int main(int argc, char** argv) {
                 ? kSmokeFrameMs
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
-        frame_ms_ring[frame % kFrameHistory] = frame_ms;
+        hud_history.push(frame_ms);
 
-        // ESC quits — unless the console is open, where Esc closes it instead.
         if (input && input->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
             PSY_LOG_INFO("sample_11: escape pressed, exiting");
             break;
@@ -473,28 +357,20 @@ int main(int argc, char** argv) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now_ticks - last_ticks)));
         last_ticks = now_ticks;
 
-        // Editor F2/~ toggle + PLAY/EDIT badge. EDIT mode pins time so the
-        // user can inspect the BVH with a frozen scene.
         const editor::Mode edit_mode = input ? editor::sample_step(*input, fb) : editor::Mode::Play;
 
-        // Smoke runs pin time + camera to a deterministic orbit path so the
-        // capture is identical across hosts (no live input required).
         f64 t;
         if (edit_mode == editor::Mode::Edit) {
             t = 0.0;
         } else if (smoke_frames > 0) {
             t = static_cast<f64>(frame) * (1.0 / 60.0);
-            // Drive the controller's pose directly (deterministic flythrough):
-            // slow orbit around the room looking at the centre.
             const f32 ang = static_cast<f32>(frame) * 0.05f;
             const math::Vec3 eye{std::cos(ang) * 5.6f, 2.4f, std::sin(ang) * 5.6f};
             controller.set_position(eye);
-            // Yaw so forward points at the room centre; slight downward pitch.
             const f32 yaw = std::atan2(-eye.x, eye.z) + math::kPi;
             controller.set_look(yaw, -0.18f);
         } else {
             t = platform::Clock::seconds(now_ticks - t0);
-            // Frozen while the console owns input so typing doesn't fly the cam.
             if (input && !ui::console::is_open())
                 controller.update(*input, dt);
         }
@@ -504,233 +380,42 @@ int main(int argc, char** argv) {
                                                          controller.forward(),
                                                          aspect,
                                                          60.0f * math::kDegToRad);
-        const render::rt::FrameRowScheduleConfig row_schedule =
-            render::rt::frame_row_schedule_config_from_console();
 
-        // ── Pass 1: primary visibility + 1-bounce reflection @ low-res. ─
-        render::rt::parallel_frame_rows(kTraceH, row_schedule, [&](u32 y0, u32 y1) {
-            for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = 0; x < kTraceW; ++x) {
-                    const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kTraceW);
-                    const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kTraceH);
-                    const render::rt::Ray ray = render::rt::primary_ray(cam, nx, ny);
-                    const render::rt::Hit h = tlas.intersect(ray);
+        render::rt::FrameRenderConfig rt_config =
+            render::rt::frame_render_config_from_console(kFbW, kFbH, kTraceW, kTraceH, 16u);
+        rt_config.ambient_scale = 20.4f;
+        rt_config.direct_scale = 255.0f;
+        rt_config.attenuation_quadratic = 0.05f;
+        rt_config.reflection_scale = 1.0f;
 
-                    const usize idx = static_cast<usize>(y) * kTraceW + x;
-                    PixelHit ph{};
-                    ph.hit = h.hit;
-                    if (!h.hit) {
-                        const math::Vec3 sky = sample_sky_lin(ray.direction);
-                        trace_pixels[idx] = pack_rgba8(clamp_u8(sky.x * 255.0f),
-                                                       clamp_u8(sky.y * 255.0f),
-                                                       clamp_u8(sky.z * 255.0f));
-                        hits[idx] = ph;
-                        continue;
-                    }
-                    const u32 inst = h.instance < materials.size() ? h.instance : kRoomInstance;
-                    const Material& m = materials[inst];
-                    ph.r = m.r;
-                    ph.g = m.g;
-                    ph.b = m.b;
-                    ph.reflectivity = m.reflectivity;
-                    ph.position = {
-                        ray.origin.x + ray.direction.x * h.t,
-                        ray.origin.y + ray.direction.y * h.t,
-                        ray.origin.z + ray.direction.z * h.t,
-                    };
-                    math::Vec3 nrm = math::normalize(h.normal);
-                    // Make sure the normal faces the viewer (BLAS winding can give
-                    // either side); used for both shading + reflection.
-                    if (math::dot(nrm, ray.direction) > 0.0f)
-                        nrm = math::mul(nrm, -1.0f);
-                    ph.normal = nrm;
+        render::rt::FrameRenderInput rt_input{};
+        rt_input.tlas = &tlas;
+        rt_input.camera = cam;
+        rt_input.lights = lights.data();
+        rt_input.light_count = static_cast<u32>(lights.size());
+        rt_input.materials.instance_rgba8 = instance_colors.data();
+        rt_input.materials.instance_count = static_cast<u32>(instance_colors.size());
+        rt_input.materials.instance_reflectivity = instance_reflectivity.data();
+        rt_input.materials.instance_reflectivity_count =
+            static_cast<u32>(instance_reflectivity.size());
+        rt_input.materials.default_rgba8 = pack_rgba8(70, 70, 80);
+        rt_frame_renderer.render(rt_input, rt_config, final_pixels.data());
 
-                    // 1-bounce mirror reflection: reflect the view direction about
-                    // the normal, intersect, and shade that hit. Escaped rays read
-                    // the sky. Bounded to a single bounce so it stays real-time.
-                    ph.refl_r = ph.refl_g = ph.refl_b = 0.0f;
-                    if (m.reflectivity > 0.01f) {
-                        const math::Vec3 rdir =
-                            math::normalize(render::rt::reflect(ray.direction, nrm));
-                        render::rt::Ray rray{};
-                        rray.origin = {ph.position.x + nrm.x * 1e-3f,
-                                       ph.position.y + nrm.y * 1e-3f,
-                                       ph.position.z + nrm.z * 1e-3f};
-                        rray.direction = rdir;
-                        rray.t_min = 1e-3f;
-                        rray.t_max = 1e3f;
-                        const render::rt::Hit rh = tlas.intersect(rray);
-                        if (!rh.hit) {
-                            const math::Vec3 sky = sample_sky_lin(rdir);
-                            ph.refl_r = sky.x;
-                            ph.refl_g = sky.y;
-                            ph.refl_b = sky.z;
-                        } else {
-                            const u32 rinst =
-                                rh.instance < materials.size() ? rh.instance : kRoomInstance;
-                            const math::Vec3 rpos = {
-                                rray.origin.x + rray.direction.x * rh.t,
-                                rray.origin.y + rray.direction.y * rh.t,
-                                rray.origin.z + rray.direction.z * rh.t,
-                            };
-                            math::Vec3 rn = math::normalize(rh.normal);
-                            if (math::dot(rn, rray.direction) > 0.0f)
-                                rn = math::mul(rn, -1.0f);
-                            const math::Vec3 rc = shade_direct(rpos, rn, materials[rinst], lights);
-                            ph.refl_r = rc.x;
-                            ph.refl_g = rc.y;
-                            ph.refl_b = rc.z;
-                        }
-                    }
-                    hits[idx] = ph;
-                }
-            }
-        });
-
-        // ── Pass 2: per-pixel direct shadow trace (packets of 8). ───────
-        std::vector<f32> accum(static_cast<usize>(kTraceW) * kTraceH * 3, 0.0f);
-
-        for (u32 li = 0; li < kNumLights; ++li) {
-            const Light& L = lights[li];
-            render::rt::parallel_frame_rows(kTraceH, row_schedule, [&](u32 y0, u32 y1) {
-                render::rt::ShadowPacket8 pkt{};
-                u32 in_pkt = 0;
-                u32 pkt_idx[8] = {0};
-                bool pkt_real[8] = {false};
-
-                auto dispatch = [&]() {
-                    for (u32 i = in_pkt; i < 8; ++i) {
-                        pkt.rays[i].origin = {0, 1e6f, 0};
-                        pkt.rays[i].direction = {0, 1, 0};
-                        pkt.rays[i].t_min = 1e-4f;
-                        pkt.rays[i].t_max = 1.0f;
-                        pkt_real[i] = false;
-                    }
-                    render::rt::trace_shadow_packet(tlas, pkt);
-                    for (u32 i = 0; i < 8; ++i) {
-                        if (!pkt_real[i])
-                            continue;
-                        const usize px = pkt_idx[i];
-                        if (pkt.occluded[i])
-                            continue;
-                        const PixelHit& ph = hits[px];
-                        math::Vec3 to_light = math::sub(L.position, ph.position);
-                        const f32 d2 = math::dot(to_light, to_light);
-                        const f32 d = std::sqrt(d2);
-                        if (d > L.range || d < 1e-4f)
-                            continue;
-                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                        const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
-                        if (ndotl <= 0.0f)
-                            continue;
-                        const f32 atten = 1.0f / (1.0f + d * d * 0.05f);
-                        const f32 k = ndotl * atten * L.intensity;
-                        accum[px * 3 + 0] += ph.r * L.r * k;
-                        accum[px * 3 + 1] += ph.g * L.g * k;
-                        accum[px * 3 + 2] += ph.b * L.b * k;
-                    }
-                    in_pkt = 0;
-                };
-
-                for (u32 y = y0; y < y1; ++y) {
-                    for (u32 x = 0; x < kTraceW; ++x) {
-                        const usize px = static_cast<usize>(y) * kTraceW + x;
-                        const PixelHit& ph = hits[px];
-                        if (!ph.hit)
-                            continue;
-                        math::Vec3 to_light = math::sub(L.position, ph.position);
-                        const f32 d2 = math::dot(to_light, to_light);
-                        const f32 d = std::sqrt(d2);
-                        if (d > L.range || d < 1e-4f)
-                            continue;
-                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                        if (math::dot(ph.normal, ld) <= 0.0f)
-                            continue;
-                        const math::Vec3 origin = {
-                            ph.position.x + ph.normal.x * 1e-3f,
-                            ph.position.y + ph.normal.y * 1e-3f,
-                            ph.position.z + ph.normal.z * 1e-3f,
-                        };
-                        pkt.rays[in_pkt].origin = origin;
-                        pkt.rays[in_pkt].direction = ld;
-                        pkt.rays[in_pkt].t_min = 1e-4f;
-                        pkt.rays[in_pkt].t_max = d - 1e-3f;
-                        pkt_idx[in_pkt] = static_cast<u32>(px);
-                        pkt_real[in_pkt] = true;
-                        ++in_pkt;
-                        if (in_pkt == 8)
-                            dispatch();
-                    }
-                }
-                if (in_pkt > 0)
-                    dispatch();
-            });
-        }
-
-        // ── Combine: direct light + ambient + mirror reflection. ────────
-        render::rt::parallel_frame_rows(kTraceH, row_schedule, [&](u32 y0, u32 y1) {
-            for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = 0; x < kTraceW; ++x) {
-                    const usize idx = static_cast<usize>(y) * kTraceW + x;
-                    const PixelHit& ph = hits[idx];
-                    if (!ph.hit)
-                        continue;  // sky already written
-                    const f32 amb = 0.08f;
-                    // Diffuse component = ambient + shadowed direct.
-                    f32 dr = ph.r * amb + accum[idx * 3 + 0];
-                    f32 dg = ph.g * amb + accum[idx * 3 + 1];
-                    f32 db = ph.b * amb + accum[idx * 3 + 2];
-                    // Lerp toward the reflected colour by the surface reflectivity.
-                    const f32 k = ph.reflectivity;
-                    const f32 r = dr * (1.0f - k) + ph.refl_r * k;
-                    const f32 g = dg * (1.0f - k) + ph.refl_g * k;
-                    const f32 bb = db * (1.0f - k) + ph.refl_b * k;
-                    // Tone-scale the linear HDR result into 0..255.
-                    trace_pixels[idx] =
-                        pack_rgba8(clamp_u8(r * 255.0f), clamp_u8(g * 255.0f), clamp_u8(bb * 255.0f));
-                }
-            }
-        });
-
-        // ── Pass 3: bilinear upsample low-res into the final FB. ────────
-        render::rt::upsample_bilinear_rgba8(trace_pixels.data(),
-                                            kTraceW,
-                                            kTraceH,
-                                            final_pixels.data(),
-                                            kFbW,
-                                            kFbH);
-
-        // Debug HUD overlay — `r_debug_hud full` enables.
-        {
-            ui::imm::DebugHudStats stats{};
-            stats.frame_ms = frame_ms;
-            stats.avg_frame_ms = [&]() noexcept {
-                const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
-                if (n == 0u)
-                    return 0.0f;
-                f32 sum = 0.0f;
-                for (u32 i = 0; i < n; ++i)
-                    sum += frame_ms_ring[i];
-                return sum / static_cast<f32>(n);
-            }();
-            stats.draw_calls = 1;  // single full-screen blit
-            stats.triangles = 0;   // raytraced — no rasterized geometry
-            stats.active_voices = 0;
-            ui::imm::draw_debug_hud(fb, stats);
-        }
-
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
+        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        ui::console::draw(fb);
         window->present(fb);
 
         if (smoke_frames > 0) {
             const math::Vec3 eye = controller.eye();
-            PSY_LOG_INFO("sample_11: frame {} — eye ({:.2f},{:.2f},{:.2f}) traced {}x{}",
-                         frame,
-                         eye.x,
-                         eye.y,
-                         eye.z,
-                         kTraceW,
-                         kTraceH);
+            PSY_LOG_INFO(
+                "sample_11: frame {} -- eye ({:.2f},{:.2f},{:.2f}) traced {}x{} bounces={}",
+                frame,
+                eye.x,
+                eye.y,
+                eye.z,
+                kTraceW,
+                kTraceH,
+                rt_config.reflection_bounces);
         }
 
         ++frame;
@@ -740,19 +425,22 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             final_pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_11: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_11: wrote capture to {}", args.capture_out);
+    const bool capture_ok = app_host.write_capture_if_requested("sample_11");
+
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+struct RtSpheresSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_11"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 11"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
     }
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
-}
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(RtSpheresSample)

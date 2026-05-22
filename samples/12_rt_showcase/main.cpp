@@ -26,14 +26,14 @@
 //   --rt-ao-lit-strength=F   Override AO direct-light strength for capture/perf checks.
 //   --rt-cores=N             Override sample RT worker chunk target for smoke/perf checks.
 
-#include "common/PngWriter.h"
-
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
 #include "jobs/JobSystem.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
@@ -60,9 +60,7 @@ void ensure_denoise_console_commands_registered();
 namespace {
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
+struct Args : app::AppArgs {
     int rt_ao = -1;
     int rt_ao_debug = -1;
     std::string rt_cores_hint;
@@ -72,22 +70,13 @@ struct Args {
     std::string rt_ao_lit_strength;
 };
 
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
+int parse_bool_arg(std::string_view v) noexcept {
+    u32 value = 0;
+    return app::parse_u32_decimal(v, value) && value != 0u ? 1 : 0;
 }
 
-Args parse_args(int argc, char** argv) {
+Args parse_sample12_args(int argc, char** argv) {
     Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
     constexpr std::string_view kAoEq = "--rt-ao=";
     constexpr std::string_view kAoSp = "--rt-ao";
     constexpr std::string_view kAoDebugEq = "--rt-ao-debug=";
@@ -103,23 +92,17 @@ Args parse_args(int argc, char** argv) {
     constexpr std::string_view kRtCoresEq = "--rt-cores=";
     constexpr std::string_view kRtCoresSp = "--rt-cores";
     for (int i = 1; i < argc; ++i) {
+        if (app::consume_common_arg(argc, argv, i, a))
+            continue;
         std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        } else if (s.starts_with(kAoEq)) {
-            a.rt_ao = parse_uint(s.substr(kAoEq.size())) != 0u ? 1 : 0;
+        if (s.starts_with(kAoEq)) {
+            a.rt_ao = parse_bool_arg(s.substr(kAoEq.size()));
         } else if (s == kAoSp && i + 1 < argc) {
-            a.rt_ao = parse_uint(std::string_view{argv[++i]}) != 0u ? 1 : 0;
+            a.rt_ao = parse_bool_arg(std::string_view{argv[++i]});
         } else if (s.starts_with(kAoDebugEq)) {
-            a.rt_ao_debug = parse_uint(s.substr(kAoDebugEq.size())) != 0u ? 1 : 0;
+            a.rt_ao_debug = parse_bool_arg(s.substr(kAoDebugEq.size()));
         } else if (s == kAoDebugSp && i + 1 < argc) {
-            a.rt_ao_debug = parse_uint(std::string_view{argv[++i]}) != 0u ? 1 : 0;
+            a.rt_ao_debug = parse_bool_arg(std::string_view{argv[++i]});
         } else if (s.starts_with(kAoSamplesEq)) {
             a.rt_ao_samples = std::string(s.substr(kAoSamplesEq.size()));
         } else if (s == kAoSamplesSp && i + 1 < argc) {
@@ -375,13 +358,7 @@ void orbit_lights(f32 t_seconds, std::array<Light, kNumLights>& lights) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-    const u32 smoke_frames = args.smoke_frames;
-    render::rt::ensure_frame_renderer_console_registered();
-    apply_rt_arg_overrides(args);
-    render::rt::ensure_denoise_console_commands_registered();
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 12 (raytracing showcase)";
     desc.window_width = 1280;
@@ -389,12 +366,17 @@ int main(int argc, char** argv) {
     desc.render_width = kFbW;
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
+    return desc;
+}
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("sample_12: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
+    const Args& args = parsed_args;
+    const u32 smoke_frames = args.smoke_frames;
+    render::rt::ensure_frame_renderer_console_registered();
+    apply_rt_arg_overrides(args);
+    render::rt::ensure_denoise_console_commands_registered();
+    const platform::WindowDesc desc = make_window_desc(args);
+    auto* window = &app_host.window();
 
     // ── Build the static scene geometry. ────────────────────────────────
     // Just THREE BLAS meshes — a unit cube, a unit sphere, and the ground —
@@ -436,19 +418,14 @@ int main(int argc, char** argv) {
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
     // ── CPU framebuffers. ───────────────────────────────────────────────
-    std::vector<u32> final_pixels(static_cast<usize>(kFbW) * kFbH, 0u);
+    std::vector<u32>& final_pixels = app_host.pixels();
     std::array<u32, kNumInstances> instance_colors{};
     for (u32 i = 0; i < kFieldCount; ++i)
         instance_colors[i] = field[i].color;
     instance_colors[kFieldCount] = pack_rgba8(55, 55, 65);
     render::rt::FrameRenderer rt_frame_renderer;
 
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(final_pixels.data());
+    render::Framebuffer& fb = app_host.framebuffer();
 
     PSY_LOG_INFO("Psynder sample 12 running{} — {} TLAS instances, {} lights",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
@@ -475,9 +452,7 @@ int main(int argc, char** argv) {
 
     std::array<Light, kNumLights> lights{};
 
-    // 60-sample ring of frame-times (ms) for the debug HUD strip chart.
-    constexpr u32 kFrameHistory = 60;
-    std::array<f32, kFrameHistory> frame_ms_ring{};
+    ui::imm::DebugHudFrameHistory hud_history{};
     u64 prev_frame_ticks = t0;
     // Smoke-mode frame-time stand-in (60 FPS budget = 1/60 s).
     constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
@@ -493,7 +468,7 @@ int main(int argc, char** argv) {
                 ? kSmokeFrameMs
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
-        frame_ms_ring[frame % kFrameHistory] = frame_ms;
+        hud_history.push(frame_ms);
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
@@ -545,31 +520,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Debug HUD overlay — `r_debug_hud full` enables. Per-frame stats
-        // plus an avg over the populated prefix of the ring.
-        {
-            ui::imm::DebugHudStats stats{};
-            stats.frame_ms = frame_ms;
-            stats.avg_frame_ms = [&]() noexcept {
-                const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
-                if (n == 0u)
-                    return 0.0f;
-                f32 sum = 0.0f;
-                for (u32 i = 0; i < n; ++i)
-                    sum += frame_ms_ring[i];
-                return sum / static_cast<f32>(n);
-            }();
-            stats.draw_calls = 1;  // single rasterized full-screen blit
-            stats.triangles = 0;   // raytraced — no rasterized geometry
-            stats.active_voices = 0;
-            ui::imm::draw_debug_hud(fb, stats);
-        }
+        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
 
         ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);
 
-        // Bump unconditionally each iteration so the frame_ms_ring populates
-        // in interactive runs (smoke_frames == 0) too.
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {
             PSY_LOG_INFO("sample_12: smoke target reached ({}); {} instances, {} lights; exiting",
@@ -580,19 +535,22 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             final_pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_12: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_12: wrote capture to {}", args.capture_out);
+    const bool capture_ok = app_host.write_capture_if_requested("sample_12");
+
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+struct RtShowcaseSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_12"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 12"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
     }
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
-}
+    static Args parse_args(int argc, char** argv) { return parse_sample12_args(argc, argv); }
+
+    int run(app::WindowApp& app_host, const Args& args) { return sample_main(args, app_host); }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(RtShowcaseSample)

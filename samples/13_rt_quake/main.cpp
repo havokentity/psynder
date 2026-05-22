@@ -6,11 +6,10 @@
 // the room's wall / floor / ceiling triangles are emitted into a single
 // triangle list, packed into a `render::rt::Bvh8` BLAS, and referenced once
 // from a `render::rt::Tlas`. Two point lights (one per room) light the
-// interior. Per low-res pixel we cast a primary ray into the room; on hit we
-// Lambert-shade from each light and trace a shadow ray (gathered into an
-// 8-wide `ShadowPacket8` and dispatched via
-// `render::rt::trace_shadow_packet`) back through the SAME room BVH, so the
-// dividing wall + doorway cast real shadows between the two rooms.
+// interior. The sample hands its TLAS, per-triangle materials, camera, and
+// lights to `render::rt::FrameRenderer`, which casts primary rays and 8-wide
+// shadow packets through the SAME room BVH, so the dividing wall + doorway
+// cast real shadows between the two rooms.
 //
 // Like sample 05, the lit pass runs at quarter resolution and is bilinear-
 // upsampled into the final framebuffer to stay real-time.
@@ -25,13 +24,13 @@
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
 #include "common/CharacterController.h"
-#include "common/PngWriter.h"
-
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
@@ -52,43 +51,6 @@ using namespace psynder;
 
 namespace {
 
-// ─── CLI parsing ─────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
-
 // ─── Render config ───────────────────────────────────────────────────────
 // Internal framebuffer (small — raytracing per pixel is expensive). The lit
 // pass runs at half these dimensions on each axis (quarter pixel count) and
@@ -102,13 +64,6 @@ constexpr u32 kNumLights = 2;
 // Pack RGBA8 little-endian.
 PSY_FORCEINLINE u32 pack_rgba8(u32 r, u32 g, u32 b, u32 a = 0xFFu) noexcept {
     return (r & 0xFFu) | ((g & 0xFFu) << 8) | ((b & 0xFFu) << 16) | ((a & 0xFFu) << 24);
-}
-PSY_FORCEINLINE u32 clamp_u8(f32 v) noexcept {
-    if (v < 0.0f)
-        return 0u;
-    if (v > 255.0f)
-        return 255u;
-    return static_cast<u32>(v);
 }
 
 // ─── Room geometry ───────────────────────────────────────────────────────
@@ -384,24 +339,9 @@ void make_lights(std::array<Light, kNumLights>& lights) {
     lights[1].range = 16.0f;
 }
 
-// ─── Skybox / background (seen only through the doorway / out-of-bounds) ──
-u32 sample_sky(math::Vec3 dir) {
-    const f32 t = 0.5f * (dir.y + 1.0f);
-    const f32 horizon[3] = {6.0f, 10.0f, 28.0f};
-    const f32 zenith[3] = {1.0f, 1.0f, 6.0f};
-    const f32 r = horizon[0] * (1.0f - t) + zenith[0] * t;
-    const f32 g = horizon[1] * (1.0f - t) + zenith[1] * t;
-    const f32 b = horizon[2] * (1.0f - t) + zenith[2] * t;
-    return pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
-}
-
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-    const u32 smoke_frames = args.smoke_frames;
-    render::rt::ensure_frame_scheduler_console_registered();
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 13 (RT Quake room)";
     desc.window_width = 1280;
@@ -409,17 +349,19 @@ int main(int argc, char** argv) {
     desc.render_width = kFbW;
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
+    return desc;
+}
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
-        PSY_LOG_ERROR("sample_13: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const u32 smoke_frames = args.smoke_frames;
+    render::rt::ensure_frame_renderer_console_registered();
+    const platform::WindowDesc desc = make_window_desc(args);
+    auto* window = &app_host.window();
 
-    // ── Build the static room geometry → one BLAS → TLAS. ───────────────
     RoomGeo room;
     build_room(room);
-    PSY_LOG_INFO("sample_13: room built — {} triangles", room.tris.size());
+    PSY_LOG_INFO("sample_13: room built -- {} triangles", room.tris.size());
 
     render::rt::Bvh8 room_blas;
     room_blas.build(room.tris.data(), static_cast<u32>(room.tris.size()));
@@ -431,59 +373,35 @@ int main(int argc, char** argv) {
     render::rt::Tlas tlas;
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
-    // ── First-person controller (Fps mode, bounds = room union). ────────
     samples::CharacterControllerConfig cc_cfg{};
     cc_cfg.floor_y = room.floor_y;
     cc_cfg.eye_height = 1.6f;
-    cc_cfg.bounds_skin = 0.3f;  // standoff > any near plane; ~player radius
+    cc_cfg.bounds_skin = 0.3f;
     samples::CharacterController controller{cc_cfg};
-    // Generic slide collision against the per-leaf volumes (Room A / corridor /
-    // Room B) — the union AABB alone let you walk through the wall strips beside
-    // the doorway.
     controller.set_volumes(room.walk_volumes.data(), static_cast<u32>(room.walk_volumes.size()));
     controller.set_mode(samples::ControllerMode::Fps);
-    controller.set_position({0.0f, room.floor_y + cc_cfg.eye_height, -5.0f});  // in Room A
+    controller.set_position({0.0f, room.floor_y + cc_cfg.eye_height, -5.0f});
     controller.set_look(0.0f, 0.0f);
 
-    // ── CPU framebuffers. ───────────────────────────────────────────────
-    std::vector<u32> final_pixels(static_cast<usize>(kFbW) * kFbH, 0u);
-    std::vector<u32> lit_pixels(static_cast<usize>(kLitW) * kLitH, 0u);
-
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(final_pixels.data());
+    std::vector<u32>& final_pixels = app_host.pixels();
+    render::Framebuffer& fb = app_host.framebuffer();
+    render::rt::FrameRenderer rt_frame_renderer;
+    ui::imm::DebugHudFrameHistory hud_history{};
 
     PSY_LOG_INFO("Psynder sample 13 running{}",
-                 smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
+                 smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)
                                   : std::string{});
 
     const u64 t0 = platform::Clock::ticks_now();
     u64 last_ticks = t0;
+    u64 prev_frame_ticks = t0;
     u32 frame = 0;
-
     const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
     constexpr f32 kFovY = 70.0f * math::kDegToRad;
+    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
 
     std::array<Light, kNumLights> lights{};
     make_lights(lights);
-
-    // Per-pixel primary-hit info so we can drive shadow packets in batches.
-    struct PixelHit {
-        bool hit;
-        math::Vec3 position;
-        math::Vec3 normal;
-        f32 r, g, b;  // surface base color in 0..1
-    };
-    std::vector<PixelHit> hits(static_cast<usize>(kLitW) * kLitH);
-
-    // 60-sample ring of frame-times (ms) for the debug HUD strip chart.
-    constexpr u32 kFrameHistory = 60;
-    std::array<f32, kFrameHistory> frame_ms_ring{};
-    u64 prev_frame_ticks = t0;
-    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
 
     while (!window->should_close()) {
         window->poll_events();
@@ -494,9 +412,8 @@ int main(int argc, char** argv) {
                 ? kSmokeFrameMs
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
-        frame_ms_ring[frame % kFrameHistory] = frame_ms;
+        hud_history.push(frame_ms);
 
-        // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
             in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
             PSY_LOG_INFO("sample_13: escape pressed, exiting");
@@ -504,197 +421,43 @@ int main(int argc, char** argv) {
         }
 
         auto* input = platform::input();
-
-        // Per-frame dt for camera integration.
         const f32 dt =
             (smoke_frames > 0)
                 ? 1.0f / 60.0f
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now_ticks - last_ticks)));
         last_ticks = now_ticks;
 
-        // Editor F2/~ toggle + PLAY/EDIT badge bottom-right. EDIT mode freezes
-        // camera motion so the user can inspect the lit scene.
         const editor::Mode edit_mode = input ? editor::sample_step(*input, fb) : editor::Mode::Play;
-
         if (smoke_frames > 0) {
-            // Deterministic camera path: walk from deep in Room A through the
-            // doorway into Room B over the first 60 frames, so the capture is
-            // identical across hosts and exercises both lit rooms + the
-            // shadowed doorway transition.
             const f32 phase = static_cast<f32>(frame) / 60.0f;
             const f32 t01 = std::clamp(phase, 0.0f, 1.0f);
             controller.set_position({0.0f, room.floor_y + cc_cfg.eye_height, -5.0f + 8.0f * t01});
             controller.set_look(0.0f, 0.0f);
         } else if (edit_mode != editor::Mode::Edit && input && !ui::console::is_open()) {
-            // Live play: WASD + mouse-look. V flies; `noclip 1` lifts bounds.
-            // Frozen while the console owns input so typing doesn't walk the cam.
             controller.update(*input, dt);
         }
 
         const Camera cam =
             render::rt::make_frame_camera(controller.eye(), controller.forward(), aspect, kFovY);
-        const render::rt::FrameRowScheduleConfig row_schedule =
-            render::rt::frame_row_schedule_config_from_console();
 
-        // ── Pass 1: primary visibility @ low-res. ───────────────────────
-        render::rt::parallel_frame_rows(kLitH, row_schedule, [&](u32 y0, u32 y1) {
-            for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = 0; x < kLitW; ++x) {
-                    const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(kLitW);
-                    const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(kLitH);
-                    const render::rt::Ray ray = render::rt::primary_ray(cam, nx, ny);
-                    const render::rt::Hit h = tlas.intersect(ray);
+        render::rt::FrameRenderConfig rt_config =
+            render::rt::frame_render_config_from_console(kFbW, kFbH, kLitW, kLitH, 16u);
+        rt_config.ambient_scale = 7.2f;
+        rt_config.direct_scale = 20.0f;
+        rt_config.attenuation_quadratic = 0.05f;
 
-                    const usize idx = static_cast<usize>(y) * kLitW + x;
-                    PixelHit ph{};
-                    ph.hit = h.hit;
-                    if (!h.hit) {
-                        lit_pixels[idx] = sample_sky(ray.direction);
-                    } else {
-                        // The triangle's stored inward color (BVH reports the
-                        // hit primitive index into our parallel arrays).
-                        const u32 prim =
-                            std::min<u32>(h.primitive, static_cast<u32>(room.colors.size()) - 1u);
-                        const math::Vec3 col = room.colors[prim];
-                        ph.r = col.x;
-                        ph.g = col.y;
-                        ph.b = col.z;
-                        ph.position = {
-                            ray.origin.x + ray.direction.x * h.t,
-                            ray.origin.y + ray.direction.y * h.t,
-                            ray.origin.z + ray.direction.z * h.t,
-                        };
-                        // Use the geometry's authored inward normal (robust even
-                        // if the BVH's geometric normal sign differs for a face).
-                        ph.normal = room.normals[prim];
-                    }
-                    hits[idx] = ph;
-                }
-            }
-        });
+        render::rt::FrameRenderInput rt_input{};
+        rt_input.tlas = &tlas;
+        rt_input.camera = cam;
+        rt_input.lights = lights.data();
+        rt_input.light_count = static_cast<u32>(lights.size());
+        rt_input.materials.primitive_rgb = room.colors.data();
+        rt_input.materials.primitive_count = static_cast<u32>(room.colors.size());
+        rt_input.materials.default_rgba8 = pack_rgba8(140, 140, 150);
+        rt_frame_renderer.render(rt_input, rt_config, final_pixels.data());
 
-        // ── Pass 2: per-pixel shadow trace (packets of 8). ──────────────
-        std::vector<f32> accum(static_cast<usize>(kLitW) * kLitH * 3, 0.0f);
-
-        for (u32 li = 0; li < kNumLights; ++li) {
-            const Light& L = lights[li];
-            render::rt::parallel_frame_rows(kLitH, row_schedule, [&](u32 y0, u32 y1) {
-                render::rt::ShadowPacket8 pkt{};
-                u32 in_pkt = 0;
-                u32 pkt_idx[8] = {0};
-                bool pkt_real[8] = {false};
-
-                auto dispatch = [&]() {
-                    for (u32 i = in_pkt; i < 8; ++i) {
-                        pkt.rays[i].origin = {0, 1e6f, 0};
-                        pkt.rays[i].direction = {0, 1, 0};
-                        pkt.rays[i].t_min = 1e-4f;
-                        pkt.rays[i].t_max = 1.0f;
-                        pkt_real[i] = false;
-                    }
-                    render::rt::trace_shadow_packet(tlas, pkt);
-                    for (u32 i = 0; i < 8; ++i) {
-                        if (!pkt_real[i])
-                            continue;
-                        if (pkt.occluded[i])
-                            continue;
-                        const usize px = pkt_idx[i];
-                        const PixelHit& ph = hits[px];
-                        math::Vec3 to_light = math::sub(L.position, ph.position);
-                        const f32 d2 = math::dot(to_light, to_light);
-                        const f32 d = std::sqrt(d2);
-                        if (d > L.range || d < 1e-4f)
-                            continue;
-                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                        const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
-                        if (ndotl <= 0.0f)
-                            continue;
-                        const f32 atten = 1.0f / (1.0f + d * d * 0.05f);
-                        const f32 k = ndotl * atten * L.intensity;
-                        accum[px * 3 + 0] += ph.r * L.r * k;
-                        accum[px * 3 + 1] += ph.g * L.g * k;
-                        accum[px * 3 + 2] += ph.b * L.b * k;
-                    }
-                    in_pkt = 0;
-                };
-
-                const usize first_px = static_cast<usize>(y0) * kLitW;
-                const usize last_px = static_cast<usize>(y1) * kLitW;
-                for (usize px = first_px; px < last_px; ++px) {
-                    const PixelHit& ph = hits[px];
-                    if (!ph.hit)
-                        continue;
-                    math::Vec3 to_light = math::sub(L.position, ph.position);
-                    const f32 d2 = math::dot(to_light, to_light);
-                    const f32 d = std::sqrt(d2);
-                    if (d > L.range || d < 1e-4f)
-                        continue;
-                    const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                    // Back-face cull: skip if the light is behind the surface.
-                    if (math::dot(ph.normal, ld) <= 0.0f)
-                        continue;
-                    // Origin offset along the normal to avoid self-shadowing.
-                    const math::Vec3 origin = {
-                        ph.position.x + ph.normal.x * 1e-3f,
-                        ph.position.y + ph.normal.y * 1e-3f,
-                        ph.position.z + ph.normal.z * 1e-3f,
-                    };
-                    pkt.rays[in_pkt].origin = origin;
-                    pkt.rays[in_pkt].direction = ld;
-                    pkt.rays[in_pkt].t_min = 1e-4f;
-                    pkt.rays[in_pkt].t_max = d - 1e-3f;
-                    pkt_idx[in_pkt] = static_cast<u32>(px);
-                    pkt_real[in_pkt] = true;
-                    ++in_pkt;
-                    if (in_pkt == 8)
-                        dispatch();
-                }
-                if (in_pkt > 0)
-                    dispatch();
-            });
-        }
-
-        // ── Combine: write final low-res lit color. ─────────────────────
-        render::rt::parallel_frame_rows(kLitH, row_schedule, [&](u32 y0, u32 y1) {
-            for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = 0; x < kLitW; ++x) {
-                    const usize idx = static_cast<usize>(y) * kLitW + x;
-                    if (!hits[idx].hit)
-                        continue;  // sky already written
-                    const PixelHit& ph = hits[idx];
-                    // Ambient floor so unlit faces aren't pure black.
-                    const f32 amb = 0.12f;
-                    const f32 r = ph.r * amb * 60.0f + accum[idx * 3 + 0] * 20.0f;
-                    const f32 g = ph.g * amb * 60.0f + accum[idx * 3 + 1] * 20.0f;
-                    const f32 b = ph.b * amb * 60.0f + accum[idx * 3 + 2] * 20.0f;
-                    lit_pixels[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
-                }
-            }
-        });
-
-        // ── Pass 3: bilinear upsample low-res into the final FB. ────────
-        render::rt::upsample_bilinear_rgba8(lit_pixels.data(), kLitW, kLitH, final_pixels.data(), kFbW, kFbH);
-
-        // Debug HUD overlay — `r_debug_hud full` enables.
-        {
-            ui::imm::DebugHudStats stats{};
-            stats.frame_ms = frame_ms;
-            stats.avg_frame_ms = [&]() noexcept {
-                const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
-                if (n == 0u)
-                    return 0.0f;
-                f32 sum = 0.0f;
-                for (u32 i = 0; i < n; ++i)
-                    sum += frame_ms_ring[i];
-                return sum / static_cast<f32>(n);
-            }();
-            stats.draw_calls = 1;
-            stats.triangles = 0;  // raytraced — no rasterized geometry
-            stats.active_voices = 0;
-            ui::imm::draw_debug_hud(fb, stats);
-        }
-
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
+        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        ui::console::draw(fb);
         window->present(fb);
 
         ++frame;
@@ -704,19 +467,20 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             final_pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_13: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_13: wrote capture to {}", args.capture_out);
+    const bool capture_ok = app_host.write_capture_if_requested("sample_13");
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+struct RtQuakeSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_13"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 13"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
     }
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
-}
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(RtQuakeSample)
