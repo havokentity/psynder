@@ -14,34 +14,13 @@
 // path in the rasterizer (vertex transform → triangle setup → tile bin →
 // perspective-correct interpolation → Z reject) plus the textured fetch.
 //
-// CLI flags:
-//   --smoke-frames=N         Headless CI run for N frames then exit.
-//   --smoke-frames N         Same, space-separated (matches cmake helper
-//                            invocation in cmake/Goldens.cmake).
-//   --smoke-capture-out PATH Write the last rendered framebuffer to PATH
-//                            (or PATH may be `=`-suffixed). The file is a
-//                            valid 24-bit RGB PNG. Used by the
-//                            psynder_add_golden_cell() ctest cells to
-//                            produce the actual-image-this-run output.
-
-#include "core/AppArgs.h"
-#include "core/Log.h"
-#include "core/Types.h"
-#include "editor/core/Editor.h"
-#include "editor/core/SampleHook.h"
-#include "math/Math.h"
 #include "platform/App.h"
-#include "platform/Platform.h"
-#include "render/Framebuffer.h"
 #include "render/GeometryTools.h"
 #include "render/Texture.h"
-#include "scene/SceneEcs.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdlib>
-#include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -60,8 +39,8 @@ constexpr u32 pack_rgba(u8 r, u8 g, u8 b, u8 a = 255) noexcept {
 // a heavy dark frame around the border, two diagonal cross-battens, and a
 // metal bolt in each corner. No RNG — a couple of cheap integer hashes give
 // the planks per-column grain + light per-texel speckle so the wood doesn't
-// look like flat bands. The buffer is owned by main() and outlives the
-// render loop; its data pointer is handed to each crate's DrawItem.
+// look like flat bands. The sample owns the texture for the lifetime of
+// every renderer submission that samples it.
 constexpr u32 kCrateTexDim = 128;
 
 // Small deterministic 2D value hash → [0,1). Cheap, repeatable, no global
@@ -179,157 +158,71 @@ const std::array<math::Vec3, 4> kCratePositions{{
     {0.7f, 1.2f, -5.5f},
 }};
 
-}  // namespace
-
-platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 02 (crate room)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = 640;
-    desc.render_height = 360;
-    desc.scale_mode = platform::ScaleMode::Integer;
-    return desc;
-}
-
-int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
-    const app::AppArgs& args = base_args;
-    const platform::WindowDesc desc = make_window_desc(args);
-    auto* window = &app_host.window();
-
-    // Procedural wooden-crate texture, built once and owned here so its
-    // storage outlives every hybrid renderer submission that samples it.
-    const render::Texture2D crate_tex = build_crate_texture();
-    const render::TextureView crate_view = crate_tex.view();
-
-    auto& scene = app_host.loaded_scene();
-    scene.prewarm_capacity({.scene_entities = 8u, .renderables = 4u, .cameras = 1u, .render_items = 4u});
-    app_host.reserve_scene_capacity(4u, 1u);
-    scene.environment().set_clear_color(0xFF182030u);
-
-    render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
-    cube_mesh_desc.base_color = crate_view;
-    const render::MeshId cube_mesh = app_host.rendering_system().cached_mesh(cube_mesh_desc);
-
-    render::MaterialDesc crate_material{};
-    crate_material.flags = render::MaterialFlags::RasterVisible;
-    const render::MaterialId crate_material_id = scene.materials().create(crate_material);
-
-    scene::LocalTransform camera_rig_transform{};
-    camera_rig_transform.translation = math::Vec3{0.0f, 1.5f, 1.5f};
-    const Entity camera_rig = scene.create_entity(camera_rig_transform);
-
-    scene::CameraComponent camera_component{};
-    camera_component.aspect =
-        static_cast<f32>(desc.render_width) / static_cast<f32>(desc.render_height);
-    scene::LocalTransform camera_transform{};
-    camera_transform.rotation =
-        math::quat_from_axis_angle(math::Vec3{1.0f, 0.0f, 0.0f}, -std::atan2(1.5f, 4.5f));
-    const Entity camera_entity =
-        scene.create_camera(camera_component, camera_transform, scene.node(camera_rig));
-    scene.set_active_camera(camera_entity);
-
-    std::array<Entity, kCratePositions.size()> crates{};
-    std::array<scene::LocalTransform, kCratePositions.size()> crate_transforms{};
-    for (usize i = 0; i < kCratePositions.size(); ++i)
-        crate_transforms[i].translation = kCratePositions[i];
-    scene.spawn_mesh_batch(cube_mesh, crate_material_id, crate_transforms, crates);
-
-    PSY_LOG_INFO("Psynder sample 02 running{}{}",
-                 args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
-                                       : std::string{},
-                 args.capture_out.empty() ? std::string{}
-                                          : fmt::format(" — capture to {}", args.capture_out));
-
-    const u64 t0 = platform::Clock::ticks_now();
-    u32 frame = 0;
-
-    u64 prev_frame_ticks = t0;
-    // Smoke-mode default frame time stand-in (60 FPS budget = 1/60 s).
-    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
-
-    while (!window->should_close()) {
-        window->poll_events();
-
-        if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
-            break;
-        }
-
-        // Per-frame wall-clock delta for HUD stats. Smoke runs are
-        // frame-indexed so we use the 60 FPS budget stand-in to keep the
-        // chart deterministic across hosts.
-        const u64 now_ticks = platform::Clock::ticks_now();
-        const f32 frame_ms =
-            args.smoke_frames > 0
-                ? kSmokeFrameMs
-                : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
-        prev_frame_ticks = now_ticks;
-
-        app_host.engine_frame_begin(app::FrameClear::depth_only());
-
-        // Drive the spin off the wall clock so non-smoke runs animate; for
-        // smoke runs we use a fixed phase (per-frame * step) so frame N is
-        // deterministic and reproducible across hosts. The cmake helper
-        // pins captures at a specific frame count so what we hand the
-        // golden gate is deterministic. Frozen in EDIT mode so the user
-        // sees a stable scene while inspecting / spawning props.
-        const editor::Mode edit_mode =
-            app_host.engine_frame_update(frame_ms * 0.001f);
-        // EDIT mode pins `t` to a constant so the scene is frozen for
-        // inspection. Smoke mode advances per frame for deterministic
-        // captures; otherwise we tick off the wall clock.
-        const f32 t =
-            (edit_mode == editor::Mode::Edit) ? 0.0f
-            : args.smoke_frames > 0
-                ? static_cast<f32>(frame) * 0.05f
-                : static_cast<f32>(platform::Clock::seconds(platform::Clock::ticks_now() - t0));
-
-        for (usize i = 0; i < kCratePositions.size(); ++i) {
-            const math::Vec3 pos = kCratePositions[i];
-            // Each crate spins at a slightly different rate to make the
-            // depth interactions visible.
-            const f32 spin = t * (0.35f + 0.12f * static_cast<f32>(i));
-            scene::LocalTransform transform{};
-            transform.translation = pos;
-            transform.rotation = math::quat_from_axis_angle(math::Vec3{0, 1, 0}, spin);
-            scene.set_transform(crates[i], transform);
-        }
-
-        app_host.engine_frame_post();
-        app_host.present();
-
-        ++frame;
-        if (args.smoke_frames > 0 && frame >= args.smoke_frames) {
-            PSY_LOG_INFO("sample_02: smoke target reached ({}); exiting", args.smoke_frames);
-            break;
-        }
-    }
-
-    // Capture the final frame to PNG if requested. We do this AFTER the
-    // last frame's submit/end_frame so the image we hand the golden gate
-    // is fully rendered, not a torn intermediate.
-    if (!app_host.write_capture_if_requested("sample_02"))
-        return EXIT_FAILURE;
-
-    return EXIT_SUCCESS;
-}
-
 struct TexturedQuadSample {
-    static constexpr std::string_view log_name() noexcept { return "sample_02"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 02"; }
+    static constexpr const char* log_name = "sample_02";
+    static constexpr const char* display_name = "Psynder sample 02 (crate room)";
 
-    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
-        return make_window_desc(args);
-    }
+    render::Texture2D crate_texture{};
+    std::array<Entity, kCratePositions.size()> crates{};
 
     static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
         return {.depth_buffer = true};
     }
 
-    int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return run_sample(args, app_host);
+    void started(app::WindowApp& app) {
+        crate_texture = build_crate_texture();
+
+        auto& scene = app.loaded_scene();
+        scene.prewarm_capacity(
+            {.scene_entities = 8u, .renderables = 4u, .cameras = 1u, .render_items = 4u});
+        app.reserve_scene_capacity(4u, 1u);
+        scene.environment().set_clear_color(0xFF182030u);
+
+        render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
+        cube_mesh_desc.base_color = crate_texture.view();
+        const render::MeshId cube_mesh = app.rendering_system().cached_mesh(cube_mesh_desc);
+
+        render::MaterialDesc crate_material{};
+        crate_material.flags = render::MaterialFlags::RasterVisible;
+        const render::MaterialId crate_material_id = scene.materials().create(crate_material);
+
+        scene::LocalTransform camera_rig_transform{};
+        camera_rig_transform.translation = math::Vec3{0.0f, 1.5f, 1.5f};
+        const Entity camera_rig = scene.create_entity(camera_rig_transform);
+
+        const render::Framebuffer& framebuffer = app.framebuffer();
+        scene::CameraComponent camera_component{};
+        camera_component.aspect =
+            framebuffer.height == 0u ? 1.0f
+                                     : static_cast<f32>(framebuffer.width) /
+                                           static_cast<f32>(framebuffer.height);
+        scene::LocalTransform camera_transform{};
+        camera_transform.rotation =
+            math::quat_from_axis_angle(math::Vec3{1.0f, 0.0f, 0.0f}, -std::atan2(1.5f, 4.5f));
+        const Entity camera_entity =
+            scene.create_camera(camera_component, camera_transform, scene.node(camera_rig));
+        scene.set_active_camera(camera_entity);
+
+        std::array<scene::LocalTransform, kCratePositions.size()> crate_transforms{};
+        for (usize i = 0; i < kCratePositions.size(); ++i)
+            crate_transforms[i].translation = kCratePositions[i];
+        scene.spawn_mesh_batch(cube_mesh, crate_material_id, crate_transforms, crates);
+    }
+
+    void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {
+        const auto edit_mode = ctx.app.engine_frame_update(ctx.dt);
+        const f32 t = edit_mode == editor::Mode::Edit ? 0.0f : static_cast<f32>(ctx.seconds);
+
+        for (usize i = 0; i < kCratePositions.size(); ++i) {
+            scene::LocalTransform transform{};
+            transform.translation = kCratePositions[i];
+            transform.rotation = math::quat_from_axis_angle(
+                math::Vec3{0, 1, 0}, t * (0.35f + 0.12f * static_cast<f32>(i)));
+            cr.scene().set_transform(crates[i], transform);
+        }
     }
 };
+
+}  // namespace
 
 PSYNDER_WINDOW_SAMPLE_MAIN(TexturedQuadSample)
