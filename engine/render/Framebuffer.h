@@ -37,7 +37,7 @@ struct Framebuffer {
 
 // Clear CPU framebuffer storage without taking a dependency on a concrete
 // renderer. Depth clears to far (1.0) with stencil 0 when present.
-inline void clear_framebuffer(Framebuffer& fb, u32 rgba) noexcept {
+inline void clear_framebuffer_color(Framebuffer& fb, u32 rgba) noexcept {
     if (!fb.pixels || fb.width == 0 || fb.height == 0)
         return;
     if (fb.format == PixelFormat::RGBA8 || fb.format == PixelFormat::BGRA8) {
@@ -46,11 +46,19 @@ inline void clear_framebuffer(Framebuffer& fb, u32 rgba) noexcept {
             std::fill_n(row, fb.width, rgba);
         }
     }
+}
+
+inline void clear_framebuffer_depth(Framebuffer& fb) noexcept {
     if (fb.depth) {
         constexpr u32 kPackedDepthFarStencilZero = 0x3F800000u;
         const usize dcount = static_cast<usize>(fb.width) * fb.height;
         std::fill_n(fb.depth, dcount, kPackedDepthFarStencilZero);
     }
+}
+
+inline void clear_framebuffer(Framebuffer& fb, u32 rgba) noexcept {
+    clear_framebuffer_color(fb, rgba);
+    clear_framebuffer_depth(fb);
 }
 
 // Lane 07/09 fills these; the platform layer reads them.

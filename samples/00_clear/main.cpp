@@ -4,8 +4,6 @@
 
 #include "core/Types.h"
 #include "platform/App.h"
-#include "render/Framebuffer.h"
-
 #include <cmath>
 #include <string_view>
 
@@ -17,7 +15,7 @@ struct ClearSample {
     static constexpr std::string_view log_name() noexcept { return "sample_00"; }
     static constexpr std::string_view display_name() noexcept { return "Psynder sample 00 (clear)"; }
 
-    void frame(app::WindowFrameContext& ctx) {
+    static app::FrameClear frame_clear(const app::WindowFrameContext& ctx) noexcept {
         // Drive the colour off frame index in smoke mode so the captured
         // frame is identical across hosts (golden-image determinism). Real
         // runs use elapsed wall-clock time so the animation looks smooth.
@@ -27,8 +25,7 @@ struct ClearSample {
         const u8 b = static_cast<u8>(127.0 + 127.0 * std::sin(t * 0.9 + 2.0));
         const u32 rgba = (static_cast<u32>(r)) | (static_cast<u32>(g) << 8) |
                          (static_cast<u32>(b) << 16) | (0xFFu << 24);
-
-        render::clear_framebuffer(ctx.framebuffer, rgba);
+        return app::FrameClear::color_only(rgba);
     }
 };
 

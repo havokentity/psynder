@@ -26,6 +26,23 @@ struct WindowAppOptions {
     bool depth_buffer = false;
 };
 
+struct FrameClear {
+    bool color = false;
+    bool depth = false;
+    u32 color_rgba8 = 0xFF000000u;
+
+    [[nodiscard]] static constexpr FrameClear none() noexcept { return {}; }
+    [[nodiscard]] static constexpr FrameClear color_only(u32 rgba8) noexcept {
+        return {true, false, rgba8};
+    }
+    [[nodiscard]] static constexpr FrameClear depth_only() noexcept {
+        return {false, true, 0xFF000000u};
+    }
+    [[nodiscard]] static constexpr FrameClear color_depth(u32 rgba8) noexcept {
+        return {true, true, rgba8};
+    }
+};
+
 inline platform::WindowDesc default_window_desc(std::string_view title = "Psynder") {
     platform::WindowDesc desc{};
     desc.title.assign(title.data(), title.size());
@@ -90,6 +107,13 @@ class WindowApp {
     [[nodiscard]] const std::vector<u32>& pixels() const noexcept { return pixels_; }
     [[nodiscard]] std::vector<u32>& depth() noexcept { return depth_; }
     [[nodiscard]] const std::vector<u32>& depth() const noexcept { return depth_; }
+
+    void engine_frame_begin(FrameClear clear) noexcept {
+        if (clear.color)
+            render::clear_framebuffer_color(framebuffer_, clear.color_rgba8);
+        if (clear.depth)
+            render::clear_framebuffer_depth(framebuffer_);
+    }
 
     editor::Mode engine_frame_update(f32 dt) noexcept {
         engine_frame_update_ran_ = true;
@@ -347,6 +371,27 @@ FrameAction run_sample_frame(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
     }
 }
 
+template <class Sample, class ArgsT>
+FrameClear sample_frame_clear(Sample& sample, const WindowFrameContextT<ArgsT>& ctx) noexcept {
+    if constexpr (requires { sample.frame_clear(ctx); }) {
+        return sample.frame_clear(ctx);
+    } else if constexpr (requires { Sample::frame_clear(ctx); }) {
+        return Sample::frame_clear(ctx);
+    } else if constexpr (requires { sample.frame_clear(); }) {
+        return sample.frame_clear();
+    } else if constexpr (requires { Sample::frame_clear(); }) {
+        return Sample::frame_clear();
+    } else if constexpr (requires {
+                             { Sample::frame_clear } -> std::convertible_to<FrameClear>;
+                         }) {
+        return Sample::frame_clear;
+    } else {
+        (void)sample;
+        (void)ctx;
+        return FrameClear::none();
+    }
+}
+
 template <class Sample>
 constexpr bool engine_frame_post_enabled() noexcept {
     if constexpr (requires {
@@ -415,6 +460,7 @@ int run_window_sample(int argc, char** argv) {
                                   : platform::Clock::seconds(platform::Clock::ticks_now() - t0),
         };
 
+        app.engine_frame_begin(detail::sample_frame_clear(sample, ctx));
         const FrameAction action = detail::run_sample_frame(sample, ctx);
         detail::run_engine_frame_post(sample, ctx);
         app.present();
