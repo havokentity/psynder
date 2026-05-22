@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Psynder — CPU image loader unit tests.
 
+#include "asset/Vault.h"
 #include "render/Texture.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -60,7 +61,8 @@ TEST_CASE("async ppm texture loader expands P6 RGB8 into RGBA8 pixels", "[render
     };
     write_bytes(path, "P6\n# comment between tokens\n2 2\n255\n", rgb);
 
-    render::TextureLoad request = render::load_ppm_texture_async(path.string());
+    REQUIRE(asset::Vault::Get().mount_directory(path.parent_path().string()));
+    render::TextureLoad request = render::load_ppm_texture_async(path.filename().string());
     REQUIRE(wait_until_done(request) == render::TextureLoadStatus::Ready);
     std::filesystem::remove(path);
 
@@ -80,7 +82,8 @@ TEST_CASE("async ppm texture loader rejects unsupported PPM variants", "[render]
     const std::array<u8, 12> rgb = {};
     write_bytes(path, "P6\n2 2\n65535\n", rgb);
 
-    render::TextureLoad request = render::load_ppm_texture_async(path.string());
+    REQUIRE(asset::Vault::Get().mount_directory(path.parent_path().string()));
+    render::TextureLoad request = render::load_ppm_texture_async(path.filename().string());
     REQUIRE(wait_until_done(request) == render::TextureLoadStatus::Failed);
     std::filesystem::remove(path);
 

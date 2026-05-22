@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "asset/Vault.h"
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
@@ -15,6 +16,8 @@
 #include <array>
 #include <concepts>
 #include <cstdlib>
+#include <filesystem>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -420,6 +423,60 @@ void run_engine_frame_post(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
     }
 }
 
+inline void mount_directory_if_present(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec))
+        asset::Vault::Get().mount_directory(path.string());
+}
+
+inline void mount_archive_if_present(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(path, ec))
+        asset::Vault::Get().mount_vault(path.string());
+}
+
+template <class Sample>
+std::string_view sample_asset_root(const Sample&) {
+    if constexpr (requires {
+                      { Sample::asset_root() } -> std::convertible_to<std::string_view>;
+                  }) {
+        return Sample::asset_root();
+    } else if constexpr (requires {
+                             { Sample::asset_root } -> std::convertible_to<std::string_view>;
+                         }) {
+        return Sample::asset_root;
+    } else {
+        return {};
+    }
+}
+
+template <class Sample>
+void mount_standard_asset_roots(const Sample& sample) {
+    namespace fs = std::filesystem;
+
+    const auto mount_archives = [](const fs::path& root) {
+        if (root.empty())
+            return;
+        mount_archive_if_present(root / "psynder.psyvault");
+        mount_archive_if_present(root / "assets.psyvault");
+    };
+
+    const fs::path exe_path{platform::executable_path()};
+    const fs::path exe_dir = exe_path.parent_path();
+    mount_archives(exe_dir);
+    mount_archives(fs::path{platform::current_working_directory()});
+
+    const std::string_view root = sample_asset_root(sample);
+    if (!root.empty()) {
+        mount_directory_if_present(exe_dir);
+#if defined(PSYNDER_SOURCE_DIR)
+        mount_directory_if_present(fs::path{PSYNDER_SOURCE_DIR} / fs::path{std::string(root)});
+#else
+        mount_directory_if_present(fs::path{std::string(root)});
+#endif
+    }
+}
+
 }  // namespace detail
 
 template <class Sample>
@@ -435,6 +492,7 @@ int run_window_sample(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+    detail::mount_standard_asset_roots(sample);
     detail::sample_started(sample, app);
 
     if (args.smoke_frames > 0) {

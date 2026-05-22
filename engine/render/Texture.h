@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include "asset/Vault.h"
 #include "jobs/JobSystem.h"
+#include "render/Color.h"
 #include "render/Image.h"
 
 #include <atomic>
@@ -80,13 +82,15 @@ struct TextureLoadState {
 
 struct TextureLoadPayload {
     std::shared_ptr<TextureLoadState> state;
-    std::string path;
+    std::string virtual_path;
 };
 
 inline void load_ppm_texture_job(void* user) noexcept {
     auto* payload = static_cast<TextureLoadPayload*>(user);
     Rgba8Image image{};
-    const bool ok = image_detail::load_ppm_rgba8_from_file_blocking(payload->path.c_str(), image);
+    const asset::Blob blob = asset::Vault::Get().read(payload->virtual_path);
+    const bool ok = blob.data != nullptr &&
+                    image_detail::decode_ppm_rgba8(std::span<const u8>{blob.data, blob.bytes}, image);
     payload->state->texture = ok ? Texture2D{std::move(image)} : Texture2D{};
     payload->state->ok = ok;
     payload->state->done.store(true, std::memory_order_release);
@@ -135,6 +139,18 @@ class TextureLoad {
     // Kept for diagnostics/future cancellation hooks; callers never block on it.
     jobs::JobHandle handle_{};
 };
+
+inline Texture2D fallback_checker_texture() {
+    std::vector<u32> pixels(16u * 16u);
+    for (u32 y = 0; y < 16u; ++y) {
+        for (u32 x = 0; x < 16u; ++x) {
+            const bool magenta = ((x ^ y) & 1u) != 0u;
+            pixels[static_cast<usize>(y) * 16u + x] = magenta ? rgba8(0xFF, 0x00, 0xFF)
+                                                               : rgba8(0x00, 0x00, 0x00);
+        }
+    }
+    return Texture2D::from_rgba8(16u, 16u, std::move(pixels));
+}
 
 inline TextureLoad load_ppm_texture_async(std::string path) {
     auto state = std::make_shared<texture_detail::TextureLoadState>();

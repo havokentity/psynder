@@ -21,50 +21,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <filesystem>
 #include <string>
 #include <vector>
 
 using namespace psynder;
 
 namespace {
-
-// Search for the asset file in a few well-known relative paths so the
-// sample works whether you launch from build/bin, the source tree, or a
-// CI working directory.
-std::string find_asset(const char* rel) {
-    namespace fs = std::filesystem;
-    const std::array<fs::path, 5> roots{
-        fs::path{},
-        fs::path{"."},
-        fs::path{".."},
-        fs::path{"../.."},
-        fs::path{"../../.."},
-    };
-    for (const auto& root : roots) {
-        fs::path candidate =
-            root.empty() ? fs::path{rel} : root / "samples" / "01_triangle" / fs::path{rel};
-        if (fs::exists(candidate))
-            return candidate.string();
-        candidate = root / fs::path{rel};
-        if (fs::exists(candidate))
-            return candidate.string();
-    }
-    return std::string{rel};
-}
-
-// Fallback texture if asset load fails — magenta/black checkerboard so the
-// failure is loud, not silent.
-render::Texture2D make_fallback_texture() {
-    std::vector<u32> pixels(16 * 16);
-    for (u32 y = 0; y < 16; ++y)
-        for (u32 x = 0; x < 16; ++x) {
-            const bool magenta = ((x ^ y) & 1u) != 0u;
-            pixels[static_cast<usize>(y) * 16u + x] = magenta ? render::rgba8(0xFF, 0x00, 0xFF)
-                                                               : render::rgba8(0x00, 0x00, 0x00);
-        }
-    return render::Texture2D::from_rgba8(16, 16, std::move(pixels));
-}
 
 const std::array<render::raster::Vertex, 3> kTriangleVerts{{
     {{-0.6f, -0.4f, 0.0f}, {0, 0, 1}, {0.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
@@ -130,8 +92,9 @@ void raster_triangle_nearest(
 struct TriangleSample {
     static constexpr const char* log_name = "sample_01";
     static constexpr const char* display_name = "Psynder sample 01 (textured triangle)";
+    static constexpr const char* asset_root = "samples/01_triangle";
 
-    render::Texture2D crate = make_fallback_texture();
+    render::Texture2D crate = render::fallback_checker_texture();
     render::TextureLoad crate_request{};
     std::string tex_path{};
     bool crate_resolved = false;
@@ -150,7 +113,7 @@ struct TriangleSample {
     void started(app::WindowApp&) {
         world.set_structural_deferred(false);
 
-        tex_path = find_asset("assets/crate.ppm");
+        tex_path = "assets/crate.ppm";
         crate_request = render::load_ppm_texture_async(tex_path);
         PSY_LOG_INFO("sample_01: queued async texture load {}", tex_path);
 
