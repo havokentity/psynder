@@ -43,7 +43,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/RenderingSystem.h"
-#include "render/Texture.h"
+#include "render/TextureGenerators.h"
 #include "render/raster/Raster.h"
 #include "world/outdoor/Terrain.h"
 #include "world/outdoor/TerrainTarget.h"
@@ -360,95 +360,6 @@ constexpr u32 kColHeliBody = pack_rgba8(60, 70, 56);
 constexpr u32 kColHeliTrim = pack_rgba8(36, 44, 36);
 constexpr u32 kColRotor = pack_rgba8(32, 32, 32);
 
-// ─── Building facade texture ─────────────────────────────────────────────
-//
-// Deterministic RGBA8 chunk (kFacadeDim², pitch == width) read as a concrete
-// watchtower facade: a mid-grey concrete field with fine speckle, a grid of
-// lit windows (warm panes with dark mullions between them), and a darker
-// roof/parapet band across the top. No RNG — one cheap integer hash gives the
-// concrete its grain. Each tower's DrawItem points `lightmap_texels` here and
-// the cube's 0..1 per-face uv spans the chunk, so the surface_cached path
-// computes vertexColor × facade(uv) per pixel. Buffer is owned by main() and
-// outlives the render loop.
-constexpr u32 kFacadeDim = 64;
-
-// Small deterministic 2D value hash → [0,1). Cheap, repeatable, no global
-// state; adds fine concrete grain so the wall isn't a dead flat field.
-PSY_FORCEINLINE f32 facade_hash2(u32 x, u32 y) noexcept {
-    u32 h = x * 374761393u + y * 668265263u;
-    h = (h ^ (h >> 13)) * 1274126177u;
-    h ^= h >> 16;
-    return static_cast<f32>(h & 0xFFFFFFu) / static_cast<f32>(0x1000000u);
-}
-
-render::Texture2D build_facade_texture() {
-    const u32 dim = kFacadeDim;
-    std::vector<u32> tex(static_cast<usize>(dim) * dim, 0u);
-
-    // Palette: cool concrete field, dark mullion/parapet, warm lit panes.
-    constexpr i32 kConcR = 150, kConcG = 152, kConcB = 150;  // concrete base
-    constexpr i32 kMullR = 58, kMullG = 60, kMullB = 64;     // window frame
-    constexpr i32 kRoofR = 70, kRoofG = 66, kRoofB = 60;     // roof/parapet band
-    constexpr i32 kWinR = 196, kWinG = 176, kWinB = 96;      // lit pane
-
-    const u32 roof_h = std::max(3u, dim / 8);  // parapet band height (top)
-    const u32 cols = 3;                        // window columns across the face
-    const u32 rows = 3;                        // window rows down the face
-    const u32 cell_w = dim / cols;
-    const u32 cell_h = (dim - roof_h) / rows;
-    const u32 pane_inset = std::max(2u, cell_w / 6);  // mullion thickness
-
-    for (u32 y = 0; y < dim; ++y) {
-        for (u32 x = 0; x < dim; ++x) {
-            // Concrete base with fine speckle so it isn't banded.
-            const i32 sp = static_cast<i32>((facade_hash2(x, y) - 0.5f) * 18.0f);
-            i32 r = kConcR + sp;
-            i32 g = kConcG + sp;
-            i32 b = kConcB + sp;
-
-            if (y < roof_h) {
-                // Darker roof / parapet band across the top.
-                const i32 rs = static_cast<i32>((facade_hash2(x, y) - 0.5f) * 12.0f);
-                r = kRoofR + rs;
-                g = kRoofG + rs;
-                b = kRoofB + rs;
-            } else {
-                // Window grid below the parapet. A pane is the inset interior
-                // of each cell; the surrounding band reads as the mullion.
-                const u32 wy = y - roof_h;
-                const u32 col_in = x % cell_w;
-                const u32 row_in = wy % cell_h;
-                const bool in_pane = col_in >= pane_inset && col_in < cell_w - pane_inset &&
-                                     row_in >= pane_inset && row_in < cell_h - pane_inset &&
-                                     wy < rows * cell_h;
-                if (in_pane) {
-                    // Warm lit glass with a faint top-down gradient + speckle
-                    // so the panes read as glazing rather than flat fill.
-                    const f32 gy = static_cast<f32>(row_in) / static_cast<f32>(cell_h);
-                    const i32 grad = static_cast<i32>((0.5f - gy) * 24.0f);
-                    const i32 gs = static_cast<i32>((facade_hash2(x, y) - 0.5f) * 14.0f);
-                    r = kWinR + grad + gs;
-                    g = kWinG + grad + gs;
-                    b = kWinB + grad + gs;
-                } else if ((col_in < pane_inset || col_in >= cell_w - pane_inset ||
-                            row_in < pane_inset || row_in >= cell_h - pane_inset) &&
-                           wy < rows * cell_h) {
-                    // Dark mullion between/around the panes.
-                    r = kMullR;
-                    g = kMullG;
-                    b = kMullB;
-                }
-            }
-
-            tex[static_cast<usize>(y) * dim + x] = pack_rgba8(clamp_u8(static_cast<f32>(r)),
-                                                              clamp_u8(static_cast<f32>(g)),
-                                                              clamp_u8(static_cast<f32>(b)),
-                                                              255u);
-        }
-    }
-    return render::Texture2D::from_rgba8(dim, dim, std::move(tex));
-}
-
 // Build a cube with a single per-face colour; populates `verts`/`indices`
 // appended to whatever the caller already has, returning the index offsets.
 void emit_cube(std::vector<render::raster::Vertex>& verts,
@@ -659,10 +570,7 @@ int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     terrain_rm.set_heightmap(hm_desc);
     world::outdoor::set_target(terrain_rm, &fb);
 
-    // ─── Building facade texture ─────────────────────────────────────────
-    // Owned here so its storage outlives every end_frame() that samples it;
-    // each tower's DrawItem points `lightmap_texels` at this buffer.
-    const render::Texture2D facade_tex = build_facade_texture();
+    const render::Texture2D facade_tex = render::texture_generators::building_facade();
     const render::TextureView facade_view = facade_tex.view();
 
     // ─── Scene props ─────────────────────────────────────────────────────

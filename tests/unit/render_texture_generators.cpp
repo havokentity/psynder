@@ -60,6 +60,13 @@ TEST_CASE("texture generators: rich procedural textures are deterministic", "[re
     REQUIRE(bricks.height() == 32u);
     REQUIRE(unique_color_count(bricks) > 4u);
 
+    const Texture2D facade_a = texture_generators::building_facade();
+    const Texture2D facade_b = texture_generators::building_facade();
+    REQUIRE(facade_a.width() == 64u);
+    REQUIRE(facade_a.height() == 64u);
+    REQUIRE(facade_a.pixels() == facade_b.pixels());
+    REQUIRE(unique_color_count(facade_a) > 16u);
+
     texture_generators::ValueNoiseDesc noise_desc{};
     noise_desc.width = 16;
     noise_desc.height = 16;

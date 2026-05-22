@@ -256,4 +256,54 @@ Texture2D bricks(const BrickDesc& desc) {
     return make_texture(width, height, std::move(pixels));
 }
 
+Texture2D building_facade(const BuildingFacadeDesc& desc) {
+    const u32 dim = safe_dim(desc.dimension);
+    const u32 columns = safe_dim(desc.columns);
+    const u32 rows = safe_dim(desc.rows);
+    const u32 roof_h = desc.roof_height == 0u ? std::max(3u, dim / 8u)
+                                              : std::min(desc.roof_height, dim);
+    const u32 cell_w = std::max(1u, dim / columns);
+    const u32 cell_h = std::max(1u, (dim - roof_h) / rows);
+    const u32 pane_inset = std::max(2u, cell_w / 6u);
+    std::vector<u32> pixels(static_cast<usize>(dim) * dim);
+
+    for (u32 y = 0; y < dim; ++y) {
+        for (u32 x = 0; x < dim; ++x) {
+            u32 pixel = add_luma(desc.concrete,
+                                 static_cast<i32>((hash01(x, y, 101u) - 0.5f) *
+                                                  desc.concrete_speckle));
+
+            if (y < roof_h) {
+                pixel = add_luma(desc.roof,
+                                 static_cast<i32>((hash01(x, y, 102u) - 0.5f) *
+                                                  desc.roof_speckle));
+            } else {
+                const u32 wy = y - roof_h;
+                const u32 col_in = x % cell_w;
+                const u32 row_in = wy % cell_h;
+                const bool in_window_region = wy < rows * cell_h;
+                const bool in_pane =
+                    in_window_region && col_in >= pane_inset && col_in < cell_w - pane_inset &&
+                    row_in >= pane_inset && row_in < cell_h - pane_inset;
+                const bool in_mullion =
+                    in_window_region && (col_in < pane_inset || col_in >= cell_w - pane_inset ||
+                                         row_in < pane_inset || row_in >= cell_h - pane_inset);
+
+                if (in_pane) {
+                    const f32 gy = static_cast<f32>(row_in) / static_cast<f32>(cell_h);
+                    const i32 grad = static_cast<i32>((0.5f - gy) * 24.0f);
+                    const i32 speckle =
+                        static_cast<i32>((hash01(x, y, 103u) - 0.5f) * desc.window_speckle);
+                    pixel = add_luma(desc.window, grad + speckle);
+                } else if (in_mullion) {
+                    pixel = desc.mullion;
+                }
+            }
+
+            pixels[static_cast<usize>(y) * dim + x] = pixel;
+        }
+    }
+    return make_texture(dim, dim, std::move(pixels));
+}
+
 }  // namespace psynder::render::texture_generators

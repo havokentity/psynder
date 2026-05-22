@@ -81,6 +81,20 @@ struct BrickDesc {
     f32 shade_strength = 0.12f;
 };
 
+struct BuildingFacadeDesc {
+    u32 dimension = 64;
+    u32 columns = 3;
+    u32 rows = 3;
+    u32 roof_height = 0;
+    u32 concrete = 0xFF969896u;
+    u32 mullion = 0xFF403C3Au;
+    u32 roof = 0xFF3C4246u;
+    u32 window = 0xFF60B0C4u;
+    f32 concrete_speckle = 18.0f;
+    f32 roof_speckle = 12.0f;
+    f32 window_speckle = 14.0f;
+};
+
 [[nodiscard]] Texture2D solid(const SolidDesc& desc = {});
 [[nodiscard]] Texture2D checker(const CheckerDesc& desc = {});
 [[nodiscard]] Texture2D grid(const GridDesc& desc = {});
@@ -89,5 +103,6 @@ struct BrickDesc {
 [[nodiscard]] Texture2D wood_planks(const WoodPlanksDesc& desc = {});
 [[nodiscard]] Texture2D wooden_crate(const WoodenCrateDesc& desc = {});
 [[nodiscard]] Texture2D bricks(const BrickDesc& desc = {});
+[[nodiscard]] Texture2D building_facade(const BuildingFacadeDesc& desc = {});
 
 }  // namespace psynder::render::texture_generators
