@@ -356,6 +356,49 @@ TEST_CASE("scene mesh batch spawn reuses one mesh and pooled storage",
     REQUIRE(scene.despawn_batch(reused) == reused.size());
 }
 
+TEST_CASE("rendering system caches built-in and generated meshes",
+          "[render][rendering_system][mesh_cache]") {
+    render::RenderingSystem renderer;
+
+    renderer.prewarm_builtin_meshes();
+    REQUIRE(renderer.meshes().live_count() == 8u);
+    renderer.prewarm_builtin_meshes();
+    REQUIRE(renderer.meshes().live_count() == 8u);
+
+    const render::MeshId triangle_a =
+        renderer.builtin_mesh(render::BuiltInMesh::TexturedTriangle);
+    const render::MeshId triangle_b =
+        renderer.builtin_mesh(render::BuiltInMesh::TexturedTriangle);
+    const render::MeshId cube = renderer.builtin_mesh(render::BuiltInMesh::UnitCube);
+
+    REQUIRE(triangle_a.valid());
+    REQUIRE(triangle_a == triangle_b);
+    REQUIRE(cube.valid());
+    REQUIRE(cube != triangle_a);
+    REQUIRE(renderer.meshes().live_count() == 8u);
+
+    render::geometry_tools::SphereDesc sphere_desc{};
+    sphere_desc.slices = 8u;
+    sphere_desc.stacks = 4u;
+    sphere_desc.radius = 1.5f;
+    const render::geometry_tools::GeneratedMesh sphere_a =
+        render::geometry_tools::uv_sphere(sphere_desc);
+    const render::geometry_tools::GeneratedMesh sphere_b =
+        render::geometry_tools::uv_sphere(sphere_desc);
+
+    const render::MeshId cached_a = renderer.cached_mesh(sphere_a);
+    const render::MeshId cached_b = renderer.cached_mesh(sphere_b);
+    REQUIRE(cached_a.valid());
+    REQUIRE(cached_a == cached_b);
+    REQUIRE(renderer.meshes().live_count() == 9u);
+
+    sphere_desc.radius = 2.0f;
+    const render::MeshId cached_c = renderer.cached_mesh(render::geometry_tools::uv_sphere(sphere_desc));
+    REQUIRE(cached_c.valid());
+    REQUIRE(cached_c != cached_a);
+    REQUIRE(renderer.meshes().live_count() == 10u);
+}
+
 TEST_CASE("rendering system builds material batches for CPU effects", "[render][rendering_system]") {
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);

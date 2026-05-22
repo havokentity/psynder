@@ -6,13 +6,17 @@
 #include "core/Log.h"
 #include "render/FrameStats.h"
 #include "render/Geometry.h"
+#include "render/GeometryTools.h"
 #include "render/MaterialBatcher.h"
 #include "render/Material.h"
 #include "render/raster/SurfaceCache.h"
 #include "render/rt/FrameRenderer.h"
 #include "scene/SceneEcs.h"
 
+#include <cstdint>
+#include <cstring>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace psynder::render {
@@ -173,6 +177,17 @@ struct SceneMeshEntity {
     MaterialId material{};
 };
 
+enum class BuiltInMesh : u8 {
+    TexturedTriangle,
+    UnitCube,
+    Pyramid,
+    Cone,
+    UvSphere,
+    GeodesicSphere,
+    SierpinskiTetrahedron,
+    SierpinskiCarpet,
+};
+
 class RenderingSystem {
    public:
     [[nodiscard]] MeshLibrary& meshes() noexcept { return meshes_; }
@@ -196,6 +211,60 @@ class RenderingSystem {
         queues_.bake_shadow_casters.reserve(renderables);
         queues_.bake_shadow_receivers.reserve(renderables);
         material_batches_.reserve(renderables, renderables);
+    }
+
+    void prewarm_builtin_meshes(const TextureAsset* base_color_asset = nullptr) {
+        [[maybe_unused]] const MeshId triangle =
+            builtin_mesh(BuiltInMesh::TexturedTriangle, base_color_asset);
+        [[maybe_unused]] const MeshId cube = builtin_mesh(BuiltInMesh::UnitCube, base_color_asset);
+        [[maybe_unused]] const MeshId pyramid =
+            builtin_mesh(BuiltInMesh::Pyramid, base_color_asset);
+        [[maybe_unused]] const MeshId cone = builtin_mesh(BuiltInMesh::Cone, base_color_asset);
+        [[maybe_unused]] const MeshId sphere =
+            builtin_mesh(BuiltInMesh::UvSphere, base_color_asset);
+        [[maybe_unused]] const MeshId geodesic =
+            builtin_mesh(BuiltInMesh::GeodesicSphere, base_color_asset);
+        [[maybe_unused]] const MeshId tetra =
+            builtin_mesh(BuiltInMesh::SierpinskiTetrahedron, base_color_asset);
+        [[maybe_unused]] const MeshId carpet =
+            builtin_mesh(BuiltInMesh::SierpinskiCarpet, base_color_asset);
+    }
+
+    [[nodiscard]] MeshId builtin_mesh(
+        BuiltInMesh mesh,
+        const TextureAsset* base_color_asset = nullptr) {
+        for (const BuiltInMeshEntry& entry : builtin_meshes_) {
+            if (entry.kind == mesh && entry.base_color_asset == base_color_asset &&
+                meshes_.valid(entry.mesh)) {
+                return entry.mesh;
+            }
+        }
+        const MeshId id = meshes_.create_mesh(builtin_mesh_desc(mesh, base_color_asset));
+        builtin_meshes_.push_back({mesh, base_color_asset, id});
+        return id;
+    }
+
+    [[nodiscard]] MeshId cached_mesh(const MeshDesc& mesh_desc) {
+        const u64 key = mesh_desc_key(mesh_desc);
+        for (const MeshCacheEntry& entry : mesh_cache_) {
+            if (entry.key == key && meshes_.valid(entry.mesh))
+                return entry.mesh;
+        }
+        const MeshId id = meshes_.create_mesh(mesh_desc);
+        mesh_cache_.push_back({key, id});
+        return id;
+    }
+
+    [[nodiscard]] MeshId cached_mesh(const geometry_tools::GeneratedMesh& mesh) {
+        const u64 key = generated_mesh_key(mesh);
+        for (const GeneratedMeshCacheEntry& entry : generated_mesh_cache_) {
+            if (entry.key == key && meshes_.valid(entry.mesh))
+                return entry.mesh;
+        }
+        generated_mesh_cache_.push_back({key, {}, mesh});
+        GeneratedMeshCacheEntry& entry = generated_mesh_cache_.back();
+        entry.mesh = meshes_.create_mesh(entry.storage.desc());
+        return entry.mesh;
     }
 
     [[nodiscard]] scene::RenderableComponent make_mesh_renderable(
@@ -459,7 +528,137 @@ class RenderingSystem {
         }
     }
 
+    struct BuiltInMeshEntry {
+        BuiltInMesh kind = BuiltInMesh::TexturedTriangle;
+        const TextureAsset* base_color_asset = nullptr;
+        MeshId mesh{};
+    };
+
+    struct MeshCacheEntry {
+        u64 key = 0;
+        MeshId mesh{};
+    };
+
+    struct GeneratedMeshCacheEntry {
+        u64 key = 0;
+        MeshId mesh{};
+        geometry_tools::GeneratedMesh storage{};
+    };
+
+    static MeshDesc builtin_mesh_desc(BuiltInMesh mesh,
+                                      const TextureAsset* base_color_asset) noexcept {
+        switch (mesh) {
+            case BuiltInMesh::TexturedTriangle:
+                return geometry_tools::textured_triangle(base_color_asset);
+            case BuiltInMesh::UnitCube:
+                return geometry_tools::unit_cube(base_color_asset);
+            case BuiltInMesh::Pyramid:
+                return geometry_tools::pyramid(base_color_asset);
+            case BuiltInMesh::Cone:
+                return geometry_tools::cone(base_color_asset);
+            case BuiltInMesh::UvSphere:
+                return geometry_tools::uv_sphere(base_color_asset);
+            case BuiltInMesh::GeodesicSphere:
+                return geometry_tools::geodesic_sphere(base_color_asset);
+            case BuiltInMesh::SierpinskiTetrahedron:
+                return geometry_tools::sierpinski_tetrahedron(base_color_asset);
+            case BuiltInMesh::SierpinskiCarpet:
+                return geometry_tools::sierpinski_carpet(base_color_asset);
+        }
+        return geometry_tools::textured_triangle(base_color_asset);
+    }
+
+    static u64 hash_bytes(const void* data, usize byte_count, u64 seed) noexcept {
+        constexpr u64 kPrime = 1099511628211ull;
+        const auto* bytes = static_cast<const u8*>(data);
+        u64 hash = seed;
+        for (usize i = 0; i < byte_count; ++i) {
+            hash ^= bytes[i];
+            hash *= kPrime;
+        }
+        return hash;
+    }
+
+    template <class T>
+    static u64 hash_value(const T& value, u64 seed) noexcept {
+        static_assert(std::is_trivially_copyable_v<T>);
+        return hash_bytes(&value, sizeof(T), seed);
+    }
+
+    static u64 mesh_desc_key(const MeshDesc& desc) noexcept {
+        u64 hash = 14695981039346656037ull;
+        const auto vertices = reinterpret_cast<std::uintptr_t>(desc.vertices);
+        const auto indices = reinterpret_cast<std::uintptr_t>(desc.indices);
+        const auto texture_asset = reinterpret_cast<std::uintptr_t>(desc.base_color_asset);
+        hash = hash_value(vertices, hash);
+        hash = hash_value(desc.vertex_count, hash);
+        hash = hash_value(indices, hash);
+        hash = hash_value(desc.index_count, hash);
+        hash = hash_texture_view(desc.base_color, hash);
+        hash = hash_value(texture_asset, hash);
+        hash = hash_value(desc.cull, hash);
+        hash = hash_aabb(desc.local_bounds, hash);
+        return hash;
+    }
+
+    static u64 generated_mesh_key(const geometry_tools::GeneratedMesh& mesh) noexcept {
+        u64 hash = 14695981039346656037ull;
+        const u64 tag = 0xA61C5EED5A77E11Full;
+        hash = hash_value(tag, hash);
+        const u32 vertex_count = static_cast<u32>(mesh.vertices.size());
+        const u32 index_count = static_cast<u32>(mesh.indices.size());
+        const auto texture_asset = reinterpret_cast<std::uintptr_t>(mesh.base_color_asset);
+        hash = hash_value(vertex_count, hash);
+        if (!mesh.vertices.empty()) {
+            for (const Vertex& vertex : mesh.vertices)
+                hash = hash_vertex(vertex, hash);
+        }
+        hash = hash_value(index_count, hash);
+        if (!mesh.indices.empty())
+            hash = hash_bytes(mesh.indices.data(), mesh.indices.size() * sizeof(u32), hash);
+        hash = hash_texture_view(mesh.base_color, hash);
+        hash = hash_value(texture_asset, hash);
+        hash = hash_value(mesh.cull, hash);
+        hash = hash_aabb(mesh.local_bounds, hash);
+        return hash;
+    }
+
+    static u64 hash_vec2(math::Vec2 v, u64 hash) noexcept {
+        hash = hash_value(v.x, hash);
+        return hash_value(v.y, hash);
+    }
+
+    static u64 hash_vec3(math::Vec3 v, u64 hash) noexcept {
+        hash = hash_value(v.x, hash);
+        hash = hash_value(v.y, hash);
+        return hash_value(v.z, hash);
+    }
+
+    static u64 hash_aabb(const math::Aabb& bounds, u64 hash) noexcept {
+        hash = hash_vec3(bounds.min, hash);
+        return hash_vec3(bounds.max, hash);
+    }
+
+    static u64 hash_texture_view(TextureView texture, u64 hash) noexcept {
+        const auto texels = reinterpret_cast<std::uintptr_t>(texture.texels);
+        hash = hash_value(texels, hash);
+        hash = hash_value(texture.width, hash);
+        hash = hash_value(texture.height, hash);
+        return hash_value(texture.pitch, hash);
+    }
+
+    static u64 hash_vertex(const Vertex& vertex, u64 hash) noexcept {
+        hash = hash_vec3(vertex.position, hash);
+        hash = hash_vec3(vertex.normal, hash);
+        hash = hash_vec2(vertex.uv, hash);
+        hash = hash_vec2(vertex.lightmap_uv, hash);
+        return hash_value(vertex.color, hash);
+    }
+
     MeshLibrary meshes_{};
+    std::vector<BuiltInMeshEntry> builtin_meshes_{};
+    std::vector<MeshCacheEntry> mesh_cache_{};
+    std::vector<GeneratedMeshCacheEntry> generated_mesh_cache_{};
     SceneRenderQueues queues_{};
     MaterialBatcher material_batches_{};
     SceneRenderStats direct_raster_stats_{};

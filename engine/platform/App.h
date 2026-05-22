@@ -131,6 +131,8 @@ class WindowApp {
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
 
+        rendering_system_.prewarm_builtin_meshes();
+
         if (options.has_default_scene)
             set_scene(default_scene_, options.default_scene);
     }

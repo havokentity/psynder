@@ -5,7 +5,6 @@
 // sampled by the engine raster path.
 //
 #include "platform/App.h"
-#include "render/GeometryTools.h"
 
 using namespace psynder;
 
@@ -25,7 +24,9 @@ struct TriangleSample {
         scene.environment().set_clear_color(0xFF202028u);
         crate.load_ppm("assets/crate.ppm");
 
-        triangle_entity = scene.spawn_mesh(render::geometry_tools::textured_triangle(&crate));
+        const render::MeshId triangle_mesh =
+            app.rendering_system().builtin_mesh(render::BuiltInMesh::TexturedTriangle, &crate);
+        triangle_entity = scene.spawn_mesh_instance(triangle_mesh);
     }
 
     void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {

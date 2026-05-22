@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include "render/GeometryTools.h"
 #include "render/Material.h"
 #include "render/RenderingSystem.h"
 
@@ -62,13 +61,8 @@ namespace psynder::render::entity_helpers {
     scene::SceneNode parent = scene::kInvalidSceneNode,
     scene::RenderableFlags flags = scene::RenderableFlags::Visible,
     scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
-    return create_mesh_entity(renderer,
-                              scene,
-                              geometry_tools::textured_triangle(&texture),
-                              local,
-                              parent,
-                              flags,
-                              mobility);
+    const MeshId mesh = renderer.builtin_mesh(BuiltInMesh::TexturedTriangle, &texture);
+    return renderer.create_mesh_instance(scene, mesh, MaterialId{}, local, parent, flags, mobility);
 }
 
 }  // namespace psynder::render::entity_helpers
