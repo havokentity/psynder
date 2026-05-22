@@ -223,9 +223,19 @@ usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexce
     const f32 fps_x = panel_origin.x + panel_size.x - 4.0f - static_cast<f32>(fps_px);
     label(math::Vec2{fps_x, panel_origin.y + 4.0f}, fps_view, kColourFps);
 
-    // Second header line: avg ms + draw/tri/voice counts.
+    // Second header line: compact per-pipeline summary.
     char meta_buf[64]{};
-    if (stats.raster_stats_valid) {
+    if (stats.raster_stats_valid && stats.rt_stats_valid) {
+        std::snprintf(meta_buf,
+                      sizeof(meta_buf),
+                      "avg %.2fms r%zu/%zu rt%u/%u v%zu",
+                      static_cast<double>(stats.avg_frame_ms),
+                      static_cast<size_t>(stats.draw_calls),
+                      static_cast<size_t>(stats.triangles),
+                      stats.rt_tiles,
+                      stats.rt_jobs,
+                      static_cast<size_t>(stats.active_voices));
+    } else if (stats.raster_stats_valid) {
         std::snprintf(meta_buf,
                       sizeof(meta_buf),
                       "avg %.2fms dc%zu tri%zu v%zu",
@@ -282,6 +292,7 @@ usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexce
         char row0[64]{};
         char row1[64]{};
         char row2[64]{};
+        char row3[64]{};
         const f32 avg_fps = (stats.avg_frame_ms > 0.0001f) ? (1000.0f / stats.avg_frame_ms) : 0.0f;
         const f32 budget_delta = stats.frame_ms - 16.6667f;
         if (stats.raster_stats_valid) {
@@ -290,33 +301,37 @@ usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexce
                           "%zu draws / %zu tris",
                           static_cast<size_t>(stats.draw_calls),
                           static_cast<size_t>(stats.triangles));
-        } else if (stats.rt_stats_valid) {
-            std::snprintf(row0,
-                          sizeof(row0),
-                          "rt %u tiles / %u jobs",
-                          stats.rt_tiles,
-                          stats.rt_jobs);
         } else {
             std::snprintf(row0, sizeof(row0), "not reported");
         }
-        std::snprintf(row1,
-                      sizeof(row1),
+        if (stats.rt_stats_valid) {
+            std::snprintf(row1,
+                          sizeof(row1),
+                          "%u tiles / %u jobs",
+                          stats.rt_tiles,
+                          stats.rt_jobs);
+        } else {
+            std::snprintf(row1, sizeof(row1), "not reported");
+        }
+        std::snprintf(row2,
+                      sizeof(row2),
                       "%.2f avg ms / %.1f fps",
                       static_cast<double>(stats.avg_frame_ms),
                       static_cast<double>(avg_fps));
-        std::snprintf(row2,
-                      sizeof(row2),
+        std::snprintf(row3,
+                      sizeof(row3),
                       "%+.2f ms vs 60Hz, %zu voices",
                       static_cast<double>(budget_delta),
                       static_cast<size_t>(stats.active_voices));
 
         const f32 stats_y = chart_y + chart_size.y + 5.0f;
         label(math::Vec2{panel_origin.x + 4.0f, stats_y}, "render", kColourSection);
-        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + kLineHeight}, "work", row0);
-        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + 2.0f * kLineHeight}, "pace", row1);
-        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + 3.0f * kLineHeight}, "budget", row2);
+        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + kLineHeight}, "raster", row0);
+        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + 2.0f * kLineHeight}, "rt", row1);
+        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + 3.0f * kLineHeight}, "pace", row2);
+        draw_stat_row(math::Vec2{panel_origin.x + 4.0f, stats_y + 4.0f * kLineHeight}, "budget", row3);
 
-        const f32 heat_y = stats_y + 4.0f * kLineHeight + 4.0f;
+        const f32 heat_y = stats_y + 5.0f * kLineHeight + 4.0f;
         label(math::Vec2{panel_origin.x + 4.0f, heat_y}, "alloc heatmap", kColourSection);
         const math::Vec2 heat_origin{panel_origin.x + 4.0f, heat_y + kLineHeight};
         const math::Vec2 heat_size{panel_size.x - 8.0f, 34.0f};
