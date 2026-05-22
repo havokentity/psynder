@@ -28,6 +28,7 @@
 
 #include "common/PngWriter.h"
 
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
@@ -60,9 +61,7 @@ void ensure_denoise_console_commands_registered();
 namespace {
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
+struct Args : app::AppArgs {
     int rt_ao = -1;
     int rt_ao_debug = -1;
     std::string rt_cores_hint;
@@ -72,22 +71,13 @@ struct Args {
     std::string rt_ao_lit_strength;
 };
 
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
+int parse_bool_arg(std::string_view v) noexcept {
+    u32 value = 0;
+    return app::parse_u32_decimal(v, value) && value != 0u ? 1 : 0;
 }
 
 Args parse_args(int argc, char** argv) {
     Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
     constexpr std::string_view kAoEq = "--rt-ao=";
     constexpr std::string_view kAoSp = "--rt-ao";
     constexpr std::string_view kAoDebugEq = "--rt-ao-debug=";
@@ -103,23 +93,17 @@ Args parse_args(int argc, char** argv) {
     constexpr std::string_view kRtCoresEq = "--rt-cores=";
     constexpr std::string_view kRtCoresSp = "--rt-cores";
     for (int i = 1; i < argc; ++i) {
+        if (app::consume_common_arg(argc, argv, i, a))
+            continue;
         std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        } else if (s.starts_with(kAoEq)) {
-            a.rt_ao = parse_uint(s.substr(kAoEq.size())) != 0u ? 1 : 0;
+        if (s.starts_with(kAoEq)) {
+            a.rt_ao = parse_bool_arg(s.substr(kAoEq.size()));
         } else if (s == kAoSp && i + 1 < argc) {
-            a.rt_ao = parse_uint(std::string_view{argv[++i]}) != 0u ? 1 : 0;
+            a.rt_ao = parse_bool_arg(std::string_view{argv[++i]});
         } else if (s.starts_with(kAoDebugEq)) {
-            a.rt_ao_debug = parse_uint(s.substr(kAoDebugEq.size())) != 0u ? 1 : 0;
+            a.rt_ao_debug = parse_bool_arg(s.substr(kAoDebugEq.size()));
         } else if (s == kAoDebugSp && i + 1 < argc) {
-            a.rt_ao_debug = parse_uint(std::string_view{argv[++i]}) != 0u ? 1 : 0;
+            a.rt_ao_debug = parse_bool_arg(std::string_view{argv[++i]});
         } else if (s.starts_with(kAoSamplesEq)) {
             a.rt_ao_samples = std::string(s.substr(kAoSamplesEq.size()));
         } else if (s == kAoSamplesSp && i + 1 < argc) {

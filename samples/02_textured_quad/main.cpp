@@ -27,6 +27,7 @@
 #include "common/MeshWinding.h"
 #include "common/PngWriter.h"
 
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
@@ -49,42 +50,6 @@
 using namespace psynder;
 
 namespace {
-
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kSmoke = "--smoke-frames=";
-    constexpr std::string_view kSmokeSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kSmoke)) {
-            a.smoke_frames = parse_uint(s.substr(kSmoke.size()));
-        } else if (s == kSmokeSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
 
 // Unit cube — 24 verts (4 per face × 6 faces). Every vertex colour is white
 // so the surface_cached path's `vertexColor × chunk` reduces to the crate
@@ -285,7 +250,7 @@ void clear_depth_far(render::Framebuffer& fb) noexcept {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
+    const app::AppArgs args = app::parse_common_args(argc, argv).args;
 
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 02 (crate room)";

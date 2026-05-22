@@ -34,6 +34,7 @@
 
 #include "common/PngWriter.h"
 
+#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Constraints.h"
@@ -56,43 +57,6 @@
 using namespace psynder;
 
 namespace {
-
-// ─── CLI parsing ─────────────────────────────────────────────────────────
-struct Args {
-    u32 smoke_frames = 0;
-    std::string capture_out;
-};
-
-u32 parse_uint(std::string_view v) noexcept {
-    u32 out = 0;
-    for (char c : v) {
-        if (c < '0' || c > '9')
-            return 0;
-        out = out * 10u + static_cast<u32>(c - '0');
-    }
-    return out;
-}
-
-Args parse_args(int argc, char** argv) {
-    Args a{};
-    constexpr std::string_view kFlag = "--smoke-frames=";
-    constexpr std::string_view kFlagSp = "--smoke-frames";
-    constexpr std::string_view kCapEq = "--smoke-capture-out=";
-    constexpr std::string_view kCapSp = "--smoke-capture-out";
-    for (int i = 1; i < argc; ++i) {
-        std::string_view s{argv[i]};
-        if (s.starts_with(kFlag)) {
-            a.smoke_frames = parse_uint(s.substr(kFlag.size()));
-        } else if (s == kFlagSp && i + 1 < argc) {
-            a.smoke_frames = parse_uint(std::string_view{argv[++i]});
-        } else if (s.starts_with(kCapEq)) {
-            a.capture_out = std::string(s.substr(kCapEq.size()));
-        } else if (s == kCapSp && i + 1 < argc) {
-            a.capture_out = argv[++i];
-        }
-    }
-    return a;
-}
 
 // ─── Render config ───────────────────────────────────────────────────────
 constexpr u32 kFbW = 640;
@@ -519,7 +483,7 @@ void render_scene(std::vector<u32>& px, const Scene& s, const Camera& cam) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
+    const app::AppArgs args = app::parse_common_args(argc, argv).args;
     const u32 smoke_frames = args.smoke_frames;
 
     platform::WindowDesc desc{};
