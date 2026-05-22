@@ -7,8 +7,9 @@
 #include "math/Bounds.h"
 #include "math/MathExt.h"
 #include "render/Material.h"
-#include "scene/SceneGraph.h"
 #include "scene/EcsRegistry.h"
+#include "scene/Environment.h"
+#include "scene/SceneGraph.h"
 
 #include <algorithm>
 #include <array>
@@ -142,12 +143,6 @@ struct ScenePrewarmConfig {
     u32 analytic_spheres = 0u;
     u32 render_items = 0u;
     u32 deferred_structural_changes = 0u;
-};
-
-struct EnvironmentSettings {
-    bool clear_color = true;
-    bool clear_depth = true;
-    u32 clear_color_rgba8 = 0xFF000000u;
 };
 
 struct SceneCameraView {
@@ -443,8 +438,8 @@ class Scene {
     [[nodiscard]] const ::psynder::render::MaterialLibrary& materials() const noexcept {
         return materials_;
     }
-    [[nodiscard]] EnvironmentSettings& environment() noexcept { return environment_; }
-    [[nodiscard]] const EnvironmentSettings& environment() const noexcept { return environment_; }
+    [[nodiscard]] Environment& environment() noexcept { return environment_; }
+    [[nodiscard]] const Environment& environment() const noexcept { return environment_; }
 
     void set_structural_deferred(bool on) noexcept { registry_->set_structural_deferred(on); }
     void apply_structural_changes() { registry_->apply_structural_changes(); }
@@ -590,7 +585,7 @@ class Scene {
     EcsRegistry* registry_ = nullptr;
     SceneGraph graph_{};
     ::psynder::render::MaterialLibrary materials_{};
-    EnvironmentSettings environment_{};
+    Environment environment_{};
     Entity default_camera_entity_{};
     u32 render_item_capacity_ = 0u;
 };

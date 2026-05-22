@@ -368,10 +368,11 @@ class WindowApp {
         return height_ == 0u ? 1.0f : static_cast<f32>(width_) / static_cast<f32>(height_);
     }
 
-    void apply_environment_clear(const scene::EnvironmentSettings& environment) noexcept {
-        if (environment.clear_color)
-            render::clear_framebuffer_color(framebuffer_, environment.clear_color_rgba8);
-        if (environment.clear_depth)
+    void apply_environment_clear(const scene::Environment& environment) noexcept {
+        const scene::EnvironmentSettings& settings = environment.settings();
+        if (settings.clear_color)
+            render::clear_framebuffer_color(framebuffer_, settings.clear_color_rgba8);
+        if (settings.clear_depth)
             render::clear_framebuffer_depth(framebuffer_);
     }
 

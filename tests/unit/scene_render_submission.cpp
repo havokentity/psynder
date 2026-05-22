@@ -107,14 +107,21 @@ TEST_CASE("scene owns environment clear settings", "[scene][render_submission][e
     registry.set_structural_deferred(false);
 
     scene::Scene scene{registry};
-    REQUIRE(scene.environment().clear_color);
-    REQUIRE(scene.environment().clear_depth);
-    REQUIRE(scene.environment().clear_color_rgba8 == 0xFF000000u);
+    REQUIRE(scene.environment().settings().clear_color);
+    REQUIRE(scene.environment().settings().clear_depth);
+    REQUIRE(scene.environment().settings().clear_color_rgba8 == 0xFF000000u);
 
-    scene.environment().clear_color_rgba8 = 0xFF202028u;
-    scene.environment().clear_depth = false;
-    REQUIRE(scene.environment().clear_color_rgba8 == 0xFF202028u);
-    REQUIRE_FALSE(scene.environment().clear_depth);
+    scene.environment().set_clear_color(0xFF202028u);
+    scene.environment().set_clear_enabled(true, false);
+    REQUIRE(scene.environment().settings().clear_color_rgba8 == 0xFF202028u);
+    REQUIRE_FALSE(scene.environment().settings().clear_depth);
+
+    REQUIRE_FALSE(scene.environment().clouds().enabled);
+    scene.environment().clouds().enabled = true;
+    scene.environment().clouds().coverage = 0.65f;
+    REQUIRE(scene.environment().settings().clouds.enabled);
+    REQUIRE_THAT(static_cast<double>(scene.environment().settings().clouds.coverage),
+                 Catch::Matchers::WithinAbs(0.65, 1e-5));
 }
 
 TEST_CASE("scene camera is a transform-backed hierarchy entity",

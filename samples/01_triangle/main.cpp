@@ -21,7 +21,7 @@ struct TriangleSample {
     Entity triangle_entity{};
 
     void started(app::WindowApp& app) {
-        scene.environment().clear_color_rgba8 = 0xFF202028u;
+        scene.environment().set_clear_color(0xFF202028u);
         crate.load_ppm("assets/crate.ppm");
 
         render::MaterialDesc triangle_material{};
