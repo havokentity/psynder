@@ -28,6 +28,10 @@ struct EnvironmentSettings {
     u32 clear_color_rgba8 = 0xFF000000u;
     EnvironmentSkySettings sky{};
     EnvironmentCloudSettings clouds{};
+
+    [[nodiscard]] constexpr bool clear_enabled() const noexcept {
+        return clear_color || clear_depth;
+    }
 };
 
 class Environment {
@@ -46,6 +50,10 @@ class Environment {
         settings_.clear_color = color;
         settings_.clear_depth = depth;
     }
+
+    void disable_clear() noexcept { set_clear_enabled(false, false); }
+
+    [[nodiscard]] bool clear_enabled() const noexcept { return settings_.clear_enabled(); }
 
     [[nodiscard]] EnvironmentSkySettings& sky() noexcept { return settings_.sky; }
     [[nodiscard]] const EnvironmentSkySettings& sky() const noexcept { return settings_.sky; }

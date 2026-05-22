@@ -210,7 +210,7 @@ class WindowApp {
 
     void engine_frame_begin(FrameClear clear) noexcept {
         active_scene_rendered_ = false;
-        if (active_scene_)
+        if (active_scene_ && active_scene_->environment().clear_enabled())
             apply_environment_clear(active_scene_->environment());
         if (clear.color)
             render::clear_framebuffer_color(framebuffer_, clear.color_rgba8);

@@ -109,12 +109,19 @@ TEST_CASE("scene owns environment clear settings", "[scene][render_submission][e
     scene::Scene scene{registry};
     REQUIRE(scene.environment().settings().clear_color);
     REQUIRE(scene.environment().settings().clear_depth);
+    REQUIRE(scene.environment().clear_enabled());
+    REQUIRE(scene.environment().settings().clear_enabled());
     REQUIRE(scene.environment().settings().clear_color_rgba8 == 0xFF000000u);
 
     scene.environment().set_clear_color(0xFF202028u);
     scene.environment().set_clear_enabled(true, false);
     REQUIRE(scene.environment().settings().clear_color_rgba8 == 0xFF202028u);
     REQUIRE_FALSE(scene.environment().settings().clear_depth);
+    REQUIRE(scene.environment().clear_enabled());
+
+    scene.environment().disable_clear();
+    REQUIRE_FALSE(scene.environment().clear_enabled());
+    REQUIRE_FALSE(scene.environment().settings().clear_enabled());
 
     REQUIRE_FALSE(scene.environment().clouds().enabled);
     scene.environment().clouds().enabled = true;
