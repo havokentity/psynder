@@ -388,7 +388,7 @@ platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     return desc;
 }
 
-int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
+int run_sample(const Args& parsed_args, app::WindowApp& app_host) {
     const Args& args = parsed_args;
     const u32 smoke_frames = args.smoke_frames;
     render::rt::ensure_frame_renderer_console_registered();
@@ -578,7 +578,7 @@ struct RtShowcaseSample {
 
     static Args parse_args(int argc, char** argv) { return parse_sample12_args(argc, argv); }
 
-    int run(app::WindowApp& app_host, const Args& args) { return sample_main(args, app_host); }
+    int run(app::WindowApp& app_host, const Args& args) { return run_sample(args, app_host); }
 };
 
 PSYNDER_WINDOW_SAMPLE_MAIN(RtShowcaseSample)

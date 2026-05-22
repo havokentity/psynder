@@ -359,7 +359,7 @@ platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     return desc;
 }
 
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
     const bool smoke = args.smoke_frames > 0;
     const platform::WindowDesc desc = make_window_desc(args);
@@ -744,7 +744,7 @@ struct ShapeSandboxSample {
     }
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 
