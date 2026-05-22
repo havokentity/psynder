@@ -1,29 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Psynder — Sample 01 / M1 demo. Rotating textured triangle.
 //
-// The sample drives the engine-facing hybrid scene renderer: app code owns a
-// RuntimeScene, a mesh handle, and a material handle, then submits the scene.
-// While lane 07's tiled scanline implementation is still maturing, we ALSO
-// carry a tiny self-contained software walker right here so the demo paints
-// visible pixels today.
+// The sample drives the engine-facing hybrid scene renderer. While lane 07's
+// tiled scanline implementation is still maturing, we ALSO carry a tiny
+// self-contained software walker here so the demo paints visible pixels today.
 //
 // Texture: 32×32 PPM under assets/crate.ppm. Loaded once at startup and
 // sampled with nearest-neighbour filtering (M1 spec — bilinear lands at M2).
 //
-// CLI flags:
-//   --smoke-frames=N         Headless CI run for N frames then exit.
-//   --smoke-frames N         Same, space-separated (matches the cmake helper
-//                            invocation in cmake/Goldens.cmake).
-//   --smoke-capture-out PATH Write the final rendered framebuffer to PATH
-//                            as a valid 24-bit RGB PNG. Used by the
-//                            psynder_add_golden_cell() ctest cells.
-
-#include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
 #include "platform/App.h"
-#include "platform/Platform.h"
+#include "render/Color.h"
 #include "render/Framebuffer.h"
 #include "render/SceneRenderer.h"
 #include "render/Texture.h"
@@ -32,10 +21,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdlib>
 #include <filesystem>
 #include <string>
-#include <string_view>
 #include <vector>
 
 using namespace psynder;
@@ -45,7 +32,7 @@ namespace {
 // Search for the asset file in a few well-known relative paths so the
 // sample works whether you launch from build/bin, the source tree, or a
 // CI working directory.
-std::string find_asset(std::string_view rel) {
+std::string find_asset(const char* rel) {
     namespace fs = std::filesystem;
     const std::array<fs::path, 5> roots{
         fs::path{},
@@ -73,10 +60,18 @@ render::Texture2D make_fallback_texture() {
     for (u32 y = 0; y < 16; ++y)
         for (u32 x = 0; x < 16; ++x) {
             const bool magenta = ((x ^ y) & 1u) != 0u;
-            pixels[static_cast<usize>(y) * 16u + x] = magenta ? 0xFFFF00FFu : 0xFF000000u;
+            pixels[static_cast<usize>(y) * 16u + x] = magenta ? render::rgba8(0xFF, 0x00, 0xFF)
+                                                               : render::rgba8(0x00, 0x00, 0x00);
         }
     return render::Texture2D::from_rgba8(16, 16, std::move(pixels));
 }
+
+const std::array<render::raster::Vertex, 3> kTriangleVerts{{
+    {{-0.6f, -0.4f, 0.0f}, {0, 0, 1}, {0.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
+    {{0.6f, -0.4f, 0.0f}, {0, 0, 1}, {1.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
+    {{0.0f, 0.6f, 0.0f}, {0, 0, 1}, {0.5f, 0.0f}, {0, 0}, 0xFFFFFFFFu},
+}};
+const std::array<u32, 3> kTriangleIndices{0, 1, 2};
 
 // ─── Self-contained nearest-filter triangle walker ───────────────────────
 // Edge function — positive on one side of the directed edge.
@@ -132,100 +127,71 @@ void raster_triangle_nearest(
     }
 }
 
-}  // namespace
+struct TriangleSample {
+    static constexpr const char* log_name = "sample_01";
+    static constexpr const char* display_name = "Psynder sample 01 (textured triangle)";
 
-platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 01 (textured triangle)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = 640;
-    desc.render_height = 360;
-    desc.scale_mode = platform::ScaleMode::Integer;
-    return desc;
-}
-
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
-    const app::AppArgs& args = base_args;
-    const u32 smoke_frames = args.smoke_frames;
-    const platform::WindowDesc desc = make_window_desc(args);
-    auto* window = &app_host.window();
-
-    // Load the crate texture (procedurally-generated 32×32 PPM committed
-    // alongside the sample).
     render::Texture2D crate = make_fallback_texture();
-    const std::string tex_path = find_asset("assets/crate.ppm");
-    render::TextureLoad crate_request = render::load_ppm_texture_async(tex_path);
+    render::TextureLoad crate_request{};
+    std::string tex_path{};
     bool crate_resolved = false;
     bool crate_failed = false;
-    PSY_LOG_INFO("sample_01: queued async texture load {}", tex_path);
 
-    render::Framebuffer& fb = app_host.framebuffer();
-
-    // Triangle vertices in mesh-local space (XY plane, Z forward, UV in [0,1]).
-    const std::array<render::raster::Vertex, 3> verts{{
-        {{-0.6f, -0.4f, 0.0f}, {0, 0, 1}, {0.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
-        {{0.6f, -0.4f, 0.0f}, {0, 0, 1}, {1.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
-        {{0.0f, 0.6f, 0.0f}, {0, 0, 1}, {0.5f, 0.0f}, {0, 0}, 0xFFFFFFFFu},
-    }};
-    const std::array<u32, 3> indices{0, 1, 2};
-
-    scene::World world;
-    world.set_structural_deferred(false);
+    scene::World world{};
     scene::RuntimeScene scene{world};
-    render::SceneRenderer renderer;
+    render::SceneRenderer renderer{};
+    render::MeshId triangle_mesh{};
+    Entity triangle_entity{};
 
-    render::MeshDesc triangle_mesh_desc{};
-    triangle_mesh_desc.vertices = verts.data();
-    triangle_mesh_desc.vertex_count = static_cast<u32>(verts.size());
-    triangle_mesh_desc.indices = indices.data();
-    triangle_mesh_desc.index_count = static_cast<u32>(indices.size());
-    triangle_mesh_desc.base_color = crate.view();
-    triangle_mesh_desc.local_bounds = math::Aabb{{-0.6f, -0.4f, 0.0f}, {0.6f, 0.6f, 0.0f}};
-    const render::MeshId triangle_mesh = renderer.meshes().create_mesh(triangle_mesh_desc);
+    static app::FrameClear frame_clear(const app::WindowFrameContext&) noexcept {
+        return app::FrameClear::color_only(render::rgba8(0x28, 0x20, 0x20));
+    }
 
-    render::MaterialDesc triangle_material{};
-    triangle_material.flags = render::Material_RasterVisible;
-    const render::MaterialId triangle_material_id = scene.materials().create(triangle_material);
-    const Entity triangle_entity =
-        scene.create_renderable(renderer.make_mesh_renderable(triangle_mesh, triangle_material_id));
+    void started(app::WindowApp&) {
+        world.set_structural_deferred(false);
 
-    PSY_LOG_INFO("Psynder sample 01 running{}",
-                 smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
-                                  : std::string{});
+        tex_path = find_asset("assets/crate.ppm");
+        crate_request = render::load_ppm_texture_async(tex_path);
+        PSY_LOG_INFO("sample_01: queued async texture load {}", tex_path);
 
-    const u64 t0 = platform::Clock::ticks_now();
-    u32 frame = 0;
+        render::MeshDesc triangle_mesh_desc{};
+        triangle_mesh_desc.vertices = kTriangleVerts.data();
+        triangle_mesh_desc.vertex_count = static_cast<u32>(kTriangleVerts.size());
+        triangle_mesh_desc.indices = kTriangleIndices.data();
+        triangle_mesh_desc.index_count = static_cast<u32>(kTriangleIndices.size());
+        triangle_mesh_desc.base_color = crate.view();
+        triangle_mesh_desc.local_bounds = math::Aabb{{-0.6f, -0.4f, 0.0f}, {0.6f, 0.6f, 0.0f}};
+        triangle_mesh = renderer.meshes().create_mesh(triangle_mesh_desc);
 
-    while (!window->should_close()) {
-        window->poll_events();
+        render::MaterialDesc triangle_material{};
+        triangle_material.flags = render::Material_RasterVisible;
+        const render::MaterialId triangle_material_id = scene.materials().create(triangle_material);
+        triangle_entity =
+            scene.create_renderable(renderer.make_mesh_renderable(triangle_mesh, triangle_material_id));
+    }
 
-        // Smoke runs pin time to frame index so the captured PNG is bit-
-        // identical across runs / hosts (golden-image determinism).
-        const f64 t = smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
-                                       : platform::Clock::seconds(platform::Clock::ticks_now() - t0);
-
-        render::raster::clear_framebuffer(fb, 0xFF202028u);  // dark slate
+    void frame(app::WindowFrameContext& ctx) {
+        resolve_texture_if_ready();
 
         // Submit through the hybrid scene renderer; raster is an internal backend.
         render::raster::ViewState view{};
-        view.target = fb;
+        view.target = ctx.framebuffer;
         view.view = math::identity4();
         view.projection = math::identity4();
         view.tile_w = 64;
         view.tile_h = 64;
         scene::LocalTransform triangle_transform{};
         triangle_transform.rotation =
-            math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(t) * 0.8f);
+            math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(ctx.seconds) * 0.8f);
         scene.set_transform(triangle_entity, triangle_transform);
         renderer.render_raster(scene, view);
 
         // ── Fallback walker so we paint visible pixels on the stub raster ──
-        const f32 angle = static_cast<f32>(t) * 0.8f;
+        const f32 angle = static_cast<f32>(ctx.seconds) * 0.8f;
         const f32 cs = std::cos(angle), sn = std::sin(angle);
-        const f32 cx = 0.5f * static_cast<f32>(desc.render_width);
-        const f32 cy = 0.5f * static_cast<f32>(desc.render_height);
-        const f32 scale = 0.45f * static_cast<f32>(desc.render_height);
+        const f32 cx = 0.5f * static_cast<f32>(ctx.framebuffer.width);
+        const f32 cy = 0.5f * static_cast<f32>(ctx.framebuffer.height);
+        const f32 scale = 0.45f * static_cast<f32>(ctx.framebuffer.height);
 
         V2 a, b, c;
         auto project = [&](const render::raster::Vertex& vtx, V2& out) {
@@ -238,9 +204,13 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             out.u = vtx.uv.x;
             out.v = vtx.uv.y;
         };
-        project(verts[0], a);
-        project(verts[1], b);
-        project(verts[2], c);
+        project(kTriangleVerts[0], a);
+        project(kTriangleVerts[1], b);
+        project(kTriangleVerts[2], c);
+        raster_triangle_nearest(ctx.framebuffer, a, b, c, crate.view());
+    }
+
+    void resolve_texture_if_ready() {
         if (!crate_resolved && crate_request.take_if_ready(crate)) {
             crate_resolved = true;
             renderer.meshes().update_base_color(triangle_mesh, crate.view());
@@ -252,34 +222,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             crate_failed = true;
             PSY_LOG_WARN("sample_01: failed to load {} — using fallback checker", tex_path);
         }
-        raster_triangle_nearest(fb, a, b, c, crate.view());
-
-        app_host.engine_frame_post();
-        app_host.present();
-
-        if (smoke_frames > 0 && ++frame >= smoke_frames) {
-            PSY_LOG_INFO("sample_01: smoke target reached ({}); exiting", smoke_frames);
-            break;
-        }
-    }
-
-    if (!app_host.write_capture_if_requested("sample_01"))
-        return EXIT_FAILURE;
-
-    return EXIT_SUCCESS;
-}
-
-struct TriangleSample {
-    static constexpr std::string_view log_name() noexcept { return "sample_01"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 01"; }
-
-    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
-        return make_window_desc(args);
-    }
-
-    int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
     }
 };
+
+}  // namespace
 
 PSYNDER_WINDOW_SAMPLE_MAIN(TriangleSample)
