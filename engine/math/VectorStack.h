@@ -4,7 +4,8 @@
 // VectorStack turns many tiny gameplay/render math calls into a few large
 // cache-linear jobs. Callers submit SoA spans directly when they already own
 // packed component streams, or submit legacy Vec3 arrays while the engine
-// migrates systems over. `flush()` executes the queued jobs in FIFO order.
+// migrates systems over. Submissions are compiled into lane runs immediately;
+// `flush()` walks the tiny program, so there is no frame-end sort cost.
 
 #pragma once
 
@@ -130,6 +131,8 @@ struct VectorStackStats {
     usize soa_elements = 0;
     usize aos_elements = 0;
     usize scratch_capacity = 0;
+    u32 lane_groups = 0;
+    u32 ordered_ops = 0;
 };
 
 class VectorStack {
@@ -178,14 +181,25 @@ class VectorStack {
         f32 scalar = 0.0f;
     };
 
+    struct ProgramRun {
+        OpKind kind{};
+        usize begin = 0;
+        usize count = 0;
+    };
+
     void push(Op op);
+    void flush_program_run(const ProgramRun& run) noexcept;
     void flush_soa(const Op& op) noexcept;
     void flush_aos(const Op& op) noexcept;
     void flush_integrate_soa(const Op& op) noexcept;
     void flush_integrate_aos(const Op& op) noexcept;
     void ensure_scratch(usize elements);
 
-    detail::VectorStackVector<Op> ops_;
+    detail::VectorStackVector<ProgramRun> program_;
+    detail::VectorStackVector<Op> points_soa_ops_;
+    detail::VectorStackVector<Op> dirs_soa_ops_;
+    detail::VectorStackVector<Op> integrate_soa_ops_;
+    detail::VectorStackVector<Op> ordered_ops_;
     detail::VectorStackVector<f32> scratch_x_;
     detail::VectorStackVector<f32> scratch_y_;
     detail::VectorStackVector<f32> scratch_z_;

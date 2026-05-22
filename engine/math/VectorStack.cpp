@@ -259,7 +259,11 @@ VectorStack::VectorStack(usize scratch_capacity) {
 }
 
 void VectorStack::reserve_ops(usize count) {
-    ops_.reserve(count);
+    program_.reserve(count);
+    points_soa_ops_.reserve(count);
+    dirs_soa_ops_.reserve(count);
+    integrate_soa_ops_.reserve(count);
+    ordered_ops_.reserve(count);
 }
 
 void VectorStack::reserve_scratch(usize elements) {
@@ -267,7 +271,11 @@ void VectorStack::reserve_scratch(usize elements) {
 }
 
 void VectorStack::clear() noexcept {
-    ops_.clear();
+    program_.clear();
+    points_soa_ops_.clear();
+    dirs_soa_ops_.clear();
+    integrate_soa_ops_.clear();
+    ordered_ops_.clear();
     stats_ = VectorStackStats{};
     stats_.scratch_capacity = scratch_x_.size();
 }
@@ -359,8 +367,70 @@ void VectorStack::flush() noexcept {
     stats_.soa_elements = 0;
     stats_.aos_elements = 0;
     stats_.scratch_capacity = scratch_x_.size();
+    stats_.lane_groups = static_cast<u32>(program_.size());
 
-    for (const Op& op : ops_) {
+    for (const ProgramRun& run : program_)
+        flush_program_run(run);
+
+    program_.clear();
+    points_soa_ops_.clear();
+    dirs_soa_ops_.clear();
+    integrate_soa_ops_.clear();
+    ordered_ops_.clear();
+}
+
+void VectorStack::push(Op op) {
+    detail::VectorStackVector<Op>* lane = nullptr;
+    switch (op.kind) {
+        case OpKind::PointsSoa:
+            lane = &points_soa_ops_;
+            break;
+        case OpKind::DirsSoa:
+            lane = &dirs_soa_ops_;
+            break;
+        case OpKind::IntegrateSoa:
+            lane = &integrate_soa_ops_;
+            break;
+        case OpKind::PointsAos:
+        case OpKind::DirsAos:
+        case OpKind::IntegrateAos:
+            lane = &ordered_ops_;
+            ++stats_.ordered_ops;
+            break;
+    }
+
+    const usize index = lane->size();
+    lane->push_back(op);
+    if (!program_.empty() && program_.back().kind == op.kind &&
+        (op.kind == OpKind::PointsSoa || op.kind == OpKind::DirsSoa || op.kind == OpKind::IntegrateSoa)) {
+        ++program_.back().count;
+    } else {
+        program_.push_back(ProgramRun{op.kind, index, 1});
+    }
+    ++stats_.ops_submitted;
+}
+
+void VectorStack::flush_program_run(const ProgramRun& run) noexcept {
+    const detail::VectorStackVector<Op>* lane = nullptr;
+    switch (run.kind) {
+        case OpKind::PointsSoa:
+            lane = &points_soa_ops_;
+            break;
+        case OpKind::DirsSoa:
+            lane = &dirs_soa_ops_;
+            break;
+        case OpKind::IntegrateSoa:
+            lane = &integrate_soa_ops_;
+            break;
+        case OpKind::PointsAos:
+        case OpKind::DirsAos:
+        case OpKind::IntegrateAos:
+            lane = &ordered_ops_;
+            break;
+    }
+
+    for (usize i = 0; i < run.count; ++i) {
+        const Op& op = (*lane)[run.begin + i];
         switch (op.kind) {
             case OpKind::PointsSoa:
             case OpKind::DirsSoa:
@@ -380,12 +450,6 @@ void VectorStack::flush() noexcept {
         ++stats_.ops_flushed;
         stats_.elements_flushed += op.count;
     }
-    ops_.clear();
-}
-
-void VectorStack::push(Op op) {
-    ops_.push_back(op);
-    ++stats_.ops_submitted;
 }
 
 void VectorStack::flush_soa(const Op& op) noexcept {

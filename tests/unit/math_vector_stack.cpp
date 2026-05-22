@@ -60,6 +60,7 @@ TEST_CASE("VectorStack transforms SoA points in flush order", "[math][vector_sta
     REQUIRE(stack.stats().ops_submitted == 1);
     REQUIRE(stack.stats().ops_flushed == 1);
     REQUIRE(stack.stats().soa_elements == x.size());
+    REQUIRE(stack.stats().lane_groups == 1);
 }
 
 TEST_CASE("Vec3SoaBuffer stores component streams on cache-line boundaries",
@@ -173,6 +174,65 @@ TEST_CASE("VectorStack integrates legacy AoS positions", "[math][vector_stack]")
         require_vec3_close(positions[i], add(ref[i], mul(velocities[i], dt)));
     }
     REQUIRE(stack.stats().aos_elements == positions.size());
+    REQUIRE(stack.stats().ordered_ops == 1);
+}
+
+TEST_CASE("VectorStack lanes contiguous SoA ops without sorting", "[math][vector_stack]") {
+    std::array<f32, 4> ax{{0.0f, 1.0f, 2.0f, 3.0f}};
+    std::array<f32, 4> ay{{0.0f, 0.0f, 0.0f, 0.0f}};
+    std::array<f32, 4> az{{0.0f, 0.0f, 0.0f, 0.0f}};
+    std::array<f32, 4> bx{{10.0f, 11.0f, 12.0f, 13.0f}};
+    std::array<f32, 4> by{{1.0f, 1.0f, 1.0f, 1.0f}};
+    std::array<f32, 4> bz{{2.0f, 2.0f, 2.0f, 2.0f}};
+    std::array<f32, 4> vx{{1.0f, 1.0f, 1.0f, 1.0f}};
+    std::array<f32, 4> vy{{2.0f, 2.0f, 2.0f, 2.0f}};
+    std::array<f32, 4> vz{{3.0f, 3.0f, 3.0f, 3.0f}};
+
+    VectorStack stack;
+    stack.integrate_positions(MutableVec3SoaView{ax.data(), ay.data(), az.data(), ax.size()},
+                              Vec3SoaView{vx.data(), vy.data(), vz.data(), vx.size()},
+                              0.5f);
+    stack.integrate_positions(MutableVec3SoaView{bx.data(), by.data(), bz.data(), bx.size()},
+                              Vec3SoaView{vx.data(), vy.data(), vz.data(), vx.size()},
+                              0.25f);
+    stack.flush();
+
+    REQUIRE(stack.stats().ops_submitted == 2);
+    REQUIRE(stack.stats().ops_flushed == 2);
+    REQUIRE(stack.stats().lane_groups == 1);
+    REQUIRE(stack.stats().ordered_ops == 0);
+    REQUIRE(approx_eq(ax[0], 0.5f));
+    REQUIRE(approx_eq(ay[0], 1.0f));
+    REQUIRE(approx_eq(az[0], 1.5f));
+    REQUIRE(approx_eq(bx[0], 10.25f));
+    REQUIRE(approx_eq(by[0], 1.5f));
+    REQUIRE(approx_eq(bz[0], 2.75f));
+}
+
+TEST_CASE("VectorStack keeps interleaved lane groups in submission order", "[math][vector_stack]") {
+    std::array<f32, 4> px{{0.0f, 1.0f, 2.0f, 3.0f}};
+    std::array<f32, 4> py{{0.0f, 0.0f, 0.0f, 0.0f}};
+    std::array<f32, 4> pz{{0.0f, 0.0f, 0.0f, 0.0f}};
+    std::array<f32, 4> vx{{1.0f, 1.0f, 1.0f, 1.0f}};
+    std::array<f32, 4> vy{{0.0f, 0.0f, 0.0f, 0.0f}};
+    std::array<f32, 4> vz{{0.0f, 0.0f, 0.0f, 0.0f}};
+    std::array<Vec3, 1> bridge{{Vec3{0.0f, 0.0f, 0.0f}}};
+    const std::array<Vec3, 1> bridge_vel{{Vec3{1.0f, 2.0f, 3.0f}}};
+
+    VectorStack stack;
+    stack.integrate_positions(MutableVec3SoaView{px.data(), py.data(), pz.data(), px.size()},
+                              Vec3SoaView{vx.data(), vy.data(), vz.data(), vx.size()},
+                              1.0f);
+    stack.integrate_positions(bridge.data(), bridge_vel.data(), bridge.size(), 0.5f);
+    stack.integrate_positions(MutableVec3SoaView{px.data(), py.data(), pz.data(), px.size()},
+                              Vec3SoaView{vx.data(), vy.data(), vz.data(), vx.size()},
+                              1.0f);
+    stack.flush();
+
+    REQUIRE(stack.stats().lane_groups == 3);
+    REQUIRE(stack.stats().ordered_ops == 1);
+    REQUIRE(approx_eq(px[0], 2.0f));
+    require_vec3_close(bridge[0], Vec3{0.5f, 1.0f, 1.5f});
 }
 
 TEST_CASE("VectorStack ignores empty submissions", "[math][vector_stack]") {
