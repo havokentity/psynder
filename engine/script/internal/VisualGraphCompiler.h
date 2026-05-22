@@ -42,7 +42,9 @@ VisualCompileResult compile_visual_graph_repl(std::string_view line);
 //
 // Supported ops: const, add, sub, mul, div, neg, component, spawn, log,
 // return. The output is ordinary Lua source and runs in the existing safe
-// Lua VM with the current `world` bindings.
+// Lua VM with the current `world` bindings. Node inputs are resolved in
+// document order, so a node may only reference ids from earlier nodes; the
+// top-level "return" field is evaluated after all nodes have been compiled.
 VisualCompileResult compile_visual_graph(std::string_view graph_json);
 
 // File/source routing helpers. `.vsg` and `.psygraph` are visual graph

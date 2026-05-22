@@ -125,7 +125,7 @@ class Lexer {
             return token;
         }
 
-        fail("unexpected character");
+        fail_at("unexpected character", token.byte);
         token.kind = TokenKind::End;
         return token;
     }
@@ -135,9 +135,11 @@ class Lexer {
     usize pos_ = 0;
     std::string error_;
 
-    void fail(std::string_view msg) {
+    void fail(std::string_view msg) { fail_at(msg, pos_); }
+
+    void fail_at(std::string_view msg, usize byte) {
         if (error_.empty()) {
-            error_ = std::string{msg} + " at byte " + std::to_string(pos_);
+            error_ = std::string{msg} + " at byte " + std::to_string(byte);
         }
     }
 
@@ -521,7 +523,12 @@ bool is_psy_repl_command(std::string_view line) noexcept {
     while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) {
         ++pos;
     }
-    return line.substr(pos, 4) == ":psy";
+    constexpr std::string_view command = ":psy";
+    if (line.substr(pos, command.size()) != command) {
+        return false;
+    }
+    const usize end = pos + command.size();
+    return end == line.size() || std::isspace(static_cast<unsigned char>(line[end]));
 }
 
 std::string_view psy_repl_payload(std::string_view line) noexcept {
@@ -529,10 +536,14 @@ std::string_view psy_repl_payload(std::string_view line) noexcept {
     while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) {
         ++pos;
     }
-    if (line.substr(pos, 4) != ":psy") {
+    constexpr std::string_view command = ":psy";
+    if (line.substr(pos, command.size()) != command) {
         return {};
     }
-    pos += 4;
+    pos += command.size();
+    if (pos < line.size() && !std::isspace(static_cast<unsigned char>(line[pos]))) {
+        return {};
+    }
     while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) {
         ++pos;
     }

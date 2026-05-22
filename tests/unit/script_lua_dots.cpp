@@ -68,6 +68,33 @@ TEST_CASE("script: REPL evaluates expressions and statements", "[script][repl]")
     REQUIRE(out.find("boom") != std::string::npos);
 }
 
+TEST_CASE("script: REPL routes native and visual graph commands exactly", "[script][repl]") {
+    VmFixture fix;
+
+    std::string out;
+
+    REQUIRE(fix.vm().execute_repl(":psy print 2 + 3;", out));
+    REQUIRE(out == "5\n");
+
+    REQUIRE(fix.vm().execute_repl(
+        R"(:graph {"nodes":[{"id":"a","op":"const","value":2},{"id":"b","op":"const","value":3},{"id":"sum","op":"add","inputs":["a","b"]}],"return":"sum"})",
+        out));
+    REQUIRE(out == "5");
+
+    REQUIRE(fix.vm().execute_repl(
+        R"(:graph {"nodes":[{"id":"a-b","op":"const","value":1},{"id":"a_b","op":"const","value":2}],"return":["a-b","a_b"]})",
+        out));
+    REQUIRE(out == "1\t2");
+
+    REQUIRE_FALSE(fix.vm().execute_repl(":psycho print 1;", out));
+    REQUIRE(out.find("psy repl command") == std::string::npos);
+
+    REQUIRE_FALSE(
+        fix.vm().execute_repl(R"(:visualize {"nodes":[{"id":"a","op":"const","value":1}],"return":"a"})",
+                              out));
+    REQUIRE(out.find("visual graph command") == std::string::npos);
+}
+
 TEST_CASE("script: execute_string runs a chunk", "[script][exec]") {
     VmFixture fix;
 

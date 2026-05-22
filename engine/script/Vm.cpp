@@ -15,7 +15,6 @@
 #include "internal/VisualGraphCompiler.h"
 
 #include <fstream>
-#include <mutex>
 #include <sstream>
 #include <string>
 
@@ -191,10 +190,7 @@ bool Vm::execute_string(std::string_view source, std::string_view name) {
     lua_State* L = impl.lua.handle();
     if (detail::is_psy_script_name(name) || detail::has_psy_script_marker(source)) {
         std::string out;
-        const bool ok = execute_psy_script(impl.psy,
-                                           detail::strip_psy_script_marker(source),
-                                           name.empty() ? "<psy>" : name,
-                                           out);
+        const bool ok = execute_psy_script(impl.psy, source, name.empty() ? "<psy>" : name, out);
         if (!ok) {
             PSY_LOG_ERROR("script: psy vm failed: {}", out);
         } else if (!out.empty()) {
