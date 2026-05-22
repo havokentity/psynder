@@ -44,6 +44,7 @@
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/RenderingSystem.h"
+#include "render/Texture.h"
 #include "render/TextureGenerators.h"
 #include "render/raster/Raster.h"
 #include "world/outdoor/Terrain.h"

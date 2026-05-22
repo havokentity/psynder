@@ -8,6 +8,7 @@
 #include "core/Log.h"
 #include "render/Color.h"
 #include "render/Image.h"
+#include "render/TextureGenerators.h"
 
 #include <atomic>
 #include <memory>
@@ -142,15 +143,11 @@ class TextureLoad {
 };
 
 inline Texture2D fallback_checker_texture() {
-    std::vector<u32> pixels(16u * 16u);
-    for (u32 y = 0; y < 16u; ++y) {
-        for (u32 x = 0; x < 16u; ++x) {
-            const bool magenta = ((x ^ y) & 1u) != 0u;
-            pixels[static_cast<usize>(y) * 16u + x] = magenta ? rgba8(0xFF, 0x00, 0xFF)
-                                                               : rgba8(0x00, 0x00, 0x00);
-        }
-    }
-    return Texture2D::from_rgba8(16u, 16u, std::move(pixels));
+    return texture_generators::checker({.width = 16u,
+                                        .height = 16u,
+                                        .cell_size = 1u,
+                                        .color_a = rgba8(0x00, 0x00, 0x00),
+                                        .color_b = rgba8(0xFF, 0x00, 0xFF)});
 }
 
 inline TextureLoad load_ppm_texture_async(std::string path) {

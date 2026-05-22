@@ -4,7 +4,12 @@
 #pragma once
 
 #include "core/Types.h"
-#include "render/Texture.h"
+
+namespace psynder::render {
+
+class Texture2D;
+
+}  // namespace psynder::render
 
 namespace psynder::render::texture_generators {
 

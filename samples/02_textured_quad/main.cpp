@@ -6,6 +6,7 @@
 //
 #include "platform/App.h"
 #include "render/GeometryTools.h"
+#include "render/Texture.h"
 #include "render/TextureGenerators.h"
 
 #include <array>

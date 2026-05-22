@@ -2,6 +2,7 @@
 // Psynder - render texture generator tests.
 
 #include "render/Color.h"
+#include "render/Texture.h"
 #include "render/TextureGenerators.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -42,6 +43,12 @@ TEST_CASE("texture generators: solid and checker produce expected texels", "[ren
     REQUIRE(checker.pixels()[2] == checker_desc.color_b);
     REQUIRE(checker.pixels()[8] == checker_desc.color_b);
     REQUIRE(checker.pixels()[10] == checker_desc.color_a);
+
+    const Texture2D fallback = fallback_checker_texture();
+    REQUIRE(fallback.width() == 16u);
+    REQUIRE(fallback.height() == 16u);
+    REQUIRE(fallback.pixels()[0] == rgba8(0, 0, 0));
+    REQUIRE(fallback.pixels()[1] == rgba8(0xFF, 0, 0xFF));
 }
 
 TEST_CASE("texture generators: rich procedural textures are deterministic", "[render][texture]") {

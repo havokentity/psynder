@@ -5,6 +5,7 @@
 
 #include "core/HashHelpers.h"
 #include "render/Color.h"
+#include "render/Texture.h"
 
 #include <algorithm>
 #include <cmath>
