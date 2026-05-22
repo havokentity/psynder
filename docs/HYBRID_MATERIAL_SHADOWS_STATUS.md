@@ -66,6 +66,8 @@ and before ending a session so crash recovery has a concrete resume point.
 - Current monitor pass: six workers dispatched; no worker completed in the
   first 60-second wait. Worktrees are present and clean from the orchestrator
   view.
+- Second monitor pass: no completions yet, but all six workers have lane-local
+  edits in their assigned worktrees. Ownership split is still clean.
 
 ## Next Multi-Agent Step
 
