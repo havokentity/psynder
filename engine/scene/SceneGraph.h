@@ -100,6 +100,7 @@ class SceneGraph {
    public:
     void clear();
     void reserve_nodes(u32 count);
+    void reserve_analytic_spheres(u32 count);
 
     SceneNode create_node(SceneNode parent = kInvalidSceneNode, const LocalTransform& local = {});
     bool destroy_node(SceneNode node);
@@ -125,6 +126,11 @@ class SceneGraph {
 
     u32 node_count() const noexcept;
     u32 live_node_count() const noexcept { return live_nodes_; }
+    u32 node_capacity() const noexcept { return static_cast<u32>(generation_.capacity()); }
+    u32 dirty_root_capacity() const noexcept { return static_cast<u32>(dirty_roots_.capacity()); }
+    u32 analytic_sphere_capacity() const noexcept {
+        return static_cast<u32>(analytic_spheres_.capacity());
+    }
 
    private:
     static SceneNode make_handle(u32 index, u32 generation) noexcept;

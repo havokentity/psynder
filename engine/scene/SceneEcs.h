@@ -9,6 +9,8 @@
 #include "scene/SceneGraph.h"
 #include "scene/World.h"
 
+#include <algorithm>
+#include <array>
 #include <mutex>
 #include <vector>
 
@@ -77,6 +79,14 @@ struct SceneRenderItem {
     ::psynder::render::MaterialId material{};
     u32 flags = 0u;
     ObjectMobility mobility = ObjectMobility::Dynamic;
+};
+
+struct ScenePrewarmConfig {
+    u32 scene_entities = 0u;
+    u32 renderables = 0u;
+    u32 analytic_spheres = 0u;
+    u32 render_items = 0u;
+    u32 deferred_structural_changes = 0u;
 };
 
 inline bool renderable_is_visible(const RenderableComponent& renderable) noexcept {
@@ -211,6 +221,28 @@ inline bool set_renderable_geometry(World& world,
     return true;
 }
 
+inline void prewarm_scene_capacity(World& world, SceneGraph& graph, const ScenePrewarmConfig& config) {
+    const u32 scene_entity_count = std::max(config.scene_entities, config.renderables);
+    graph.reserve_nodes(scene_entity_count);
+    graph.reserve_analytic_spheres(config.analytic_spheres);
+
+    world.reserve_entities(scene_entity_count);
+    world.reserve_archetype<TransformComponent>(scene_entity_count);
+    world.reserve_archetype<SceneNodeComponent, TransformComponent>(scene_entity_count);
+    if (config.renderables != 0u) {
+        world.reserve_archetype<RenderableComponent, SceneNodeComponent, TransformComponent>(
+            config.renderables);
+    }
+
+    const u32 structural_ops = config.deferred_structural_changes != 0u
+                                   ? config.deferred_structural_changes
+                                   : scene_entity_count * 2u + config.renderables;
+    const u32 structural_bytes = scene_entity_count * static_cast<u32>(sizeof(TransformComponent) +
+                                                                       sizeof(SceneNodeComponent)) +
+                                 config.renderables * static_cast<u32>(sizeof(RenderableComponent));
+    world.reserve_structural_changes(structural_ops, structural_bytes);
+}
+
 inline Entity create_scene_entity(World& world,
                                   SceneGraph& graph,
                                   SceneNode parent = kInvalidSceneNode,
@@ -243,9 +275,9 @@ inline void gather_scene_render_items(World& world,
     world.query<reads<SceneNodeComponent, RenderableComponent>, writes<>>(
         [&](std::span<const SceneNodeComponent> nodes, std::span<const RenderableComponent> renderables) {
             const usize n = std::min(nodes.size(), renderables.size());
-            thread_local std::vector<SceneRenderItem> chunk_items;
-            chunk_items.clear();
-            chunk_items.reserve(n);
+            constexpr usize kMaxChunkRows = 256u;
+            std::array<SceneRenderItem, kMaxChunkRows> chunk_items{};
+            usize chunk_count = 0u;
             for (usize i = 0; i < n; ++i) {
                 const RenderableComponent& r = renderables[i];
                 if ((r.flags & Renderable_Visible) == 0u || r.geometry == GeometryKind::None)
@@ -263,12 +295,12 @@ inline void gather_scene_render_items(World& world,
                 item.material = r.material;
                 item.flags = r.flags;
                 item.mobility = r.mobility;
-                chunk_items.push_back(item);
+                chunk_items[chunk_count++] = item;
             }
-            if (!chunk_items.empty()) {
+            if (chunk_count != 0u) {
                 std::scoped_lock lock{append_mutex};
-                out.reserve(out.size() + chunk_items.size());
-                out.insert(out.end(), chunk_items.begin(), chunk_items.end());
+                out.reserve(out.size() + chunk_count);
+                out.insert(out.end(), chunk_items.begin(), chunk_items.begin() + chunk_count);
             }
         });
 }
@@ -284,6 +316,16 @@ class RuntimeScene {
     [[nodiscard]] ::psynder::render::MaterialLibrary& materials() noexcept { return materials_; }
     [[nodiscard]] const ::psynder::render::MaterialLibrary& materials() const noexcept {
         return materials_;
+    }
+
+    void prewarm_capacity(const ScenePrewarmConfig& config) {
+        prewarm_scene_capacity(*world_, graph_, config);
+        render_item_capacity_ =
+            std::max(render_item_capacity_, std::max(config.render_items, config.renderables));
+    }
+
+    void reserve_render_items(std::vector<SceneRenderItem>& out) const {
+        out.reserve(render_item_capacity_);
     }
 
     [[nodiscard]] Entity create_entity(const LocalTransform& local = {},
@@ -350,6 +392,7 @@ class RuntimeScene {
     }
 
     void gather_render_items(std::vector<SceneRenderItem>& out) {
+        reserve_render_items(out);
         gather_scene_render_items(*world_, graph_, out);
     }
 
@@ -357,6 +400,7 @@ class RuntimeScene {
     World* world_ = nullptr;
     SceneGraph graph_{};
     ::psynder::render::MaterialLibrary materials_{};
+    u32 render_item_capacity_ = 0u;
 };
 
 }  // namespace psynder::scene

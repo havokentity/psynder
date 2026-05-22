@@ -70,6 +70,8 @@ class WorldImpl {
     Entity create();
     void destroy(Entity e);
     bool alive(Entity e) const noexcept;
+    void reserve_entities(u32 count);
+    void reserve_structural_changes(u32 op_count, u32 byte_count);
 
     // Type-erased component ops
     void add_raw(Entity e, ComponentId comp, const void* bytes, u32 byte_count);
@@ -81,6 +83,7 @@ class WorldImpl {
     void defer_remove(Entity e, ComponentId comp);
     void defer_destroy(Entity e);
     void apply_structural_changes();
+    void reserve_archetype_rows(std::span<const ComponentId> sorted_components, u32 row_count);
 
     // Toggle: when true, add/remove/destroy are queued; when false, they
     // happen immediately. Default is false (immediate) so unit tests are
@@ -99,7 +102,8 @@ class WorldImpl {
 
     // Stats
     u32 entity_count() const noexcept { return live_entities_; }
-    u32 chunk_live_count() const noexcept { return static_cast<u32>(pool_.live_count()); }
+    u32 entity_capacity() const noexcept;
+    u32 chunk_live_count() const noexcept;
 
    private:
     WorldImpl();
@@ -179,6 +183,18 @@ void World::add(Entity e, const T& component) {
     static_assert(std::is_trivially_copyable_v<T>,
                   "Psynder components must be trivially copyable POD");
     detail::WorldImpl::Get().add_raw(e, component_id<T>(), &component, sizeof(T));
+}
+
+template <class... Ts>
+void World::reserve_archetype(u32 row_count) {
+    auto ids = detail::component_ids_array<Ts...>();
+    std::vector<ComponentId> sorted;
+    sorted.reserve(ids.size());
+    for (ComponentId id : ids)
+        sorted.push_back(id);
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+    detail::WorldImpl::Get().reserve_archetype_rows(sorted, row_count);
 }
 
 template <class T>

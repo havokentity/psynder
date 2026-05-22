@@ -101,3 +101,75 @@ TEST_CASE("runtime scene creates transform-backed renderable entities for shared
 
     REQUIRE(scene.destroy_entity(entity));
 }
+
+TEST_CASE("runtime scene prewarm preserves capacity through dynamic renderable updates",
+          "[scene][render_submission][prewarm]") {
+    auto& world = scene::World::Get();
+    world.set_structural_deferred(false);
+
+    scene::RuntimeScene scene{world};
+    scene::ScenePrewarmConfig config{};
+    config.scene_entities = 8u;
+    config.renderables = 6u;
+    config.render_items = 6u;
+    scene.prewarm_capacity(config);
+
+    REQUIRE(scene.graph().node_capacity() >= config.scene_entities);
+    REQUIRE(world.entity_capacity() >= config.scene_entities);
+
+    render::MaterialDesc material_desc{};
+    material_desc.albedo_rgba8 = 0xFF88CC44u;
+    const render::MaterialId material = scene.materials().create(material_desc);
+
+    scene::RenderableComponent static_renderable =
+        scene::make_static_renderable(scene::GeometryKind::AnalyticSphere,
+                                      17u,
+                                      material,
+                                      math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}});
+    scene::RenderableComponent dynamic_renderable =
+        scene::make_dynamic_renderable(scene::GeometryKind::AnalyticSphere,
+                                       23u,
+                                       material,
+                                       math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}});
+
+    const u32 chunks_after_prewarm = world.chunk_live_count();
+    const u32 graph_capacity = scene.graph().node_capacity();
+    const u32 dirty_capacity = scene.graph().dirty_root_capacity();
+
+    std::vector<Entity> static_entities;
+    static_entities.reserve(5u);
+    for (u32 i = 0; i < 5u; ++i) {
+        static_entities.push_back(
+            scene.create_renderable(static_renderable, translate({static_cast<f32>(i), 0.0f, 0.0f})));
+    }
+    const Entity dynamic_entity =
+        scene.create_renderable(dynamic_renderable, translate({0.0f, 2.0f, 0.0f}));
+
+    scene.update_transforms();
+    REQUIRE(world.chunk_live_count() == chunks_after_prewarm);
+    REQUIRE(scene.graph().node_capacity() == graph_capacity);
+    REQUIRE(scene.graph().dirty_root_capacity() == dirty_capacity);
+
+    std::vector<scene::SceneRenderItem> items;
+    scene.gather_render_items(items);
+    REQUIRE(items.size() == 6u);
+    const usize item_capacity = items.capacity();
+    REQUIRE(item_capacity >= config.render_items);
+
+    for (u32 frame = 0; frame < 12u; ++frame) {
+        scene.set_transform(dynamic_entity, translate({static_cast<f32>(frame) * 0.25f, 2.0f, 0.0f}));
+        const scene::SceneGraphUpdateStats stats = scene.update_transforms();
+        REQUIRE(stats.nodes_visited == 1u);
+        REQUIRE(stats.transforms_updated == 1u);
+        scene.gather_render_items(items);
+        REQUIRE(items.size() == 6u);
+        REQUIRE(items.capacity() == item_capacity);
+        REQUIRE(world.chunk_live_count() == chunks_after_prewarm);
+        REQUIRE(scene.graph().node_capacity() == graph_capacity);
+        REQUIRE(scene.graph().dirty_root_capacity() == dirty_capacity);
+    }
+
+    for (Entity entity : static_entities)
+        REQUIRE(scene.destroy_entity(entity));
+    REQUIRE(scene.destroy_entity(dynamic_entity));
+}

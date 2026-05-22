@@ -31,6 +31,22 @@ bool World::alive(Entity e) const noexcept {
     return detail::WorldImpl::Get().alive(e);
 }
 
+void World::reserve_entities(u32 count) {
+    detail::WorldImpl::Get().reserve_entities(count);
+}
+
+void World::reserve_structural_changes(u32 op_count, u32 byte_count) {
+    detail::WorldImpl::Get().reserve_structural_changes(op_count, byte_count);
+}
+
+u32 World::entity_capacity() const noexcept {
+    return detail::WorldImpl::Get().entity_capacity();
+}
+
+u32 World::chunk_live_count() const noexcept {
+    return detail::WorldImpl::Get().chunk_live_count();
+}
+
 void World::set_structural_deferred(bool on) noexcept {
     detail::WorldImpl::Get().set_deferred_mode(on);
 }
@@ -76,6 +92,28 @@ u32 WorldImpl::allocate_slot() {
     }
     entities_.emplace_back();
     return static_cast<u32>(entities_.size() - 1);
+}
+
+void WorldImpl::reserve_entities(u32 count) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    entities_.reserve(count);
+    free_indices_.reserve(count);
+}
+
+void WorldImpl::reserve_structural_changes(u32 op_count, u32 byte_count) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    pending_.reserve(op_count);
+    deferred_arena_.reserve(byte_count);
+}
+
+u32 WorldImpl::entity_capacity() const noexcept {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return static_cast<u32>(entities_.capacity());
+}
+
+u32 WorldImpl::chunk_live_count() const noexcept {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return static_cast<u32>(pool_.live_count());
 }
 
 Entity WorldImpl::create() {
@@ -190,6 +228,14 @@ u32 WorldImpl::ensure_archetype(std::span<const ComponentId> sorted_components) 
     archetypes_.back().init(id, sorted_components);
     ++archetype_topology_version_;
     return id;
+}
+
+void WorldImpl::reserve_archetype_rows(std::span<const ComponentId> sorted_components, u32 row_count) {
+    if (row_count == 0u)
+        return;
+    std::lock_guard<std::mutex> lk(mutex_);
+    const u32 archetype_id = ensure_archetype(sorted_components);
+    archetypes_[archetype_id].reserve_rows(pool_, row_count);
 }
 
 void WorldImpl::migrate_entity(u32 entity_idx,
