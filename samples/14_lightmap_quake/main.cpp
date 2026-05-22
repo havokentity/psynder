@@ -76,8 +76,6 @@
 
 #include "common/CharacterController.h"
 #include "common/MeshWinding.h"
-#include "common/PngWriter.h"
-
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
@@ -85,6 +83,7 @@
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -787,11 +786,12 @@ int main(int argc, char** argv) {
     desc.render_height = 360;
     desc.scale_mode = platform::ScaleMode::Integer;
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
+    app::WindowApp app_host{args, desc, {.depth_buffer = true}};
+    if (!app_host) {
         PSY_LOG_ERROR("sample_14: failed to create window");
         return EXIT_FAILURE;
     }
+    auto* window = &app_host.window();
     auto* input = platform::input();
 
     // Build the room + parallel bake scene once.
@@ -880,15 +880,7 @@ int main(int argc, char** argv) {
     controller.set_look(0.0f, 0.0f);
 
     // CPU framebuffer + depth.
-    std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    std::vector<u32> depth(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    render::Framebuffer fb{};
-    fb.width = desc.render_width;
-    fb.height = desc.render_height;
-    fb.pitch = desc.render_width * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
-    fb.depth = depth.data();
+    render::Framebuffer& fb = app_host.framebuffer();
 
     auto& rasterizer = render::raster::Rasterizer::Get();
 
@@ -1007,19 +999,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_14: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_14: wrote capture to {}", args.capture_out);
-    }
+    const bool capture_ok = app_host.write_capture_if_requested("sample_14");
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

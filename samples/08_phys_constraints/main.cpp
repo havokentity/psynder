@@ -32,8 +32,6 @@
 //   --smoke-frames N         Space-separated form (matches Goldens.cmake).
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
-#include "common/PngWriter.h"
-
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
@@ -41,6 +39,7 @@
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "ui/console/ConsoleOverlay.h"
@@ -494,11 +493,12 @@ int main(int argc, char** argv) {
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
+    app::WindowApp app_host{args, desc};
+    if (!app_host) {
         PSY_LOG_ERROR("sample_08: failed to create window");
         return EXIT_FAILURE;
     }
+    auto* window = &app_host.window();
 
     // Earth gravity into the engine world (it integrates the bodies; we mirror
     // the same vector into our PBD step so both stay consistent).
@@ -515,13 +515,8 @@ int main(int argc, char** argv) {
         scene.nodes.size(),
         scene.graph.size());
 
-    std::vector<u32> pixels(static_cast<usize>(kFbW) * kFbH, 0u);
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
+    std::vector<u32>& pixels = app_host.pixels();
+    render::Framebuffer& fb = app_host.framebuffer();
 
     const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
 
@@ -598,19 +593,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_08: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_08: wrote capture to {}", args.capture_out);
-    }
+    const bool capture_ok = app_host.write_capture_if_requested("sample_08");
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -34,13 +34,12 @@
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
 #include "common/MeshWinding.h"
-#include "common/PngWriter.h"
-
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -373,8 +372,6 @@ void fill_sky(render::Framebuffer& fb) noexcept {
 // ─── Box mesh helpers ────────────────────────────────────────────────────
 // Unit cube spanning [-0.5, +0.5]³ — per-face flat-shaded by colour.
 
-constexpr u32 kColTowerBody = pack_rgba8(82, 70, 52);
-constexpr u32 kColTowerRoof = pack_rgba8(48, 38, 32);
 constexpr u32 kColHeliBody = pack_rgba8(60, 70, 56);
 constexpr u32 kColHeliTrim = pack_rgba8(36, 44, 36);
 constexpr u32 kColRotor = pack_rgba8(32, 32, 32);
@@ -621,22 +618,15 @@ int main(int argc, char** argv) {
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
+    app::WindowApp app_host{args, desc, {.depth_buffer = true}};
+    if (!app_host) {
         PSY_LOG_ERROR("sample_06: failed to create window");
         return EXIT_FAILURE;
     }
+    auto* window = &app_host.window();
 
-    std::vector<u32> pixels(static_cast<usize>(kFbW) * kFbH, 0u);
-    std::vector<u32> depth(static_cast<usize>(kFbW) * kFbH, 0u);
-
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
-    fb.depth = depth.data();
+    render::Framebuffer& fb = app_host.framebuffer();
+    std::vector<u32>& depth = app_host.depth();
 
     // ─── Heightmap + raymarcher state ────────────────────────────────────
     const std::vector<u16> heights = build_heightmap();
@@ -828,19 +818,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_06: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_06: wrote capture to {}", args.capture_out);
-    }
+    const bool capture_ok = app_host.write_capture_if_requested("sample_06");
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -20,13 +20,12 @@
 //                            as a valid 24-bit RGB PNG. Used by the
 //                            psynder_add_golden_cell() ctest cells.
 
-#include "common/PngWriter.h"
-
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "math/Math.h"
 #include "editor/core/SampleHook.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -192,11 +191,12 @@ int main(int argc, char** argv) {
     desc.render_height = 360;
     desc.scale_mode = platform::ScaleMode::Integer;
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
+    app::WindowApp app_host{args, desc};
+    if (!app_host) {
         PSY_LOG_ERROR("sample_01: failed to create window");
         return EXIT_FAILURE;
     }
+    auto* window = &app_host.window();
 
     // Load the crate texture (procedurally-generated 32×32 PPM committed
     // alongside the sample).
@@ -209,14 +209,7 @@ int main(int argc, char** argv) {
         PSY_LOG_INFO("sample_01: loaded crate texture {} ({}x{})", tex_path, crate.width, crate.height);
     }
 
-    // CPU-side framebuffer at the internal render resolution.
-    std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    render::Framebuffer fb{};
-    fb.width = desc.render_width;
-    fb.height = desc.render_height;
-    fb.pitch = desc.render_width * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
+    render::Framebuffer& fb = app_host.framebuffer();
 
     // Triangle vertices in mesh-local space (XY plane, Z forward, UV in [0,1]).
     const std::array<render::raster::Vertex, 3> verts{{
@@ -303,19 +296,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_01: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_01: wrote capture to {}", args.capture_out);
-    }
+    if (!app_host.write_capture_if_requested("sample_01"))
+        return EXIT_FAILURE;
 
-    platform::destroy_window(window);
     return EXIT_SUCCESS;
 }

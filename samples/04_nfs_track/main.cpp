@@ -33,8 +33,6 @@
 //                            harness.
 
 #include "common/MeshWinding.h"
-#include "common/PngWriter.h"
-
 #include "asset/Vfs.h"
 #include "core/AppArgs.h"
 #include "core/Log.h"
@@ -42,6 +40,7 @@
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -505,7 +504,7 @@ EngineEstimate estimate_engine(f32 speed_mps, f32 throttle, f32 wheel_radius) no
         gear = 1;
 
     const f32 wheel_omega = speed_mps / wheel_radius;  // rad/s
-    const f32 engine_omega = wheel_omega * kGearRatio[gear - 1] * kFinal;
+    const f32 engine_omega = wheel_omega * kGearRatio[static_cast<usize>(gear - 1)] * kFinal;
     f32 rpm = engine_omega * 60.0f / math::kTwoPi;
     if (rpm < kIdle)
         rpm = kIdle;
@@ -603,22 +602,14 @@ int main(int argc, char** argv) {
     desc.render_height = 360;
     desc.scale_mode = platform::ScaleMode::Integer;
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
+    app::WindowApp app_host{args, desc, {.depth_buffer = true}};
+    if (!app_host) {
         PSY_LOG_ERROR("sample_04: failed to create window");
         return EXIT_FAILURE;
     }
+    auto* window = &app_host.window();
 
-    std::vector<u32> pixels(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-    std::vector<u32> depth(static_cast<usize>(desc.render_width) * desc.render_height, 0);
-
-    render::Framebuffer fb{};
-    fb.width = desc.render_width;
-    fb.height = desc.render_height;
-    fb.pitch = desc.render_width * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(pixels.data());
-    fb.depth = depth.data();
+    render::Framebuffer& fb = app_host.framebuffer();
 
     auto& rasterizer = render::raster::Rasterizer::Get();
 
@@ -706,7 +697,6 @@ int main(int argc, char** argv) {
     // accelerations.
     f32 hud_throttle = 0.0f;
     f32 hud_brake = 0.0f;
-    f32 hud_steer = 0.0f;
 
     Driver driver{};
 
@@ -987,23 +977,7 @@ int main(int argc, char** argv) {
     }
 
     // ─── Capture ────────────────────────────────────────────────────────
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_04: failed to write capture to {}", args.capture_out);
-            if (hud_active)
-                psynder::ui::rml::hide("hud");
-            psynder::ui::rml::shutdown();
-            physics::vehicle::destroy(veh);
-            world.destroy_body(chassis);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_04: wrote capture to {}", args.capture_out);
-    }
+    const bool capture_ok = app_host.write_capture_if_requested("sample_04");
 
     if (hud_active) {
         psynder::ui::rml::hide("hud");
@@ -1012,6 +986,5 @@ int main(int argc, char** argv) {
 
     physics::vehicle::destroy(veh);
     world.destroy_body(chassis);
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

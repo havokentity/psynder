@@ -17,14 +17,13 @@
 //   --smoke-frames N         Space-separated form (matches Goldens.cmake).
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
-#include "common/PngWriter.h"
-
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
@@ -213,11 +212,12 @@ int main(int argc, char** argv) {
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
+    app::WindowApp app_host{args, desc};
+    if (!app_host) {
         PSY_LOG_ERROR("sample_05: failed to create window");
         return EXIT_FAILURE;
     }
+    auto* window = &app_host.window();
 
     // ── Build the static scene geometry. ────────────────────────────────
     // One Bvh8 per cube + one Bvh8 for the ground. Each cube BLAS holds
@@ -248,16 +248,9 @@ int main(int argc, char** argv) {
     render::rt::Tlas tlas;
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
-    // ── CPU framebuffers. ───────────────────────────────────────────────
-    std::vector<u32> final_pixels(static_cast<usize>(kFbW) * kFbH, 0u);
+    std::vector<u32>& final_pixels = app_host.pixels();
+    render::Framebuffer& fb = app_host.framebuffer();
     std::vector<u32> shadow_pixels(static_cast<usize>(kShadowW) * kShadowH, 0u);
-
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(final_pixels.data());
 
     PSY_LOG_INFO("Psynder sample 05 running{}",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
@@ -514,19 +507,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             final_pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_05: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_05: wrote capture to {}", args.capture_out);
-    }
+    const bool capture_ok = app_host.write_capture_if_requested("sample_05");
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

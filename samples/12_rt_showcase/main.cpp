@@ -26,8 +26,6 @@
 //   --rt-ao-lit-strength=F   Override AO direct-light strength for capture/perf checks.
 //   --rt-cores=N             Override sample RT worker chunk target for smoke/perf checks.
 
-#include "common/PngWriter.h"
-
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
@@ -35,6 +33,7 @@
 #include "editor/core/SampleHook.h"
 #include "jobs/JobSystem.h"
 #include "math/Math.h"
+#include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
 #include "render/rt/Bvh.h"
@@ -374,11 +373,12 @@ int main(int argc, char** argv) {
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
 
-    auto* window = platform::create_window(desc);
-    if (!window) {
+    app::WindowApp app_host{args, desc};
+    if (!app_host) {
         PSY_LOG_ERROR("sample_12: failed to create window");
         return EXIT_FAILURE;
     }
+    auto* window = &app_host.window();
 
     // ── Build the static scene geometry. ────────────────────────────────
     // Just THREE BLAS meshes — a unit cube, a unit sphere, and the ground —
@@ -420,19 +420,14 @@ int main(int argc, char** argv) {
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
     // ── CPU framebuffers. ───────────────────────────────────────────────
-    std::vector<u32> final_pixels(static_cast<usize>(kFbW) * kFbH, 0u);
+    std::vector<u32>& final_pixels = app_host.pixels();
     std::array<u32, kNumInstances> instance_colors{};
     for (u32 i = 0; i < kFieldCount; ++i)
         instance_colors[i] = field[i].color;
     instance_colors[kFieldCount] = pack_rgba8(55, 55, 65);
     render::rt::FrameRenderer rt_frame_renderer;
 
-    render::Framebuffer fb{};
-    fb.width = kFbW;
-    fb.height = kFbH;
-    fb.pitch = kFbW * 4;
-    fb.format = render::PixelFormat::RGBA8;
-    fb.pixels = reinterpret_cast<u8*>(final_pixels.data());
+    render::Framebuffer& fb = app_host.framebuffer();
 
     PSY_LOG_INFO("Psynder sample 12 running{} — {} TLAS instances, {} lights",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
@@ -564,19 +559,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!args.capture_out.empty()) {
-        const bool ok = samples::write_png_rgba8_framebuffer(args.capture_out.c_str(),
-                                                             final_pixels.data(),
-                                                             fb.width,
-                                                             fb.height);
-        if (!ok) {
-            PSY_LOG_ERROR("sample_12: failed to write capture to {}", args.capture_out);
-            platform::destroy_window(window);
-            return EXIT_FAILURE;
-        }
-        PSY_LOG_INFO("sample_12: wrote capture to {}", args.capture_out);
-    }
+    const bool capture_ok = app_host.write_capture_if_requested("sample_12");
 
-    platform::destroy_window(window);
-    return EXIT_SUCCESS;
+    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
