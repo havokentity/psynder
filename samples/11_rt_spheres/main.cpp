@@ -34,7 +34,6 @@
 #include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/imm/DebugHud.h"
 
 #include <algorithm>
 #include <array>
@@ -313,7 +312,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     // -- CPU framebuffer + shared RT renderer. -----------------------------
     std::vector<u32>& final_pixels = app_host.pixels();
     render::SceneRenderer renderer;
-    ui::imm::DebugHudFrameHistory hud_history{};
 
     // -- Shared first-person / free-cam controller (samples/common). ------
     samples::CharacterControllerConfig cc_cfg{};
@@ -333,23 +331,14 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     auto* input = platform::input();
     const u64 t0 = platform::Clock::ticks_now();
     u64 last_ticks = t0;
-    u64 prev_frame_ticks = t0;
     u32 frame = 0;
     const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
-    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
     std::array<Light, kNumLights> lights{};
 
     while (!window->should_close()) {
         window->poll_events();
 
         const u64 now_ticks = platform::Clock::ticks_now();
-        const f32 frame_ms =
-            smoke_frames > 0
-                ? kSmokeFrameMs
-                : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
-        prev_frame_ticks = now_ticks;
-        hud_history.push(frame_ms);
-
         if (input && input->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             PSY_LOG_INFO("sample_11: escape pressed, exiting");
             break;
@@ -403,7 +392,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(70, 70, 80);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        app_host.engine_frame_post(hud_history.make_stats(frame_ms, 1, 0, 0));
+        app_host.engine_frame_post();
         app_host.present();
 
         if (smoke_frames > 0) {

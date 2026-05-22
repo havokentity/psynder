@@ -818,7 +818,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        app_host.engine_frame_post(editor::FrameOverlayStats{towers.size() + 5u, 0, 0});
+        app_host.engine_frame_post();
         app_host.present();
 
         if (smoke_frames > 0 && ++frame >= smoke_frames) {

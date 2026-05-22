@@ -4,6 +4,7 @@
 #pragma once
 
 #include "core/Log.h"
+#include "render/FrameStats.h"
 #include "render/Geometry.h"
 #include "render/MaterialBatcher.h"
 #include "render/Material.h"
@@ -258,6 +259,7 @@ class SceneRenderer {
         emit_raster_queue(queues_.raster_opaque, scene.materials(), rasterizer, stats);
         emit_raster_queue(queues_.raster_transparent, scene.materials(), rasterizer, stats);
         rasterizer.end_frame();
+        record_raster_work(stats.raster_draws, stats.raster_triangles);
         return stats;
     }
 
@@ -278,6 +280,7 @@ class SceneRenderer {
         }
         rasterizer.end_frame();
         stats.submitted = static_cast<u32>(draws.size());
+        record_raster_work(stats.raster_draws, stats.raster_triangles);
         return stats;
     }
 
@@ -301,6 +304,8 @@ class SceneRenderer {
 
     SceneRenderStats end_raster_frame() {
         raster::Rasterizer::Get().end_frame();
+        record_raster_work(direct_raster_stats_.raster_draws,
+                           direct_raster_stats_.raster_triangles);
         return direct_raster_stats_;
     }
 

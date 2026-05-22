@@ -8,9 +8,11 @@
 #include "core/Types.h"
 #include "editor/core/SampleHook.h"
 #include "platform/Platform.h"
+#include "render/FrameStats.h"
 #include "render/Framebuffer.h"
 #include "render/PngWriter.h"
 
+#include <array>
 #include <concepts>
 #include <cstdlib>
 #include <string_view>
@@ -31,6 +33,7 @@ class WindowApp {
    public:
     WindowApp(const AppArgs& args, const platform::WindowDesc& desc, WindowAppOptions options = {})
         : args_(args), width_(desc.render_width), height_(desc.render_height) {
+        render::reset_frame_stats();
         window_ = platform::create_window(desc);
         if (!window_)
             return;
@@ -80,6 +83,7 @@ class WindowApp {
     editor::Mode engine_frame_update(f32 dt) noexcept {
         engine_frame_update_ran_ = true;
         engine_frame_ms_ = dt > 0.0f ? dt * 1000.0f : 1000.0f / 60.0f;
+        record_engine_frame_ms(engine_frame_ms_);
         if (auto* input = platform::input()) {
             return editor::sample_update(*input, dt);
         }
@@ -87,28 +91,33 @@ class WindowApp {
     }
 
     void engine_frame_post() noexcept {
+        const render::FrameStats render_stats = render::frame_stats_snapshot();
         if (auto* input = platform::input()) {
             if (engine_frame_update_ran_) {
-                editor::draw_frame_overlays(framebuffer_,
-                                            editor::make_debug_hud_stats(engine_frame_ms_, engine_frame_ms_));
+                editor::draw_frame_overlays(framebuffer_, make_engine_debug_hud(render_stats));
             } else {
-                editor::frame_overlays(*input, framebuffer_);
+                editor::frame_overlays(*input, framebuffer_, make_engine_overlay_stats(render_stats));
             }
         }
+        render::reset_frame_stats();
         engine_frame_update_ran_ = false;
     }
 
     void engine_frame_post(const editor::FrameOverlayStats& stats) noexcept {
+        editor::FrameOverlayStats reported = stats;
+        reported.render_stats_valid = true;
         if (auto* input = platform::input()) {
             if (engine_frame_update_ran_) {
                 editor::draw_frame_overlays(framebuffer_,
-                                            editor::make_debug_hud_stats(engine_frame_ms_,
-                                                                         engine_frame_ms_,
-                                                                         stats));
+                                            editor::make_debug_hud_stats_with_render(
+                                                engine_frame_ms_,
+                                                engine_frame_ms_,
+                                                reported));
             } else {
-                editor::frame_overlays(*input, framebuffer_, stats);
+                editor::frame_overlays(*input, framebuffer_, reported);
             }
         }
+        render::reset_frame_stats();
         engine_frame_update_ran_ = false;
     }
 
@@ -120,6 +129,7 @@ class WindowApp {
             }
         }
         editor::draw_frame_overlays(framebuffer_, hud);
+        render::reset_frame_stats();
         engine_frame_update_ran_ = false;
     }
 
@@ -155,6 +165,9 @@ class WindowApp {
         height_ = other.height_;
         engine_frame_update_ran_ = other.engine_frame_update_ran_;
         engine_frame_ms_ = other.engine_frame_ms_;
+        engine_frame_ms_ring_ = other.engine_frame_ms_ring_;
+        engine_frame_ms_head_ = other.engine_frame_ms_head_;
+        engine_frame_ms_count_ = other.engine_frame_ms_count_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         framebuffer_ = other.framebuffer_;
@@ -163,6 +176,9 @@ class WindowApp {
         other.window_ = nullptr;
         other.engine_frame_update_ran_ = false;
         other.engine_frame_ms_ = 1000.0f / 60.0f;
+        other.engine_frame_ms_ring_ = {};
+        other.engine_frame_ms_head_ = 0;
+        other.engine_frame_ms_count_ = 0;
         other.framebuffer_ = {};
     }
 
@@ -172,9 +188,50 @@ class WindowApp {
     u32 height_ = 0;
     bool engine_frame_update_ran_ = false;
     f32 engine_frame_ms_ = 1000.0f / 60.0f;
+    std::array<f32, 120> engine_frame_ms_ring_{};
+    u32 engine_frame_ms_head_ = 0;
+    u32 engine_frame_ms_count_ = 0;
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
+
+    void record_engine_frame_ms(f32 frame_ms) noexcept {
+        engine_frame_ms_ring_[engine_frame_ms_head_] = frame_ms;
+        engine_frame_ms_head_ =
+            (engine_frame_ms_head_ + 1u) % static_cast<u32>(engine_frame_ms_ring_.size());
+        if (engine_frame_ms_count_ < static_cast<u32>(engine_frame_ms_ring_.size()))
+            ++engine_frame_ms_count_;
+    }
+
+    [[nodiscard]] f32 average_engine_frame_ms() const noexcept {
+        if (engine_frame_ms_count_ == 0u)
+            return engine_frame_ms_;
+        f32 sum = 0.0f;
+        for (u32 i = 0; i < engine_frame_ms_count_; ++i)
+            sum += engine_frame_ms_ring_[i];
+        return sum / static_cast<f32>(engine_frame_ms_count_);
+    }
+
+    [[nodiscard]] static editor::FrameOverlayStats make_engine_overlay_stats(
+        const render::FrameStats& stats) noexcept {
+        editor::FrameOverlayStats out{};
+        out.draw_calls = stats.raster_draws;
+        out.triangles = stats.raster_triangles;
+        out.active_voices = 0u;
+        out.rt_tiles = stats.rt_tiles;
+        out.rt_jobs = stats.rt_jobs;
+        out.raster_stats_valid = stats.raster_reported;
+        out.rt_stats_valid = stats.rt_reported;
+        out.render_stats_valid = stats.has_render_report();
+        return out;
+    }
+
+    [[nodiscard]] ui::imm::DebugHudStats make_engine_debug_hud(
+        const render::FrameStats& stats) const noexcept {
+        return editor::make_debug_hud_stats(engine_frame_ms_,
+                                            average_engine_frame_ms(),
+                                            make_engine_overlay_stats(stats));
+    }
 };
 
 enum class FrameAction {

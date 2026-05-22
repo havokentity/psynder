@@ -37,7 +37,6 @@
 #include "render/SceneRenderer.h"
 #include "render/Texture.h"
 #include "scene/SceneEcs.h"
-#include "ui/imm/DebugHud.h"
 
 #include <array>
 #include <cmath>
@@ -314,15 +313,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const u64 t0 = platform::Clock::ticks_now();
     u32 frame = 0;
 
-    // 60-sample ring of recent frame times (ms) for the debug HUD's strip
-    // chart. Wraps via `frame % kFrameHistory`; the HUD's own internal
-    // averaging looks at `avg_frame_ms` so we keep this lightweight.
-    // Sized `u32` so `frame + 1u` and the `min` against it stay in the
-    // same domain (the comparable variant in PR #114 mixed `usize` and
-    // `u32`, which clang would have narrowed silently — pre-emptively
-    // avoiding that here).
-    constexpr u32 kFrameHistory = 60;
-    std::array<f32, kFrameHistory> frame_ms_ring{};
     u64 prev_frame_ticks = t0;
     // Smoke-mode default frame time stand-in (60 FPS budget = 1/60 s).
     constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
@@ -344,7 +334,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 ? kSmokeFrameMs
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
-        frame_ms_ring[frame % kFrameHistory] = frame_ms;
 
         // Clear colour + depth.
         render::raster::clear_framebuffer(fb, 0xFF182030u);
@@ -391,26 +380,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             scene.set_transform(crates[i], transform);
         }
 
-        const render::SceneRenderStats render_stats = renderer.render_raster(scene, view);
-
-        // Debug HUD overlay — toggle via `r_debug_hud full` console var.
-        // The HUD reads the per-frame stats we filled at the top of the
-        ui::imm::DebugHudStats stats{};
-        stats.frame_ms = frame_ms;
-        stats.avg_frame_ms = [&]() noexcept {
-            // Walk only the populated prefix of the ring. `n` matches
-            // `kFrameHistory`'s `u32` type so we don't mix domains.
-            const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
-            if (n == 0u)
-                return 0.0f;
-            f32 sum = 0.0f;
-            for (u32 i = 0; i < n; ++i)
-                sum += frame_ms_ring[i];
-            return sum / static_cast<f32>(n);
-        }();
-        stats.draw_calls = render_stats.raster_draws;
-        stats.triangles = render_stats.raster_triangles;
-        app_host.engine_frame_post(stats);
+        renderer.render_raster(scene, view);
+        app_host.engine_frame_post();
         app_host.present();
 
         ++frame;

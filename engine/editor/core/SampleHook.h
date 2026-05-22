@@ -167,6 +167,11 @@ struct FrameOverlayStats {
     usize draw_calls = 0;
     usize triangles = 0;
     usize active_voices = 0;
+    u32 rt_tiles = 0;
+    u32 rt_jobs = 0;
+    bool raster_stats_valid = false;
+    bool rt_stats_valid = false;
+    bool render_stats_valid = false;
 };
 
 inline ui::imm::DebugHudStats make_debug_hud_stats(f32 frame_ms,
@@ -178,6 +183,19 @@ inline ui::imm::DebugHudStats make_debug_hud_stats(f32 frame_ms,
     hud.draw_calls = stats.draw_calls;
     hud.triangles = stats.triangles;
     hud.active_voices = stats.active_voices;
+    hud.rt_tiles = stats.rt_tiles;
+    hud.rt_jobs = stats.rt_jobs;
+    hud.raster_stats_valid = stats.raster_stats_valid || stats.render_stats_valid;
+    hud.rt_stats_valid = stats.rt_stats_valid;
+    hud.render_stats_valid = stats.render_stats_valid;
+    return hud;
+}
+
+inline ui::imm::DebugHudStats make_debug_hud_stats_with_render(f32 frame_ms,
+                                                               f32 avg_frame_ms,
+                                                               const FrameOverlayStats& stats) noexcept {
+    ui::imm::DebugHudStats hud = make_debug_hud_stats(frame_ms, avg_frame_ms, stats);
+    hud.render_stats_valid = true;
     return hud;
 }
 

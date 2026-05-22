@@ -151,6 +151,8 @@ DebugHudStats DebugHudFrameHistory::make_stats(f32 frame_ms,
     stats.draw_calls = draw_calls;
     stats.triangles = triangles;
     stats.active_voices = active_voices;
+    stats.raster_stats_valid = true;
+    stats.render_stats_valid = true;
     return stats;
 }
 
@@ -223,13 +225,29 @@ usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexce
 
     // Second header line: avg ms + draw/tri/voice counts.
     char meta_buf[64]{};
-    std::snprintf(meta_buf,
-                  sizeof(meta_buf),
-                  "avg %.2fms dc%zu tri%zu v%zu",
-                  static_cast<double>(stats.avg_frame_ms),
-                  static_cast<size_t>(stats.draw_calls),
-                  static_cast<size_t>(stats.triangles),
-                  static_cast<size_t>(stats.active_voices));
+    if (stats.raster_stats_valid) {
+        std::snprintf(meta_buf,
+                      sizeof(meta_buf),
+                      "avg %.2fms dc%zu tri%zu v%zu",
+                      static_cast<double>(stats.avg_frame_ms),
+                      static_cast<size_t>(stats.draw_calls),
+                      static_cast<size_t>(stats.triangles),
+                      static_cast<size_t>(stats.active_voices));
+    } else if (stats.rt_stats_valid) {
+        std::snprintf(meta_buf,
+                      sizeof(meta_buf),
+                      "avg %.2fms rt%u jobs%u v%zu",
+                      static_cast<double>(stats.avg_frame_ms),
+                      stats.rt_tiles,
+                      stats.rt_jobs,
+                      static_cast<size_t>(stats.active_voices));
+    } else {
+        std::snprintf(meta_buf,
+                      sizeof(meta_buf),
+                      "avg %.2fms dc-- tri-- v%zu",
+                      static_cast<double>(stats.avg_frame_ms),
+                      static_cast<size_t>(stats.active_voices));
+    }
     label(math::Vec2{panel_origin.x + 4.0f, panel_origin.y + 4.0f + kLineHeight},
           std::string_view{meta_buf},
           kColourLabel);
@@ -266,11 +284,21 @@ usize draw_debug_hud(render::Framebuffer& fb, const DebugHudStats& stats) noexce
         char row2[64]{};
         const f32 avg_fps = (stats.avg_frame_ms > 0.0001f) ? (1000.0f / stats.avg_frame_ms) : 0.0f;
         const f32 budget_delta = stats.frame_ms - 16.6667f;
-        std::snprintf(row0,
-                      sizeof(row0),
-                      "%zu draws / %zu tris",
-                      static_cast<size_t>(stats.draw_calls),
-                      static_cast<size_t>(stats.triangles));
+        if (stats.raster_stats_valid) {
+            std::snprintf(row0,
+                          sizeof(row0),
+                          "%zu draws / %zu tris",
+                          static_cast<size_t>(stats.draw_calls),
+                          static_cast<size_t>(stats.triangles));
+        } else if (stats.rt_stats_valid) {
+            std::snprintf(row0,
+                          sizeof(row0),
+                          "rt %u tiles / %u jobs",
+                          stats.rt_tiles,
+                          stats.rt_jobs);
+        } else {
+            std::snprintf(row0, sizeof(row0), "not reported");
+        }
         std::snprintf(row1,
                       sizeof(row1),
                       "%.2f avg ms / %.1f fps",

@@ -8,6 +8,7 @@
 #include "core/hardware/CpuFeatures.h"
 #include "jobs/JobSystem.h"
 #include "jobs/JobSystemHetero.h"
+#include "render/FrameStats.h"
 
 #include <algorithm>
 #include <array>
@@ -1480,6 +1481,7 @@ void FrameRenderer::render(const FrameRenderInput& input,
                               FrameTelemetryCounter::HitPixels,
                               static_cast<u64>(stats->hit_pixels));
     }
+    record_rt_work(tile_count, scheduled_jobs);
 }
 
 }  // namespace psynder::render::rt

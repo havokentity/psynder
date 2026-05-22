@@ -36,7 +36,6 @@
 #include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/imm/DebugHud.h"
 
 #include <algorithm>
 #include <array>
@@ -390,7 +389,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     std::vector<u32>& final_pixels = app_host.pixels();
     render::SceneRenderer renderer;
-    ui::imm::DebugHudFrameHistory hud_history{};
 
     PSY_LOG_INFO("Psynder sample 13 running{}",
                  smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)
@@ -398,11 +396,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     const u64 t0 = platform::Clock::ticks_now();
     u64 last_ticks = t0;
-    u64 prev_frame_ticks = t0;
     u32 frame = 0;
     const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
     constexpr f32 kFovY = 70.0f * math::kDegToRad;
-    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
 
     std::array<Light, kNumLights> lights{};
     make_lights(lights);
@@ -411,13 +407,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         window->poll_events();
 
         const u64 now_ticks = platform::Clock::ticks_now();
-        const f32 frame_ms =
-            smoke_frames > 0
-                ? kSmokeFrameMs
-                : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
-        prev_frame_ticks = now_ticks;
-        hud_history.push(frame_ms);
-
         if (auto* in = platform::input();
             in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             PSY_LOG_INFO("sample_13: escape pressed, exiting");
@@ -460,7 +449,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(140, 140, 150);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        app_host.engine_frame_post(hud_history.make_stats(frame_ms, 1, 0, 0));
+        app_host.engine_frame_post();
         app_host.present();
 
         ++frame;

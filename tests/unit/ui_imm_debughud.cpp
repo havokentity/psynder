@@ -65,6 +65,7 @@ imm::DebugHudStats sample_stats() {
     s.draw_calls = 1234;
     s.triangles = 56789;
     s.active_voices = 4;
+    s.render_stats_valid = true;
     return s;
 }
 

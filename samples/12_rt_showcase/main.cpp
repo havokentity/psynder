@@ -484,7 +484,6 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
     std::array<Light, kNumLights> lights{};
 
-    ui::imm::DebugHudFrameHistory hud_history{};
     u64 prev_frame_ticks = t0;
     // Smoke-mode frame-time stand-in (60 FPS budget = 1/60 s).
     constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
@@ -500,7 +499,6 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
                 ? kSmokeFrameMs
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
-        hud_history.push(frame_ms);
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
@@ -552,7 +550,7 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
             }
         }
 
-        app_host.engine_frame_post(hud_history.make_stats(frame_ms, 1, 0, 0));
+        app_host.engine_frame_post();
         app_host.present();
 
         ++frame;

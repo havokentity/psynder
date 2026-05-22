@@ -90,7 +90,6 @@
 #include "render/SceneRenderer.h"
 #include "render/Texture.h"
 #include "render/raster/Raster.h"
-#include "ui/imm/DebugHud.h"
 #include "world/bsp/Bsp.h"
 #include "world/bsp/BspFormat.h"
 
@@ -930,18 +929,15 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const u64 t0 = platform::Clock::ticks_now();
     u64 last_ticks = t0;
     u32 frame = 0;
-    f32 frame_ms_ring[60] = {0.0f};
 
     while (!window->should_close()) {
         window->poll_events();
         const u64 now = platform::Clock::ticks_now();
-        const f32 frame_ms = static_cast<f32>(platform::Clock::seconds(now - last_ticks) * 1000.0);
         const f32 dt =
             (args.smoke_frames > 0)
                 ? 1.0f / 60.0f
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now - last_ticks)));
         last_ticks = now;
-        frame_ms_ring[frame % 60u] = frame_ms;
 
         // Run overlay input before gameplay hotkeys so toggle/escape/B frames
         // never leak into game controls.
@@ -1023,16 +1019,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        ui::imm::DebugHudStats stats{};
-        stats.frame_ms = frame_ms;
-        const u32 n = std::min<u32>(frame + 1u, 60u);
-        f32 sum = 0.0f;
-        for (u32 i = 0; i < n; ++i)
-            sum += frame_ms_ring[i];
-        stats.avg_frame_ms = n ? sum / static_cast<f32>(n) : frame_ms;
-        stats.draw_calls = ctx.draw_count;
-        stats.triangles = ctx.tri_count;
-        app_host.engine_frame_post(stats);
+        app_host.engine_frame_post();
         app_host.present();
 
         if (args.smoke_frames > 0) {
