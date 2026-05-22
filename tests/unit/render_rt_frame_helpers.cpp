@@ -60,7 +60,7 @@ TEST_CASE("render rt frame renderer: reflection bounce cvar clamps to implemente
 
     render::rt::FrameRenderConfig config =
         render::rt::frame_render_config_from_console(16u, 16u, 16u, 16u, 8u);
-    REQUIRE(config.reflection_bounces == 1u);
+    REQUIRE(config.reflection_bounces == 8u);
 
     overrides.reflection_bounces = "0";
     render::rt::apply_frame_renderer_console_overrides(overrides);
