@@ -60,6 +60,7 @@ void SceneGraph::clear() {
     effective_dirty_.clear();
     dirty_queued_.clear();
     dirty_roots_.clear();
+    free_nodes_.clear();
     analytic_spheres_.clear();
     live_nodes_ = 0;
     max_depth_ = 0;
@@ -83,6 +84,7 @@ void SceneGraph::reserve_nodes(u32 count) {
     effective_dirty_.reserve(count);
     dirty_queued_.reserve(count);
     dirty_roots_.reserve(count);
+    free_nodes_.reserve(count);
     analytic_spheres_.reserve(count);
 }
 
@@ -92,24 +94,60 @@ void SceneGraph::reserve_analytic_spheres(u32 count) {
 
 SceneNode SceneGraph::create_node(SceneNode parent, const LocalTransform& local) {
     const u32 parent_index = valid_index(parent) ? parent.index() : kInvalidIndex;
-    const u32 index = static_cast<u32>(generation_.size());
-    const u32 generation = 1u;
-    generation_.push_back(generation);
-    alive_.push_back(1u);
-    parent_.push_back(parent_index);
-    first_child_.push_back(kInvalidIndex);
-    next_sibling_.push_back(kInvalidIndex);
-    prev_sibling_.push_back(kInvalidIndex);
-    depth_.push_back(parent_index == kInvalidIndex ? 0u : depth_[parent_index] + 1u);
-    local_translation_.push_back(local.translation);
-    local_rotation_.push_back(local.rotation);
-    local_scale_.push_back(local.scale);
-    local_.push_back(math::identity4());
-    world_.push_back(math::identity4());
-    local_dirty_.push_back(1u);
-    local_matrix_dirty_.push_back(1u);
-    effective_dirty_.push_back(1u);
-    dirty_queued_.push_back(1u);
+
+    u32 index = kInvalidIndex;
+    if (!free_nodes_.empty()) {
+        auto it = free_nodes_.end();
+        if (parent_index == kInvalidIndex) {
+            it = free_nodes_.end() - 1;
+        } else {
+            it = std::find_if(free_nodes_.begin(), free_nodes_.end(), [&](u32 candidate) {
+                return candidate > parent_index;
+            });
+        }
+        if (it != free_nodes_.end()) {
+            index = *it;
+            *it = free_nodes_.back();
+            free_nodes_.pop_back();
+        }
+    }
+
+    if (index == kInvalidIndex) {
+        index = static_cast<u32>(generation_.size());
+        generation_.push_back(1u);
+        alive_.push_back(0u);
+        parent_.push_back(kInvalidIndex);
+        first_child_.push_back(kInvalidIndex);
+        next_sibling_.push_back(kInvalidIndex);
+        prev_sibling_.push_back(kInvalidIndex);
+        depth_.push_back(0u);
+        local_translation_.push_back({});
+        local_rotation_.push_back({});
+        local_scale_.push_back({});
+        local_.push_back(math::identity4());
+        world_.push_back(math::identity4());
+        local_dirty_.push_back(0u);
+        local_matrix_dirty_.push_back(0u);
+        effective_dirty_.push_back(0u);
+        dirty_queued_.push_back(0u);
+    }
+
+    const u32 generation = generation_[index];
+    alive_[index] = 1u;
+    parent_[index] = parent_index;
+    first_child_[index] = kInvalidIndex;
+    next_sibling_[index] = kInvalidIndex;
+    prev_sibling_[index] = kInvalidIndex;
+    depth_[index] = parent_index == kInvalidIndex ? 0u : depth_[parent_index] + 1u;
+    local_translation_[index] = local.translation;
+    local_rotation_[index] = local.rotation;
+    local_scale_[index] = local.scale;
+    local_[index] = math::identity4();
+    world_[index] = math::identity4();
+    local_dirty_[index] = 1u;
+    local_matrix_dirty_[index] = 1u;
+    effective_dirty_[index] = 1u;
+    dirty_queued_[index] = 1u;
     dirty_roots_.push_back(index);
     max_depth_ = std::max(max_depth_, depth_[index]);
     if (parent_index != kInvalidIndex)
@@ -140,6 +178,7 @@ bool SceneGraph::destroy_node(SceneNode node) {
     effective_dirty_[index] = 0u;
     if (index < dirty_queued_.size())
         dirty_queued_[index] = 0u;
+    free_nodes_.push_back(index);
     --live_nodes_;
     recompute_depth_bounds();
     return true;

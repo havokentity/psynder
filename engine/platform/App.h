@@ -451,7 +451,10 @@ class WindowApp {
     }
 
     void bind_scene_authoring(scene::Scene& scene) noexcept {
-        scene.bind_mesh_spawner(this, &WindowApp::spawn_mesh_for_scene);
+        scene.bind_mesh_spawner(this,
+                                &WindowApp::spawn_mesh_for_scene,
+                                &WindowApp::spawn_mesh_instance_for_scene,
+                                &WindowApp::spawn_mesh_batch_for_scene);
     }
 
     static Entity spawn_mesh_for_scene(void* user,
@@ -465,6 +468,37 @@ class WindowApp {
         if (!app)
             return {};
         return app->rendering_system_.spawn_mesh(scene, mesh_desc, local, parent, flags, mobility);
+    }
+
+    static Entity spawn_mesh_instance_for_scene(void* user,
+                                                scene::Scene& scene,
+                                                render::MeshId mesh,
+                                                render::MaterialId material,
+                                                const scene::LocalTransform& local,
+                                                scene::SceneNode parent,
+                                                scene::RenderableFlags flags,
+                                                scene::ObjectMobility mobility) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return {};
+        return app->rendering_system_.spawn_mesh_instance(
+            scene, mesh, material, local, parent, flags, mobility);
+    }
+
+    static u32 spawn_mesh_batch_for_scene(void* user,
+                                          scene::Scene& scene,
+                                          render::MeshId mesh,
+                                          render::MaterialId material,
+                                          std::span<const scene::LocalTransform> local,
+                                          std::span<Entity> out_entities,
+                                          scene::SceneNode parent,
+                                          scene::RenderableFlags flags,
+                                          scene::ObjectMobility mobility) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return 0u;
+        return app->rendering_system_.spawn_mesh_batch(
+            scene, mesh, material, local, out_entities, parent, flags, mobility);
     }
 
     [[nodiscard]] f32 render_target_aspect() const noexcept {

@@ -105,6 +105,35 @@ TEST_CASE("scene graph: set local transform defers world math until update",
     REQUIRE_THAT(static_cast<double>(world_after.m[13]), Catch::Matchers::WithinAbs(2.0, 1e-5));
 }
 
+TEST_CASE("scene graph: destroyed node slots are pooled and reused",
+          "[scene][scene_graph][pool]") {
+    SceneGraph graph;
+    graph.reserve_nodes(4);
+    SceneNode a = graph.create_node(kInvalidSceneNode, trs({1.0f, 0.0f, 0.0f}));
+    SceneNode b = graph.create_node(kInvalidSceneNode, trs({2.0f, 0.0f, 0.0f}));
+    graph.update_world_transforms();
+
+    const u32 node_capacity = graph.node_capacity();
+    REQUIRE(graph.destroy_node(a));
+    REQUIRE(graph.destroy_node(b));
+    REQUIRE(graph.free_node_count() == 2u);
+
+    SceneNode reused_a = graph.create_node(kInvalidSceneNode, trs({3.0f, 0.0f, 0.0f}));
+    SceneNode reused_b = graph.create_node(kInvalidSceneNode, trs({0.0f, 4.0f, 0.0f}));
+    REQUIRE(reused_a.valid());
+    REQUIRE(reused_b.valid());
+    REQUIRE(reused_a.raw != a.raw);
+    REQUIRE(reused_b.raw != b.raw);
+    REQUIRE(graph.node_capacity() == node_capacity);
+    REQUIRE(graph.free_node_count() == 0u);
+
+    SceneGraphUpdateStats stats = graph.update_world_transforms();
+    REQUIRE(stats.transforms_updated == 2u);
+    const math::Mat4& world = graph.world_matrix(reused_b);
+    REQUIRE_THAT(static_cast<double>(world.m[12]), Catch::Matchers::WithinAbs(0.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(world.m[13]), Catch::Matchers::WithinAbs(4.0, 1e-5));
+}
+
 TEST_CASE("scene graph: transform columns are cache-line aligned SoA",
           "[scene][scene_graph][cache]") {
     SceneGraph graph;

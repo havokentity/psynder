@@ -127,6 +127,7 @@ class SceneGraph {
     u32 node_count() const noexcept;
     u32 live_node_count() const noexcept { return live_nodes_; }
     u32 node_capacity() const noexcept { return static_cast<u32>(generation_.capacity()); }
+    u32 free_node_count() const noexcept { return static_cast<u32>(free_nodes_.size()); }
     u32 dirty_root_capacity() const noexcept { return static_cast<u32>(dirty_roots_.capacity()); }
     u32 analytic_sphere_capacity() const noexcept {
         return static_cast<u32>(analytic_spheres_.capacity());
@@ -157,6 +158,7 @@ class SceneGraph {
     detail::AlignedVector<u8> effective_dirty_;
     detail::AlignedVector<u8> dirty_queued_;
     detail::AlignedVector<u32> dirty_roots_;
+    detail::AlignedVector<u32> free_nodes_;
     detail::AlignedVector<AnalyticSphereDesc> analytic_spheres_;
     u32 live_nodes_ = 0;
     u32 max_depth_ = 0;

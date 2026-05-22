@@ -247,6 +247,23 @@ class RenderingSystem {
         return create_mesh_entity(scene, mesh_desc, material, local, parent, flags, mobility);
     }
 
+    [[nodiscard]] SceneMeshEntity create_mesh_instance(
+        scene::Scene& scene,
+        MeshId mesh,
+        MaterialId material,
+        const scene::LocalTransform& local = {},
+        scene::SceneNode parent = scene::kInvalidSceneNode,
+        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
+        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
+        if (!material.valid())
+            material = scene.materials().create(MaterialDesc{});
+        const Entity entity = scene.create_renderable(
+            make_mesh_renderable(mesh, material, flags, math::aabb_empty(), mobility),
+            local,
+            parent);
+        return {entity, mesh, material};
+    }
+
     [[nodiscard]] Entity spawn_mesh(
         scene::Scene& scene,
         const MeshDesc& mesh_desc,
@@ -256,6 +273,40 @@ class RenderingSystem {
         scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
         return create_mesh_entity(scene, mesh_desc, MaterialDesc{}, local, parent, flags, mobility)
             .entity;
+    }
+
+    [[nodiscard]] Entity spawn_mesh_instance(
+        scene::Scene& scene,
+        MeshId mesh,
+        MaterialId material,
+        const scene::LocalTransform& local = {},
+        scene::SceneNode parent = scene::kInvalidSceneNode,
+        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
+        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
+        return create_mesh_instance(scene, mesh, material, local, parent, flags, mobility).entity;
+    }
+
+    u32 spawn_mesh_batch(scene::Scene& scene,
+                         MeshId mesh,
+                         MaterialId material,
+                         std::span<const scene::LocalTransform> local,
+                         std::span<Entity> out_entities,
+                         scene::SceneNode parent = scene::kInvalidSceneNode,
+                         scene::RenderableFlags flags = scene::RenderableFlags::Visible,
+                         scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
+        const usize count = std::min(local.size(), out_entities.size());
+        if (count == 0u)
+            return 0u;
+        if (!material.valid())
+            material = scene.materials().create(MaterialDesc{});
+        u32 spawned = 0u;
+        for (usize i = 0; i < count; ++i) {
+            out_entities[i] =
+                create_mesh_instance(scene, mesh, material, local[i], parent, flags, mobility).entity;
+            if (out_entities[i].valid())
+                ++spawned;
+        }
+        return spawned;
     }
 
     SceneRenderStats build(scene::Scene& scene) {

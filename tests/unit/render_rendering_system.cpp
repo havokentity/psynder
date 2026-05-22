@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <span>
 
 using namespace psynder;
 
@@ -256,6 +257,103 @@ TEST_CASE("scene spawn mesh delegates to bound rendering system", "[render][rend
     REQUIRE(scene.materials().valid(renderable->material));
 
     REQUIRE(scene.destroy_entity(entity));
+}
+
+TEST_CASE("scene mesh batch spawn reuses one mesh and pooled storage",
+          "[render][rendering_system][pool]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+
+    scene::ScenePrewarmConfig config{};
+    config.scene_entities = 4u;
+    config.renderables = 4u;
+    config.render_items = 4u;
+    scene.prewarm_capacity(config);
+    renderer.reserve_scene_capacity(4u, 1u);
+
+    scene.bind_mesh_spawner(
+        &renderer,
+        [](void* user,
+           scene::Scene& target_scene,
+           const render::MeshDesc& mesh_desc,
+           const scene::LocalTransform& local,
+           scene::SceneNode parent,
+           scene::RenderableFlags flags,
+           scene::ObjectMobility mobility) -> Entity {
+            auto* bound_renderer = static_cast<render::RenderingSystem*>(user);
+            return bound_renderer->spawn_mesh(target_scene, mesh_desc, local, parent, flags, mobility);
+        },
+        [](void* user,
+           scene::Scene& target_scene,
+           render::MeshId mesh,
+           render::MaterialId material,
+           const scene::LocalTransform& local,
+           scene::SceneNode parent,
+           scene::RenderableFlags flags,
+           scene::ObjectMobility mobility) -> Entity {
+            auto* bound_renderer = static_cast<render::RenderingSystem*>(user);
+            return bound_renderer->spawn_mesh_instance(
+                target_scene, mesh, material, local, parent, flags, mobility);
+        },
+        [](void* user,
+           scene::Scene& target_scene,
+           render::MeshId mesh,
+           render::MaterialId material,
+           std::span<const scene::LocalTransform> local,
+           std::span<Entity> out,
+           scene::SceneNode parent,
+           scene::RenderableFlags flags,
+           scene::ObjectMobility mobility) -> u32 {
+            auto* bound_renderer = static_cast<render::RenderingSystem*>(user);
+            return bound_renderer->spawn_mesh_batch(
+                target_scene, mesh, material, local, out, parent, flags, mobility);
+        });
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    const render::MeshId mesh = renderer.meshes().create_mesh(mesh_desc);
+
+    render::MaterialDesc material_desc{};
+    material_desc.flags = render::MaterialFlags::RasterVisible;
+    const render::MaterialId material = scene.materials().create(material_desc);
+
+    const auto before = scene.pool_stats();
+    std::array<scene::LocalTransform, 4> local{};
+    for (usize i = 0; i < local.size(); ++i)
+        local[i].translation = {static_cast<f32>(i), 0.0f, 0.0f};
+    std::array<Entity, 4> entities{};
+
+    REQUIRE(scene.spawn_mesh_batch(mesh, material, local, entities) == entities.size());
+    REQUIRE(renderer.meshes().live_count() == 1u);
+    for (Entity entity : entities)
+        REQUIRE(entity.valid());
+
+    const render::SceneRenderStats stats = renderer.build(scene);
+    REQUIRE(stats.submitted == entities.size());
+    REQUIRE(stats.raster_draws == 0u);
+
+    const auto after_spawn = scene.pool_stats();
+    REQUIRE(after_spawn.entity_capacity == before.entity_capacity);
+    REQUIRE(after_spawn.node_capacity == before.node_capacity);
+    REQUIRE(after_spawn.chunk_live_count == before.chunk_live_count);
+
+    REQUIRE(scene.despawn_batch(entities) == entities.size());
+    REQUIRE(scene.graph().free_node_count() >= entities.size());
+
+    std::array<Entity, 4> reused{};
+    REQUIRE(scene.spawn_mesh_batch(mesh, material, local, reused) == reused.size());
+    const auto after_reuse = scene.pool_stats();
+    REQUIRE(after_reuse.entity_capacity == before.entity_capacity);
+    REQUIRE(after_reuse.node_capacity == before.node_capacity);
+    REQUIRE(after_reuse.chunk_live_count == before.chunk_live_count);
+
+    REQUIRE(scene.despawn_batch(reused) == reused.size());
 }
 
 TEST_CASE("rendering system builds material batches for CPU effects", "[render][rendering_system]") {

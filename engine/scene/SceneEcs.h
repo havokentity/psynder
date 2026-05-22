@@ -4,8 +4,10 @@
 #pragma once
 
 #include "core/Types.h"
+#include "core/Log.h"
 #include "math/Bounds.h"
 #include "math/MathExt.h"
+#include "render/Geometry.h"
 #include "render/Material.h"
 #include "scene/EcsRegistry.h"
 #include "scene/Environment.h"
@@ -15,11 +17,8 @@
 #include <algorithm>
 #include <array>
 #include <mutex>
+#include <span>
 #include <vector>
-
-namespace psynder::render {
-struct MeshDesc;
-}
 
 namespace psynder::scene {
 
@@ -148,6 +147,15 @@ struct ScenePrewarmConfig {
     u32 analytic_spheres = 0u;
     u32 render_items = 0u;
     u32 deferred_structural_changes = 0u;
+};
+
+struct ScenePoolStats {
+    u32 entity_capacity = 0u;
+    u32 chunk_live_count = 0u;
+    u32 node_capacity = 0u;
+    u32 live_nodes = 0u;
+    u32 free_nodes = 0u;
+    u32 render_item_capacity = 0u;
 };
 
 struct SceneCameraView {
@@ -438,6 +446,23 @@ class Scene {
                                    SceneNode parent,
                                    RenderableFlags flags,
                                    ObjectMobility mobility);
+    using SpawnMeshInstanceFn = Entity (*)(void* user,
+                                           Scene& scene,
+                                           ::psynder::render::MeshId mesh,
+                                           ::psynder::render::MaterialId material,
+                                           const LocalTransform& local,
+                                           SceneNode parent,
+                                           RenderableFlags flags,
+                                           ObjectMobility mobility);
+    using SpawnMeshBatchFn = u32 (*)(void* user,
+                                     Scene& scene,
+                                     ::psynder::render::MeshId mesh,
+                                     ::psynder::render::MaterialId material,
+                                     std::span<const LocalTransform> local,
+                                     std::span<Entity> out_entities,
+                                     SceneNode parent,
+                                     RenderableFlags flags,
+                                     ObjectMobility mobility);
 
     explicit Scene(EcsRegistry& registry = EcsRegistry::Get()) noexcept
         : registry_(&registry)
@@ -468,19 +493,29 @@ class Scene {
     [[nodiscard]] SceneRuntime& runtime() noexcept { return runtime_; }
     [[nodiscard]] const SceneRuntime& runtime() const noexcept { return runtime_; }
 
-    void bind_mesh_spawner(void* user, SpawnMeshFn fn) noexcept {
+    void bind_mesh_spawner(void* user,
+                           SpawnMeshFn fn,
+                           SpawnMeshInstanceFn instance_fn = nullptr,
+                           SpawnMeshBatchFn batch_fn = nullptr) noexcept {
         mesh_spawner_user_ = user;
         mesh_spawner_ = fn;
+        mesh_instance_spawner_ = instance_fn;
+        mesh_batch_spawner_ = batch_fn;
     }
 
     void clear_mesh_spawner(void* user) noexcept {
         if (mesh_spawner_user_ == user) {
             mesh_spawner_user_ = nullptr;
             mesh_spawner_ = nullptr;
+            mesh_instance_spawner_ = nullptr;
+            mesh_batch_spawner_ = nullptr;
         }
     }
 
     [[nodiscard]] bool can_spawn_mesh() const noexcept { return mesh_spawner_ != nullptr; }
+    [[nodiscard]] bool can_spawn_mesh_instance() const noexcept {
+        return mesh_instance_spawner_ != nullptr;
+    }
 
     void set_structural_deferred(bool on) noexcept { registry_->set_structural_deferred(on); }
     void apply_structural_changes() { registry_->apply_structural_changes(); }
@@ -489,15 +524,28 @@ class Scene {
         prewarm_scene_capacity(*registry_, graph_, config);
         render_item_capacity_ =
             std::max(render_item_capacity_, std::max(config.render_items, config.renderables));
+        pool_growth_warnings_ = true;
+        record_pool_watermark();
     }
 
     void reserve_render_items(std::vector<SceneRenderItem>& out) const {
         out.reserve(render_item_capacity_);
     }
 
+    [[nodiscard]] ScenePoolStats pool_stats() const noexcept {
+        return {registry_->entity_capacity(),
+                registry_->chunk_live_count(),
+                graph_.node_capacity(),
+                graph_.live_node_count(),
+                graph_.free_node_count(),
+                render_item_capacity_};
+    }
+
     [[nodiscard]] Entity create_entity(const LocalTransform& local = {},
                                        SceneNode parent = kInvalidSceneNode) {
-        return create_scene_entity(*registry_, graph_, parent, local);
+        const Entity entity = create_scene_entity(*registry_, graph_, parent, local);
+        warn_pool_growth("create_entity");
+        return entity;
     }
 
     [[nodiscard]] SceneNode node(Entity entity) const noexcept {
@@ -533,6 +581,62 @@ class Scene {
         return mesh_spawner_(mesh_spawner_user_, *this, mesh_desc, local, parent, flags, mobility);
     }
 
+    [[nodiscard]] Entity spawn_mesh_instance(
+        ::psynder::render::MeshId mesh,
+        ::psynder::render::MaterialId material = {},
+        const LocalTransform& local = {},
+        SceneNode parent = kInvalidSceneNode,
+        RenderableFlags flags = RenderableFlags::Visible,
+        ObjectMobility mobility = ObjectMobility::Dynamic) {
+        if (!mesh_instance_spawner_)
+            return {};
+        return mesh_instance_spawner_(
+            mesh_spawner_user_, *this, mesh, material, local, parent, flags, mobility);
+    }
+
+    u32 spawn_mesh_batch(::psynder::render::MeshId mesh,
+                         ::psynder::render::MaterialId material,
+                         std::span<const LocalTransform> local,
+                         std::span<Entity> out_entities,
+                         SceneNode parent = kInvalidSceneNode,
+                         RenderableFlags flags = RenderableFlags::Visible,
+                         ObjectMobility mobility = ObjectMobility::Dynamic) {
+        if (local.empty() || out_entities.empty())
+            return 0u;
+        const usize count = std::min(local.size(), out_entities.size());
+        const std::span<const LocalTransform> local_slice{local.data(), count};
+        const std::span<Entity> out_slice{out_entities.data(), count};
+        if (mesh_batch_spawner_) {
+            return mesh_batch_spawner_(mesh_spawner_user_,
+                                       *this,
+                                       mesh,
+                                       material,
+                                       local_slice,
+                                       out_slice,
+                                       parent,
+                                       flags,
+                                       mobility);
+        }
+        u32 spawned = 0u;
+        for (usize i = 0; i < count; ++i) {
+            out_slice[i] = spawn_mesh_instance(mesh, material, local_slice[i], parent, flags, mobility);
+            if (out_slice[i].valid())
+                ++spawned;
+        }
+        return spawned;
+    }
+
+    bool despawn_entity(Entity entity) { return destroy_entity(entity); }
+
+    u32 despawn_batch(std::span<const Entity> entities) {
+        u32 despawned = 0u;
+        for (Entity entity : entities) {
+            if (despawn_entity(entity))
+                ++despawned;
+        }
+        return despawned;
+    }
+
     bool destroy_entity(Entity entity) {
         SceneNode node{};
         if (auto* node_component = registry_->get<SceneNodeComponent>(entity))
@@ -549,6 +653,7 @@ class Scene {
         if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
             return false;
         registry_->add<CameraComponent>(entity, camera);
+        warn_pool_growth("attach_camera");
         return true;
     }
 
@@ -570,6 +675,7 @@ class Scene {
         if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
             return false;
         registry_->add<RenderableComponent>(entity, renderable);
+        warn_pool_growth("attach_renderable");
         return true;
     }
 
@@ -645,6 +751,12 @@ class Scene {
         render_item_capacity_ = other.render_item_capacity_;
         mesh_spawner_user_ = other.mesh_spawner_user_;
         mesh_spawner_ = other.mesh_spawner_;
+        mesh_instance_spawner_ = other.mesh_instance_spawner_;
+        mesh_batch_spawner_ = other.mesh_batch_spawner_;
+        pool_growth_warnings_ = other.pool_growth_warnings_;
+        last_entity_capacity_ = other.last_entity_capacity_;
+        last_chunk_live_count_ = other.last_chunk_live_count_;
+        last_node_capacity_ = other.last_node_capacity_;
 
         other.registry_ = &EcsRegistry::Get();
         other.environment_.bind_runtime(other.runtime_.environment);
@@ -652,6 +764,42 @@ class Scene {
         other.render_item_capacity_ = 0u;
         other.mesh_spawner_user_ = nullptr;
         other.mesh_spawner_ = nullptr;
+        other.mesh_instance_spawner_ = nullptr;
+        other.mesh_batch_spawner_ = nullptr;
+        other.pool_growth_warnings_ = false;
+        other.last_entity_capacity_ = 0u;
+        other.last_chunk_live_count_ = 0u;
+        other.last_node_capacity_ = 0u;
+    }
+
+    void record_pool_watermark() noexcept {
+        last_entity_capacity_ = registry_->entity_capacity();
+        last_chunk_live_count_ = registry_->chunk_live_count();
+        last_node_capacity_ = graph_.node_capacity();
+    }
+
+    void warn_pool_growth(const char* op) noexcept {
+        if (!pool_growth_warnings_)
+            return;
+        const u32 entity_capacity = registry_->entity_capacity();
+        const u32 chunk_live_count = registry_->chunk_live_count();
+        const u32 node_capacity = graph_.node_capacity();
+        if (entity_capacity > last_entity_capacity_ || chunk_live_count > last_chunk_live_count_ ||
+            node_capacity > last_node_capacity_) {
+            PSY_LOG_WARN(
+                "scene: pooled storage grew during {} (entities {}->{}, chunks {}->{}, nodes "
+                "{}->{}); prewarm more capacity to avoid runtime allocation",
+                op,
+                last_entity_capacity_,
+                entity_capacity,
+                last_chunk_live_count_,
+                chunk_live_count,
+                last_node_capacity_,
+                node_capacity);
+            last_entity_capacity_ = entity_capacity;
+            last_chunk_live_count_ = chunk_live_count;
+            last_node_capacity_ = node_capacity;
+        }
     }
 
     EcsRegistry* registry_ = nullptr;
@@ -663,6 +811,12 @@ class Scene {
     u32 render_item_capacity_ = 0u;
     void* mesh_spawner_user_ = nullptr;
     SpawnMeshFn mesh_spawner_ = nullptr;
+    SpawnMeshInstanceFn mesh_instance_spawner_ = nullptr;
+    SpawnMeshBatchFn mesh_batch_spawner_ = nullptr;
+    bool pool_growth_warnings_ = false;
+    u32 last_entity_capacity_ = 0u;
+    u32 last_chunk_live_count_ = 0u;
+    u32 last_node_capacity_ = 0u;
 };
 
 }  // namespace psynder::scene
