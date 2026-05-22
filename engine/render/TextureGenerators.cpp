@@ -3,6 +3,7 @@
 
 #include "render/TextureGenerators.h"
 
+#include "core/HashHelpers.h"
 #include "render/Color.h"
 
 #include <algorithm>
@@ -24,16 +25,8 @@ namespace {
     return static_cast<u8>(std::clamp(value, 0, 255));
 }
 
-[[nodiscard]] u32 hash_u32(u32 x, u32 y, u32 seed = 0u) noexcept {
-    u32 h = x * 374761393u + y * 668265263u + seed * 2246822519u;
-    h = (h ^ (h >> 13u)) * 1274126177u;
-    h ^= h >> 16u;
-    return h;
-}
-
 [[nodiscard]] f32 hash01(u32 x, u32 y, u32 seed = 0u) noexcept {
-    return static_cast<f32>(hash_u32(x, y, seed) & 0x00FFFFFFu) /
-           static_cast<f32>(0x01000000u);
+    return hash_helpers::hash2_unit24(x, y, seed);
 }
 
 struct Rgba {

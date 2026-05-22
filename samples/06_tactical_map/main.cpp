@@ -35,6 +35,7 @@
 
 #include "common/MeshWinding.h"
 #include "core/AppArgs.h"
+#include "core/HashHelpers.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/SampleHook.h"
@@ -105,17 +106,6 @@ PSY_FORCEINLINE u32 pack_depth_u24(f32 z) noexcept {
 // large ridge bump that runs roughly along the X axis through the centre.
 // Output is u16, 0..65535, scaled to metres by `height_scale`.
 
-// 32-bit integer hash → uniform float in [0,1).
-PSY_FORCEINLINE f32 hash01(u32 x, u32 z, u32 seed) noexcept {
-    u32 h = x * 0x27d4eb2du ^ (z * 0x165667b1u + seed * 0x9e3779b9u);
-    h ^= h >> 15;
-    h *= 0x85ebca6bu;
-    h ^= h >> 13;
-    h *= 0xc2b2ae35u;
-    h ^= h >> 16;
-    return static_cast<f32>(h) * (1.0f / 4294967296.0f);
-}
-
 // Smoothstep (5th order — Perlin's standard fade curve).
 PSY_FORCEINLINE f32 fade5(f32 t) noexcept {
     return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
@@ -130,10 +120,14 @@ PSY_FORCEINLINE f32 value_noise(f32 wx, f32 wz, f32 cell, u32 seed) noexcept {
     const i32 iz = static_cast<i32>(std::floor(fz));
     const f32 tx = fade5(fx - static_cast<f32>(ix));
     const f32 tz = fade5(fz - static_cast<f32>(iz));
-    const f32 h00 = hash01(static_cast<u32>(ix), static_cast<u32>(iz), seed);
-    const f32 h10 = hash01(static_cast<u32>(ix + 1), static_cast<u32>(iz), seed);
-    const f32 h01 = hash01(static_cast<u32>(ix), static_cast<u32>(iz + 1), seed);
-    const f32 h11 = hash01(static_cast<u32>(ix + 1), static_cast<u32>(iz + 1), seed);
+    const f32 h00 =
+        hash_helpers::murmur_mix2_unit32(static_cast<u32>(ix), static_cast<u32>(iz), seed);
+    const f32 h10 =
+        hash_helpers::murmur_mix2_unit32(static_cast<u32>(ix + 1), static_cast<u32>(iz), seed);
+    const f32 h01 =
+        hash_helpers::murmur_mix2_unit32(static_cast<u32>(ix), static_cast<u32>(iz + 1), seed);
+    const f32 h11 =
+        hash_helpers::murmur_mix2_unit32(static_cast<u32>(ix + 1), static_cast<u32>(iz + 1), seed);
     const f32 a = h00 + (h10 - h00) * tx;
     const f32 b = h01 + (h11 - h01) * tx;
     return a + (b - a) * tz;
