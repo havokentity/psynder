@@ -7,6 +7,8 @@ and before ending a session so crash recovery has a concrete resume point.
 ## Current Branch
 
 - Orchestrator branch: `codex/hybrid-material-shadows`
+- Shared integration branch: `integration/wave-hybrid-material-shadows`
+- Current base commit: `00bde99 render: add hybrid material shadow policy`
 - Base intent: define the shared contracts for material policy, static/dynamic
   renderables, raster/RT/bake shadow queues, and first sample migration.
 - Integration flow for future worker PRs: workers should target a shared
@@ -37,9 +39,9 @@ and before ending a session so crash recovery has a concrete resume point.
 
 ## Next Multi-Agent Step
 
-1. Commit and push the current shared contract branch.
-2. Create/push `integration/wave-hybrid-material-shadows` from that contract
-   commit.
+1. Current shared contract branch is committed and pushed.
+2. `integration/wave-hybrid-material-shadows` is created and pushed from that
+   contract commit.
 3. Resume/reuse prior agents as code-writing workers where useful, each from a
    dedicated worktree and branch.
 4. Worker PRs target `integration/wave-hybrid-material-shadows`, not `main`.
