@@ -5,6 +5,7 @@
 
 #include "asset/Vault.h"
 #include "jobs/JobSystem.h"
+#include "core/Log.h"
 #include "render/Color.h"
 #include "render/Image.h"
 
@@ -163,5 +164,79 @@ inline TextureLoad load_ppm_texture_async(std::string path) {
     const jobs::JobHandle handle = jobs::JobSystem::Get().submit(desc);
     return TextureLoad{std::move(state), handle};
 }
+
+class TextureAsset {
+   public:
+    TextureAsset() = default;
+    TextureAsset(const TextureAsset&) = delete;
+    TextureAsset& operator=(const TextureAsset&) = delete;
+
+    void load_ppm(std::string virtual_path, Texture2D fallback = fallback_checker_texture()) {
+        virtual_path_ = std::move(virtual_path);
+        texture_ = std::move(fallback);
+        request_ = load_ppm_texture_async(virtual_path_);
+        state_ = State::Loading;
+        logged_ = false;
+        PSY_LOG_INFO("[render.texture] queued async load {}", virtual_path_);
+    }
+
+    [[nodiscard]] TextureView view() const {
+        refresh();
+        return texture_.view();
+    }
+
+    [[nodiscard]] const Texture2D& texture() const {
+        refresh();
+        return texture_;
+    }
+
+    [[nodiscard]] TextureLoadStatus status() const {
+        refresh();
+        switch (state_) {
+            case State::Ready:
+                return TextureLoadStatus::Ready;
+            case State::Failed:
+                return TextureLoadStatus::Failed;
+            default:
+                return TextureLoadStatus::Pending;
+        }
+    }
+
+   private:
+    enum class State : u8 {
+        Empty,
+        Loading,
+        Ready,
+        Failed,
+    };
+
+    void refresh() const {
+        if (state_ != State::Loading)
+            return;
+
+        Texture2D ready{};
+        if (request_.take_if_ready(ready)) {
+            texture_ = std::move(ready);
+            state_ = State::Ready;
+            PSY_LOG_INFO("[render.texture] ready {} ({}x{})",
+                         virtual_path_,
+                         texture_.width(),
+                         texture_.height());
+            return;
+        }
+
+        if (!logged_ && request_.status() == TextureLoadStatus::Failed) {
+            logged_ = true;
+            state_ = State::Failed;
+            PSY_LOG_WARN("[render.texture] failed to load {}; using fallback texture", virtual_path_);
+        }
+    }
+
+    std::string virtual_path_{};
+    mutable Texture2D texture_{};
+    mutable TextureLoad request_{};
+    mutable State state_ = State::Empty;
+    mutable bool logged_ = false;
+};
 
 }  // namespace psynder::render

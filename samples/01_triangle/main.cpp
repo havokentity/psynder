@@ -94,11 +94,7 @@ struct TriangleSample {
     static constexpr const char* display_name = "Psynder sample 01 (textured triangle)";
     static constexpr const char* asset_root = "samples/01_triangle";
 
-    render::Texture2D crate = render::fallback_checker_texture();
-    render::TextureLoad crate_request{};
-    std::string tex_path{};
-    bool crate_resolved = false;
-    bool crate_failed = false;
+    render::TextureAsset crate{};
 
     scene::World world{};
     scene::RuntimeScene scene{world};
@@ -113,16 +109,14 @@ struct TriangleSample {
     void started(app::WindowApp&) {
         world.set_structural_deferred(false);
 
-        tex_path = "assets/crate.ppm";
-        crate_request = render::load_ppm_texture_async(tex_path);
-        PSY_LOG_INFO("sample_01: queued async texture load {}", tex_path);
+        crate.load_ppm("assets/crate.ppm");
 
         render::MeshDesc triangle_mesh_desc{};
         triangle_mesh_desc.vertices = kTriangleVerts.data();
         triangle_mesh_desc.vertex_count = static_cast<u32>(kTriangleVerts.size());
         triangle_mesh_desc.indices = kTriangleIndices.data();
         triangle_mesh_desc.index_count = static_cast<u32>(kTriangleIndices.size());
-        triangle_mesh_desc.base_color = crate.view();
+        triangle_mesh_desc.base_color_asset = &crate;
         triangle_mesh_desc.local_bounds = math::Aabb{{-0.6f, -0.4f, 0.0f}, {0.6f, 0.6f, 0.0f}};
         triangle_mesh = renderer.meshes().create_mesh(triangle_mesh_desc);
 
@@ -134,8 +128,6 @@ struct TriangleSample {
     }
 
     void frame(app::WindowFrameContext& ctx) {
-        resolve_texture_if_ready();
-
         // Submit through the hybrid scene renderer; raster is an internal backend.
         render::raster::ViewState view{};
         view.target = ctx.framebuffer;
@@ -171,20 +163,6 @@ struct TriangleSample {
         project(kTriangleVerts[1], b);
         project(kTriangleVerts[2], c);
         raster_triangle_nearest(ctx.framebuffer, a, b, c, crate.view());
-    }
-
-    void resolve_texture_if_ready() {
-        if (!crate_resolved && crate_request.take_if_ready(crate)) {
-            crate_resolved = true;
-            renderer.meshes().update_base_color(triangle_mesh, crate.view());
-            PSY_LOG_INFO("sample_01: async texture ready {} ({}x{})",
-                         tex_path,
-                         crate.width(),
-                         crate.height());
-        } else if (!crate_failed && crate_request.status() == render::TextureLoadStatus::Failed) {
-            crate_failed = true;
-            PSY_LOG_WARN("sample_01: failed to load {} — using fallback checker", tex_path);
-        }
     }
 };
 

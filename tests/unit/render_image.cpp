@@ -41,6 +41,16 @@ render::TextureLoadStatus wait_until_done(render::TextureLoad& request) {
     return request.status();
 }
 
+render::TextureLoadStatus wait_until_done(const render::TextureAsset& texture) {
+    for (u32 spin = 0; spin < 200u; ++spin) {
+        const render::TextureLoadStatus status = texture.status();
+        if (status != render::TextureLoadStatus::Pending)
+            return status;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return texture.status();
+}
+
 }  // namespace
 
 TEST_CASE("async ppm texture loader expands P6 RGB8 into RGBA8 pixels", "[render][image]") {
@@ -90,4 +100,36 @@ TEST_CASE("async ppm texture loader rejects unsupported PPM variants", "[render]
     render::Texture2D texture{};
     REQUIRE_FALSE(request.take_if_ready(texture));
     REQUIRE_FALSE(texture.valid());
+}
+
+TEST_CASE("texture asset resolves async PPM loads behind a stable view", "[render][image]") {
+    const std::filesystem::path path = unique_ppm_path("psynder_texture_asset");
+    const std::array<u8, 12> rgb = {
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        255,
+        128,
+        64,
+        1,
+        2,
+        3,
+    };
+    write_bytes(path, "P6\n2 2\n255\n", rgb);
+
+    REQUIRE(asset::Vault::Get().mount_directory(path.parent_path().string()));
+    render::TextureAsset texture{};
+    texture.load_ppm(path.filename().string());
+    REQUIRE(wait_until_done(texture) == render::TextureLoadStatus::Ready);
+    std::filesystem::remove(path);
+
+    const render::TextureView view = texture.view();
+    REQUIRE(view.valid());
+    REQUIRE(view.width == 2u);
+    REQUIRE(view.height == 2u);
+    REQUIRE(view.texels[0] == 0xFF100804u);
+    REQUIRE(view.texels[3] == 0xFF030201u);
 }

@@ -352,7 +352,9 @@ class SceneRenderer {
             cull_from_material(material_view.winding[material_slot], mesh_view.cull[mesh_slot]);
         if (material_view.blend[material_slot] == MaterialBlendMode::AlphaTest)
             draw.flags |= raster::draw_flags::kAlphaTest;
-        const TextureView texture = mesh_view.base_color[mesh_slot];
+        const TextureView texture = mesh_view.base_color_asset[mesh_slot] != nullptr
+                                        ? mesh_view.base_color_asset[mesh_slot]->view()
+                                        : mesh_view.base_color[mesh_slot];
         if (texture.valid()) {
             draw.lightmap_texels = texture.texels;
             draw.lightmap_w = texture.width;
