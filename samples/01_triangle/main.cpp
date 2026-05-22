@@ -5,20 +5,10 @@
 // sampled by the engine raster path.
 //
 #include "platform/App.h"
-#include "render/Color.h"
-
-#include <array>
 
 using namespace psynder;
 
 namespace {
-
-const std::array<render::Vertex, 3> kTriangleVerts{{
-    {{-0.6f, -0.4f, 0.0f}, {0, 0, 1}, {0.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
-    {{0.6f, -0.4f, 0.0f}, {0, 0, 1}, {1.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
-    {{0.0f, 0.6f, 0.0f}, {0, 0, 1}, {0.5f, 0.0f}, {0, 0}, 0xFFFFFFFFu},
-}};
-const std::array<u32, 3> kTriangleIndices{0, 2, 1};
 
 struct TriangleSample {
     static constexpr const char* log_name = "sample_01";
@@ -31,23 +21,16 @@ struct TriangleSample {
     Entity triangle_entity{};
 
     static app::FrameClear frame_clear(const app::WindowFrameContext&) noexcept {
-        return app::FrameClear::color_only(render::rgba8(0x28, 0x20, 0x20));
+        return app::FrameClear::color_only(0xFF202028u);
     }
 
     void started(app::WindowApp& app) {
         crate.load_ppm("assets/crate.ppm");
 
-        render::MeshDesc triangle_mesh_desc{};
-        triangle_mesh_desc.vertices = kTriangleVerts.data();
-        triangle_mesh_desc.vertex_count = static_cast<u32>(kTriangleVerts.size());
-        triangle_mesh_desc.indices = kTriangleIndices.data();
-        triangle_mesh_desc.index_count = static_cast<u32>(kTriangleIndices.size());
-        triangle_mesh_desc.base_color_asset = &crate;
-        triangle_mesh_desc.local_bounds = math::Aabb{{-0.6f, -0.4f, 0.0f}, {0.6f, 0.6f, 0.0f}};
-
         render::MaterialDesc triangle_material{};
         triangle_material.flags = render::Material_RasterVisible;
         const render::MaterialId triangle_material_id = scene.materials().create(triangle_material);
+        const render::MeshDesc triangle_mesh_desc = render::geometry_tools::textured_triangle(&crate);
         triangle_entity = app.create_mesh_entity(scene, triangle_mesh_desc, triangle_material_id).entity;
     }
 

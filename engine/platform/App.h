@@ -12,6 +12,7 @@
 #include "platform/Platform.h"
 #include "render/FrameStats.h"
 #include "render/Framebuffer.h"
+#include "render/GeometryTools.h"
 #include "render/PngWriter.h"
 #include "render/RenderingSystem.h"
 #include "scene/SceneEcs.h"
