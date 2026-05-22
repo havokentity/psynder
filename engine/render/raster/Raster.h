@@ -105,8 +105,8 @@ class Rasterizer {
     void end_frame();
 };
 
-// Convenience: clear a framebuffer to the given RGBA8.
-void clear_framebuffer(Framebuffer& fb, u32 rgba) noexcept;
+// Compatibility alias; prefer renderer-neutral render::clear_framebuffer.
+using ::psynder::render::clear_framebuffer;
 
 // Build a multiplicative DrawItem for precomputed projected/blob shadow
 // geometry. The returned draw performs no material lookup and writes no depth.

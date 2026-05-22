@@ -1,26 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Psynder — Sample 00 / M0 demo. Open a window, animate the clear color,
-// blit each frame. The single demo that proves the platform + framebuffer +
-// rasterizer-clear path on every supported OS.
-//
-// CLI flags:
-//   --smoke-frames=N         Run N frames then exit. Used by CI as a headless
-//                            liveness check; pairs with the AGENTS.md smoke
-//                            lock that serializes platform invocations on
-//                            shared Mac runners.
-//   --smoke-frames N         Same, space-separated (matches the cmake helper
-//                            invocation in cmake/Goldens.cmake).
-//   --smoke-capture-out PATH Write the final rendered framebuffer to PATH
-//                            as a valid 24-bit RGB PNG. Used by the
-//                            psynder_add_golden_cell() ctest cells to grab
-//                            the actual-image-this-run output for the
-//                            clear-color golden.
+// and let the engine host own overlays, presentation, smoke, and capture.
 
-#include "core/Log.h"
 #include "core/Types.h"
 #include "platform/App.h"
-#include "platform/Platform.h"
-#include "render/raster/Raster.h"
+#include "render/Framebuffer.h"
 
 #include <cmath>
 #include <string_view>
@@ -55,7 +39,7 @@ struct ClearSample {
         const u32 rgba = (static_cast<u32>(r)) | (static_cast<u32>(g) << 8) |
                          (static_cast<u32>(b) << 16) | (0xFFu << 24);
 
-        render::raster::clear_framebuffer(ctx.framebuffer, rgba);
+        render::clear_framebuffer(ctx.framebuffer, rgba);
     }
 };
 

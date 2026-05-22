@@ -527,26 +527,4 @@ void Rasterizer::end_frame() {
     }
 }
 
-// ─── clear_framebuffer (retained from the Phase-0 stub) ──────────────────
-void clear_framebuffer(Framebuffer& fb, u32 rgba) noexcept {
-    if (!fb.pixels || fb.width == 0 || fb.height == 0)
-        return;
-    if (fb.format == PixelFormat::RGBA8 || fb.format == PixelFormat::BGRA8) {
-        auto* pixels = reinterpret_cast<u32*>(fb.pixels);
-        const usize count = static_cast<usize>(fb.width) * fb.height;
-        for (usize i = 0; i < count; ++i)
-            pixels[i] = rgba;
-    }
-    if (fb.depth) {
-        // Clear depth to 1.0 (far plane). Stencil clears to 0.
-        u32 packed_far;
-        constexpr f32 far_one = 1.0f;
-        std::memcpy(&packed_far, &far_one, sizeof(packed_far));
-        packed_far &= 0xFFFFFF00u;
-        const usize dcount = static_cast<usize>(fb.width) * fb.height;
-        for (usize i = 0; i < dcount; ++i)
-            fb.depth[i] = packed_far;
-    }
-}
-
 }  // namespace psynder::render::raster
