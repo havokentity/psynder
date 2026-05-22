@@ -7,7 +7,7 @@
 // triangle list, packed into a `render::rt::Bvh8` BLAS, and referenced once
 // from a `render::rt::Tlas`. Two point lights (one per room) light the
 // interior. The sample hands its TLAS, per-triangle materials, camera, and
-// lights to `render::rt::FrameRenderer`, which casts primary rays and 8-wide
+// lights to the hybrid scene renderer, which casts primary rays and 8-wide
 // shadow packets through the SAME room BVH, so the dividing wall + doorway
 // cast real shadows between the two rooms.
 //
@@ -33,6 +33,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
 #include "ui/console/ConsoleOverlay.h"
@@ -385,7 +386,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     std::vector<u32>& final_pixels = app_host.pixels();
     render::Framebuffer& fb = app_host.framebuffer();
-    render::rt::FrameRenderer rt_frame_renderer;
+    render::SceneRenderer renderer;
     ui::imm::DebugHudFrameHistory hud_history{};
 
     PSY_LOG_INFO("Psynder sample 13 running{}",
@@ -454,7 +455,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.primitive_rgb = room.colors.data();
         rt_input.materials.primitive_count = static_cast<u32>(room.colors.size());
         rt_input.materials.default_rgba8 = pack_rgba8(140, 140, 150);
-        rt_frame_renderer.render(rt_input, rt_config, final_pixels.data());
+        renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
         ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
         ui::console::draw(fb);

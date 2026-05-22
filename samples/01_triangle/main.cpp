@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Psynder — Sample 01 / M1 demo. Rotating textured triangle.
 //
-// The sample exists to drive lane 07's rasterizer through its public API
-// (Rasterizer::Get().submit(DrawItem)). While lane 07's tiled scanline
-// implementation is being built, we ALSO carry a tiny self-contained
-// software walker right here in the sample so the demo paints visible
-// pixels today on the stub rasterizer. When lane 07 ships the real
-// rasterizer, the fallback walker can be deleted — the DrawItem we submit
-// already matches the contract in engine/render/raster/Raster.h.
+// The sample drives the engine-facing hybrid scene renderer: app code owns a
+// RuntimeScene, a mesh handle, and a material handle, then submits the scene.
+// While lane 07's tiled scanline implementation is still maturing, we ALSO
+// carry a tiny self-contained software walker right here so the demo paints
+// visible pixels today.
 //
 // Texture: 32×32 PPM under assets/crate.ppm. Loaded once at startup and
 // sampled with nearest-neighbour filtering (M1 spec — bilinear lands at M2).
@@ -28,8 +26,9 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/Texture.h"
-#include "render/raster/Raster.h"
+#include "scene/SceneEcs.h"
 
 #include <algorithm>
 #include <array>
@@ -172,10 +171,25 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     }};
     const std::array<u32, 3> indices{0, 1, 2};
 
-    // Drive lane 07's public API with a real DrawItem each frame. Even
-    // though Rasterizer::submit() is a stub today, we want the wiring on
-    // the books so when lane 07 lands, this sample needs zero changes.
-    auto& rasterizer = render::raster::Rasterizer::Get();
+    scene::World world;
+    world.set_structural_deferred(false);
+    scene::RuntimeScene scene{world};
+    render::SceneRenderer renderer;
+
+    render::MeshDesc triangle_mesh_desc{};
+    triangle_mesh_desc.vertices = verts.data();
+    triangle_mesh_desc.vertex_count = static_cast<u32>(verts.size());
+    triangle_mesh_desc.indices = indices.data();
+    triangle_mesh_desc.index_count = static_cast<u32>(indices.size());
+    triangle_mesh_desc.base_color = crate.view();
+    triangle_mesh_desc.local_bounds = math::Aabb{{-0.6f, -0.4f, 0.0f}, {0.6f, 0.6f, 0.0f}};
+    const render::MeshId triangle_mesh = renderer.meshes().create_mesh(triangle_mesh_desc);
+
+    render::MaterialDesc triangle_material{};
+    triangle_material.flags = render::Material_RasterVisible;
+    const render::MaterialId triangle_material_id = scene.materials().create(triangle_material);
+    const Entity triangle_entity =
+        scene.create_renderable(renderer.make_mesh_renderable(triangle_mesh, triangle_material_id));
 
     PSY_LOG_INFO("Psynder sample 01 running{}",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
@@ -194,24 +208,18 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         render::raster::clear_framebuffer(fb, 0xFF202028u);  // dark slate
 
-        // ── Build a ViewState + DrawItem and submit through the public API ──
+        // Submit through the hybrid scene renderer; raster is an internal backend.
         render::raster::ViewState view{};
         view.target = fb;
         view.view = math::identity4();
         view.projection = math::identity4();
         view.tile_w = 64;
         view.tile_h = 64;
-        rasterizer.begin_frame(view);
-
-        render::raster::DrawItem item{};
-        item.vertices = verts.data();
-        item.vertex_count = static_cast<u32>(verts.size());
-        item.indices = indices.data();
-        item.index_count = static_cast<u32>(indices.size());
-        item.model = math::rotate_quat(
-            math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(t) * 0.8f));
-        rasterizer.submit(item);
-        rasterizer.end_frame();
+        scene::LocalTransform triangle_transform{};
+        triangle_transform.rotation =
+            math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(t) * 0.8f);
+        scene.set_transform(triangle_entity, triangle_transform);
+        renderer.render_raster(scene, view);
 
         // ── Fallback walker so we paint visible pixels on the stub raster ──
         const f32 angle = static_cast<f32>(t) * 0.8f;
@@ -236,6 +244,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         project(verts[2], c);
         if (!crate_resolved && crate_request.take_if_ready(crate)) {
             crate_resolved = true;
+            renderer.meshes().update_base_color(triangle_mesh, crate.view());
             PSY_LOG_INFO("sample_01: async texture ready {} ({}x{})",
                          tex_path,
                          crate.width(),

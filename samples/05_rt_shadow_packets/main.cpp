@@ -3,7 +3,7 @@
 //
 // The scene: a dark ground plane and five colored cubes scattered around it,
 // lit by three orbiting point lights (red / green / blue). The sample hands
-// its TLAS, camera, lights, and instance colors to `render::rt::FrameRenderer`;
+// its TLAS, camera, lights, and instance colors to the hybrid scene renderer;
 // the engine owns primary visibility, 8-wide shadow packets, lighting, and
 // upsample. The skybox is a vertical gradient.
 //
@@ -24,6 +24,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
 #include "ui/console/ConsoleOverlay.h"
@@ -224,7 +225,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     std::vector<u32>& final_pixels = app_host.pixels();
     render::Framebuffer& fb = app_host.framebuffer();
-    render::rt::FrameRenderer rt_frame_renderer;
+    render::SceneRenderer renderer;
     ui::imm::DebugHudFrameHistory hud_history{};
 
     PSY_LOG_INFO("Psynder sample 05 running{}",
@@ -275,7 +276,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.instance_rgba8 = instance_colors.data();
         rt_input.materials.instance_count = static_cast<u32>(instance_colors.size());
         rt_input.materials.default_rgba8 = pack_rgba8(60, 60, 70);
-        rt_frame_renderer.render(rt_input, rt_config, final_pixels.data());
+        renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
         ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
         ui::console::draw(fb);

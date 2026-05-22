@@ -26,6 +26,19 @@ enum class MaterialBlendMode : u8 {
     AlphaBlend = 2,
 };
 
+enum class MaterialCpuEffect : u8 {
+    None = 0,
+    UvScroll = 1,
+};
+
+struct MaterialCpuEffectDesc {
+    MaterialCpuEffect type = MaterialCpuEffect::None;
+    f32 uv_scroll_u = 0.0f;
+    f32 uv_scroll_v = 0.0f;
+    f32 phase = 0.0f;
+    f32 rate = 1.0f;
+};
+
 enum MaterialFlags : u32 {
     Material_RasterVisible = 1u << 0,
     Material_RtVisible = 1u << 1,
@@ -47,6 +60,7 @@ struct MaterialDesc {
     f32 reflectivity = 0.0f;
     f32 roughness = 1.0f;
     f32 emissive = 0.0f;
+    MaterialCpuEffectDesc cpu_effect{};
     MaterialWinding winding = MaterialWinding::Ccw;
     MaterialBlendMode blend = MaterialBlendMode::Opaque;
     u32 flags = Material_DefaultFlags;
@@ -59,6 +73,11 @@ struct MaterialView {
     std::span<const f32> reflectivity;
     std::span<const f32> roughness;
     std::span<const f32> emissive;
+    std::span<const MaterialCpuEffect> cpu_effect;
+    std::span<const f32> uv_scroll_u;
+    std::span<const f32> uv_scroll_v;
+    std::span<const f32> effect_phase;
+    std::span<const f32> effect_rate;
     std::span<const MaterialWinding> winding;
     std::span<const MaterialBlendMode> blend;
     std::span<const u32> flags;
@@ -66,6 +85,25 @@ struct MaterialView {
 
 class MaterialLibrary {
    public:
+    void reserve(u32 count) {
+        generation_.reserve(count);
+        alive_.reserve(count);
+        albedo_rgba8_.reserve(count);
+        base_color_texture_.reserve(count);
+        alpha_cutoff_.reserve(count);
+        reflectivity_.reserve(count);
+        roughness_.reserve(count);
+        emissive_.reserve(count);
+        cpu_effect_.reserve(count);
+        uv_scroll_u_.reserve(count);
+        uv_scroll_v_.reserve(count);
+        effect_phase_.reserve(count);
+        effect_rate_.reserve(count);
+        winding_.reserve(count);
+        blend_.reserve(count);
+        flags_.reserve(count);
+    }
+
     void clear() {
         generation_.clear();
         alive_.clear();
@@ -76,6 +114,11 @@ class MaterialLibrary {
         reflectivity_.clear();
         roughness_.clear();
         emissive_.clear();
+        cpu_effect_.clear();
+        uv_scroll_u_.clear();
+        uv_scroll_v_.clear();
+        effect_phase_.clear();
+        effect_rate_.clear();
         winding_.clear();
         blend_.clear();
         flags_.clear();
@@ -96,6 +139,11 @@ class MaterialLibrary {
             reflectivity_.push_back(0.0f);
             roughness_.push_back(0.0f);
             emissive_.push_back(0.0f);
+            cpu_effect_.push_back(MaterialCpuEffect::None);
+            uv_scroll_u_.push_back(0.0f);
+            uv_scroll_v_.push_back(0.0f);
+            effect_phase_.push_back(0.0f);
+            effect_rate_.push_back(1.0f);
             winding_.push_back(MaterialWinding::Ccw);
             blend_.push_back(MaterialBlendMode::Opaque);
             flags_.push_back(0u);
@@ -144,6 +192,11 @@ class MaterialLibrary {
         out.reflectivity = reflectivity_[i];
         out.roughness = roughness_[i];
         out.emissive = emissive_[i];
+        out.cpu_effect.type = cpu_effect_[i];
+        out.cpu_effect.uv_scroll_u = uv_scroll_u_[i];
+        out.cpu_effect.uv_scroll_v = uv_scroll_v_[i];
+        out.cpu_effect.phase = effect_phase_[i];
+        out.cpu_effect.rate = effect_rate_[i];
         out.winding = winding_[i];
         out.blend = blend_[i];
         out.flags = flags_[i];
@@ -157,12 +210,25 @@ class MaterialLibrary {
                 reflectivity_,
                 roughness_,
                 emissive_,
+                cpu_effect_,
+                uv_scroll_u_,
+                uv_scroll_v_,
+                effect_phase_,
+                effect_rate_,
                 winding_,
                 blend_,
                 flags_};
     }
 
+    [[nodiscard]] bool slot(MaterialId id, u32& out) const noexcept {
+        if (!valid(id))
+            return false;
+        out = handle_index(id);
+        return true;
+    }
+
     [[nodiscard]] u32 slot_count() const noexcept { return static_cast<u32>(generation_.size()); }
+    [[nodiscard]] u32 free_count() const noexcept { return static_cast<u32>(free_.size()); }
     [[nodiscard]] u32 live_count() const noexcept {
         u32 count = 0;
         for (u8 alive : alive_)
@@ -186,6 +252,11 @@ class MaterialLibrary {
         reflectivity_[index] = std::clamp(desc.reflectivity, 0.0f, 1.0f);
         roughness_[index] = std::clamp(desc.roughness, 0.0f, 1.0f);
         emissive_[index] = std::max(0.0f, desc.emissive);
+        cpu_effect_[index] = desc.cpu_effect.type;
+        uv_scroll_u_[index] = desc.cpu_effect.uv_scroll_u;
+        uv_scroll_v_[index] = desc.cpu_effect.uv_scroll_v;
+        effect_phase_[index] = desc.cpu_effect.phase;
+        effect_rate_[index] = desc.cpu_effect.rate;
         winding_[index] = desc.winding;
         blend_[index] = desc.blend;
         flags_[index] = desc.flags;
@@ -200,6 +271,11 @@ class MaterialLibrary {
     std::vector<f32> reflectivity_;
     std::vector<f32> roughness_;
     std::vector<f32> emissive_;
+    std::vector<MaterialCpuEffect> cpu_effect_;
+    std::vector<f32> uv_scroll_u_;
+    std::vector<f32> uv_scroll_v_;
+    std::vector<f32> effect_phase_;
+    std::vector<f32> effect_rate_;
     std::vector<MaterialWinding> winding_;
     std::vector<MaterialBlendMode> blend_;
     std::vector<u32> flags_;

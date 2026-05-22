@@ -2,7 +2,7 @@
 # Sample 14 — offline-baked lightmaps. Builds a small 3D room, bakes a
 # lightmap for it in-process with the real lm_bake library, round-trips the
 # atlas through a .lmlight file, then renders the room lit by the reloaded
-# lightmap via Rasterizer::submit() (per-vertex albedo*lumel). B toggles
+# lightmap via the hybrid renderer facade (per-vertex albedo*lumel). B toggles
 # baked vs. flat. Links lm_bake_lib for bake()/write_lmlight()/read_lmlight().
 file(GLOB SRC CONFIGURE_DEPENDS *.cpp)
 if(SRC STREQUAL "")
