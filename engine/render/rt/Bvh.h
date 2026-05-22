@@ -45,7 +45,10 @@ class Tlas {
         const Bvh8* blas;
         math::Mat4 transform;
     };
+    void reserve(u32 count);
     void build(const InstanceDesc* instances, u32 count);
+    bool update_instance_transform(u32 instance, const math::Mat4& transform);
+    u32 instance_count() const noexcept;
     void refit();
     Hit intersect(const Ray& ray) const;
     bool occluded(const Ray& ray) const;

@@ -159,9 +159,9 @@ TEST_CASE("Tlas refit updates world bounds when transforms move",
     r.t_max = 1e30f;
     REQUIRE(tlas.intersect(r).hit);
 
-    // Move the instance far off-axis, refit, expect a miss.
-    desc.transform = math::translate(math::Vec3{100.0f, 100.0f, 5.0f});
-    // Update the TLAS's stored instance: rebuild API takes a fresh array.
-    tlas.build(&desc, 1);
+    // Move the instance far off-axis through the dynamic path: update the
+    // stored transform, then refit without rebuilding the TLAS topology.
+    REQUIRE(tlas.update_instance_transform(0u, math::translate(math::Vec3{100.0f, 100.0f, 5.0f})));
+    tlas.refit();
     REQUIRE_FALSE(tlas.intersect(r).hit);
 }

@@ -20,6 +20,7 @@
 #include "Bvh_impl.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -296,13 +297,22 @@ struct ChildEntry {
     bool is_leaf;
 };
 
-void gather_children(const std::vector<BinaryNode>& bin,
-                     u32 bin_id,
-                     u32 depth,
-                     std::vector<ChildEntry>& out) {
+struct ChildList {
+    std::array<ChildEntry, 8> items{};
+    u32 count = 0;
+
+    bool push(ChildEntry entry) noexcept {
+        if (count >= static_cast<u32>(items.size()))
+            return false;
+        items[count++] = entry;
+        return true;
+    }
+};
+
+void gather_children(const std::vector<BinaryNode>& bin, u32 bin_id, u32 depth, ChildList& out) {
     const BinaryNode& n = bin[bin_id];
-    if (n.is_leaf() || depth == 0) {
-        out.push_back({bin_id, n.is_leaf()});
+    if (n.is_leaf() || depth == 0 || out.count >= static_cast<u32>(out.items.size())) {
+        out.push({bin_id, n.is_leaf()});
         return;
     }
     gather_children(bin, n.left, depth - 1, out);
@@ -343,22 +353,19 @@ u32 build_wide(const std::vector<BinaryNode>& bin, u32 bin_id, std::vector<Bvh8N
         return wide_id;
     }
 
-    std::vector<ChildEntry> kids;
-    kids.reserve(8);
+    ChildList kids;
     gather_children(bin, bin_id, 3, kids);
-    if (kids.size() > 8)
-        kids.resize(8);
 
     u8 mask = 0;
-    for (u32 i = 0; i < static_cast<u32>(kids.size()); ++i) {
-        const BinaryNode& cn = bin[kids[i].bin_id];
+    for (u32 i = 0; i < kids.count; ++i) {
+        const BinaryNode& cn = bin[kids.items[i].bin_id];
         w.min_x[i] = cn.bounds.min.x;
         w.min_y[i] = cn.bounds.min.y;
         w.min_z[i] = cn.bounds.min.z;
         w.max_x[i] = cn.bounds.max.x;
         w.max_y[i] = cn.bounds.max.y;
         w.max_z[i] = cn.bounds.max.z;
-        if (kids[i].is_leaf) {
+        if (kids.items[i].is_leaf) {
             w.child_index[i] = cn.first_prim;
             w.child_count[i] = cn.prim_count;
             w.child_kind[i] = 1;
@@ -373,13 +380,13 @@ u32 build_wide(const std::vector<BinaryNode>& bin, u32 bin_id, std::vector<Bvh8N
     // Recurse on inner children. We must build *first*, then patch indices,
     // because vector reallocation during recursion would invalidate refs.
     u32 child_wide_ids[8] = {0};
-    for (u32 i = 0; i < static_cast<u32>(kids.size()); ++i) {
-        if (!kids[i].is_leaf) {
-            child_wide_ids[i] = build_wide(bin, kids[i].bin_id, wide_nodes);
+    for (u32 i = 0; i < kids.count; ++i) {
+        if (!kids.items[i].is_leaf) {
+            child_wide_ids[i] = build_wide(bin, kids.items[i].bin_id, wide_nodes);
         }
     }
-    for (u32 i = 0; i < static_cast<u32>(kids.size()); ++i) {
-        if (!kids[i].is_leaf) {
+    for (u32 i = 0; i < kids.count; ++i) {
+        if (!kids.items[i].is_leaf) {
             wide_nodes[wide_id].child_index[i] = child_wide_ids[i];
         }
     }
@@ -441,6 +448,7 @@ void rebuild_wide_from_binary(const std::vector<BinaryNode>& bin, std::vector<Bv
     wide_nodes.clear();
     if (bin.empty())
         return;
+    wide_nodes.reserve(bin.size());
     build_wide(bin, 0, wide_nodes);
 }
 
@@ -687,6 +695,17 @@ bool Bvh8::occluded(const Ray& ray) const {
 // TLAS — top-level over BLAS instances
 // ───────────────────────────────────────────────────────────────────────
 
+void Tlas::reserve(u32 count) {
+    auto& s = detail::state_of(*this);
+    s.instances.reserve(count);
+    s.blas_states.reserve(count);
+    s.world_bounds.reserve(count);
+    s.inv_transform.reserve(count);
+    s.prim_indices.reserve(count);
+    s.binary_nodes.reserve(static_cast<size_t>(count) * 2u);
+    s.wide_nodes.reserve(static_cast<size_t>(count) * 2u);
+}
+
 void Tlas::build(const InstanceDesc* instances, u32 count) {
     auto& s = detail::state_of(*this);
     s.instances.assign(instances, instances + count);
@@ -734,6 +753,19 @@ void Tlas::build(const InstanceDesc* instances, u32 count) {
     rebuild_wide_from_binary(s.binary_nodes, s.wide_nodes);
     s.as_built_cost = tree_sah_cost(s.binary_nodes);
     s.refit_cost = s.as_built_cost;
+}
+
+bool Tlas::update_instance_transform(u32 instance, const math::Mat4& transform) {
+    auto& s = detail::state_of(*this);
+    if (instance >= s.instances.size())
+        return false;
+    s.instances[instance].transform = transform;
+    return true;
+}
+
+u32 Tlas::instance_count() const noexcept {
+    const auto& s = detail::state_of(*this);
+    return static_cast<u32>(s.instances.size());
 }
 
 void Tlas::refit() {

@@ -9,6 +9,7 @@
 #include "jobs/JobSystemHetero.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <string>
@@ -31,6 +32,7 @@ console::CVar* g_frame_ao_debug = nullptr;
 console::CVar* g_frame_reflection_bounces = nullptr;
 
 inline constexpr u32 kMaxReflectionBounces = 8u;
+inline constexpr u32 kStackPacketLights = 16u;
 
 PSY_FORCEINLINE u32 pack_rgba8(u32 r, u32 g, u32 b) noexcept {
     return (r & 0xFFu) | ((g & 0xFFu) << 8) | ((b & 0xFFu) << 16) | (0xFFu << 24);
@@ -1076,80 +1078,95 @@ void FrameRenderer::render(const FrameRenderInput& input,
     }
 
     parallel_tiles(trace_w, trace_h, config, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
-        std::vector<ShadowPacket8> pkts(light_count);
-        std::vector<u32> in_pkt(light_count, 0u);
-        std::vector<u32> pkt_idx(static_cast<usize>(light_count) * 8u, 0u);
-        std::vector<u8> pkt_real(static_cast<usize>(light_count) * 8u, 0u);
-
-        auto dispatch = [&](u32 li) {
-            ShadowPacket8& pkt = pkts[li];
-            const FrameLight& light = input.lights[li];
-            for (u32 i = in_pkt[li]; i < 8u; ++i) {
-                fill_dummy_ray(pkt.rays[i]);
-                pkt_real[static_cast<usize>(li) * 8u + i] = 0u;
-            }
-            trace_scene_shadow_packet(input, analytic_spheres_, rt_shadow_mask, pkt);
-            for (u32 i = 0; i < 8u; ++i) {
-                if (pkt_real[static_cast<usize>(li) * 8u + i] == 0u || pkt.occluded[i])
-                    continue;
-                const usize px = pkt_idx[static_cast<usize>(li) * 8u + i];
-                const PixelHit& ph = hits_[px];
-                math::Vec3 to_light = math::sub(light.position, ph.position);
-                const f32 d2 = math::dot(to_light, to_light);
-                const f32 d = std::sqrt(d2);
-                if (d > light.range || d < 1.0e-4f)
-                    continue;
-                const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
-                if (ndotl <= 0.0f)
-                    continue;
-                const f32 atten = 1.0f / (1.0f + d * d * config.attenuation_quadratic);
-                const f32 k = ndotl * atten * light.intensity;
-                accum_[px * 3u + 0u] += ph.r * light.r * k;
-                accum_[px * 3u + 1u] += ph.g * light.g * k;
-                accum_[px * 3u + 2u] += ph.b * light.b * k;
-            }
-            in_pkt[li] = 0u;
-        };
-
-        for (u32 y = y0; y < y1; ++y) {
-            for (u32 x = x0; x < x1; ++x) {
-                const usize px = static_cast<usize>(y) * trace_w + x;
-                const PixelHit& ph = hits_[px];
-                if (!ph.hit)
-                    continue;
-
-                for (u32 li = 0; li < light_count; ++li) {
-                    const FrameLight& light = input.lights[li];
+        auto shade_tile = [&](auto& pkts, auto& in_pkt, auto& pkt_idx, auto& pkt_real) {
+            auto dispatch = [&](u32 li) {
+                ShadowPacket8& pkt = pkts[li];
+                const FrameLight& light = input.lights[li];
+                for (u32 i = in_pkt[li]; i < 8u; ++i) {
+                    fill_dummy_ray(pkt.rays[i]);
+                    pkt_real[static_cast<usize>(li) * 8u + i] = 0u;
+                }
+                trace_scene_shadow_packet(input, analytic_spheres_, rt_shadow_mask, pkt);
+                for (u32 i = 0; i < 8u; ++i) {
+                    if (pkt_real[static_cast<usize>(li) * 8u + i] == 0u || pkt.occluded[i])
+                        continue;
+                    const usize px = pkt_idx[static_cast<usize>(li) * 8u + i];
+                    const PixelHit& ph = hits_[px];
                     math::Vec3 to_light = math::sub(light.position, ph.position);
                     const f32 d2 = math::dot(to_light, to_light);
                     const f32 d = std::sqrt(d2);
                     if (d > light.range || d < 1.0e-4f)
                         continue;
                     const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                    if (math::dot(ph.normal, ld) <= 0.0f)
+                    const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
+                    if (ndotl <= 0.0f)
+                        continue;
+                    const f32 atten = 1.0f / (1.0f + d * d * config.attenuation_quadratic);
+                    const f32 k = ndotl * atten * light.intensity;
+                    accum_[px * 3u + 0u] += ph.r * light.r * k;
+                    accum_[px * 3u + 1u] += ph.g * light.g * k;
+                    accum_[px * 3u + 2u] += ph.b * light.b * k;
+                }
+                in_pkt[li] = 0u;
+            };
+
+            for (u32 y = y0; y < y1; ++y) {
+                for (u32 x = x0; x < x1; ++x) {
+                    const usize px = static_cast<usize>(y) * trace_w + x;
+                    const PixelHit& ph = hits_[px];
+                    if (!ph.hit)
                         continue;
 
-                    const math::Vec3 origin = {ph.position.x + ph.normal.x * 1.0e-3f,
-                                               ph.position.y + ph.normal.y * 1.0e-3f,
-                                               ph.position.z + ph.normal.z * 1.0e-3f};
-                    u32& idx = in_pkt[li];
-                    pkts[li].rays[idx].origin = origin;
-                    pkts[li].rays[idx].direction = ld;
-                    pkts[li].rays[idx].t_min = 1.0e-4f;
-                    pkts[li].rays[idx].t_max = d - 1.0e-3f;
-                    pkt_idx[static_cast<usize>(li) * 8u + idx] = static_cast<u32>(px);
-                    pkt_real[static_cast<usize>(li) * 8u + idx] = 1u;
-                    ++idx;
-                    if (idx == 8u)
-                        dispatch(li);
+                    for (u32 li = 0; li < light_count; ++li) {
+                        const FrameLight& light = input.lights[li];
+                        math::Vec3 to_light = math::sub(light.position, ph.position);
+                        const f32 d2 = math::dot(to_light, to_light);
+                        const f32 d = std::sqrt(d2);
+                        if (d > light.range || d < 1.0e-4f)
+                            continue;
+                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
+                        if (math::dot(ph.normal, ld) <= 0.0f)
+                            continue;
+
+                        const math::Vec3 origin = {ph.position.x + ph.normal.x * 1.0e-3f,
+                                                   ph.position.y + ph.normal.y * 1.0e-3f,
+                                                   ph.position.z + ph.normal.z * 1.0e-3f};
+                        u32& idx = in_pkt[li];
+                        pkts[li].rays[idx].origin = origin;
+                        pkts[li].rays[idx].direction = ld;
+                        pkts[li].rays[idx].t_min = 1.0e-4f;
+                        pkts[li].rays[idx].t_max = d - 1.0e-3f;
+                        pkt_idx[static_cast<usize>(li) * 8u + idx] = static_cast<u32>(px);
+                        pkt_real[static_cast<usize>(li) * 8u + idx] = 1u;
+                        ++idx;
+                        if (idx == 8u)
+                            dispatch(li);
+                    }
                 }
             }
-        }
 
-        for (u32 li = 0; li < light_count; ++li) {
-            if (in_pkt[li] > 0u)
-                dispatch(li);
+            for (u32 li = 0; li < light_count; ++li) {
+                if (in_pkt[li] > 0u)
+                    dispatch(li);
+            }
+        };
+
+        if (light_count <= kStackPacketLights) {
+            std::array<ShadowPacket8, kStackPacketLights> pkts{};
+            std::array<u32, kStackPacketLights> in_pkt{};
+            std::array<u32, kStackPacketLights * 8u> pkt_idx{};
+            std::array<u8, kStackPacketLights * 8u> pkt_real{};
+            shade_tile(pkts, in_pkt, pkt_idx, pkt_real);
+        } else {
+            thread_local std::vector<ShadowPacket8> tls_pkts;
+            thread_local std::vector<u32> tls_in_pkt;
+            thread_local std::vector<u32> tls_pkt_idx;
+            thread_local std::vector<u8> tls_pkt_real;
+            tls_pkts.resize(light_count);
+            tls_in_pkt.assign(light_count, 0u);
+            tls_pkt_idx.resize(static_cast<usize>(light_count) * 8u);
+            tls_pkt_real.assign(static_cast<usize>(light_count) * 8u, 0u);
+            shade_tile(tls_pkts, tls_in_pkt, tls_pkt_idx, tls_pkt_real);
         }
     });
 
