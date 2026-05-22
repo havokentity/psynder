@@ -98,6 +98,38 @@ and before ending a session so crash recovery has a concrete resume point.
   - `ctest --test-dir build/mac-release -R sample_ --output-on-failure` passed:
     12/12 sample smokes
   - `git diff --check` passed
+- Flat-frame wave started from `origin/integration/wave-hybrid-material-shadows`
+  after PR #142/#143 were merged into the integration branch. User is testing
+  the main checkout, so all new work uses separate worktrees.
+- Flat-frame agents dispatched:
+  - `codex/agent-core-frame-alloc-guard`
+    - agent: `019e4fc0-d1f1-72d0-a93d-9a4f87f2af37`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-core-frame-alloc-guard`
+    - owns `engine/core/`
+    - task: frame allocation guard/telemetry foundation
+  - `codex/agent-rt-frame-telemetry`
+    - agent: `019e4fc0-d26c-7062-b37b-c9f01553e328`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-rt-frame-telemetry`
+    - owns `engine/render/rt/`
+    - task: RT frame-stage timing/counters without render-loop allocation
+  - `codex/agent-scene-prewarm-pools`
+    - agent: `019e4fc0-d2a8-7d70-8da2-a4a293fde698`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-scene-prewarm-pools`
+    - owns `engine/scene/`
+    - task: prewarm/fixed-capacity behavior for dynamic scene updates
+  - `codex/agent-math-hotpath`
+    - agent: `019e4fc0-d2ef-7c11-8c88-20ef0553a663`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-math-hotpath`
+    - owns `engine/math/`
+    - task: math hot-path tightening within lane 02
+  - `codex/agent-samples-perf-graph`
+    - agent: `019e4fc0-d33a-7761-a655-9cd7fa49577f`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-samples-perf-graph`
+    - owns `samples/` and `tests/`
+    - task: sample perf graph/debug HUD allocation hygiene and validation
+- Math/SIMD finding for this wave: `engine/simd` has real SIMD support and
+  runtime dispatch, but `engine/math` Mat4/quaternion/batch helpers are still
+  largely scalar; batch transform helpers are the first lane-02 target.
 
 ## Next Multi-Agent Step
 
