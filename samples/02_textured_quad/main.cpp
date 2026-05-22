@@ -339,7 +339,7 @@ struct TexturedQuadSample {
     }
 
     static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
-        return {.depth_buffer = true};
+        return {.depth_buffer = true, .has_default_scene = false};
     }
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {

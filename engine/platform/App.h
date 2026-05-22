@@ -31,10 +31,17 @@
 
 namespace psynder::app {
 
+struct SceneCreateOptions {
+    bool add_default_camera = false;
+    scene::CameraComponent default_camera{};
+    scene::LocalTransform default_camera_transform{};
+};
+
 struct WindowAppOptions {
     bool depth_buffer = false;
     bool has_default_scene = true;
     bool has_default_camera = true;
+    SceneCreateOptions default_scene{};
 };
 
 struct FrameClear {
@@ -73,8 +80,7 @@ class WindowApp {
     WindowApp(const AppArgs& args, const platform::WindowDesc& desc, WindowAppOptions options = {})
         : args_(args)
         , width_(desc.render_width)
-        , height_(desc.render_height)
-        , has_default_camera_(options.has_default_camera) {
+        , height_(desc.render_height) {
         render::reset_frame_stats();
         window_ = platform::create_window(desc);
         if (!window_)
@@ -91,8 +97,11 @@ class WindowApp {
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
 
+        default_scene_options_ = options.default_scene;
+        default_scene_options_.add_default_camera = options.has_default_camera;
+
         if (options.has_default_scene)
-            set_scene(default_scene_);
+            set_scene(default_scene_, default_scene_options_);
     }
 
     WindowApp(const WindowApp&) = delete;
@@ -156,19 +165,21 @@ class WindowApp {
         return view;
     }
 
-    bool load_scene(scene::Scene& scene) noexcept {
+    bool load_scene(scene::Scene& scene, const SceneCreateOptions& options = {}) noexcept {
         for (u32 i = 0; i < loaded_scene_count_; ++i) {
             if (loaded_scenes_[i] == &scene)
                 return true;
         }
         if (loaded_scene_count_ >= kMaxLoadedScenes)
             return false;
+        const u32 scene_index = loaded_scene_count_;
         loaded_scenes_[loaded_scene_count_++] = &scene;
+        on_scene_created(scene, scene_index, options);
         return true;
     }
 
-    void set_scene(scene::Scene& scene) noexcept {
-        if (load_scene(scene)) {
+    void set_scene(scene::Scene& scene, const SceneCreateOptions& options = {}) noexcept {
+        if (load_scene(scene, options)) {
             active_scene_ = &scene;
             active_scene_rendered_ = false;
         }
@@ -227,8 +238,6 @@ class WindowApp {
     render::SceneRenderStats engine_frame_render() {
         if (active_scene_ == nullptr || active_scene_rendered_)
             return {};
-        if (has_default_camera_)
-            (void)active_scene_->ensure_default_camera(render_target_aspect());
         scene::SceneCameraView camera{};
         if (!active_scene_->active_camera_view(render_target_aspect(), camera)) {
             draw_no_camera_notice();
@@ -355,7 +364,7 @@ class WindowApp {
         }
         active_scene_ = active_was_default_scene ? &default_scene_ : other.active_scene_;
         active_scene_rendered_ = other.active_scene_rendered_;
-        has_default_camera_ = other.has_default_camera_;
+        default_scene_options_ = other.default_scene_options_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         rendering_system_ = std::move(other.rendering_system_);
@@ -372,7 +381,7 @@ class WindowApp {
         other.active_scene_rendered_ = false;
         other.loaded_scenes_ = {};
         other.loaded_scene_count_ = 0;
-        other.has_default_camera_ = true;
+        other.default_scene_options_ = {};
         other.framebuffer_ = {};
     }
 
@@ -392,7 +401,7 @@ class WindowApp {
     u32 loaded_scene_count_ = 0;
     scene::Scene* active_scene_ = nullptr;
     bool active_scene_rendered_ = false;
-    bool has_default_camera_ = true;
+    SceneCreateOptions default_scene_options_{};
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
@@ -417,6 +426,17 @@ class WindowApp {
 
     [[nodiscard]] f32 render_target_aspect() const noexcept {
         return height_ == 0u ? 1.0f : static_cast<f32>(width_) / static_cast<f32>(height_);
+    }
+
+    void on_scene_created(scene::Scene& scene,
+                          u32,
+                          const SceneCreateOptions& options) noexcept {
+        if (!options.add_default_camera)
+            return;
+        scene::CameraComponent camera = options.default_camera;
+        if (camera.aspect <= 0.0f)
+            camera.aspect = render_target_aspect();
+        (void)scene.create_camera(camera, options.default_camera_transform);
     }
 
     void apply_environment_clear(const scene::Environment& environment) noexcept {
