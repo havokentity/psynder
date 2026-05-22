@@ -22,6 +22,7 @@ struct TriangleSample {
     void started(app::WindowApp& app) {
         auto& scene = app.loaded_scene();
         scene.environment().set_clear_color(0xFF202028u);
+        (void)scene.spawn_camera();
         crate.load_ppm("assets/crate.ppm");
 
         const render::MeshId triangle_mesh =

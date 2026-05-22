@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <mutex>
 #include <span>
 #include <vector>
@@ -117,6 +118,19 @@ PSYNDER_COMPONENT(CameraComponent) {
     u32 tile_h = 64;
     u8 active = 1;
     u8 _pad[3] = {};
+};
+
+struct CameraDesc {
+    math::Vec3 position{0.0f, 0.0f, 2.5f};
+    math::Vec3 look_at{0.0f, 0.0f, 0.0f};
+    math::Vec3 up{0.0f, 1.0f, 0.0f};
+    f32 fov_y_rad = 60.0f * math::kDegToRad;
+    f32 aspect = 0.0f;  // <= 0 means use the active render target aspect.
+    f32 near_z = 0.1f;
+    f32 far_z = 100.0f;
+    u32 tile_w = 64;
+    u32 tile_h = 64;
+    bool active = true;
 };
 
 PSYNDER_COMPONENT(RenderableComponent) {
@@ -349,6 +363,58 @@ inline bool set_scene_entity_transform(EcsRegistry& registry,
     return true;
 }
 
+[[nodiscard]] inline math::Quat camera_rotation_towards(math::Vec3 position,
+                                                        math::Vec3 target,
+                                                        math::Vec3 up) noexcept {
+    const math::Vec3 forward = math::normalize(math::sub(target, position));
+    const math::Vec3 safe_forward =
+        math::length(forward) > 0.0f ? forward : math::Vec3{0.0f, 0.0f, -1.0f};
+    math::Vec3 right = math::normalize(math::cross(safe_forward, up));
+    if (math::length(right) <= 0.0f)
+        right = math::Vec3{1.0f, 0.0f, 0.0f};
+    const math::Vec3 camera_up = math::cross(right, safe_forward);
+    const math::Vec3 back = math::mul(safe_forward, -1.0f);
+
+    const f32 m00 = right.x;
+    const f32 m01 = camera_up.x;
+    const f32 m02 = back.x;
+    const f32 m10 = right.y;
+    const f32 m11 = camera_up.y;
+    const f32 m12 = back.y;
+    const f32 m20 = right.z;
+    const f32 m21 = camera_up.z;
+    const f32 m22 = back.z;
+    const f32 trace = m00 + m11 + m22;
+
+    math::Quat q{};
+    if (trace > 0.0f) {
+        const f32 s = std::sqrt(trace + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (m21 - m12) / s;
+        q.y = (m02 - m20) / s;
+        q.z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const f32 s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q.w = (m21 - m12) / s;
+        q.x = 0.25f * s;
+        q.y = (m01 + m10) / s;
+        q.z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const f32 s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q.w = (m02 - m20) / s;
+        q.x = (m01 + m10) / s;
+        q.y = 0.25f * s;
+        q.z = (m12 + m21) / s;
+    } else {
+        const f32 s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q.w = (m10 - m01) / s;
+        q.x = (m02 + m20) / s;
+        q.y = (m12 + m21) / s;
+        q.z = 0.25f * s;
+    }
+    return math::quat_normalize(q);
+}
+
 inline bool find_active_camera(EcsRegistry& registry,
                                SceneGraph& graph,
                                f32 render_target_aspect,
@@ -562,6 +628,27 @@ class Scene {
         return entity;
     }
 
+    [[nodiscard]] Entity spawn_camera(const CameraDesc& desc = {},
+                                      SceneNode parent = kInvalidSceneNode) {
+        CameraComponent camera{};
+        camera.fov_y_rad = desc.fov_y_rad;
+        camera.aspect = desc.aspect;
+        camera.near_z = desc.near_z;
+        camera.far_z = desc.far_z;
+        camera.tile_w = desc.tile_w;
+        camera.tile_h = desc.tile_h;
+        camera.active = desc.active ? 1u : 0u;
+
+        LocalTransform transform{};
+        transform.translation = desc.position;
+        transform.rotation = camera_rotation_towards(desc.position, desc.look_at, desc.up);
+
+        const Entity entity = create_camera(camera, transform, parent);
+        if (desc.active)
+            set_active_camera(entity);
+        return entity;
+    }
+
     [[nodiscard]] Entity create_renderable(const RenderableComponent& renderable,
                                            const LocalTransform& local = {},
                                            SceneNode parent = kInvalidSceneNode) {
@@ -719,21 +806,6 @@ class Scene {
         return find_active_camera_entity(*registry_);
     }
 
-    [[nodiscard]] Entity ensure_default_camera(f32 render_target_aspect) {
-        SceneCameraView view{};
-        if (active_camera_view(render_target_aspect, view))
-            return view.entity;
-        if (registry_->alive(default_camera_entity_) &&
-            registry_->get<CameraComponent>(default_camera_entity_)) {
-            set_active_camera(default_camera_entity_);
-            return default_camera_entity_;
-        }
-        CameraComponent camera{};
-        camera.aspect = render_target_aspect;
-        default_camera_entity_ = create_camera(camera);
-        return default_camera_entity_;
-    }
-
     void gather_render_items(std::vector<SceneRenderItem>& out) {
         reserve_render_items(out);
         gather_scene_render_items(*registry_, graph_, out);
@@ -747,7 +819,6 @@ class Scene {
         runtime_ = std::move(other.runtime_);
         environment_ = std::move(other.environment_);
         environment_.bind_runtime(runtime_.environment);
-        default_camera_entity_ = other.default_camera_entity_;
         render_item_capacity_ = other.render_item_capacity_;
         mesh_spawner_user_ = other.mesh_spawner_user_;
         mesh_spawner_ = other.mesh_spawner_;
@@ -760,7 +831,6 @@ class Scene {
 
         other.registry_ = &EcsRegistry::Get();
         other.environment_.bind_runtime(other.runtime_.environment);
-        other.default_camera_entity_ = {};
         other.render_item_capacity_ = 0u;
         other.mesh_spawner_user_ = nullptr;
         other.mesh_spawner_ = nullptr;
@@ -807,7 +877,6 @@ class Scene {
     ::psynder::render::MaterialLibrary materials_{};
     SceneRuntime runtime_{};
     Environment environment_{};
-    Entity default_camera_entity_{};
     u32 render_item_capacity_ = 0u;
     void* mesh_spawner_user_ = nullptr;
     SpawnMeshFn mesh_spawner_ = nullptr;

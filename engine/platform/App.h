@@ -31,33 +31,9 @@
 
 namespace psynder::app {
 
-struct DefaultCameraOptions {
-    bool enabled = true;
-    math::Vec3 position{0.0f, 0.0f, 2.5f};
-    math::Vec3 look_at{0.0f, 0.0f, 0.0f};
-    math::Vec3 up{0.0f, 1.0f, 0.0f};
-    f32 fov_y_rad = 60.0f * math::kDegToRad;
-    f32 aspect = 0.0f;
-    f32 near_z = 0.1f;
-    f32 far_z = 100.0f;
-    u32 tile_w = 64;
-    u32 tile_h = 64;
-};
-
-struct SceneCreateOptions {
-    DefaultCameraOptions camera{};
-
-    [[nodiscard]] static constexpr SceneCreateOptions without_default_camera() noexcept {
-        SceneCreateOptions options{};
-        options.camera.enabled = false;
-        return options;
-    }
-};
-
 struct WindowAppOptions {
     bool depth_buffer = true;
     bool has_default_scene = true;
-    SceneCreateOptions default_scene{};
 };
 
 struct FrameClear {
@@ -134,7 +110,7 @@ class WindowApp {
         rendering_system_.prewarm_builtin_meshes();
 
         if (options.has_default_scene)
-            set_scene(default_scene_, options.default_scene);
+            set_scene(default_scene_);
     }
 
     WindowApp(const WindowApp&) = delete;
@@ -208,9 +184,7 @@ class WindowApp {
         return view;
     }
 
-    bool load_scene(scene::Scene& scene,
-                    const SceneCreateOptions& options =
-                        SceneCreateOptions::without_default_camera()) noexcept {
+    bool load_scene(scene::Scene& scene) noexcept {
         for (u32 i = 0; i < loaded_scene_count_; ++i) {
             if (loaded_scenes_[i] == &scene) {
                 bind_scene_authoring(scene);
@@ -219,17 +193,13 @@ class WindowApp {
         }
         if (loaded_scene_count_ >= kMaxLoadedScenes)
             return false;
-        const u32 scene_index = loaded_scene_count_;
         loaded_scenes_[loaded_scene_count_++] = &scene;
         bind_scene_authoring(scene);
-        on_scene_created(scene, scene_index, options);
         return true;
     }
 
-    void set_scene(scene::Scene& scene,
-                   const SceneCreateOptions& options =
-                       SceneCreateOptions::without_default_camera()) noexcept {
-        if (load_scene(scene, options)) {
+    void set_scene(scene::Scene& scene) noexcept {
+        if (load_scene(scene)) {
             active_scene_ = &scene;
             active_runtime_ = &scene.runtime();
             active_scene_rendered_ = false;
@@ -507,79 +477,6 @@ class WindowApp {
         return height_ == 0u ? 1.0f : static_cast<f32>(width_) / static_cast<f32>(height_);
     }
 
-    [[nodiscard]] static math::Quat camera_rotation_towards(math::Vec3 position,
-                                                            math::Vec3 target,
-                                                            math::Vec3 up) noexcept {
-        const math::Vec3 forward = math::normalize(math::sub(target, position));
-        const math::Vec3 safe_forward =
-            math::length(forward) > 0.0f ? forward : math::Vec3{0.0f, 0.0f, -1.0f};
-        math::Vec3 right = math::normalize(math::cross(safe_forward, up));
-        if (math::length(right) <= 0.0f)
-            right = math::Vec3{1.0f, 0.0f, 0.0f};
-        const math::Vec3 camera_up = math::cross(right, safe_forward);
-        const math::Vec3 back = math::mul(safe_forward, -1.0f);
-
-        const f32 m00 = right.x;
-        const f32 m01 = camera_up.x;
-        const f32 m02 = back.x;
-        const f32 m10 = right.y;
-        const f32 m11 = camera_up.y;
-        const f32 m12 = back.y;
-        const f32 m20 = right.z;
-        const f32 m21 = camera_up.z;
-        const f32 m22 = back.z;
-        const f32 trace = m00 + m11 + m22;
-
-        math::Quat q{};
-        if (trace > 0.0f) {
-            const f32 s = std::sqrt(trace + 1.0f) * 2.0f;
-            q.w = 0.25f * s;
-            q.x = (m21 - m12) / s;
-            q.y = (m02 - m20) / s;
-            q.z = (m10 - m01) / s;
-        } else if (m00 > m11 && m00 > m22) {
-            const f32 s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
-            q.w = (m21 - m12) / s;
-            q.x = 0.25f * s;
-            q.y = (m01 + m10) / s;
-            q.z = (m02 + m20) / s;
-        } else if (m11 > m22) {
-            const f32 s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
-            q.w = (m02 - m20) / s;
-            q.x = (m01 + m10) / s;
-            q.y = 0.25f * s;
-            q.z = (m12 + m21) / s;
-        } else {
-            const f32 s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
-            q.w = (m10 - m01) / s;
-            q.x = (m02 + m20) / s;
-            q.y = (m12 + m21) / s;
-            q.z = 0.25f * s;
-        }
-        return math::quat_normalize(q);
-    }
-
-    void on_scene_created(scene::Scene& scene,
-                          u32,
-                          const SceneCreateOptions& options) noexcept {
-        if (!options.camera.enabled)
-            return;
-        scene::CameraComponent camera{};
-        camera.fov_y_rad = options.camera.fov_y_rad;
-        camera.aspect = options.camera.aspect;
-        camera.near_z = options.camera.near_z;
-        camera.far_z = options.camera.far_z;
-        camera.tile_w = options.camera.tile_w;
-        camera.tile_h = options.camera.tile_h;
-        if (camera.aspect <= 0.0f)
-            camera.aspect = render_target_aspect();
-        scene::LocalTransform transform{};
-        transform.translation = options.camera.position;
-        transform.rotation =
-            camera_rotation_towards(options.camera.position, options.camera.look_at, options.camera.up);
-        (void)scene.create_camera(camera, transform);
-    }
-
     void apply_environment_clear(const scene::EnvironmentRuntimeSoA& environment) noexcept {
         constexpr u32 kMainEnvironment = 0u;
         const scene::EnvironmentClearFlags flags = environment.clear_flags[kMainEnvironment];
@@ -696,17 +593,21 @@ std::string_view sample_display_name(const Sample& sample) noexcept {
 }
 
 template <class Sample, class ArgsT>
+constexpr bool sample_has_custom_run() noexcept {
+    return requires(Sample& sample, WindowApp& app, const ArgsT& args) {
+        sample.run(app, args);
+    };
+}
+
+template <class Sample, class ArgsT>
 WindowAppOptions sample_window_options(const Sample& sample, const ArgsT& args) noexcept {
     WindowAppOptions options{};
+    if constexpr (sample_has_custom_run<Sample, ArgsT>())
+        options.has_default_scene = false;
     if constexpr (requires { sample.window_options(args); }) {
         options = sample.window_options(args);
     } else if constexpr (requires { Sample::window_options(args); }) {
         options = Sample::window_options(args);
-    }
-    if constexpr (requires { sample.scene_options(args); }) {
-        options.default_scene = sample.scene_options(args);
-    } else if constexpr (requires { Sample::scene_options(args); }) {
-        options.default_scene = Sample::scene_options(args);
     }
     return options;
 }

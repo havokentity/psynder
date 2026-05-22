@@ -31,13 +31,6 @@ struct TexturedQuadSample {
     render::Texture2D crate_texture{};
     std::array<Entity, kCratePositions.size()> crates{};
 
-    static app::SceneCreateOptions scene_options(const app::AppArgs&) noexcept {
-        app::SceneCreateOptions options{};
-        options.camera.position = math::Vec3{0.0f, 1.5f, 1.5f};
-        options.camera.look_at = math::Vec3{0.0f, 0.0f, -3.0f};
-        return options;
-    }
-
     void started(app::WindowApp& app) {
         crate_texture = render::texture_generators::wooden_crate();
 
@@ -46,6 +39,8 @@ struct TexturedQuadSample {
             {.scene_entities = 8u, .renderables = 4u, .cameras = 1u, .render_items = 4u});
         app.reserve_scene_capacity(4u, 1u);
         scene.environment().set_clear_color(0xFF182030u);
+        (void)scene.spawn_camera({.position = math::Vec3{0.0f, 1.5f, 1.5f},
+                                  .look_at = math::Vec3{0.0f, 0.0f, -3.0f}});
 
         render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
         cube_mesh_desc.base_color = crate_texture.view();
