@@ -46,6 +46,52 @@ MeshDesc describe(const Vertex* vertices,
     return desc;
 }
 
+math::Aabb bounds_from_vertices(const std::vector<Vertex>& vertices) noexcept {
+    if (vertices.empty())
+        return math::aabb_empty();
+    math::Aabb out{vertices[0].position, vertices[0].position};
+    for (const Vertex& v : vertices) {
+        out.min.x = std::min(out.min.x, v.position.x);
+        out.min.y = std::min(out.min.y, v.position.y);
+        out.min.z = std::min(out.min.z, v.position.z);
+        out.max.x = std::max(out.max.x, v.position.x);
+        out.max.y = std::max(out.max.y, v.position.y);
+        out.max.z = std::max(out.max.z, v.position.z);
+    }
+    return out;
+}
+
+void finish_generated(GeneratedMesh& mesh,
+                      TextureView base_color,
+                      const TextureAsset* base_color_asset,
+                      raster::CullMode cull) noexcept {
+    mesh.base_color = base_color;
+    mesh.base_color_asset = base_color_asset;
+    mesh.cull = cull;
+    mesh.local_bounds = bounds_from_vertices(mesh.vertices);
+}
+
+f32 clamp_positive(f32 value, f32 fallback) noexcept {
+    return value > 0.0001f ? value : fallback;
+}
+
+u32 clamp_segments(u32 value, u32 lo, u32 hi) noexcept {
+    return std::clamp(value, lo, hi);
+}
+
+f32 hash_noise(f32 x, f32 z, u32 seed) noexcept {
+    const i32 ix = static_cast<i32>(std::floor(x * 127.0f));
+    const i32 iz = static_cast<i32>(std::floor(z * 127.0f));
+    u32 h = static_cast<u32>(ix) * 0x9E3779B1u ^ static_cast<u32>(iz) * 0x85EBCA6Bu ^
+            seed * 0xC2B2AE35u;
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    h *= 0x846CA68Bu;
+    h ^= h >> 16;
+    return static_cast<f32>(h & 0xFFFFu) * (1.0f / 32767.5f) - 1.0f;
+}
+
 void emit_triangle(std::array<Vertex, 240>& vertices,
                    std::array<u32, 240>& indices,
                    u32& cursor,
@@ -296,6 +342,36 @@ u32 terrain_color(TerrainKind kind, f32 y) noexcept {
     return kWhite;
 }
 
+u32 terrain_color(const TerrainDesc& desc, TerrainKind kind, f32 y) noexcept {
+    if (desc.water_color != 0u && y <= desc.water_level)
+        return desc.water_color;
+    if (desc.low_color != 0u || desc.mid_color != 0u || desc.high_color != 0u) {
+        const u32 low = desc.low_color != 0u ? desc.low_color : terrain_color(kind, y);
+        const u32 mid = desc.mid_color != 0u ? desc.mid_color : low;
+        const u32 high = desc.high_color != 0u ? desc.high_color : mid;
+        if (y < 0.12f)
+            return low;
+        return y < 0.36f ? mid : high;
+    }
+    if (y <= desc.water_level)
+        return desc.water_color != 0u ? desc.water_color : terrain_color(kind, desc.water_level - 0.01f);
+    return terrain_color(kind, y);
+}
+
+f32 terrain_height(const TerrainDesc& desc, TerrainKind kind, f32 x, f32 z) noexcept {
+    const f32 feature = clamp_positive(desc.feature_scale, 1.0f);
+    f32 y = terrain_height(kind, x * feature, z * feature);
+    if (desc.noise_strength > 0.0f)
+        y += desc.noise_strength * hash_noise(x + 13.1f, z - 7.3f, desc.seed);
+    if (desc.terrace_strength > 0.0f) {
+        constexpr f32 kLevels = 10.0f;
+        const f32 stepped = std::floor(y * kLevels + 0.5f) / kLevels;
+        const f32 t = std::clamp(desc.terrace_strength, 0.0f, 1.0f);
+        y = y * (1.0f - t) + stepped * t;
+    }
+    return desc.height_bias + y * desc.height_scale;
+}
+
 TerrainStorage make_terrain_storage(TerrainKind kind) noexcept {
     TerrainStorage out{};
     constexpr f32 extent = 3.0f;
@@ -338,6 +414,227 @@ TerrainStorage make_terrain_storage(TerrainKind kind) noexcept {
 }
 
 }  // namespace
+
+MeshDesc GeneratedMesh::desc() const noexcept {
+    MeshDesc out{};
+    out.vertices = vertices.data();
+    out.vertex_count = static_cast<u32>(vertices.size());
+    out.indices = indices.data();
+    out.index_count = static_cast<u32>(indices.size());
+    out.base_color = base_color;
+    out.base_color_asset = base_color_asset;
+    out.cull = cull;
+    out.local_bounds = local_bounds;
+    return out;
+}
+
+GeneratedMesh unit_cube(const BoxDesc& desc) {
+    const math::Vec3 h{clamp_positive(desc.half_extent.x, 0.5f),
+                       clamp_positive(desc.half_extent.y, 0.5f),
+                       clamp_positive(desc.half_extent.z, 0.5f)};
+    const math::Vec2 uv{clamp_positive(desc.uv_repeat.x, 1.0f),
+                        clamp_positive(desc.uv_repeat.y, 1.0f)};
+    GeneratedMesh out{};
+    out.vertices = {
+        {{h.x, -h.y, -h.z}, {1, 0, 0}, {0, uv.y}, {0, 0}, desc.color},
+        {{h.x, h.y, -h.z}, {1, 0, 0}, {0, 0}, {0, 0}, desc.color},
+        {{h.x, h.y, h.z}, {1, 0, 0}, {uv.x, 0}, {0, 0}, desc.color},
+        {{h.x, -h.y, h.z}, {1, 0, 0}, {uv.x, uv.y}, {0, 0}, desc.color},
+        {{-h.x, -h.y, h.z}, {-1, 0, 0}, {0, uv.y}, {0, 0}, desc.color},
+        {{-h.x, h.y, h.z}, {-1, 0, 0}, {0, 0}, {0, 0}, desc.color},
+        {{-h.x, h.y, -h.z}, {-1, 0, 0}, {uv.x, 0}, {0, 0}, desc.color},
+        {{-h.x, -h.y, -h.z}, {-1, 0, 0}, {uv.x, uv.y}, {0, 0}, desc.color},
+        {{-h.x, h.y, -h.z}, {0, 1, 0}, {0, uv.y}, {0, 0}, desc.color},
+        {{-h.x, h.y, h.z}, {0, 1, 0}, {0, 0}, {0, 0}, desc.color},
+        {{h.x, h.y, h.z}, {0, 1, 0}, {uv.x, 0}, {0, 0}, desc.color},
+        {{h.x, h.y, -h.z}, {0, 1, 0}, {uv.x, uv.y}, {0, 0}, desc.color},
+        {{-h.x, -h.y, h.z}, {0, -1, 0}, {0, uv.y}, {0, 0}, desc.color},
+        {{-h.x, -h.y, -h.z}, {0, -1, 0}, {0, 0}, {0, 0}, desc.color},
+        {{h.x, -h.y, -h.z}, {0, -1, 0}, {uv.x, 0}, {0, 0}, desc.color},
+        {{h.x, -h.y, h.z}, {0, -1, 0}, {uv.x, uv.y}, {0, 0}, desc.color},
+        {{-h.x, -h.y, h.z}, {0, 0, 1}, {0, uv.y}, {0, 0}, desc.color},
+        {{h.x, -h.y, h.z}, {0, 0, 1}, {uv.x, uv.y}, {0, 0}, desc.color},
+        {{h.x, h.y, h.z}, {0, 0, 1}, {uv.x, 0}, {0, 0}, desc.color},
+        {{-h.x, h.y, h.z}, {0, 0, 1}, {0, 0}, {0, 0}, desc.color},
+        {{h.x, -h.y, -h.z}, {0, 0, -1}, {0, uv.y}, {0, 0}, desc.color},
+        {{-h.x, -h.y, -h.z}, {0, 0, -1}, {uv.x, uv.y}, {0, 0}, desc.color},
+        {{-h.x, h.y, -h.z}, {0, 0, -1}, {uv.x, 0}, {0, 0}, desc.color},
+        {{h.x, h.y, -h.z}, {0, 0, -1}, {0, 0}, {0, 0}, desc.color},
+    };
+    out.indices = {0,  2,  1,  0,  3,  2,  4,  6,  5,  4,  7,  6,
+                   8,  10, 9,  8,  11, 10, 12, 14, 13, 12, 15, 14,
+                   16, 18, 17, 16, 19, 18, 20, 22, 21, 20, 23, 22};
+    finish_generated(out, desc.base_color, desc.base_color_asset, desc.cull);
+    return out;
+}
+
+GeneratedMesh pyramid(const PyramidDesc& desc) {
+    const f32 hx = clamp_positive(desc.half_width, 0.5f);
+    const f32 hz = clamp_positive(desc.half_depth, 0.5f);
+    const f32 height = clamp_positive(desc.height, 0.9f);
+    const math::Vec2 uv{clamp_positive(desc.uv_repeat.x, 1.0f),
+                        clamp_positive(desc.uv_repeat.y, 1.0f)};
+    const math::Vec3 apex{0.0f, height, 0.0f};
+    const math::Vec3 p0{-hx, 0.0f, -hz};
+    const math::Vec3 p1{hx, 0.0f, -hz};
+    const math::Vec3 p2{hx, 0.0f, hz};
+    const math::Vec3 p3{-hx, 0.0f, hz};
+    auto face_normal = [](math::Vec3 a, math::Vec3 b, math::Vec3 c) noexcept {
+        return math::normalize(math::cross(math::sub(b, a), math::sub(c, a)));
+    };
+
+    GeneratedMesh out{};
+    out.vertices.reserve(16);
+    out.indices.reserve(18);
+    auto emit = [&](math::Vec3 a, math::Vec3 b, math::Vec3 c, math::Vec2 ua, math::Vec2 ub, math::Vec2 uc) {
+        const u32 base = static_cast<u32>(out.vertices.size());
+        const math::Vec3 n = face_normal(a, b, c);
+        out.vertices.push_back(make_vertex(a, n, ua, desc.color));
+        out.vertices.push_back(make_vertex(b, n, ub, desc.color));
+        out.vertices.push_back(make_vertex(c, n, uc, desc.color));
+        out.indices.push_back(base);
+        out.indices.push_back(base + 1u);
+        out.indices.push_back(base + 2u);
+    };
+    emit(p0, p3, p1, {0, uv.y}, {0, 0}, {uv.x, uv.y});
+    emit(p1, p3, p2, {uv.x, uv.y}, {0, 0}, {uv.x, 0});
+    emit(p0, apex, p1, {0, uv.y}, {uv.x * 0.5f, 0}, {uv.x, uv.y});
+    emit(p1, apex, p2, {0, uv.y}, {uv.x * 0.5f, 0}, {uv.x, uv.y});
+    emit(p2, apex, p3, {0, uv.y}, {uv.x * 0.5f, 0}, {uv.x, uv.y});
+    emit(p3, apex, p0, {0, uv.y}, {uv.x * 0.5f, 0}, {uv.x, uv.y});
+    finish_generated(out, desc.base_color, desc.base_color_asset, desc.cull);
+    return out;
+}
+
+GeneratedMesh cone(const ConeDesc& desc) {
+    const u32 segments = clamp_segments(desc.segments, 3u, 256u);
+    const f32 radius = clamp_positive(desc.radius, 0.5f);
+    const f32 height = clamp_positive(desc.height, 0.9f);
+    const math::Vec2 uv{clamp_positive(desc.uv_repeat.x, 1.0f),
+                        clamp_positive(desc.uv_repeat.y, 1.0f)};
+
+    GeneratedMesh out{};
+    out.vertices.reserve(static_cast<usize>(segments) * 2u + (desc.cap ? segments + 1u : 1u));
+    out.indices.reserve(static_cast<usize>(segments) * (desc.cap ? 6u : 3u));
+    const math::Vec3 apex{0.0f, height, 0.0f};
+    const u32 apex_index = static_cast<u32>(out.vertices.size());
+    out.vertices.push_back(make_vertex(apex, {0, 1, 0}, {uv.x * 0.5f, 0}, desc.color));
+
+    const u32 side_ring = static_cast<u32>(out.vertices.size());
+    for (u32 i = 0; i < segments; ++i) {
+        const f32 u = static_cast<f32>(i) / static_cast<f32>(segments);
+        const f32 a = u * math::kTwoPi;
+        const math::Vec3 p{radius * std::cos(a), 0.0f, radius * std::sin(a)};
+        out.vertices.push_back(make_vertex(p, math::normalize({p.x, radius / height, p.z}), {u * uv.x, uv.y}, desc.color));
+    }
+
+    u32 cap_center = 0;
+    u32 cap_ring = 0;
+    if (desc.cap) {
+        cap_center = static_cast<u32>(out.vertices.size());
+        out.vertices.push_back(make_vertex({0, 0, 0}, {0, -1, 0}, {uv.x * 0.5f, uv.y * 0.5f}, desc.color));
+        cap_ring = static_cast<u32>(out.vertices.size());
+        for (u32 i = 0; i < segments; ++i) {
+            const f32 a = static_cast<f32>(i) * math::kTwoPi / static_cast<f32>(segments);
+            const math::Vec3 p{radius * std::cos(a), 0.0f, radius * std::sin(a)};
+            out.vertices.push_back(make_vertex(p, {0, -1, 0}, {(0.5f + p.x / (2.0f * radius)) * uv.x,
+                                                               (0.5f - p.z / (2.0f * radius)) * uv.y}, desc.color));
+        }
+    }
+
+    for (u32 i = 0; i < segments; ++i) {
+        const u32 n = (i + 1u) % segments;
+        out.indices.push_back(apex_index);
+        out.indices.push_back(side_ring + i);
+        out.indices.push_back(side_ring + n);
+        if (desc.cap) {
+            out.indices.push_back(cap_center);
+            out.indices.push_back(cap_ring + n);
+            out.indices.push_back(cap_ring + i);
+        }
+    }
+    finish_generated(out, desc.base_color, desc.base_color_asset, desc.cull);
+    return out;
+}
+
+GeneratedMesh uv_sphere(const SphereDesc& desc) {
+    const u32 slices = clamp_segments(desc.slices, 3u, 256u);
+    const u32 stacks = clamp_segments(desc.stacks, 2u, 128u);
+    const f32 radius = clamp_positive(desc.radius, 1.0f);
+    const math::Vec2 uv{clamp_positive(desc.uv_repeat.x, 1.0f),
+                        clamp_positive(desc.uv_repeat.y, 1.0f)};
+
+    GeneratedMesh out{};
+    out.vertices.reserve(static_cast<usize>(slices + 1u) * (stacks + 1u));
+    out.indices.reserve(static_cast<usize>(slices) * stacks * 6u);
+    for (u32 stack = 0; stack <= stacks; ++stack) {
+        const f32 v = static_cast<f32>(stack) / static_cast<f32>(stacks);
+        const f32 phi = v * math::kPi;
+        const f32 y = std::cos(phi);
+        const f32 ring = std::sin(phi);
+        for (u32 slice = 0; slice <= slices; ++slice) {
+            const f32 u = static_cast<f32>(slice) / static_cast<f32>(slices);
+            const f32 theta = u * math::kTwoPi;
+            const math::Vec3 n{ring * std::cos(theta), y, ring * std::sin(theta)};
+            out.vertices.push_back(make_vertex(math::mul(n, radius), n, {u * uv.x, v * uv.y}, desc.color));
+        }
+    }
+    const u32 stride = slices + 1u;
+    for (u32 stack = 0; stack < stacks; ++stack) {
+        for (u32 slice = 0; slice < slices; ++slice) {
+            const u32 a = stack * stride + slice;
+            const u32 b = a + 1u;
+            const u32 c = a + stride;
+            const u32 d = c + 1u;
+            out.indices.insert(out.indices.end(), {a, c, b, b, c, d});
+        }
+    }
+    finish_generated(out, desc.base_color, desc.base_color_asset, desc.cull);
+    return out;
+}
+
+GeneratedMesh terrain(const TerrainDesc& desc) {
+    const u32 cells = clamp_segments(desc.cells, 1u, 256u);
+    const u32 side = cells + 1u;
+    const f32 extent = clamp_positive(desc.half_extent, 3.0f);
+    const f32 step = (extent * 2.0f) / static_cast<f32>(cells);
+    const TerrainKind kind = to_kind(desc.preset);
+    const math::Vec2 uv{clamp_positive(desc.uv_repeat.x, 1.0f),
+                        clamp_positive(desc.uv_repeat.y, 1.0f)};
+
+    GeneratedMesh out{};
+    out.vertices.resize(static_cast<usize>(side) * side);
+    out.indices.reserve(static_cast<usize>(cells) * cells * 6u);
+    for (u32 zc = 0; zc < side; ++zc) {
+        const f32 v = static_cast<f32>(zc) / static_cast<f32>(cells);
+        const f32 z = -extent + v * extent * 2.0f;
+        for (u32 xc = 0; xc < side; ++xc) {
+            const f32 u = static_cast<f32>(xc) / static_cast<f32>(cells);
+            const f32 x = -extent + u * extent * 2.0f;
+            const f32 sx = x / extent;
+            const f32 sz = z / extent;
+            const f32 y = terrain_height(desc, kind, sx, sz);
+            const f32 hx0 = terrain_height(desc, kind, (x - step) / extent, sz);
+            const f32 hx1 = terrain_height(desc, kind, (x + step) / extent, sz);
+            const f32 hz0 = terrain_height(desc, kind, sx, (z - step) / extent);
+            const f32 hz1 = terrain_height(desc, kind, sx, (z + step) / extent);
+            const math::Vec3 normal = math::normalize({hx0 - hx1, 2.0f * step, hz0 - hz1});
+            out.vertices[static_cast<usize>(zc) * side + xc] =
+                make_vertex({x, y, z}, normal, {u * uv.x, v * uv.y}, terrain_color(desc, kind, y));
+        }
+    }
+    for (u32 zc = 0; zc < cells; ++zc) {
+        for (u32 xc = 0; xc < cells; ++xc) {
+            const u32 a = zc * side + xc;
+            const u32 b = a + 1u;
+            const u32 c = a + side;
+            const u32 d = c + 1u;
+            out.indices.insert(out.indices.end(), {a, c, b, b, c, d});
+        }
+    }
+    finish_generated(out, desc.base_color, desc.base_color_asset, desc.cull);
+    return out;
+}
 
 MeshDesc textured_triangle(const TextureAsset* base_color_asset) noexcept {
     static constexpr Vertex kVertices[] = {

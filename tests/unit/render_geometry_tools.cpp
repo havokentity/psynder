@@ -110,3 +110,59 @@ TEST_CASE("geometry tools terrain presets dispatch by enum", "[render][geometry_
         require_height_variation(mesh);
     }
 }
+
+TEST_CASE("geometry tools build parameterized primitive meshes", "[render][geometry_tools]") {
+    render::geometry_tools::BoxDesc box{};
+    box.half_extent = {2.0f, 0.25f, 1.0f};
+    box.color = 0xFF3366AAu;
+    const render::geometry_tools::GeneratedMesh box_mesh = render::geometry_tools::unit_cube(box);
+    require_mesh_desc(box_mesh.desc());
+    REQUIRE(box_mesh.vertices.size() == 24u);
+    REQUIRE(box_mesh.indices.size() == 36u);
+    REQUIRE(box_mesh.local_bounds.min.x == -2.0f);
+    REQUIRE(box_mesh.local_bounds.max.z == 1.0f);
+    REQUIRE(box_mesh.vertices[0].color == 0xFF3366AAu);
+
+    render::geometry_tools::ConeDesc cone{};
+    cone.segments = 12;
+    cone.radius = 0.75f;
+    cone.height = 1.5f;
+    cone.cap = false;
+    const render::geometry_tools::GeneratedMesh cone_mesh = render::geometry_tools::cone(cone);
+    require_mesh_desc(cone_mesh.desc());
+    REQUIRE(cone_mesh.indices.size() == 12u * 3u);
+
+    render::geometry_tools::SphereDesc sphere{};
+    sphere.slices = 10;
+    sphere.stacks = 5;
+    sphere.radius = 2.0f;
+    const render::geometry_tools::GeneratedMesh sphere_mesh = render::geometry_tools::uv_sphere(sphere);
+    require_mesh_desc(sphere_mesh.desc());
+    REQUIRE(sphere_mesh.vertices.size() == 66u);
+    REQUIRE(sphere_mesh.indices.size() == 300u);
+    REQUIRE(sphere_mesh.local_bounds.min.y <= -2.0f);
+    REQUIRE(sphere_mesh.local_bounds.max.y >= 2.0f);
+}
+
+TEST_CASE("geometry tools build parameterized terrain meshes", "[render][geometry_tools]") {
+    render::geometry_tools::TerrainDesc terrain{};
+    terrain.preset = render::geometry_tools::TerrainPreset::Volcanic;
+    terrain.cells = 8;
+    terrain.half_extent = 4.0f;
+    terrain.height_scale = 2.0f;
+    terrain.noise_strength = 0.04f;
+    terrain.terrace_strength = 0.5f;
+    terrain.seed = 42u;
+    terrain.low_color = 0xFF101010u;
+    terrain.mid_color = 0xFF303030u;
+    terrain.high_color = 0xFF805030u;
+    terrain.water_color = 0xFF204060u;
+
+    const render::geometry_tools::GeneratedMesh mesh = render::geometry_tools::terrain(terrain);
+    require_mesh_desc(mesh.desc());
+    require_height_variation(mesh.desc());
+    REQUIRE(mesh.vertices.size() == 81u);
+    REQUIRE(mesh.indices.size() == 8u * 8u * 6u);
+    REQUIRE(mesh.local_bounds.min.x == -4.0f);
+    REQUIRE(mesh.local_bounds.max.z == 4.0f);
+}
