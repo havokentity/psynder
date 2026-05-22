@@ -28,11 +28,11 @@ struct TriangleSample {
         triangle_entity = app.create_raster_mesh_entity(scene, triangle_mesh_desc).entity;
     }
 
-    void frame(app::WindowFrameContext& ctx) {
+    void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {
         scene::LocalTransform triangle_transform{};
         triangle_transform.rotation =
             math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(ctx.seconds) * 0.8f);
-        ctx.app.loaded_scene(0).set_transform(triangle_entity, triangle_transform);
+        cr.scene().set_transform(triangle_entity, triangle_transform);
     }
 };
 

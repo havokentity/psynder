@@ -20,8 +20,8 @@ struct ClearSample {
     static constexpr const char* log_name = "sample_00";
     static constexpr const char* display_name = "Psynder sample 00 (clear)";
 
-    void frame_begin(const app::WindowFrameContext& ctx) noexcept {
-        ctx.app.scene().environment().set_clear_color(animated_clear_color(ctx.seconds));
+    void frame_begin(const app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) noexcept {
+        cr.environment().set_clear_color(animated_clear_color(ctx.seconds));
     }
 };
 

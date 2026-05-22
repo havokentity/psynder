@@ -77,6 +77,24 @@ struct FrameClear {
     }
 };
 
+struct PSY_CACHELINE_ALIGN WindowFrameCacheReady {
+    scene::Scene* scene_ptr = nullptr;
+    scene::SceneRuntime* runtime_ptr = nullptr;
+    scene::Environment* environment_ptr = nullptr;
+    scene::EnvironmentRuntimeSoA* environment_runtime_ptr = nullptr;
+
+    [[nodiscard]] bool has_scene() const noexcept { return scene_ptr != nullptr; }
+    [[nodiscard]] scene::Scene& scene() const noexcept { return *scene_ptr; }
+    [[nodiscard]] scene::SceneRuntime& runtime() const noexcept { return *runtime_ptr; }
+    [[nodiscard]] scene::Environment& environment() const noexcept { return *environment_ptr; }
+    [[nodiscard]] scene::EnvironmentRuntimeSoA& hot_environment() const noexcept {
+        return *environment_runtime_ptr;
+    }
+};
+
+static_assert(sizeof(WindowFrameCacheReady) == kCacheLine);
+static_assert(alignof(WindowFrameCacheReady) == kCacheLine);
+
 inline platform::WindowDesc default_window_desc(std::string_view title = "Psynder") {
     platform::WindowDesc desc{};
     desc.title.assign(title.data(), title.size());
@@ -168,6 +186,14 @@ class WindowApp {
     }
     [[nodiscard]] const scene::Scene& loaded_scene(u32 index = 0u) const noexcept {
         return *loaded_scenes_[index];
+    }
+    [[nodiscard]] WindowFrameCacheReady cache_ready() noexcept {
+        WindowFrameCacheReady cr{};
+        cr.scene_ptr = active_scene_;
+        cr.runtime_ptr = active_runtime_;
+        cr.environment_ptr = active_scene_ ? &active_scene_->environment() : nullptr;
+        cr.environment_runtime_ptr = active_runtime_ ? &active_runtime_->environment : nullptr;
+        return cr;
     }
 
     [[nodiscard]] render::raster::ViewState default_raster_view() noexcept {
@@ -706,15 +732,30 @@ void sample_stopped(Sample& sample, WindowApp& app) {
 }
 
 template <class Sample, class ArgsT>
-void run_sample_frame_begin(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
-    if constexpr (requires { sample.frame_begin(ctx); }) {
+void run_sample_frame_begin(Sample& sample,
+                            WindowFrameContextT<ArgsT>& ctx,
+                            WindowFrameCacheReady& cr) {
+    if constexpr (requires { sample.frame_begin(ctx, cr); }) {
+        sample.frame_begin(ctx, cr);
+    } else if constexpr (requires { sample.frame_begin(ctx); }) {
         sample.frame_begin(ctx);
     }
 }
 
 template <class Sample, class ArgsT>
-FrameAction run_sample_frame(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
-    if constexpr (requires { sample.frame(ctx); }) {
+FrameAction run_sample_frame(Sample& sample,
+                             WindowFrameContextT<ArgsT>& ctx,
+                             WindowFrameCacheReady& cr) {
+    if constexpr (requires { sample.frame(ctx, cr); }) {
+        if constexpr (requires {
+                          { sample.frame(ctx, cr) } -> std::same_as<FrameAction>;
+                      }) {
+            return sample.frame(ctx, cr);
+        } else {
+            sample.frame(ctx, cr);
+            return FrameAction::Continue;
+        }
+    } else if constexpr (requires { sample.frame(ctx); }) {
         if constexpr (requires {
                           { sample.frame(ctx) } -> std::same_as<FrameAction>;
                       }) {
@@ -729,8 +770,14 @@ FrameAction run_sample_frame(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
 }
 
 template <class Sample, class ArgsT>
-FrameClear sample_frame_clear(Sample& sample, const WindowFrameContextT<ArgsT>& ctx) noexcept {
-    if constexpr (requires { sample.frame_clear(ctx); }) {
+FrameClear sample_frame_clear(Sample& sample,
+                              const WindowFrameContextT<ArgsT>& ctx,
+                              WindowFrameCacheReady& cr) noexcept {
+    if constexpr (requires { sample.frame_clear(ctx, cr); }) {
+        return sample.frame_clear(ctx, cr);
+    } else if constexpr (requires { Sample::frame_clear(ctx, cr); }) {
+        return Sample::frame_clear(ctx, cr);
+    } else if constexpr (requires { sample.frame_clear(ctx); }) {
         return sample.frame_clear(ctx);
     } else if constexpr (requires { Sample::frame_clear(ctx); }) {
         return Sample::frame_clear(ctx);
@@ -765,8 +812,12 @@ constexpr bool engine_frame_post_enabled() noexcept {
 }
 
 template <class Sample, class ArgsT>
-void run_engine_frame_post(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
-    if constexpr (requires { sample.frame_post(ctx); }) {
+void run_engine_frame_post(Sample& sample,
+                           WindowFrameContextT<ArgsT>& ctx,
+                           WindowFrameCacheReady& cr) {
+    if constexpr (requires { sample.frame_post(ctx, cr); }) {
+        sample.frame_post(ctx, cr);
+    } else if constexpr (requires { sample.frame_post(ctx); }) {
         sample.frame_post(ctx);
     } else if constexpr (engine_frame_post_enabled<Sample>()) {
         ctx.app.engine_frame_post();
@@ -871,11 +922,12 @@ int run_window_sample(int argc, char** argv) {
             args.smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
                                   : platform::Clock::seconds(platform::Clock::ticks_now() - t0),
         };
+        WindowFrameCacheReady cr = app.cache_ready();
 
-        detail::run_sample_frame_begin(sample, ctx);
-        app.engine_frame_begin(detail::sample_frame_clear(sample, ctx));
-        const FrameAction action = detail::run_sample_frame(sample, ctx);
-        detail::run_engine_frame_post(sample, ctx);
+        detail::run_sample_frame_begin(sample, ctx, cr);
+        app.engine_frame_begin(detail::sample_frame_clear(sample, ctx, cr));
+        const FrameAction action = detail::run_sample_frame(sample, ctx, cr);
+        detail::run_engine_frame_post(sample, ctx, cr);
         app.present();
 
         ++frame;
