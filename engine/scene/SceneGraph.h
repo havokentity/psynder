@@ -6,10 +6,62 @@
 #include "core/Types.h"
 #include "math/Math.h"
 
+#include <limits>
+#include <new>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace psynder::scene {
+namespace detail {
+
+template <class T, usize Alignment = kCacheLine>
+class CacheAlignedAllocator {
+   public:
+    using value_type = T;
+    using is_always_equal = std::true_type;
+
+    static_assert(Alignment >= alignof(T), "allocator alignment must satisfy T");
+
+    CacheAlignedAllocator() noexcept = default;
+
+    template <class U>
+    constexpr CacheAlignedAllocator(const CacheAlignedAllocator<U, Alignment>&) noexcept {}
+
+    [[nodiscard]] T* allocate(std::size_t count) {
+        if (count > std::numeric_limits<std::size_t>::max() / sizeof(T))
+            throw std::bad_array_new_length{};
+        if (count == 0)
+            return nullptr;
+        return static_cast<T*>(::operator new(count * sizeof(T), std::align_val_t{Alignment}));
+    }
+
+    void deallocate(T* ptr, std::size_t) noexcept {
+        ::operator delete(ptr, std::align_val_t{Alignment});
+    }
+
+    template <class U>
+    struct rebind {
+        using other = CacheAlignedAllocator<U, Alignment>;
+    };
+};
+
+template <class A, class B, usize Alignment>
+constexpr bool operator==(const CacheAlignedAllocator<A, Alignment>&,
+                          const CacheAlignedAllocator<B, Alignment>&) noexcept {
+    return true;
+}
+
+template <class A, class B, usize Alignment>
+constexpr bool operator!=(const CacheAlignedAllocator<A, Alignment>&,
+                          const CacheAlignedAllocator<B, Alignment>&) noexcept {
+    return false;
+}
+
+template <class T>
+using AlignedVector = std::vector<T, CacheAlignedAllocator<T>>;
+
+}  // namespace detail
 
 struct SceneNode {
     u32 raw = 0;
@@ -47,6 +99,7 @@ struct SceneGraphUpdateStats {
 class SceneGraph {
    public:
     void clear();
+    void reserve_nodes(u32 count);
 
     SceneNode create_node(SceneNode parent = kInvalidSceneNode, const LocalTransform& local = {});
     bool destroy_node(SceneNode node);
@@ -78,23 +131,25 @@ class SceneGraph {
     bool valid_index(SceneNode node) const noexcept;
     void attach_child(u32 parent_index, u32 child_index) noexcept;
     void detach_child(u32 child_index) noexcept;
-    void rebuild_depth_lists();
+    void recompute_depth_bounds() noexcept;
     void update_subtree_depths(u32 root_index, u32 depth);
 
-    std::vector<u32> generation_;
-    std::vector<u8> alive_;
-    std::vector<u32> parent_;
-    std::vector<u32> first_child_;
-    std::vector<u32> next_sibling_;
-    std::vector<u32> prev_sibling_;
-    std::vector<u32> depth_;
-    std::vector<math::Mat4> local_;
-    std::vector<math::Mat4> world_;
-    std::vector<u8> local_dirty_;
-    std::vector<u8> effective_dirty_;
-    std::vector<std::vector<u32>> nodes_by_depth_;
-    std::vector<AnalyticSphereDesc> analytic_spheres_;
+    detail::AlignedVector<u32> generation_;
+    detail::AlignedVector<u8> alive_;
+    detail::AlignedVector<u32> parent_;
+    detail::AlignedVector<u32> first_child_;
+    detail::AlignedVector<u32> next_sibling_;
+    detail::AlignedVector<u32> prev_sibling_;
+    detail::AlignedVector<u32> depth_;
+    detail::AlignedVector<math::Mat4> local_;
+    detail::AlignedVector<math::Mat4> world_;
+    detail::AlignedVector<u8> local_dirty_;
+    detail::AlignedVector<u8> effective_dirty_;
+    detail::AlignedVector<u8> dirty_queued_;
+    detail::AlignedVector<u32> dirty_roots_;
+    detail::AlignedVector<AnalyticSphereDesc> analytic_spheres_;
     u32 live_nodes_ = 0;
+    u32 max_depth_ = 0;
 };
 
 math::Mat4 local_transform_matrix(const LocalTransform& local);
