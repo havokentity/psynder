@@ -26,10 +26,9 @@ struct TriangleSample {
         scene.environment().set_clear_color(0xFF202028u);
         crate.load_ppm("assets/crate.ppm");
 
-        const render::MeshDesc triangle_mesh_desc = render::geometry_tools::textured_triangle(&crate);
         triangle_entity = render::entity_helpers::create_mesh_entity(app.rendering_system(),
                                                                      scene,
-                                                                     triangle_mesh_desc)
+                                                                     render::geometry_tools::textured_triangle(&crate))
                               .entity;
     }
 
