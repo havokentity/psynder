@@ -6,7 +6,6 @@
 //
 #include "platform/App.h"
 #include "render/EntityHelpers.h"
-#include "render/GeometryTools.h"
 
 using namespace psynder;
 
@@ -26,10 +25,8 @@ struct TriangleSample {
         scene.environment().set_clear_color(0xFF202028u);
         crate.load_ppm("assets/crate.ppm");
 
-        triangle_entity = render::entity_helpers::create_mesh_entity(app.rendering_system(),
-                                                                     scene,
-                                                                     render::geometry_tools::textured_triangle(&crate))
-                              .entity;
+        triangle_entity =
+            render::entity_helpers::create_textured_triangle(app.rendering_system(), scene, crate).entity;
     }
 
     void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {
