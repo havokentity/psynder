@@ -232,6 +232,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     std::array<Entity, kCratePositions.size()> crates{};
     for (Entity& crate : crates)
         crate = scene.create_renderable(app_host.make_mesh_renderable(cube_mesh, crate_material_id));
+    app_host.set_scene(scene);
 
     PSY_LOG_INFO("Psynder sample 02 running{}{}",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -285,18 +286,16 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 ? static_cast<f32>(frame) * 0.05f
                 : static_cast<f32>(platform::Clock::seconds(platform::Clock::ticks_now() - t0));
 
-        render::raster::ViewState view{};
-        view.target = fb;
-        view.view = math::look_at_rh(math::Vec3{0, 1.5f, 1.5f},   // eye
-                                     math::Vec3{0, 0.0f, -3.0f},  // target
-                                     math::Vec3{0, 1.0f, 0.0f});  // up
-        view.projection = math::perspective_rh(60.0f * math::kDegToRad,
-                                               static_cast<f32>(desc.render_width) /
-                                                   static_cast<f32>(desc.render_height),
-                                               0.1f,
-                                               100.0f);
-        view.tile_w = 64;
-        view.tile_h = 64;
+        app::Camera camera{};
+        camera.view = math::look_at_rh(math::Vec3{0, 1.5f, 1.5f},   // eye
+                                       math::Vec3{0, 0.0f, -3.0f},  // target
+                                       math::Vec3{0, 1.0f, 0.0f});  // up
+        camera.projection = math::perspective_rh(60.0f * math::kDegToRad,
+                                                 static_cast<f32>(desc.render_width) /
+                                                     static_cast<f32>(desc.render_height),
+                                                 0.1f,
+                                                 100.0f);
+        app_host.set_camera(camera);
 
         for (usize i = 0; i < kCratePositions.size(); ++i) {
             const math::Vec3 pos = kCratePositions[i];
@@ -309,7 +308,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             scene.set_transform(crates[i], transform);
         }
 
-        app_host.render_scene(scene, view);
         app_host.engine_frame_post();
         app_host.present();
 

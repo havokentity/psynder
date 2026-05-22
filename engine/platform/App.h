@@ -16,6 +16,7 @@
 #include "render/PngWriter.h"
 #include "render/RenderingSystem.h"
 #include "scene/SceneEcs.h"
+#include "ui/imm/Imm.h"
 
 #include <array>
 #include <concepts>
@@ -31,6 +32,13 @@ namespace psynder::app {
 
 struct WindowAppOptions {
     bool depth_buffer = false;
+};
+
+struct Camera {
+    math::Mat4 view = math::identity4();
+    math::Mat4 projection = math::identity4();
+    u32 tile_w = 64;
+    u32 tile_h = 64;
 };
 
 struct FrameClear {
@@ -122,11 +130,39 @@ class WindowApp {
     [[nodiscard]] render::raster::ViewState default_raster_view() noexcept {
         render::raster::ViewState view{};
         view.target = framebuffer_;
-        view.view = math::identity4();
-        view.projection = math::identity4();
+        view.view = Camera{}.view;
+        view.projection = Camera{}.projection;
         view.tile_w = 64;
         view.tile_h = 64;
         return view;
+    }
+
+    void set_scene(scene::Scene& scene) noexcept {
+        active_scene_ = &scene;
+        if (!active_camera_set_)
+            set_camera(Camera{});
+    }
+
+    void clear_scene() noexcept {
+        active_scene_ = nullptr;
+        active_scene_rendered_ = false;
+    }
+
+    void set_camera(const Camera& camera) noexcept {
+        active_camera_ = camera;
+        active_camera_set_ = true;
+    }
+
+    [[nodiscard]] bool has_camera() const noexcept {
+        return active_camera_set_;
+    }
+
+    void clear_camera() noexcept {
+        active_camera_set_ = false;
+    }
+
+    void delete_camera() noexcept {
+        clear_camera();
     }
 
     void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
@@ -168,10 +204,31 @@ class WindowApp {
     }
 
     render::SceneRenderStats render_scene(scene::Scene& scene, const render::raster::ViewState& view) {
-        return rendering_system_.render_raster(scene, view);
+        render::SceneRenderStats stats = rendering_system_.render_raster(scene, view);
+        if (&scene == active_scene_)
+            active_scene_rendered_ = true;
+        return stats;
+    }
+
+    render::SceneRenderStats engine_frame_render() {
+        if (active_scene_ == nullptr || active_scene_rendered_)
+            return {};
+        if (!active_camera_set_) {
+            draw_no_camera_notice();
+            active_scene_rendered_ = true;
+            return {};
+        }
+        render::raster::ViewState view{};
+        view.target = framebuffer_;
+        view.view = active_camera_.view;
+        view.projection = active_camera_.projection;
+        view.tile_w = active_camera_.tile_w;
+        view.tile_h = active_camera_.tile_h;
+        return render_scene(*active_scene_, view);
     }
 
     void engine_frame_begin(FrameClear clear) noexcept {
+        active_scene_rendered_ = false;
         if (clear.color)
             render::clear_framebuffer_color(framebuffer_, clear.color_rgba8);
         if (clear.depth)
@@ -189,6 +246,7 @@ class WindowApp {
     }
 
     void engine_frame_post() noexcept {
+        engine_frame_render();
         const render::FrameStats render_stats = render::frame_stats_snapshot();
         if (auto* input = platform::input()) {
             if (engine_frame_update_ran_) {
@@ -202,6 +260,7 @@ class WindowApp {
     }
 
     void engine_frame_post(const editor::FrameOverlayStats& stats) noexcept {
+        engine_frame_render();
         editor::FrameOverlayStats reported = stats;
         reported.render_stats_valid = true;
         if (auto* input = platform::input()) {
@@ -220,6 +279,7 @@ class WindowApp {
     }
 
     void engine_frame_post(const ui::imm::DebugHudStats& hud) noexcept {
+        engine_frame_render();
         if (!engine_frame_update_ran_) {
             if (auto* input = platform::input()) {
                 editor::sample_update(*input, hud.frame_ms > 0.0f ? hud.frame_ms * 0.001f
@@ -266,6 +326,10 @@ class WindowApp {
         engine_frame_ms_ring_ = other.engine_frame_ms_ring_;
         engine_frame_ms_head_ = other.engine_frame_ms_head_;
         engine_frame_ms_count_ = other.engine_frame_ms_count_;
+        active_scene_ = other.active_scene_;
+        active_camera_ = other.active_camera_;
+        active_camera_set_ = other.active_camera_set_;
+        active_scene_rendered_ = other.active_scene_rendered_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         rendering_system_ = std::move(other.rendering_system_);
@@ -278,6 +342,10 @@ class WindowApp {
         other.engine_frame_ms_ring_ = {};
         other.engine_frame_ms_head_ = 0;
         other.engine_frame_ms_count_ = 0;
+        other.active_scene_ = nullptr;
+        other.active_camera_ = {};
+        other.active_camera_set_ = false;
+        other.active_scene_rendered_ = false;
         other.framebuffer_ = {};
     }
 
@@ -290,6 +358,10 @@ class WindowApp {
     std::array<f32, 120> engine_frame_ms_ring_{};
     u32 engine_frame_ms_head_ = 0;
     u32 engine_frame_ms_count_ = 0;
+    scene::Scene* active_scene_ = nullptr;
+    Camera active_camera_{};
+    bool active_camera_set_ = false;
+    bool active_scene_rendered_ = false;
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
@@ -310,6 +382,32 @@ class WindowApp {
         for (u32 i = 0; i < engine_frame_ms_count_; ++i)
             sum += engine_frame_ms_ring_[i];
         return sum / static_cast<f32>(engine_frame_ms_count_);
+    }
+
+    void draw_no_camera_notice() noexcept {
+        if (framebuffer_.width == 0u || framebuffer_.height == 0u || framebuffer_.pixels == nullptr)
+            return;
+
+        constexpr std::string_view kText = "No Camera Rendering";
+        constexpr f32 kCellW = 6.0f;
+        constexpr f32 kCellH = 8.0f;
+        const f32 text_w = static_cast<f32>(kText.size()) * kCellW;
+        const f32 panel_w = text_w + 16.0f;
+        const f32 panel_h = kCellH + 12.0f;
+        const f32 x = (static_cast<f32>(framebuffer_.width) - panel_w) * 0.5f;
+        const f32 y = (static_cast<f32>(framebuffer_.height) - panel_h) * 0.5f;
+
+        ui::imm::begin_frame(framebuffer_);
+        ui::imm::filled_rect(math::Vec2{x, y},
+                             math::Vec2{panel_w, panel_h},
+                             ui::imm::rgba(0x0B, 0x10, 0x18));
+        ui::imm::rect_outline(math::Vec2{x, y},
+                              math::Vec2{panel_w, panel_h},
+                              ui::imm::rgba(0x71, 0x82, 0x99));
+        ui::imm::label(math::Vec2{x + 8.0f, y + 6.0f},
+                       kText,
+                       ui::imm::rgba(0xFF, 0xD2, 0x66));
+        ui::imm::end_frame();
     }
 
     [[nodiscard]] static editor::FrameOverlayStats make_engine_overlay_stats(

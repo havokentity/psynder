@@ -32,6 +32,7 @@ struct TriangleSample {
         const render::MaterialId triangle_material_id = scene.materials().create(triangle_material);
         const render::MeshDesc triangle_mesh_desc = render::geometry_tools::textured_triangle(&crate);
         triangle_entity = app.create_mesh_entity(scene, triangle_mesh_desc, triangle_material_id).entity;
+        app.set_scene(scene);
     }
 
     void frame(app::WindowFrameContext& ctx) {
@@ -39,7 +40,6 @@ struct TriangleSample {
         triangle_transform.rotation =
             math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(ctx.seconds) * 0.8f);
         scene.set_transform(triangle_entity, triangle_transform);
-        ctx.app.render_scene(scene);
     }
 };
 
