@@ -256,7 +256,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         }
 
         const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb) : editor::Mode::Play;
+            platform::input() ? editor::sample_step(*platform::input(), fb, frame_ms * 0.001f)
+                              : editor::Mode::Play;
         const f64 t = (edit_mode == editor::Mode::Edit) ? 0.0
                       : smoke_frames > 0
                           ? static_cast<f64>(frame) * (1.0 / 60.0)

@@ -358,7 +358,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         // golden gate is deterministic. Frozen in EDIT mode so the user
         // sees a stable scene while inspecting / spawning props.
         const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb) : editor::Mode::Play;
+            platform::input() ? editor::sample_step(*platform::input(), fb, frame_ms * 0.001f)
+                              : editor::Mode::Play;
         // EDIT mode pins `t` to a constant so the scene is frozen for
         // inspection. Smoke mode advances per frame for deterministic
         // captures; otherwise we tick off the wall clock.

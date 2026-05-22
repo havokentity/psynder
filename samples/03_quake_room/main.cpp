@@ -585,14 +585,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     while (!window->should_close()) {
         window->poll_events();
 
-        // ── Input integration ────────────────────────────────────────────
-        // Escape quits — unless the console is open, where Esc closes the
-        // console instead (handled inside sample_step's console::update).
-        if (!ui::console::is_open() && input->key_down(platform::KeyCode::Escape)) {
-            PSY_LOG_INFO("sample_03: escape pressed, exiting");
-            break;
-        }
-
         const u64 now = platform::Clock::ticks_now();
         // Smoke runs use a fixed dt so motion is deterministic.
         const f32 dt =
@@ -600,6 +592,16 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 ? 1.0f / 60.0f
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now - last_ticks)));
         last_ticks = now;
+
+        // Run console capture before gameplay hotkeys so toggle/escape frames
+        // never leak into the controller or host quit path.
+        (void)editor::sample_update(*input, dt);
+
+        // ── Input integration ────────────────────────────────────────────
+        if (!editor::overlays_capturing() && input->key_down(platform::KeyCode::Escape)) {
+            PSY_LOG_INFO("sample_03: escape pressed, exiting");
+            break;
+        }
 
         if (args.smoke_frames > 0) {
             // Smoke mode pins the camera to a deterministic path so the
@@ -612,7 +614,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             // Linearly walk z from -5 (deep in A) to +3 (deep in B).
             controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f + 8.0f * t01});
             controller.set_look(0.0f, 0.0f);
-        } else if (!ui::console::is_open()) {
+        } else if (!editor::overlays_capturing()) {
             // Live play: WASD + mouse-look via the shared controller. FPS
             // mode walks on the floor and clamps to the room bounds; V flies;
             // `noclip 1` lifts the clamp + gravity. Frozen while the console
@@ -646,10 +648,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // Editor F2/~ toggle + PLAY/EDIT badge bottom-right (lane 18). Drawn
-        // after the rasterizer so the badge composites on top of the scene.
-        // Mode toggle is independent of the controller's V fly-toggle.
-        (void)editor::sample_step(*input, fb);
+        // PLAY/EDIT badge bottom-right (lane 18). Drawn after the rasterizer so
+        // the badge composites on top of the scene.
+        editor::sample_draw(fb);
 
         // Drop-down developer console (`~`). Drawn last so the panel +
         // scrollback composite over the scene, badge, and HUD.

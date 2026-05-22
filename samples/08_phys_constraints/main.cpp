@@ -537,8 +537,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         // Editor F2/~ toggle + PLAY/EDIT badge. EDIT mode freezes the sim so
         // the hanging pose can be inspected.
-        const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb) : editor::Mode::Play;
+        const editor::Mode edit_mode = platform::input()
+                                           ? editor::sample_step(*platform::input(), fb, kFixedDt)
+                                           : editor::Mode::Play;
 
         if (edit_mode != editor::Mode::Edit) {
             // Advance both the engine world (exercises step) and the PBD

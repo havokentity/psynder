@@ -480,7 +480,8 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
         // Editor F2/~ toggle + PLAY/EDIT badge bottom-right. EDIT mode
         // pins time so the user can inspect the BVH with a frozen scene.
         const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb) : editor::Mode::Play;
+            platform::input() ? editor::sample_step(*platform::input(), fb, frame_ms * 0.001f)
+                              : editor::Mode::Play;
 
         // Smoke runs pin time to frame index so the captured PNG is
         // deterministic across hosts.

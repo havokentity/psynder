@@ -62,6 +62,20 @@ TEST_CASE("common app args report missing spaced values", "[core][app_args]") {
     REQUIRE(capture.diagnostics.missing_capture_out_value);
 }
 
+TEST_CASE("common app args report missing equals-form values", "[core][app_args]") {
+    const char* smoke_argv[] = {"sample", "--smoke-frames="};
+    const char* capture_argv[] = {"sample", "--smoke-capture-out="};
+
+    const app::AppArgParseResult smoke = app::parse_common_args(2, smoke_argv);
+    const app::AppArgParseResult capture = app::parse_common_args(2, capture_argv);
+
+    REQUIRE(smoke.args.smoke_frames == 0u);
+    REQUIRE(smoke.diagnostics.missing_smoke_frames_value);
+    REQUIRE_FALSE(smoke.diagnostics.malformed_smoke_frames);
+    REQUIRE(capture.args.capture_out.empty());
+    REQUIRE(capture.diagnostics.missing_capture_out_value);
+}
+
 TEST_CASE("common app arg consumer leaves custom args to caller", "[core][app_args]") {
     const char* argv[] = {"sample", "--custom", "--smoke-frames", "3"};
     app::AppArgs args{};

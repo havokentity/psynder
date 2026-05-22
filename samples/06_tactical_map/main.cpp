@@ -47,6 +47,7 @@
 #include "render/raster/Raster.h"
 #include "world/outdoor/Terrain.h"
 #include "world/outdoor/TerrainTarget.h"
+#include "world/outdoor/Heightmap_internal.h"
 
 #include <algorithm>
 #include <array>
@@ -197,39 +198,12 @@ std::vector<u16> build_heightmap() {
 //
 // Semantics deliberately match `world::outdoor::detail::sample_bilinear`:
 //   * null heights / zero size / non-positive spacing  →  return 0
-//   * out-of-bounds (fx/fz outside [0, size-1])         →  return 0
+//   * out-of-bounds texels                               →  blend as height 0
 //   * in-bounds                                          →  bilinear blend
-// (The Copilot review on PR #114 flagged edge-clamp extrapolation for props
-// near the map edge — falling back to 0 keeps this consistent with the rest
-// of the engine.)
+// Border texels blend against zero-valued OOB samples to match the engine
+// heightmap sampler.
 f32 terrain_height(const world::outdoor::HeightmapDesc& hm, f32 wx, f32 wz) noexcept {
-    if (!hm.heights || hm.size_x == 0 || hm.size_z == 0 || hm.spacing <= 0.0f) {
-        return 0.0f;
-    }
-    const f32 fx = wx / hm.spacing;
-    const f32 fz = wz / hm.spacing;
-    const f32 max_x = static_cast<f32>(hm.size_x - 1);
-    const f32 max_z = static_cast<f32>(hm.size_z - 1);
-    if (fx < 0.0f || fx > max_x || fz < 0.0f || fz > max_z) {
-        return 0.0f;
-    }
-    const i32 ix = static_cast<i32>(std::floor(fx));
-    const i32 iz = static_cast<i32>(std::floor(fz));
-    const f32 tx = fx - static_cast<f32>(ix);
-    const f32 tz = fz - static_cast<f32>(iz);
-    auto fetch = [&hm](i32 cx, i32 cz) noexcept -> f32 {
-        cx = std::clamp(cx, 0, static_cast<i32>(hm.size_x) - 1);
-        cz = std::clamp(cz, 0, static_cast<i32>(hm.size_z) - 1);
-        const usize idx = static_cast<usize>(cz) * hm.size_x + static_cast<usize>(cx);
-        return static_cast<f32>(hm.heights[idx]) * hm.height_scale;
-    };
-    const f32 h00 = fetch(ix, iz);
-    const f32 h10 = fetch(ix + 1, iz);
-    const f32 h01 = fetch(ix, iz + 1);
-    const f32 h11 = fetch(ix + 1, iz + 1);
-    const f32 a = h00 * (1.0f - tx) + h10 * tx;
-    const f32 b = h01 * (1.0f - tx) + h11 * tx;
-    return a * (1.0f - tz) + b * tz;
+    return world::outdoor::detail::sample_bilinear(hm, wx, wz);
 }
 
 // ─── Sky gradient ────────────────────────────────────────────────────────
@@ -266,6 +240,12 @@ struct CameraView {
 // headroom over the ~30m central ridge.
 constexpr f32 kFlyoverClearance = 10.0f;
 constexpr f32 kTowerHeight = 7.0f;
+constexpr f32 kFlyoverDirEpsilon = 1e-4f;
+constexpr f32 kFlyoverLookAheadStart = 8.0f;
+constexpr f32 kFlyoverLookAheadEnd = 56.0f;
+constexpr f32 kFlyoverLookAheadStep = 8.0f;
+constexpr f32 kFlyoverRingRadius = 14.0f;
+constexpr u32 kFlyoverRingSamples = 8;
 
 CameraView make_flyover_camera(f32 t_seconds,
                                const world::outdoor::HeightmapDesc& hm,
@@ -292,7 +272,7 @@ CameraView make_flyover_camera(f32 t_seconds,
     // the unclamped eye grazes straight along the crest. Clamp instead above the
     // MAX terrain found over three sets of samples:
     //   * the eye's own column,
-    //   * a look-ahead fan toward the view target (catches the in-front ridge),
+    //   * look-ahead line samples toward the view target (catch the in-front ridge),
     //   * a small ring around the eye (catches a crest the orbit is about to
     //     pass — motion is tangential, not toward the target — and any sharp tip
     //     the bilinear at the exact column would miss).
@@ -304,17 +284,18 @@ CameraView make_flyover_camera(f32 t_seconds,
         const f32 dx = centre.x - eye.x;
         const f32 dz = centre.z - eye.z;
         const f32 dlen = std::sqrt(dx * dx + dz * dz);
-        const f32 fx = dlen > 1e-4f ? dx / dlen : 0.0f;
-        const f32 fz = dlen > 1e-4f ? dz / dlen : 0.0f;
-        for (f32 d = 8.0f; d <= 56.0f; d += 8.0f) {
+        const f32 fx = dlen > kFlyoverDirEpsilon ? dx / dlen : 0.0f;
+        const f32 fz = dlen > kFlyoverDirEpsilon ? dz / dlen : 0.0f;
+        for (f32 d = kFlyoverLookAheadStart; d <= kFlyoverLookAheadEnd; d += kFlyoverLookAheadStep) {
             max_ground = std::max(max_ground, terrain_height(hm, eye.x + fx * d, eye.z + fz * d));
         }
-        constexpr f32 kRingR = 14.0f;
-        for (u32 k = 0; k < 8; ++k) {
-            const f32 a = static_cast<f32>(k) * (math::kPi * 0.25f);
-            max_ground = std::max(
-                max_ground,
-                terrain_height(hm, eye.x + std::cos(a) * kRingR, eye.z + std::sin(a) * kRingR));
+        constexpr f32 kRingAngleStep = math::kTwoPi / static_cast<f32>(kFlyoverRingSamples);
+        for (u32 k = 0; k < kFlyoverRingSamples; ++k) {
+            const f32 a = static_cast<f32>(k) * kRingAngleStep;
+            max_ground = std::max(max_ground,
+                                  terrain_height(hm,
+                                                 eye.x + std::cos(a) * kFlyoverRingRadius,
+                                                 eye.z + std::sin(a) * kFlyoverRingRadius));
         }
     }
     // ASYMMETRIC smoothing: RISE to the target instantly (never clip a crest);
@@ -476,62 +457,94 @@ void emit_cube(std::vector<render::raster::Vertex>& verts,
                u32 col_top) {
     const u32 base = static_cast<u32>(verts.size());
     // 6 faces × 4 verts. Per-face colour so the silhouette doesn't smear.
-    auto push_face =
-        [&](math::Vec3 a, math::Vec3 b, math::Vec3 c, math::Vec3 d, math::Vec3 normal, u32 col) {
-            const u32 v0 = static_cast<u32>(verts.size());
-            verts.push_back({a, normal, {0, 0}, {0, 0}, col});
-            verts.push_back({b, normal, {1, 0}, {0, 0}, col});
-            verts.push_back({c, normal, {1, 1}, {0, 0}, col});
-            verts.push_back({d, normal, {0, 1}, {0, 0}, col});
-            indices.push_back(v0 + 0);
-            indices.push_back(v0 + 1);
-            indices.push_back(v0 + 2);
-            indices.push_back(v0 + 0);
-            indices.push_back(v0 + 2);
-            indices.push_back(v0 + 3);
-        };
+    auto push_face = [&](math::Vec3 a,
+                         math::Vec3 b,
+                         math::Vec3 c,
+                         math::Vec3 d,
+                         math::Vec3 normal,
+                         u32 col,
+                         math::Vec2 uv0,
+                         math::Vec2 uv1,
+                         math::Vec2 uv2,
+                         math::Vec2 uv3) {
+        const u32 v0 = static_cast<u32>(verts.size());
+        verts.push_back({a, normal, uv0, {0, 0}, col});
+        verts.push_back({b, normal, uv1, {0, 0}, col});
+        verts.push_back({c, normal, uv2, {0, 0}, col});
+        verts.push_back({d, normal, uv3, {0, 0}, col});
+        indices.push_back(v0 + 0);
+        indices.push_back(v0 + 1);
+        indices.push_back(v0 + 2);
+        indices.push_back(v0 + 0);
+        indices.push_back(v0 + 2);
+        indices.push_back(v0 + 3);
+    };
     // +X face
     push_face({0.5f, -0.5f, -0.5f},
               {0.5f, 0.5f, -0.5f},
               {0.5f, 0.5f, 0.5f},
               {0.5f, -0.5f, 0.5f},
               {1, 0, 0},
-              col_side);
+              col_side,
+              {0, 1},
+              {0, 0},
+              {1, 0},
+              {1, 1});
     // -X face
     push_face({-0.5f, -0.5f, 0.5f},
               {-0.5f, 0.5f, 0.5f},
               {-0.5f, 0.5f, -0.5f},
               {-0.5f, -0.5f, -0.5f},
               {-1, 0, 0},
-              col_side);
+              col_side,
+              {0, 1},
+              {0, 0},
+              {1, 0},
+              {1, 1});
     // +Y top
     push_face({-0.5f, 0.5f, -0.5f},
               {-0.5f, 0.5f, 0.5f},
               {0.5f, 0.5f, 0.5f},
               {0.5f, 0.5f, -0.5f},
               {0, 1, 0},
-              col_top);
+              col_top,
+              {0, 0},
+              {1, 0},
+              {1, 1},
+              {0, 1});
     // -Y bottom
     push_face({-0.5f, -0.5f, 0.5f},
               {-0.5f, -0.5f, -0.5f},
               {0.5f, -0.5f, -0.5f},
               {0.5f, -0.5f, 0.5f},
               {0, -1, 0},
-              col_side);
+              col_side,
+              {0, 0},
+              {1, 0},
+              {1, 1},
+              {0, 1});
     // +Z face
     push_face({-0.5f, -0.5f, 0.5f},
               {0.5f, -0.5f, 0.5f},
               {0.5f, 0.5f, 0.5f},
               {-0.5f, 0.5f, 0.5f},
               {0, 0, 1},
-              col_side);
+              col_side,
+              {0, 1},
+              {1, 1},
+              {1, 0},
+              {0, 0});
     // -Z face
     push_face({0.5f, -0.5f, -0.5f},
               {-0.5f, -0.5f, -0.5f},
               {-0.5f, 0.5f, -0.5f},
               {0.5f, 0.5f, -0.5f},
               {0, 0, -1},
-              col_side);
+              col_side,
+              {0, 1},
+              {1, 1},
+              {1, 0},
+              {0, 0});
     (void)base;
 }
 
@@ -573,7 +586,7 @@ std::array<Tower, 6> make_watchtowers(const world::outdoor::HeightmapDesc& hm) {
         const f32 wz = xz[i].y;
         const f32 hy = terrain_height(hm, wx, wz);
         towers[i].ground_pos = {wx, hy, wz};
-        towers[i].height = 7.0f;
+        towers[i].height = kTowerHeight;
         towers[i].half_extent = 1.6f;
     }
     return towers;

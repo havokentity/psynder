@@ -52,7 +52,7 @@
 //      `bake::read_lmlight()`. The render path consumes ONLY the reloaded
 //      atlas, so the demo genuinely round-trips through the on-disk format.
 //   3. PER-PIXEL lightmap. For every face we rasterise its baked irradiance
-//      into a small RGBA8 "chunk" (build_face_chunk): each chunk texel (s,t)
+//      into a small RGBA8 "chunk" (build_face_chunks): each chunk texel (s,t)
 //      is mapped back to the quad's 3D point, the covering bake triangle is
 //      picked, its barycentrics taken, and the matching BakedSurface sampled
 //      bilinearly. The chunk is tonemapped to LDR. We then set the quad's
@@ -117,6 +117,9 @@ namespace bake = psynder::tools::bake;
 
 namespace {
 
+constexpr f32 kWallStandoff = 0.3f;
+constexpr f32 kPortalOverlap = 2.5f * kWallStandoff;
+
 constexpr u32 pack_rgba(u8 r, u8 g, u8 b, u8 a = 255) noexcept {
     return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
            (static_cast<u32>(a) << 24);
@@ -157,8 +160,7 @@ struct Vertex {
 // face's quad through the base uv (0,0)-(1,1). Owned by World so its bytes
 // outlive the render loop (the rasterizer holds the raw pointer per frame).
 struct FaceChunk {
-    render::Texture2D texture;            // kChunkRes × kChunkRes RGBA8, row-major
-    math::Vec3 albedo{0.7f, 0.7f, 0.7f};  // flat fallback when baked is off
+    render::Texture2D texture;  // kChunkRes × kChunkRes RGBA8, row-major
 };
 
 struct World {
@@ -177,7 +179,7 @@ struct World {
     // One baked chunk per face (filled after the bake round-trips).
     std::vector<FaceChunk> face_chunks;
     math::Aabb bounds{};
-    // Per-leaf walkable volumes (Room A, doorway corridor, Room B) for the
+    // Explicit room/corridor walkable volumes for the
     // generic convex-volume slide collision — the union AABB alone lets you
     // walk through the wall strips beside the doorway.
     std::array<math::Aabb, 3> walk_volumes{};
@@ -510,12 +512,12 @@ void build_world(World& w) {
     w.floor_y = kFloorY;
     w.bounds.min = {kRoomX0, kFloorY, kRoomAZ0};
     w.bounds.max = {kRoomX1, kCeilY, kRoomBZ1};
-    // Walkable volumes for slide collision. The corridor is stretched +/-0.75
-    // in Z so it overlaps both rooms past the 0.3 wall standoff (no dead gap at
-    // the doorways); the stretch only re-covers floor already inside the rooms.
+    // Walkable volumes for slide collision. The corridor is stretched in Z so it
+    // overlaps both rooms past the wall standoff (no dead gap at the doorways);
+    // the stretch only re-covers floor already inside the rooms.
     w.walk_volumes[0] = math::Aabb{{kRoomX0, kFloorY, kRoomAZ0}, {kRoomX1, kCeilY, kRoomAZ1}};
-    w.walk_volumes[1] =
-        math::Aabb{{kDoorX0, kFloorY, kDoorZ0 - 0.75f}, {kDoorX1, kCeilY, kDoorZ1 + 0.75f}};
+    w.walk_volumes[1] = math::Aabb{{kDoorX0, kFloorY, kDoorZ0 - kPortalOverlap},
+                                   {kDoorX1, kCeilY, kDoorZ1 + kPortalOverlap}};
     w.walk_volumes[2] = math::Aabb{{kRoomX0, kFloorY, kRoomBZ0}, {kRoomX1, kCeilY, kRoomBZ1}};
 }
 
@@ -703,7 +705,6 @@ void build_face_chunks(World& w, const bake::BakedAtlas& atlas, f32 exposure) {
 
     for (usize fi = 0; fi < face_count; ++fi) {
         FaceChunk& chunk = w.face_chunks[fi];
-        chunk.albedo = w.verts[w.map.faces[fi].first_vertex].albedo;
         std::vector<u32> texels(static_cast<usize>(kChunkRes) * kChunkRes, 0xFFFFFFFFu);
         if (!atlas_ok)
             continue;
@@ -905,10 +906,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     cc_cfg.eye_height = 1.6f;
     // Wall standoff > the camera near plane so you can't poke the near clip
     // through a wall and see the void/next room when standing close.
-    cc_cfg.bounds_skin = 0.3f;
+    cc_cfg.bounds_skin = kWallStandoff;
     samples::CharacterController controller{cc_cfg};
-    // Generic slide collision against the per-leaf volumes (Room A / corridor /
-    // Room B) — the union AABB alone let you walk through the wall strips beside
+    // Generic slide collision against the explicit room/corridor volumes; the
+    // union AABB alone let you walk through the wall strips beside
     // the doorway.
     controller.set_volumes(w.walk_volumes.data(), static_cast<u32>(w.walk_volumes.size()));
     controller.set_mode(samples::ControllerMode::Fps);
@@ -943,6 +944,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         last_ticks = now;
         frame_ms_ring[frame % 60u] = frame_ms;
 
+        // Run console capture before gameplay hotkeys so toggle/escape/B frames
+        // never leak into game controls.
+        (void)editor::sample_update(*input, dt);
+
         if (!bake_integrated && bake_state && bake_state->done.load(std::memory_order_acquire)) {
             bake_integrated = true;
             have_bake = bake_state->ok;
@@ -960,13 +965,14 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             bake_state->atlas = {};
         }
 
-        // ESC quits — unless the console is open, where Esc closes it instead.
-        if (input->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+        // ESC quits unless the overlays consumed this input frame.
+        if (input->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             PSY_LOG_INFO("sample_14: escape pressed, exiting");
             break;
         }
         // B toggles the baked cvar (edge-triggered). Disabled when no bake.
-        if (have_bake && input->key_pressed(platform::KeyCode::B) && baked_cvar) {
+        if (have_bake && input->key_pressed(platform::KeyCode::B) && baked_cvar &&
+            !editor::overlays_capturing()) {
             const bool now_on = !baked_cvar->GetBool();
             console.SetCVarOverride("r_lightmap_baked", now_on ? "1" : "0");
             PSY_LOG_INFO("sample_14: lightmap {}", now_on ? "BAKED" : "FLAT");
@@ -985,7 +991,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 console.SetCVarOverride("r_lightmap_baked", "0");
             if (frame == 3 && baked_cvar)
                 console.SetCVarOverride("r_lightmap_baked", "1");
-        } else if (!ui::console::is_open()) {
+        } else if (!editor::overlays_capturing()) {
             // Frozen while the console owns input so typing doesn't walk the cam.
             controller.update(*input, dt);
         }
@@ -1018,8 +1024,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // Editor F2/~ toggle + PLAY/EDIT badge.
-        (void)editor::sample_step(*input, fb);
+        // PLAY/EDIT badge.
+        editor::sample_draw(fb);
 
         // Debug HUD overlay (`r_debug_hud full`).
         {
