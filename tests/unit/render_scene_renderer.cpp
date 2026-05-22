@@ -64,13 +64,13 @@ TEST_CASE("scene renderer queues split raster, transparent, RT, and shadow work"
     REQUIRE(queues.raster_transparent.size() == 1u);
     REQUIRE(queues.rt_visible.size() == 3u);
     REQUIRE(queues.rt_shadow_casters.size() == 1u);
-    REQUIRE(queues.raster_opaque[0].entity == a);
-    REQUIRE(queues.raster_transparent[0].entity == b);
-    REQUIRE(queues.rt_shadow_casters[0].entity == a);
+    REQUIRE(queues.item(queues.raster_opaque[0]).entity == a);
+    REQUIRE(queues.item(queues.raster_transparent[0]).entity == b);
+    REQUIRE(queues.item(queues.rt_shadow_casters[0]).entity == a);
 
-    scene.destroy_entity(a);
-    scene.destroy_entity(b);
-    scene.destroy_entity(c);
+    REQUIRE(scene.destroy_entity(a));
+    REQUIRE(scene.destroy_entity(b));
+    REQUIRE(scene.destroy_entity(c));
 }
 
 TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene_renderer]") {
@@ -111,7 +111,7 @@ TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene
     REQUIRE(stats.raster_triangles == 1u);
     REQUIRE(stats.raster_skipped == 0u);
 
-    scene.destroy_entity(entity);
+    REQUIRE(scene.destroy_entity(entity));
 }
 
 TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_renderer]") {
@@ -147,8 +147,8 @@ TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_ren
     REQUIRE((second.mesh.raw & 0x00FFFFFFu) == (first.mesh.raw & 0x00FFFFFFu));
     REQUIRE(second.mesh.raw != first.mesh.raw);
 
-    scene.destroy_entity(first.entity);
-    scene.destroy_entity(second.entity);
+    REQUIRE(scene.destroy_entity(first.entity));
+    REQUIRE(scene.destroy_entity(second.entity));
 }
 
 TEST_CASE("scene renderer builds material batches for CPU effects", "[render][scene_renderer]") {
@@ -203,7 +203,7 @@ TEST_CASE("scene renderer builds material batches for CPU effects", "[render][sc
     REQUIRE(material_view.uv_scroll_u[batches[0].material_slot] == 0.25f);
     REQUIRE(material_view.uv_scroll_v[batches[0].material_slot] == -0.5f);
 
-    scene.destroy_entity(a.entity);
-    scene.destroy_entity(b.entity);
-    scene.destroy_entity(c.entity);
+    REQUIRE(scene.destroy_entity(a.entity));
+    REQUIRE(scene.destroy_entity(b.entity));
+    REQUIRE(scene.destroy_entity(c.entity));
 }

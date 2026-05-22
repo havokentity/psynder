@@ -16,10 +16,10 @@ namespace psynder::render {
 
 struct SceneRenderQueues {
     std::vector<scene::SceneRenderItem> all;
-    std::vector<scene::SceneRenderItem> raster_opaque;
-    std::vector<scene::SceneRenderItem> raster_transparent;
-    std::vector<scene::SceneRenderItem> rt_visible;
-    std::vector<scene::SceneRenderItem> rt_shadow_casters;
+    std::vector<u32> raster_opaque;
+    std::vector<u32> raster_transparent;
+    std::vector<u32> rt_visible;
+    std::vector<u32> rt_shadow_casters;
 
     void clear() {
         all.clear();
@@ -35,6 +35,10 @@ struct SceneRenderQueues {
         rt_visible.reserve(all.size());
         rt_shadow_casters.reserve(all.size());
     }
+
+    [[nodiscard]] const scene::SceneRenderItem& item(u32 index) const noexcept {
+        return all[index];
+    }
 };
 
 inline void build_scene_render_queues(scene::RuntimeScene& scene, SceneRenderQueues& queues) {
@@ -45,21 +49,22 @@ inline void build_scene_render_queues(scene::RuntimeScene& scene, SceneRenderQue
 
     const MaterialLibrary& materials = scene.materials();
     const MaterialView material_view = materials.view();
-    for (const scene::SceneRenderItem& item : queues.all) {
+    for (u32 item_index = 0; item_index < static_cast<u32>(queues.all.size()); ++item_index) {
+        const scene::SceneRenderItem& item = queues.all[item_index];
         u32 material_slot = 0;
         if (!materials.slot(item.material, material_slot))
             continue;
         const u32 flags = material_view.flags[material_slot];
         if ((flags & Material_RasterVisible) != 0u) {
             if (material_view.blend[material_slot] == MaterialBlendMode::AlphaBlend)
-                queues.raster_transparent.push_back(item);
+                queues.raster_transparent.push_back(item_index);
             else
-                queues.raster_opaque.push_back(item);
+                queues.raster_opaque.push_back(item_index);
         }
         if ((flags & Material_RtVisible) != 0u)
-            queues.rt_visible.push_back(item);
+            queues.rt_visible.push_back(item_index);
         if ((flags & Material_CastsRtShadow) != 0u)
-            queues.rt_shadow_casters.push_back(item);
+            queues.rt_shadow_casters.push_back(item_index);
     }
 }
 
@@ -245,11 +250,16 @@ class SceneRenderer {
                draw.index_count >= 3u;
     }
 
-    void emit_raster_queue(const std::vector<scene::SceneRenderItem>& items,
+    void emit_raster_queue(std::span<const u32> item_indices,
                            const MaterialLibrary& materials,
                            raster::Rasterizer& rasterizer,
                            SceneRenderStats& stats) const {
-        for (const scene::SceneRenderItem& item : items) {
+        for (const u32 item_index : item_indices) {
+            if (item_index >= queues_.all.size()) {
+                ++stats.raster_skipped;
+                continue;
+            }
+            const scene::SceneRenderItem& item = queues_.all[item_index];
             raster::DrawItem draw{};
             if (!build_raster_draw(item, materials, draw)) {
                 ++stats.raster_skipped;
