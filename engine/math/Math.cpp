@@ -6,7 +6,59 @@
 
 #include <cmath>
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
+
 namespace psynder::math {
+namespace {
+
+PSY_FORCEINLINE void mul_affine_column(const Mat4& a,
+                                       const f32* b_col,
+                                       f32* out_col,
+                                       bool translation) noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const float32x4_t c0 = vld1q_f32(a.m + 0);
+    const float32x4_t c1 = vld1q_f32(a.m + 4);
+    const float32x4_t c2 = vld1q_f32(a.m + 8);
+    const float32x4_t c3 = vld1q_f32(a.m + 12);
+    float32x4_t r = vmulq_n_f32(c0, b_col[0]);
+    r = vfmaq_n_f32(r, c1, b_col[1]);
+    r = vfmaq_n_f32(r, c2, b_col[2]);
+    if (translation)
+        r = vaddq_f32(r, c3);
+    vst1q_f32(out_col, r);
+#elif defined(__x86_64__) || defined(_M_X64)
+    const __m128 c0 = _mm_loadu_ps(a.m + 0);
+    const __m128 c1 = _mm_loadu_ps(a.m + 4);
+    const __m128 c2 = _mm_loadu_ps(a.m + 8);
+    const __m128 c3 = _mm_loadu_ps(a.m + 12);
+    __m128 r = _mm_mul_ps(c0, _mm_set1_ps(b_col[0]));
+#if defined(__FMA__)
+    r = _mm_fmadd_ps(c1, _mm_set1_ps(b_col[1]), r);
+    r = _mm_fmadd_ps(c2, _mm_set1_ps(b_col[2]), r);
+#else
+    r = _mm_add_ps(r, _mm_mul_ps(c1, _mm_set1_ps(b_col[1])));
+    r = _mm_add_ps(r, _mm_mul_ps(c2, _mm_set1_ps(b_col[2])));
+#endif
+    if (translation)
+        r = _mm_add_ps(r, c3);
+    _mm_storeu_ps(out_col, r);
+#else
+    out_col[0] = a.m[0] * b_col[0] + a.m[4] * b_col[1] + a.m[8] * b_col[2] +
+                 (translation ? a.m[12] : 0.0f);
+    out_col[1] = a.m[1] * b_col[0] + a.m[5] * b_col[1] + a.m[9] * b_col[2] +
+                 (translation ? a.m[13] : 0.0f);
+    out_col[2] = a.m[2] * b_col[0] + a.m[6] * b_col[1] + a.m[10] * b_col[2] +
+                 (translation ? a.m[14] : 0.0f);
+    out_col[3] = translation ? 1.0f : 0.0f;
+#endif
+}
+
+}  // namespace
 
 Mat4 identity4() {
     return {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}};
@@ -98,6 +150,26 @@ Mat4 mul(const Mat4& a, const Mat4& b) {
         r.m[c * 4 + 3] = a30 * b0 + a31 * b1 + a32 * b2 + a33 * b3;
     }
     return r;
+}
+
+Mat4 mul_affine(const Mat4& a, const Mat4& b) noexcept {
+    Mat4 r{};
+    mul_affine_column(a, b.m + 0, r.m + 0, false);
+    mul_affine_column(a, b.m + 4, r.m + 4, false);
+    mul_affine_column(a, b.m + 8, r.m + 8, false);
+    mul_affine_column(a, b.m + 12, r.m + 12, true);
+    r.m[3] = 0.0f;
+    r.m[7] = 0.0f;
+    r.m[11] = 0.0f;
+    r.m[15] = 1.0f;
+    return r;
+}
+
+void mul_affine_batch(const Mat4* parents, const Mat4* locals, Mat4* out, usize count) noexcept {
+    if (!parents || !locals || !out)
+        return;
+    for (usize i = 0; i < count; ++i)
+        out[i] = mul_affine(parents[i], locals[i]);
 }
 
 Vec4 mul(const Mat4& m, Vec4 v) {

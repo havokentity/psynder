@@ -84,6 +84,8 @@ Mat4 translate(Vec3 t);
 Mat4 rotate_quat(Quat q);
 Mat4 scale(Vec3 s);
 Mat4 mul(const Mat4& a, const Mat4& b);
+Mat4 mul_affine(const Mat4& a, const Mat4& b) noexcept;
+void mul_affine_batch(const Mat4* parents, const Mat4* locals, Mat4* out, usize count) noexcept;
 Vec4 mul(const Mat4& m, Vec4 v);
 
 // ─── Quaternion helpers ──────────────────────────────────────────────────

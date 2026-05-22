@@ -251,7 +251,8 @@ SceneGraphUpdateStats SceneGraph::update_world_transforms(u32 parallel_threshold
                                                                       local_scale_[index]});
                 local_matrix_dirty_[index] = 0u;
             }
-            world_[index] = p == kInvalidIndex ? local_[index] : math::mul(world_[p], local_[index]);
+            world_[index] =
+                p == kInvalidIndex ? local_[index] : math::mul_affine(world_[p], local_[index]);
             local_dirty_[index] = 0u;
             ++stats.transforms_updated;
         }
