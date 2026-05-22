@@ -32,7 +32,7 @@ struct TriangleSample {
 
     render::TextureAsset crate{};
 
-    scene::RuntimeScene scene{};
+    scene::Scene scene{};
     render::SceneRenderer renderer{};
     render::MeshId triangle_mesh{};
     Entity triangle_entity{};

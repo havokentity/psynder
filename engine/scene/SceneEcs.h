@@ -7,7 +7,7 @@
 #include "math/Bounds.h"
 #include "render/Material.h"
 #include "scene/SceneGraph.h"
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <algorithm>
 #include <array>
@@ -152,85 +152,85 @@ inline bool renderable_can_participate_in_static_bake(const RenderableComponent&
     return validate_renderable_for_static_bake(renderable).ok();
 }
 
-inline bool update_renderable(World& world, Entity entity, const RenderableComponent& renderable) {
-    if (!world.alive(entity) || !world.get<RenderableComponent>(entity))
+inline bool update_renderable(EcsRegistry& registry, Entity entity, const RenderableComponent& renderable) {
+    if (!registry.alive(entity) || !registry.get<RenderableComponent>(entity))
         return false;
-    world.add<RenderableComponent>(entity, renderable);
+    registry.add<RenderableComponent>(entity, renderable);
     return true;
 }
 
-inline bool set_renderable_mobility(World& world, Entity entity, ObjectMobility mobility) {
-    auto* renderable = world.get<RenderableComponent>(entity);
+inline bool set_renderable_mobility(EcsRegistry& registry, Entity entity, ObjectMobility mobility) {
+    auto* renderable = registry.get<RenderableComponent>(entity);
     if (!renderable)
         return false;
     RenderableComponent updated = *renderable;
     updated.mobility = mobility;
-    world.add<RenderableComponent>(entity, updated);
+    registry.add<RenderableComponent>(entity, updated);
     return true;
 }
 
-inline bool mark_renderable_static(World& world, Entity entity) {
-    return set_renderable_mobility(world, entity, ObjectMobility::Static);
+inline bool mark_renderable_static(EcsRegistry& registry, Entity entity) {
+    return set_renderable_mobility(registry, entity, ObjectMobility::Static);
 }
 
-inline bool mark_renderable_dynamic(World& world, Entity entity) {
-    return set_renderable_mobility(world, entity, ObjectMobility::Dynamic);
+inline bool mark_renderable_dynamic(EcsRegistry& registry, Entity entity) {
+    return set_renderable_mobility(registry, entity, ObjectMobility::Dynamic);
 }
 
-inline bool get_renderable_mobility(World& world, Entity entity, ObjectMobility& out) {
-    auto* renderable = world.get<RenderableComponent>(entity);
+inline bool get_renderable_mobility(EcsRegistry& registry, Entity entity, ObjectMobility& out) {
+    auto* renderable = registry.get<RenderableComponent>(entity);
     if (!renderable)
         return false;
     out = renderable->mobility;
     return true;
 }
 
-inline bool set_renderable_material(World& world, Entity entity, ::psynder::render::MaterialId material) {
-    auto* renderable = world.get<RenderableComponent>(entity);
+inline bool set_renderable_material(EcsRegistry& registry, Entity entity, ::psynder::render::MaterialId material) {
+    auto* renderable = registry.get<RenderableComponent>(entity);
     if (!renderable)
         return false;
     RenderableComponent updated = *renderable;
     updated.material = material;
-    world.add<RenderableComponent>(entity, updated);
+    registry.add<RenderableComponent>(entity, updated);
     return true;
 }
 
-inline bool set_renderable_flags(World& world, Entity entity, u32 flags) {
-    auto* renderable = world.get<RenderableComponent>(entity);
+inline bool set_renderable_flags(EcsRegistry& registry, Entity entity, u32 flags) {
+    auto* renderable = registry.get<RenderableComponent>(entity);
     if (!renderable)
         return false;
     RenderableComponent updated = *renderable;
     updated.flags = flags;
-    world.add<RenderableComponent>(entity, updated);
+    registry.add<RenderableComponent>(entity, updated);
     return true;
 }
 
-inline bool set_renderable_geometry(World& world,
+inline bool set_renderable_geometry(EcsRegistry& registry,
                                     Entity entity,
                                     GeometryKind geometry,
                                     u32 geometry_id,
                                     const math::Aabb& local_bounds) {
-    auto* renderable = world.get<RenderableComponent>(entity);
+    auto* renderable = registry.get<RenderableComponent>(entity);
     if (!renderable)
         return false;
     RenderableComponent updated = *renderable;
     updated.geometry = geometry;
     updated.geometry_id = geometry_id;
     updated.local_bounds = local_bounds;
-    world.add<RenderableComponent>(entity, updated);
+    registry.add<RenderableComponent>(entity, updated);
     return true;
 }
 
-inline void prewarm_scene_capacity(World& world, SceneGraph& graph, const ScenePrewarmConfig& config) {
+inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, const ScenePrewarmConfig& config) {
     const u32 scene_entity_count = std::max(config.scene_entities, config.renderables);
     graph.reserve_nodes(scene_entity_count);
     graph.reserve_analytic_spheres(config.analytic_spheres);
 
-    world.reserve_entities(scene_entity_count);
-    world.reserve_archetype<TransformComponent>(scene_entity_count);
-    world.reserve_archetype<SceneNodeComponent, TransformComponent>(scene_entity_count);
+    registry.reserve_entities(scene_entity_count);
+    registry.reserve_archetype<TransformComponent>(scene_entity_count);
+    registry.reserve_archetype<SceneNodeComponent, TransformComponent>(scene_entity_count);
     if (config.renderables != 0u) {
-        world.reserve_archetype<RenderableComponent, SceneNodeComponent, TransformComponent>(
+        registry.reserve_archetype<RenderableComponent, SceneNodeComponent, TransformComponent>(
             config.renderables);
     }
 
@@ -240,26 +240,26 @@ inline void prewarm_scene_capacity(World& world, SceneGraph& graph, const SceneP
     const u32 structural_bytes = scene_entity_count * static_cast<u32>(sizeof(TransformComponent) +
                                                                        sizeof(SceneNodeComponent)) +
                                  config.renderables * static_cast<u32>(sizeof(RenderableComponent));
-    world.reserve_structural_changes(structural_ops, structural_bytes);
+    registry.reserve_structural_changes(structural_ops, structural_bytes);
 }
 
-inline Entity create_scene_entity(World& world,
+inline Entity create_scene_entity(EcsRegistry& registry,
                                   SceneGraph& graph,
                                   SceneNode parent = kInvalidSceneNode,
                                   const LocalTransform& local = {}) {
-    const Entity entity = world.create();
+    const Entity entity = registry.create();
     const SceneNode node = graph.create_node(parent, local);
-    world.add<TransformComponent>(entity, TransformComponent{local});
-    world.add<SceneNodeComponent>(entity, SceneNodeComponent{node, entity});
+    registry.add<TransformComponent>(entity, TransformComponent{local});
+    registry.add<SceneNodeComponent>(entity, SceneNodeComponent{node, entity});
     return entity;
 }
 
-inline bool set_scene_entity_transform(World& world,
+inline bool set_scene_entity_transform(EcsRegistry& registry,
                                        SceneGraph& graph,
                                        Entity entity,
                                        const LocalTransform& local) {
-    auto* transform = world.get<TransformComponent>(entity);
-    auto* node = world.get<SceneNodeComponent>(entity);
+    auto* transform = registry.get<TransformComponent>(entity);
+    auto* node = registry.get<SceneNodeComponent>(entity);
     if (!transform || !node || !graph.alive(node->node))
         return false;
     transform->local = local;
@@ -267,12 +267,12 @@ inline bool set_scene_entity_transform(World& world,
     return true;
 }
 
-inline void gather_scene_render_items(World& world,
+inline void gather_scene_render_items(EcsRegistry& registry,
                                       const SceneGraph& graph,
                                       std::vector<SceneRenderItem>& out) {
     out.clear();
     std::mutex append_mutex;
-    world.query<reads<SceneNodeComponent, RenderableComponent>, writes<>>(
+    registry.query<reads<SceneNodeComponent, RenderableComponent>, writes<>>(
         [&](std::span<const SceneNodeComponent> nodes, std::span<const RenderableComponent> renderables) {
             const usize n = std::min(nodes.size(), renderables.size());
             constexpr usize kMaxChunkRows = 256u;
@@ -305,14 +305,14 @@ inline void gather_scene_render_items(World& world,
         });
 }
 
-class RuntimeScene {
+class Scene {
    public:
-    explicit RuntimeScene(World& world = World::Get()) noexcept : world_(&world) {
-        world_->set_structural_deferred(false);
+    explicit Scene(EcsRegistry& registry = EcsRegistry::Get()) noexcept : registry_(&registry) {
+        registry_->set_structural_deferred(false);
     }
 
-    [[nodiscard]] World& world() noexcept { return *world_; }
-    [[nodiscard]] const World& world() const noexcept { return *world_; }
+    [[nodiscard]] EcsRegistry& registry() noexcept { return *registry_; }
+    [[nodiscard]] const EcsRegistry& registry() const noexcept { return *registry_; }
     [[nodiscard]] SceneGraph& graph() noexcept { return graph_; }
     [[nodiscard]] const SceneGraph& graph() const noexcept { return graph_; }
     [[nodiscard]] ::psynder::render::MaterialLibrary& materials() noexcept { return materials_; }
@@ -320,11 +320,11 @@ class RuntimeScene {
         return materials_;
     }
 
-    void set_structural_deferred(bool on) noexcept { world_->set_structural_deferred(on); }
-    void apply_structural_changes() { world_->apply_structural_changes(); }
+    void set_structural_deferred(bool on) noexcept { registry_->set_structural_deferred(on); }
+    void apply_structural_changes() { registry_->apply_structural_changes(); }
 
     void prewarm_capacity(const ScenePrewarmConfig& config) {
-        prewarm_scene_capacity(*world_, graph_, config);
+        prewarm_scene_capacity(*registry_, graph_, config);
         render_item_capacity_ =
             std::max(render_item_capacity_, std::max(config.render_items, config.renderables));
     }
@@ -335,7 +335,7 @@ class RuntimeScene {
 
     [[nodiscard]] Entity create_entity(const LocalTransform& local = {},
                                        SceneNode parent = kInvalidSceneNode) {
-        return create_scene_entity(*world_, graph_, parent, local);
+        return create_scene_entity(*registry_, graph_, parent, local);
     }
 
     [[nodiscard]] Entity create_renderable(const RenderableComponent& renderable,
@@ -348,45 +348,45 @@ class RuntimeScene {
 
     bool destroy_entity(Entity entity) {
         SceneNode node{};
-        if (auto* node_component = world_->get<SceneNodeComponent>(entity))
+        if (auto* node_component = registry_->get<SceneNodeComponent>(entity))
             node = node_component->node;
-        world_->destroy(entity);
+        registry_->destroy(entity);
         return node.valid() ? graph_.destroy_node(node) : false;
     }
 
     bool set_transform(Entity entity, const LocalTransform& local) {
-        return set_scene_entity_transform(*world_, graph_, entity, local);
+        return set_scene_entity_transform(*registry_, graph_, entity, local);
     }
 
     bool attach_renderable(Entity entity, const RenderableComponent& renderable) {
-        if (!world_->alive(entity) || !world_->get<SceneNodeComponent>(entity))
+        if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
             return false;
-        world_->add<RenderableComponent>(entity, renderable);
+        registry_->add<RenderableComponent>(entity, renderable);
         return true;
     }
 
     bool update_renderable(Entity entity, const RenderableComponent& renderable) {
-        return ::psynder::scene::update_renderable(*world_, entity, renderable);
+        return ::psynder::scene::update_renderable(*registry_, entity, renderable);
     }
 
     bool set_renderable_mobility(Entity entity, ObjectMobility mobility) {
-        return ::psynder::scene::set_renderable_mobility(*world_, entity, mobility);
+        return ::psynder::scene::set_renderable_mobility(*registry_, entity, mobility);
     }
 
     bool mark_renderable_static(Entity entity) {
-        return ::psynder::scene::mark_renderable_static(*world_, entity);
+        return ::psynder::scene::mark_renderable_static(*registry_, entity);
     }
 
     bool mark_renderable_dynamic(Entity entity) {
-        return ::psynder::scene::mark_renderable_dynamic(*world_, entity);
+        return ::psynder::scene::mark_renderable_dynamic(*registry_, entity);
     }
 
     bool get_renderable_mobility(Entity entity, ObjectMobility& out) {
-        return ::psynder::scene::get_renderable_mobility(*world_, entity, out);
+        return ::psynder::scene::get_renderable_mobility(*registry_, entity, out);
     }
 
     RenderableValidation validate_renderable_for_static_bake(Entity entity) {
-        auto* renderable = world_->get<RenderableComponent>(entity);
+        auto* renderable = registry_->get<RenderableComponent>(entity);
         if (!renderable)
             return RenderableValidation{RenderableValidation_NoGeometry};
         return ::psynder::scene::validate_renderable_for_static_bake(*renderable);
@@ -398,11 +398,11 @@ class RuntimeScene {
 
     void gather_render_items(std::vector<SceneRenderItem>& out) {
         reserve_render_items(out);
-        gather_scene_render_items(*world_, graph_, out);
+        gather_scene_render_items(*registry_, graph_, out);
     }
 
    private:
-    World* world_ = nullptr;
+    EcsRegistry* registry_ = nullptr;
     SceneGraph graph_{};
     ::psynder::render::MaterialLibrary materials_{};
     u32 render_item_capacity_ = 0u;

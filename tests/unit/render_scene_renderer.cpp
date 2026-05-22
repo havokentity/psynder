@@ -24,9 +24,9 @@ constexpr std::array<u32, 3> kIndices{0, 2, 1};
 
 TEST_CASE("scene renderer queues split raster, transparent, RT, and shadow work",
           "[render][scene_renderer]") {
-    auto& world = scene::World::Get();
-    world.set_structural_deferred(false);
-    scene::RuntimeScene scene{world};
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
     render::SceneRenderer renderer;
 
     render::MaterialDesc opaque_desc{};
@@ -75,9 +75,9 @@ TEST_CASE("scene renderer queues split raster, transparent, RT, and shadow work"
 }
 
 TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene_renderer]") {
-    auto& world = scene::World::Get();
-    world.set_structural_deferred(false);
-    scene::RuntimeScene scene{world};
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
     render::SceneRenderer renderer;
 
     render::MaterialDesc material_desc{};
@@ -118,9 +118,9 @@ TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene
 
 TEST_CASE("scene renderer filters static baked and projected raster shadow queues",
           "[render][scene_renderer]") {
-    auto& world = scene::World::Get();
-    world.set_structural_deferred(false);
-    scene::RuntimeScene scene{world};
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
     render::SceneRenderer renderer;
 
     render::MaterialDesc static_desc{};
@@ -174,9 +174,9 @@ TEST_CASE("scene renderer filters static baked and projected raster shadow queue
 }
 
 TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_renderer]") {
-    auto& world = scene::World::Get();
-    world.set_structural_deferred(false);
-    scene::RuntimeScene scene{world};
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
     render::SceneRenderer renderer;
     renderer.reserve_scene_capacity(8u);
 
@@ -211,9 +211,9 @@ TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_ren
 }
 
 TEST_CASE("scene renderer builds material batches for CPU effects", "[render][scene_renderer]") {
-    auto& world = scene::World::Get();
-    world.set_structural_deferred(false);
-    scene::RuntimeScene scene{world};
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
     render::SceneRenderer renderer;
     renderer.reserve_scene_capacity(4u);
 

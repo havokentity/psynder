@@ -21,7 +21,7 @@ namespace psynder::script::detail {
 
 namespace {
 // Component ids minted by the script lane start at 0x80000000 so they never
-// collide with engine-side ids (which start at 1, see scene/World.cpp).
+// collide with engine-side ids (which start at 1, see scene/EcsRegistry.cpp).
 // When lane 06 lands a real "find by name" shim this can collapse down to a
 // single id space; the bit is the temporary boundary.
 inline constexpr scene::ComponentId kScriptIdBase = 0x80000000u;

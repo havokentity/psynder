@@ -68,7 +68,7 @@ struct SceneRenderPolicyIssue {
     u32 material_flags = 0;
 };
 
-inline void build_scene_render_queues(scene::RuntimeScene& scene, SceneRenderQueues& queues) {
+inline void build_scene_render_queues(scene::Scene& scene, SceneRenderQueues& queues) {
     queues.clear();
     scene.update_transforms();
     scene.gather_render_items(queues.all);
@@ -116,7 +116,7 @@ inline void build_scene_render_queues(scene::RuntimeScene& scene, SceneRenderQue
     }
 }
 
-inline u32 collect_scene_render_policy_issues(scene::RuntimeScene& scene,
+inline u32 collect_scene_render_policy_issues(scene::Scene& scene,
                                               std::vector<SceneRenderPolicyIssue>& out) {
     out.clear();
     std::vector<scene::SceneRenderItem> items;
@@ -138,7 +138,7 @@ inline u32 collect_scene_render_policy_issues(scene::RuntimeScene& scene,
     return static_cast<u32>(out.size());
 }
 
-inline u32 warn_scene_render_policy_issues(scene::RuntimeScene& scene) {
+inline u32 warn_scene_render_policy_issues(scene::Scene& scene) {
     std::vector<SceneRenderPolicyIssue> issues;
     const u32 count = collect_scene_render_policy_issues(scene, issues);
     for (const SceneRenderPolicyIssue& issue : issues) {
@@ -220,7 +220,7 @@ class SceneRenderer {
     }
 
     [[nodiscard]] SceneMeshEntity create_mesh_entity(
-        scene::RuntimeScene& scene,
+        scene::Scene& scene,
         const MeshDesc& mesh_desc,
         MaterialId material,
         const scene::LocalTransform& local = {},
@@ -235,7 +235,7 @@ class SceneRenderer {
         return {entity, mesh, material};
     }
 
-    SceneRenderStats build(scene::RuntimeScene& scene) {
+    SceneRenderStats build(scene::Scene& scene) {
         build_scene_render_queues(scene, queues_);
         SceneRenderStats stats{};
         stats.submitted = static_cast<u32>(queues_.all.size());
@@ -252,7 +252,7 @@ class SceneRenderer {
         return stats;
     }
 
-    SceneRenderStats render_raster(scene::RuntimeScene& scene, const raster::ViewState& view) {
+    SceneRenderStats render_raster(scene::Scene& scene, const raster::ViewState& view) {
         SceneRenderStats stats = build(scene);
         raster::Rasterizer& rasterizer = raster::Rasterizer::Get();
         rasterizer.begin_frame(view);

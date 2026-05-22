@@ -6,7 +6,7 @@
 namespace psynder::editor::detail {
 
 State& get_state() noexcept {
-    // Function-local static gives us the same lazy init as scene::World::Get
+    // Function-local static gives us the same lazy init as scene::EcsRegistry::Get
     // (lane 06) and physics::World::Get (lane 13). The editor is part of
     // the engine library; this singleton is fenced by PSYNDER_EDITOR at
     // the lane-CMakeLists level (the lane is not added in retail builds).

@@ -125,7 +125,7 @@ and before ending a session so crash recovery has a concrete resume point.
     - owns `engine/scene/`
     - task: prewarm/fixed-capacity behavior for dynamic scene updates
     - status: complete; commit `2957fec`; capacity/prewarm APIs for
-      `SceneGraph`, `World`, and `RuntimeScene`
+      `SceneGraph`, `EcsRegistry`, and `Scene`
     - integration note: includes focused tests under `tests/`; orchestrator
       should review/own that cross-lane coverage during merge
   - `codex/agent-math-hotpath`

@@ -2,7 +2,7 @@
 // Psynder — chunk pool. Backs 16 KiB chunks with page-aligned blocks
 // from `psynder::mem::page_alloc`. Reuses freed chunks via a free list
 // threaded through `ChunkHeader::next_chunk_raw`. App-scope lifetime,
-// owned by `WorldImpl`.
+// owned by `EcsRegistryImpl`.
 
 #include "Chunk.h"
 

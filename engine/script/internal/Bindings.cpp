@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 #include "core/Log.h"
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <cstring>
 #include <string>

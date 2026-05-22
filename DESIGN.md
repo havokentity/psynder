@@ -152,7 +152,7 @@ What we **allow** ourselves, freely, where it doesn't hurt the cache:
 - **`std::unique_ptr`** anywhere for clear ownership; **`std::shared_ptr`** only in tools and the editor (still banned in the engine runtime).
 - **STL containers** where appropriate outside hot paths.
 - **Inheritance** where it actually models the problem (e.g., a `AssetLoader` base with `PngLoader`/`WavLoader`/`GltfLoader` impls).
-- **Service-locator globals** for a small named list — `World*`, `JobSystem*`, `Allocator*`, `Log*`, `Clock*`, `Config*` — grabbed once at frame start. New singletons require an ADR.
+- **Service-locator globals** for a small named list — `EcsRegistry*`, `JobSystem*`, `Allocator*`, `Log*`, `Clock*`, `Config*` — grabbed once at frame start. New singletons require an ADR.
 
 The principle is: **pay the DOTS tax where it earns its keep, write normal C++ everywhere else.** A two-line helper class for `ScopedTimer` is fine. A `class Entity { virtual void Tick(); }` in the renderer is not.
 
@@ -608,8 +608,8 @@ Polygon meshes land on terrain seamlessly in both backends because they share de
 
 - One transform hierarchy. Top-level partitions: `WorldStatic`, `WorldDynamic`, `Effects`, `UI`. The renderer doesn't care which world system fed a draw; it gets the same `DrawItem` either way.
 - Per-entity bounding boxes and leaf/cell memberships are tracked centrally; when an entity moves, the scene graph notifies every spatial index that contains it. See §9.4 for the index hybrid.
-- Runtime app code should submit entities to a `scene::RuntimeScene`, not
-  hand-write raster or RT frame loops. `RuntimeScene::create_entity()`
+- Runtime app code should submit entities to a `scene::Scene`, not
+  hand-write raster or RT frame loops. `Scene::create_entity()`
   creates the ECS entity plus its default transform/node binding, and a
   `RenderableComponent` links geometry to a shared `render::MaterialId`.
   Raster and RT renderers consume the same gathered scene render items.
@@ -988,7 +988,7 @@ Total: ~18 months for a small team, ~30 months solo. Pace adjusts cheerfully.
 - **Hot subsystems** (`render/`, `scene/ecs/`, `physics/`, `audio/mixer/`): strict DOTS — POD components, SoA storage, free-function systems, no `virtual`, no `shared_ptr`, no per-frame heap allocation.
 - **Cold engine code** (tools, editor, asset loaders, platform shim, network protocol, file-format parsers): normal C++ — classes, RAII, `virtual` for plugin slots, STL containers — whatever is clearest.
 - **Public game/script API** (the surface users build on): strict DOTS, no exceptions. Systems and queries only, no entity-object methods.
-- New singletons require an ADR; the allow-list is `World*`, `JobSystem*`, `Allocator*`, `Log*`, `Clock*`, `Config*`.
+- New singletons require an ADR; the allow-list is `EcsRegistry*`, `JobSystem*`, `Allocator*`, `Log*`, `Clock*`, `Config*`.
 
 **Style:**
 - 4-space indent, 100-col soft limit.

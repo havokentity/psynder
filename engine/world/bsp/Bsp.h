@@ -5,7 +5,7 @@
 
 #include "core/Types.h"
 #include "math/Math.h"
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <span>
 #include <string_view>

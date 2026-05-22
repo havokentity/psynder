@@ -3,13 +3,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <cstddef>
 
 // We deliberately reach into the lane's internal headers here — these are
 // implementation-detail invariants, not user contract. Other lanes only ever
-// include the public `World.h` surface.
+// include the public `EcsRegistry.h` surface.
 #include "scene/Chunk.h"
 #include "scene/Archetype.h"
 
@@ -40,7 +40,7 @@ PSYNDER_COMPONENT(SingleU) {
 
 TEST_CASE("scene: archetype column offsets are 64-byte aligned", "[scene][chunk][layout]") {
     using namespace chunk_test;
-    auto& w = World::Get();
+    auto& w = EcsRegistry::Get();
     w.set_structural_deferred(false);
 
     // Use heterogenous components to spread different sized columns.
@@ -76,7 +76,7 @@ TEST_CASE("scene: archetype column offsets are 64-byte aligned", "[scene][chunk]
 
 TEST_CASE("scene: chunk header version stamps bump on writes", "[scene][chunk][version]") {
     using namespace chunk_test;
-    auto& w = World::Get();
+    auto& w = EcsRegistry::Get();
     w.set_structural_deferred(false);
 
     // Make at least one entity so the archetype has a live chunk.

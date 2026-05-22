@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 #include "core/Log.h"
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <cstring>
 #include <string>
@@ -83,12 +83,12 @@ int l_world_spawn(lua_State* L) {
         return luaL_error(L, "world:spawn: registry missing");
     }
 
-    // Allocate a real engine entity. The shared `scene::World::Get()` is the
+    // Allocate a real engine entity. The shared `scene::EcsRegistry::Get()` is the
     // ground truth — handle.raw is non-zero when the entity is valid.
     // (`Entity` lives in the top-level psynder namespace, not psynder::scene.)
-    ::psynder::Entity entity = scene::World::Get().create();
+    ::psynder::Entity entity = scene::EcsRegistry::Get().create();
     if (!entity.valid()) {
-        return luaL_error(L, "world:spawn: scene::World::create failed");
+        return luaL_error(L, "world:spawn: scene::EcsRegistry::create failed");
     }
     const lua_Integer entity_raw = static_cast<lua_Integer>(entity.raw);
 

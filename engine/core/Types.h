@@ -36,7 +36,7 @@ inline constexpr usize kHugePage = 2 * 1024 * 1024;
 // ─── ECS handle types ────────────────────────────────────────────────────
 // An Entity is an opaque 32-bit handle. Top 8 bits are a generation counter
 // (to detect stale references); bottom 24 bits index the entity table.
-// See engine/scene/World.h for the full ECS contract.
+// See engine/scene/EcsRegistry.h for the full ECS contract.
 struct Entity {
     u32 raw = 0;
     constexpr bool valid() const noexcept { return raw != 0; }

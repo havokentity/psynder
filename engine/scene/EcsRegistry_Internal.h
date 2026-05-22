@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Psynder — lane-06 internal: declares the type-erased helpers the public
-// templates in `World.h` forward to. NOT a public header — other lanes
-// only ever include `World.h`.
+// templates in `EcsRegistry.h` forward to. NOT a public header — other lanes
+// only ever include `EcsRegistry.h`.
 
 #pragma once
 
-#include "World.h"
+#include "EcsRegistry.h"
 #include "Archetype.h"
 #include "Chunk.h"
 #include "Registry.h"
@@ -50,18 +50,18 @@ struct StructuralChange {
     Entity target;
     ComponentId component;
     // For Add, points into a side arena that owns the bytes. Owned by the
-    // World; freed when the change is applied.
+    // registry; freed when the change is applied.
     const std::byte* bytes;
     u32 byte_count;
 };
 
-// ─── World implementation singleton ────────────────────────────────────
-// Holds every piece of state the public `World` class is implemented on
-// top of. The public `World` has no data members (header-frozen), so we
+// ─── EcsRegistry implementation singleton ─────────────────────────────
+// Holds every piece of state the public `EcsRegistry` class is implemented on
+// top of. The public `EcsRegistry` has no data members (header-frozen), so we
 // own everything here.
-class WorldImpl {
+class EcsRegistryImpl {
    public:
-    static WorldImpl& Get();
+    static EcsRegistryImpl& Get();
 
     // Lifetime
     void shutdown() noexcept;
@@ -106,11 +106,11 @@ class WorldImpl {
     u32 chunk_live_count() const noexcept;
 
    private:
-    WorldImpl();
-    ~WorldImpl() = default;
+    EcsRegistryImpl();
+    ~EcsRegistryImpl() = default;
 
-    WorldImpl(const WorldImpl&) = delete;
-    WorldImpl& operator=(const WorldImpl&) = delete;
+    EcsRegistryImpl(const EcsRegistryImpl&) = delete;
+    EcsRegistryImpl& operator=(const EcsRegistryImpl&) = delete;
 
     // Archetype lookup / creation.
     u32 ensure_archetype(std::span<const ComponentId> sorted_components);
@@ -172,21 +172,21 @@ inline std::array<ComponentId, sizeof...(Ts)> component_ids_array() {
 
 // ─── Public-template definitions ──────────────────────────────────────
 // These provide bodies for the templates declared in the (frozen) public
-// `World.h`. Lane 06 includes this file via the small append at the
-// bottom of `World.h` (kept text-identical to the bootstrap header except
-// for an `#include "World_Internal.h"`-equivalent that downstream lanes
+// `EcsRegistry.h`. Lane 06 includes this file via the small append at the
+// bottom of `EcsRegistry.h` (kept text-identical to the bootstrap header except
+// for an `#include "EcsRegistry_Internal.h"`-equivalent that downstream lanes
 // already see through the normal include chain).
 namespace psynder::scene {
 
 template <class T>
-void World::add(Entity e, const T& component) {
+void EcsRegistry::add(Entity e, const T& component) {
     static_assert(std::is_trivially_copyable_v<T>,
                   "Psynder components must be trivially copyable POD");
-    detail::WorldImpl::Get().add_raw(e, component_id<T>(), &component, sizeof(T));
+    detail::EcsRegistryImpl::Get().add_raw(e, component_id<T>(), &component, sizeof(T));
 }
 
 template <class... Ts>
-void World::reserve_archetype(u32 row_count) {
+void EcsRegistry::reserve_archetype(u32 row_count) {
     auto ids = detail::component_ids_array<Ts...>();
     std::vector<ComponentId> sorted;
     sorted.reserve(ids.size());
@@ -194,21 +194,21 @@ void World::reserve_archetype(u32 row_count) {
         sorted.push_back(id);
     std::sort(sorted.begin(), sorted.end());
     sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
-    detail::WorldImpl::Get().reserve_archetype_rows(sorted, row_count);
+    detail::EcsRegistryImpl::Get().reserve_archetype_rows(sorted, row_count);
 }
 
 template <class T>
-T* World::get(Entity e) {
+T* EcsRegistry::get(Entity e) {
     static_assert(std::is_trivially_copyable_v<T>,
                   "Psynder components must be trivially copyable POD");
-    return static_cast<T*>(detail::WorldImpl::Get().get_raw(e, component_id<T>()));
+    return static_cast<T*>(detail::EcsRegistryImpl::Get().get_raw(e, component_id<T>()));
 }
 
 template <class T>
-void World::remove(Entity e) {
+void EcsRegistry::remove(Entity e) {
     static_assert(std::is_trivially_copyable_v<T>,
                   "Psynder components must be trivially copyable POD");
-    detail::WorldImpl::Get().remove_raw(e, component_id<T>());
+    detail::EcsRegistryImpl::Get().remove_raw(e, component_id<T>());
 }
 
 // ─── query<reads<R...>, writes<W...>>(body) ─────────────────────────
@@ -240,7 +240,7 @@ class QueryBuilder<reads<R...>, writes<W...>> {
         required.erase(std::unique(required.begin(), required.end()), required.end());
 
         std::vector<u32> matched;
-        detail::WorldImpl::Get().resolve_query(required, matched);
+        detail::EcsRegistryImpl::Get().resolve_query(required, matched);
 
         // Flatten the per-archetype chunks into a single (archetype_idx,
         // chunk_idx) list so `parallel_for` can spread them across
@@ -257,7 +257,7 @@ class QueryBuilder<reads<R...>, writes<W...>> {
         std::vector<Job> work;
         work.reserve(matched.size());
         for (u32 archetype_idx : matched) {
-            auto& arche = detail::WorldImpl::Get().archetype(archetype_idx);
+            auto& arche = detail::EcsRegistryImpl::Get().archetype(archetype_idx);
             for (u32 ci = 0; ci < arche.chunk_count(); ++ci) {
                 detail::Chunk* c = arche.chunk(ci);
                 if (!c || c->header.row_count == 0)
@@ -268,7 +268,7 @@ class QueryBuilder<reads<R...>, writes<W...>> {
 
         auto walk_one = [&](usize begin, usize end) {
             for (usize w_i = begin; w_i < end; ++w_i) {
-                auto& arche = detail::WorldImpl::Get().archetype(work[w_i].arche);
+                auto& arche = detail::EcsRegistryImpl::Get().archetype(work[w_i].arche);
                 detail::Chunk* c = arche.chunk(work[w_i].chunk);
                 const u32 n = c->header.row_count;
 
@@ -301,15 +301,15 @@ class QueryBuilder<reads<R...>, writes<W...>> {
     }
 };
 
-// Member-template body for the public `World::query<Reads, Writes>(body)`
+// Member-template body for the public `EcsRegistry::query<Reads, Writes>(body)`
 // API. Defined here so the class declaration in the public header stays a
 // pure surface contract.
 template <class Reads, class Writes, class Body>
-void World::query(Body&& body) {
+void EcsRegistry::query(Body&& body) {
     QueryBuilder<Reads, Writes>::run(std::forward<Body>(body));
 }
 
-// Free-function variant. Equivalent to `World::Get().query<R,W>(body)` for
+// Free-function variant. Equivalent to `EcsRegistry::Get().query<R,W>(body)` for
 // callers that prefer the namespaced form.
 template <class Reads, class Writes, class Body>
 inline void query(Body&& body) {

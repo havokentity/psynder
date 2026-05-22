@@ -5,7 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <span>
 #include <vector>
@@ -31,7 +31,7 @@ using lane06_query::Tag;
 using lane06_query::Vel;
 
 TEST_CASE("scene: query iterates every entity matching the components", "[scene][query]") {
-    auto& w = World::Get();
+    auto& w = EcsRegistry::Get();
     w.set_structural_deferred(false);
 
     // Build two archetypes: (Pos, Vel) and (Pos, Vel, Tag). Both match a
@@ -107,7 +107,7 @@ TEST_CASE("scene: query iterates every entity matching the components", "[scene]
 
 TEST_CASE("scene: query with extra required components filters out other archetypes",
           "[scene][query]") {
-    auto& w = World::Get();
+    auto& w = EcsRegistry::Get();
     w.set_structural_deferred(false);
 
     constexpr int kAlpha = 64;  // Pos only — no Vel, won't match
@@ -147,7 +147,7 @@ TEST_CASE("scene: query with extra required components filters out other archety
 
 TEST_CASE("scene: structural changes batched via deferred mode apply at boundary",
           "[scene][query][deferred]") {
-    auto& w = World::Get();
+    auto& w = EcsRegistry::Get();
 
     // Pre-create one entity in non-deferred mode so it exists when we flip
     // the toggle.

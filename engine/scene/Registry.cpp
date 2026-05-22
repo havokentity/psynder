@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Psynder — component registry impl. Lane 06.
 
-// Full definition of `ComponentTypeInfo` lives in `World.h`; pulling it in
+// Full definition of `ComponentTypeInfo` lives in `EcsRegistry.h`; pulling it in
 // here lets `register_component` translate to/from our internal POD.
-#include "World.h"
+#include "EcsRegistry.h"
 #include "Registry.h"
 
 #include <atomic>

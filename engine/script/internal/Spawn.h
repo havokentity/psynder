@@ -3,7 +3,7 @@
 //
 // Phase 1 of the script-side spawn API. Where `world:create_entity` (in
 // Bindings.cpp) builds a per-VM component table for DOTS systems to iterate,
-// `world:spawn` reaches into the shared `scene::World::Get()` singleton and
+// `world:spawn` reaches into the shared `scene::EcsRegistry::Get()` singleton and
 // allocates a real engine entity. Lua scripts get the entity handle back as
 // an integer so they can stash it for later destruction or query.
 //
@@ -42,7 +42,7 @@ namespace psynder::script::detail {
 //     Validated as table. Each key is treated as a component name and
 //     each value as the field bag, recorded in the per-VM storage table
 //     keyed by `world:component(key)`.
-//   - Allocates an entity via `scene::World::Get().create()`.
+//   - Allocates an entity via `scene::EcsRegistry::Get().create()`.
 //   - Returns the entity handle as an integer (matching the existing
 //     `create_entity` shape so script-side code can treat the two
 //     interchangeably).

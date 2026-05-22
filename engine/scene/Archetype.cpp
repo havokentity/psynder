@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Psynder — archetype storage impl. Lane 06.
 
-#include "World.h"  // full ComponentTypeInfo / ComponentId definitions
+#include "EcsRegistry.h"  // full ComponentTypeInfo / ComponentId definitions
 #include "Archetype.h"
 #include "Registry.h"
 

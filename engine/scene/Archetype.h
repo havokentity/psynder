@@ -14,9 +14,9 @@
 #include <vector>
 
 namespace psynder::scene {
-// `ComponentId` is defined in `World.h`; we forward-declare a compatible
-// alias here to break the include cycle (`World.h` pulls in
-// `World_Internal.h` which pulls in `Archetype.h`).
+// `ComponentId` is defined in `EcsRegistry.h`; we forward-declare a compatible
+// alias here to break the include cycle (`EcsRegistry.h` pulls in
+// `EcsRegistry_Internal.h` which pulls in `Archetype.h`).
 using ComponentId = u32;
 }  // namespace psynder::scene
 
@@ -83,7 +83,7 @@ class Archetype {
 
     // ─── Per-row entity-index column ──────────────────────────────────
     // The archetype stores, alongside the user-visible columns, a sidecar
-    // u32 column with the entity index for each row. The World uses it to
+    // u32 column with the entity index for each row. The registry uses it to
     // patch entity slots on swap_pop. The sidecar is **the first column
     // inside the chunk**, occupying the slot reserved by `init`.
     u32* entity_index_column(Chunk* c) const noexcept {

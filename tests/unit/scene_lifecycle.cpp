@@ -3,7 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <vector>
 
@@ -25,20 +25,20 @@ using lane06_lifecycle::LifePos;
 using lane06_lifecycle::LifeVel;
 
 namespace {
-// Reset the global World between tests by destroying every live entity.
+// Reset the global ECS registry between tests by destroying every live entity.
 // Catch2 reuses singletons, so each test starts from a known state.
-void drain_world() {
-    auto& w = World::Get();
+void drain_registry() {
+    auto& w = EcsRegistry::Get();
     w.set_structural_deferred(false);
-    // The World doesn't currently expose an "iterate all entities" surface,
+    // The registry doesn't currently expose an "iterate all entities" surface,
     // but the unit tests below track every entity they create. We just
     // destroy any leftovers per-test by remembering them.
 }
 }  // namespace
 
 TEST_CASE("scene: create returns a valid Entity that reports alive()", "[scene][lifecycle]") {
-    drain_world();
-    auto& w = World::Get();
+    drain_registry();
+    auto& w = EcsRegistry::Get();
 
     Entity e = w.create();
     REQUIRE(e.valid());
@@ -48,8 +48,8 @@ TEST_CASE("scene: create returns a valid Entity that reports alive()", "[scene][
 }
 
 TEST_CASE("scene: destroy invalidates by generation", "[scene][lifecycle]") {
-    drain_world();
-    auto& w = World::Get();
+    drain_registry();
+    auto& w = EcsRegistry::Get();
 
     Entity e1 = w.create();
     REQUIRE(w.alive(e1));
@@ -65,16 +65,16 @@ TEST_CASE("scene: destroy invalidates by generation", "[scene][lifecycle]") {
 }
 
 TEST_CASE("scene: alive() on a default-constructed handle is false", "[scene][lifecycle]") {
-    drain_world();
-    auto& w = World::Get();
+    drain_registry();
+    auto& w = EcsRegistry::Get();
     Entity invalid;
     REQUIRE_FALSE(invalid.valid());
     REQUIRE_FALSE(w.alive(invalid));
 }
 
 TEST_CASE("scene: many create/destroy cycles do not leak slots", "[scene][lifecycle]") {
-    drain_world();
-    auto& w = World::Get();
+    drain_registry();
+    auto& w = EcsRegistry::Get();
     constexpr int kCycles = 32;
     constexpr int kPerCycle = 64;
 
@@ -94,8 +94,8 @@ TEST_CASE("scene: many create/destroy cycles do not leak slots", "[scene][lifecy
 
 TEST_CASE("scene: add component places entity in archetype and roundtrips via get",
           "[scene][lifecycle][component]") {
-    drain_world();
-    auto& w = World::Get();
+    drain_registry();
+    auto& w = EcsRegistry::Get();
 
     Entity e = w.create();
     REQUIRE(w.alive(e));
@@ -121,8 +121,8 @@ TEST_CASE("scene: add component places entity in archetype and roundtrips via ge
 
 TEST_CASE("scene: add/remove migrates between archetypes preserving overlap",
           "[scene][lifecycle][archetype]") {
-    drain_world();
-    auto& w = World::Get();
+    drain_registry();
+    auto& w = EcsRegistry::Get();
 
     Entity e = w.create();
     w.add<LifePos>(e, LifePos{1, 2, 3});
@@ -149,8 +149,8 @@ TEST_CASE("scene: add/remove migrates between archetypes preserving overlap",
 }
 
 TEST_CASE("scene: get on a non-existent component returns nullptr", "[scene][lifecycle]") {
-    drain_world();
-    auto& w = World::Get();
+    drain_registry();
+    auto& w = EcsRegistry::Get();
 
     Entity e = w.create();
     REQUIRE(w.get<LifePos>(e) == nullptr);

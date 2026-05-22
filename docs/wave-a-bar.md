@@ -41,7 +41,7 @@ This means every lane MUST:
 | 03-simd | `engine/simd/Simd.h` |
 | 04-jobs | `engine/jobs/JobSystem.h` |
 | 05-asset | `engine/asset/Vfs.h` |
-| 06-scene | `engine/scene/World.h` |
+| 06-scene | `engine/scene/EcsRegistry.h` |
 | 07-render-raster | `engine/render/raster/Raster.h`, `engine/render/Framebuffer.h` |
 | 08-render-rt | `engine/render/rt/Bvh.h` |
 | 09-render-post | `engine/render/post/Post.h` |

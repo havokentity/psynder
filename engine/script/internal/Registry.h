@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Psynder — script-lane internal registry of Lua systems + components.
 //
-// Components mirror what `PSYNDER_COMPONENT(...)` (see engine/scene/World.h)
+// Components mirror what `PSYNDER_COMPONENT(...)` (see engine/scene/EcsRegistry.h)
 // registers on the engine side: a name keyed onto a u32 ComponentId. The
 // scripting layer keeps its own name→id table because Lua refers to
 // components by string (the API shape in DESIGN.md §3.3 is
@@ -14,7 +14,7 @@
 #pragma once
 
 #include "core/Types.h"
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <span>
 #include <string>

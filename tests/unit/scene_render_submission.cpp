@@ -58,12 +58,12 @@ TEST_CASE("render material library stores editable raster and RT state in SoA co
     REQUIRE((view.flags[0] & render::Material_CastsBakedShadow) != 0u);
 }
 
-TEST_CASE("runtime scene creates transform-backed renderable entities for shared renderers",
+TEST_CASE("scene creates transform-backed renderable entities for shared renderers",
           "[scene][render_submission]") {
-    auto& world = scene::World::Get();
-    world.set_structural_deferred(false);
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
 
-    scene::RuntimeScene scene{world};
+    scene::Scene scene{registry};
     render::MaterialDesc material_desc{};
     material_desc.albedo_rgba8 = 0xFF2040C0u;
     material_desc.reflectivity = 1.0f;
@@ -78,9 +78,9 @@ TEST_CASE("runtime scene creates transform-backed renderable entities for shared
     renderable.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
 
     const Entity entity = scene.create_renderable(renderable, translate({3.0f, 4.0f, 5.0f}));
-    REQUIRE(world.get<scene::TransformComponent>(entity) != nullptr);
-    REQUIRE(world.get<scene::SceneNodeComponent>(entity) != nullptr);
-    REQUIRE(world.get<scene::RenderableComponent>(entity) != nullptr);
+    REQUIRE(registry.get<scene::TransformComponent>(entity) != nullptr);
+    REQUIRE(registry.get<scene::SceneNodeComponent>(entity) != nullptr);
+    REQUIRE(registry.get<scene::RenderableComponent>(entity) != nullptr);
 
     const scene::SceneGraphUpdateStats stats = scene.update_transforms();
     REQUIRE(stats.transforms_updated >= 1u);
@@ -102,12 +102,12 @@ TEST_CASE("runtime scene creates transform-backed renderable entities for shared
     REQUIRE(scene.destroy_entity(entity));
 }
 
-TEST_CASE("runtime scene prewarm preserves capacity through dynamic renderable updates",
+TEST_CASE("scene prewarm preserves capacity through dynamic renderable updates",
           "[scene][render_submission][prewarm]") {
-    auto& world = scene::World::Get();
-    world.set_structural_deferred(false);
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
 
-    scene::RuntimeScene scene{world};
+    scene::Scene scene{registry};
     scene::ScenePrewarmConfig config{};
     config.scene_entities = 8u;
     config.renderables = 6u;
@@ -115,7 +115,7 @@ TEST_CASE("runtime scene prewarm preserves capacity through dynamic renderable u
     scene.prewarm_capacity(config);
 
     REQUIRE(scene.graph().node_capacity() >= config.scene_entities);
-    REQUIRE(world.entity_capacity() >= config.scene_entities);
+    REQUIRE(registry.entity_capacity() >= config.scene_entities);
 
     render::MaterialDesc material_desc{};
     material_desc.albedo_rgba8 = 0xFF88CC44u;
@@ -132,7 +132,7 @@ TEST_CASE("runtime scene prewarm preserves capacity through dynamic renderable u
                                        material,
                                        math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}});
 
-    const u32 chunks_after_prewarm = world.chunk_live_count();
+    const u32 chunks_after_prewarm = registry.chunk_live_count();
     const u32 graph_capacity = scene.graph().node_capacity();
     const u32 dirty_capacity = scene.graph().dirty_root_capacity();
 
@@ -146,7 +146,7 @@ TEST_CASE("runtime scene prewarm preserves capacity through dynamic renderable u
         scene.create_renderable(dynamic_renderable, translate({0.0f, 2.0f, 0.0f}));
 
     scene.update_transforms();
-    REQUIRE(world.chunk_live_count() == chunks_after_prewarm);
+    REQUIRE(registry.chunk_live_count() == chunks_after_prewarm);
     REQUIRE(scene.graph().node_capacity() == graph_capacity);
     REQUIRE(scene.graph().dirty_root_capacity() == dirty_capacity);
 
@@ -164,7 +164,7 @@ TEST_CASE("runtime scene prewarm preserves capacity through dynamic renderable u
         scene.gather_render_items(items);
         REQUIRE(items.size() == 6u);
         REQUIRE(items.capacity() == item_capacity);
-        REQUIRE(world.chunk_live_count() == chunks_after_prewarm);
+        REQUIRE(registry.chunk_live_count() == chunks_after_prewarm);
         REQUIRE(scene.graph().node_capacity() == graph_capacity);
         REQUIRE(scene.graph().dirty_root_capacity() == dirty_capacity);
     }

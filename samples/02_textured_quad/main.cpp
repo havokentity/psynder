@@ -2,7 +2,7 @@
 // Psynder — Sample 02 / M2 demo. Rotating "crate room" — a small set of
 // unit cubes spinning on the floor, viewed through a perspective camera.
 //
-// Sample 02 submits a small RuntimeScene through the hybrid scene renderer.
+// Sample 02 submits a small Scene through the hybrid scene renderer.
 // Raster remains the internal backend that performs tiled-binner + bilinear +
 // Z. The crates now
 // carry a real per-pixel procedural wooden-crate texture: each cube vertex
@@ -282,9 +282,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                          cube_idx.data(),
                          static_cast<u32>(cube_idx.size()));
 
-    scene::World world;
-    world.set_structural_deferred(false);
-    scene::RuntimeScene scene{world};
+    scene::Scene scene{};
     render::SceneRenderer renderer;
 
     render::MeshDesc cube_mesh_desc{};

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
-// Psynder — archetype-chunked ECS world impl. Lane 06.
+// Psynder — archetype-chunked ECS registry impl. Lane 06.
 //
-// The public `World` class (frozen header) is a façade over a singleton
-// `WorldImpl` owned by this TU. All actual storage — archetypes, chunks,
-// the entity slot table, deferred-change queue — lives in `WorldImpl`.
+// The public `EcsRegistry` class (frozen header) is a façade over a singleton
+// `EcsRegistryImpl` owned by this TU. All actual storage — archetypes, chunks,
+// the entity slot table, deferred-change queue — lives in `EcsRegistryImpl`.
 
-#include "World.h"
-#include "World_Internal.h"
+#include "EcsRegistry.h"
+#include "EcsRegistry_Internal.h"
 
 #include <algorithm>
 #include <cstring>
@@ -15,50 +15,50 @@
 
 namespace psynder::scene {
 
-// ─── Public World façade ────────────────────────────────────────────
-World& World::Get() {
-    static World w;
-    return w;
+// ─── Public EcsRegistry façade ───────────────────────────────────────
+EcsRegistry& EcsRegistry::Get() {
+    static EcsRegistry registry;
+    return registry;
 }
 
-Entity World::create() {
-    return detail::WorldImpl::Get().create();
+Entity EcsRegistry::create() {
+    return detail::EcsRegistryImpl::Get().create();
 }
-void World::destroy(Entity e) {
-    detail::WorldImpl::Get().destroy(e);
+void EcsRegistry::destroy(Entity e) {
+    detail::EcsRegistryImpl::Get().destroy(e);
 }
-bool World::alive(Entity e) const noexcept {
-    return detail::WorldImpl::Get().alive(e);
-}
-
-void World::reserve_entities(u32 count) {
-    detail::WorldImpl::Get().reserve_entities(count);
+bool EcsRegistry::alive(Entity e) const noexcept {
+    return detail::EcsRegistryImpl::Get().alive(e);
 }
 
-void World::reserve_structural_changes(u32 op_count, u32 byte_count) {
-    detail::WorldImpl::Get().reserve_structural_changes(op_count, byte_count);
+void EcsRegistry::reserve_entities(u32 count) {
+    detail::EcsRegistryImpl::Get().reserve_entities(count);
 }
 
-u32 World::entity_capacity() const noexcept {
-    return detail::WorldImpl::Get().entity_capacity();
+void EcsRegistry::reserve_structural_changes(u32 op_count, u32 byte_count) {
+    detail::EcsRegistryImpl::Get().reserve_structural_changes(op_count, byte_count);
 }
 
-u32 World::chunk_live_count() const noexcept {
-    return detail::WorldImpl::Get().chunk_live_count();
+u32 EcsRegistry::entity_capacity() const noexcept {
+    return detail::EcsRegistryImpl::Get().entity_capacity();
 }
 
-void World::set_structural_deferred(bool on) noexcept {
-    detail::WorldImpl::Get().set_deferred_mode(on);
+u32 EcsRegistry::chunk_live_count() const noexcept {
+    return detail::EcsRegistryImpl::Get().chunk_live_count();
 }
 
-void World::apply_structural_changes() {
-    detail::WorldImpl::Get().apply_structural_changes();
+void EcsRegistry::set_structural_deferred(bool on) noexcept {
+    detail::EcsRegistryImpl::Get().set_deferred_mode(on);
 }
 
-// ─── WorldImpl ──────────────────────────────────────────────────────
+void EcsRegistry::apply_structural_changes() {
+    detail::EcsRegistryImpl::Get().apply_structural_changes();
+}
+
+// ─── EcsRegistryImpl ──────────────────────────────────────────────────────
 namespace detail {
 
-WorldImpl::WorldImpl() {
+EcsRegistryImpl::EcsRegistryImpl() {
     // Archetype 0 is the "empty" archetype — entities that exist but have
     // no components. It has zero columns, so it allocates no chunks.
     archetypes_.emplace_back();
@@ -66,12 +66,12 @@ WorldImpl::WorldImpl() {
     archetypes_[0].init(0, std::span<const ComponentId>{});
 }
 
-WorldImpl& WorldImpl::Get() {
-    static WorldImpl impl;
+EcsRegistryImpl& EcsRegistryImpl::Get() {
+    static EcsRegistryImpl impl;
     return impl;
 }
 
-void WorldImpl::shutdown() noexcept {
+void EcsRegistryImpl::shutdown() noexcept {
     std::lock_guard<std::mutex> lk(mutex_);
     for (auto& a : archetypes_)
         a.release_all(pool_);
@@ -84,7 +84,7 @@ void WorldImpl::shutdown() noexcept {
     live_entities_ = 0;
 }
 
-u32 WorldImpl::allocate_slot() {
+u32 EcsRegistryImpl::allocate_slot() {
     if (!free_indices_.empty()) {
         const u32 idx = free_indices_.back();
         free_indices_.pop_back();
@@ -94,29 +94,29 @@ u32 WorldImpl::allocate_slot() {
     return static_cast<u32>(entities_.size() - 1);
 }
 
-void WorldImpl::reserve_entities(u32 count) {
+void EcsRegistryImpl::reserve_entities(u32 count) {
     std::lock_guard<std::mutex> lk(mutex_);
     entities_.reserve(count);
     free_indices_.reserve(count);
 }
 
-void WorldImpl::reserve_structural_changes(u32 op_count, u32 byte_count) {
+void EcsRegistryImpl::reserve_structural_changes(u32 op_count, u32 byte_count) {
     std::lock_guard<std::mutex> lk(mutex_);
     pending_.reserve(op_count);
     deferred_arena_.reserve(byte_count);
 }
 
-u32 WorldImpl::entity_capacity() const noexcept {
+u32 EcsRegistryImpl::entity_capacity() const noexcept {
     std::lock_guard<std::mutex> lk(mutex_);
     return static_cast<u32>(entities_.capacity());
 }
 
-u32 WorldImpl::chunk_live_count() const noexcept {
+u32 EcsRegistryImpl::chunk_live_count() const noexcept {
     std::lock_guard<std::mutex> lk(mutex_);
     return static_cast<u32>(pool_.live_count());
 }
 
-Entity WorldImpl::create() {
+Entity EcsRegistryImpl::create() {
     std::lock_guard<std::mutex> lk(mutex_);
     const u32 idx = allocate_slot();
     auto& slot = entities_[idx];
@@ -146,7 +146,7 @@ constexpr u32 entity_index_of(Entity e) noexcept {
 }
 }  // namespace
 
-void WorldImpl::destroy(Entity e) {
+void EcsRegistryImpl::destroy(Entity e) {
     if (deferred_) {
         defer_destroy(e);
         return;
@@ -183,7 +183,7 @@ void WorldImpl::destroy(Entity e) {
     --live_entities_;
 }
 
-bool WorldImpl::alive(Entity e) const noexcept {
+bool EcsRegistryImpl::alive(Entity e) const noexcept {
     std::lock_guard<std::mutex> lk(mutex_);
     const u32 idx = entity_index_of(e);
     if (idx == 0xFFFFFFFFu || idx >= entities_.size())
@@ -192,7 +192,7 @@ bool WorldImpl::alive(Entity e) const noexcept {
     return slot.alive && slot.generation == e.gen();
 }
 
-std::vector<ComponentId> WorldImpl::merged_components(std::span<const ComponentId> base,
+std::vector<ComponentId> EcsRegistryImpl::merged_components(std::span<const ComponentId> base,
                                                       ComponentId added,
                                                       ComponentId removed) {
     std::vector<ComponentId> out;
@@ -211,7 +211,7 @@ std::vector<ComponentId> WorldImpl::merged_components(std::span<const ComponentI
     return out;
 }
 
-u32 WorldImpl::ensure_archetype(std::span<const ComponentId> sorted_components) {
+u32 EcsRegistryImpl::ensure_archetype(std::span<const ComponentId> sorted_components) {
     // Linear search — typical games have hundreds of archetypes, not
     // millions. This is only on structural change. Wave B can swap in a
     // hash if it ever shows up in profiling.
@@ -230,7 +230,7 @@ u32 WorldImpl::ensure_archetype(std::span<const ComponentId> sorted_components) 
     return id;
 }
 
-void WorldImpl::reserve_archetype_rows(std::span<const ComponentId> sorted_components, u32 row_count) {
+void EcsRegistryImpl::reserve_archetype_rows(std::span<const ComponentId> sorted_components, u32 row_count) {
     if (row_count == 0u)
         return;
     std::lock_guard<std::mutex> lk(mutex_);
@@ -238,7 +238,7 @@ void WorldImpl::reserve_archetype_rows(std::span<const ComponentId> sorted_compo
     archetypes_[archetype_id].reserve_rows(pool_, row_count);
 }
 
-void WorldImpl::migrate_entity(u32 entity_idx,
+void EcsRegistryImpl::migrate_entity(u32 entity_idx,
                                u32 new_archetype_id,
                                ComponentId added_id,
                                const void* added_bytes,
@@ -310,7 +310,7 @@ void WorldImpl::migrate_entity(u32 entity_idx,
     slot.row_in_chunk = ref.row;
 }
 
-void WorldImpl::add_raw(Entity e, ComponentId comp, const void* bytes, u32 byte_count) {
+void EcsRegistryImpl::add_raw(Entity e, ComponentId comp, const void* bytes, u32 byte_count) {
     if (deferred_) {
         defer_add(e, comp, bytes, byte_count);
         return;
@@ -343,7 +343,7 @@ void WorldImpl::add_raw(Entity e, ComponentId comp, const void* bytes, u32 byte_
     migrate_entity(idx, new_arche, comp, bytes, byte_count, 0u);
 }
 
-void* WorldImpl::get_raw(Entity e, ComponentId comp) noexcept {
+void* EcsRegistryImpl::get_raw(Entity e, ComponentId comp) noexcept {
     std::lock_guard<std::mutex> lk(mutex_);
     const u32 idx = entity_index_of(e);
     if (idx == 0xFFFFFFFFu || idx >= entities_.size())
@@ -361,7 +361,7 @@ void* WorldImpl::get_raw(Entity e, ComponentId comp) noexcept {
     return arche.column_base(c, col) + static_cast<usize>(slot.row_in_chunk) * sz;
 }
 
-void WorldImpl::remove_raw(Entity e, ComponentId comp) {
+void EcsRegistryImpl::remove_raw(Entity e, ComponentId comp) {
     if (deferred_) {
         defer_remove(e, comp);
         return;
@@ -384,7 +384,7 @@ void WorldImpl::remove_raw(Entity e, ComponentId comp) {
     migrate_entity(idx, new_arche, 0u, nullptr, 0u, comp);
 }
 
-void WorldImpl::defer_add(Entity e, ComponentId comp, const void* bytes, u32 byte_count) {
+void EcsRegistryImpl::defer_add(Entity e, ComponentId comp, const void* bytes, u32 byte_count) {
     std::lock_guard<std::mutex> lk(mutex_);
     const usize offset = deferred_arena_.size();
     deferred_arena_.insert(deferred_arena_.end(),
@@ -402,17 +402,17 @@ void WorldImpl::defer_add(Entity e, ComponentId comp, const void* bytes, u32 byt
     pending_.push_back(sc);
 }
 
-void WorldImpl::defer_remove(Entity e, ComponentId comp) {
+void EcsRegistryImpl::defer_remove(Entity e, ComponentId comp) {
     std::lock_guard<std::mutex> lk(mutex_);
     pending_.push_back({StructuralOp::RemoveComponent, e, comp, nullptr, 0});
 }
 
-void WorldImpl::defer_destroy(Entity e) {
+void EcsRegistryImpl::defer_destroy(Entity e) {
     std::lock_guard<std::mutex> lk(mutex_);
     pending_.push_back({StructuralOp::Destroy, e, 0u, nullptr, 0});
 }
 
-void WorldImpl::apply_one(const StructuralChange& sc) {
+void EcsRegistryImpl::apply_one(const StructuralChange& sc) {
     // Caller holds mutex_.
     const u32 idx = entity_index_of(sc.target);
     if (idx == 0xFFFFFFFFu || idx >= entities_.size())
@@ -474,7 +474,7 @@ void WorldImpl::apply_one(const StructuralChange& sc) {
     }
 }
 
-void WorldImpl::apply_structural_changes() {
+void EcsRegistryImpl::apply_structural_changes() {
     std::lock_guard<std::mutex> lk(mutex_);
     if (pending_.empty())
         return;
@@ -496,7 +496,7 @@ void WorldImpl::apply_structural_changes() {
     ++archetype_topology_version_;
 }
 
-void WorldImpl::resolve_query(std::span<const ComponentId> required, std::vector<u32>& matched) const {
+void EcsRegistryImpl::resolve_query(std::span<const ComponentId> required, std::vector<u32>& matched) const {
     std::lock_guard<std::mutex> lk(mutex_);
     matched.clear();
     for (u32 i = 1; i < archetypes_.size(); ++i) {

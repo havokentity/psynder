@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Psynder — archetype-chunked ECS world. Lane 06 owns the full ECS impl
+// Psynder — archetype-chunked ECS registry. Lane 06 owns the full ECS impl
 // (chunks, archetypes, queries, structural batching, spatial indices).
 //
 // This header freezes the contract used by every other subsystem.
@@ -48,10 +48,10 @@ ComponentId component_id() {
     /* clang-format on */       \
     struct Name
 
-// ─── World ───────────────────────────────────────────────────────────────
-class World {
+// ─── EcsRegistry ───────────────────────────────────────────────────────────────
+class EcsRegistry {
    public:
-    static World& Get();
+    static EcsRegistry& Get();
 
     Entity create();
     void destroy(Entity e);
@@ -78,7 +78,7 @@ class World {
     // Query construction is library-provided; lane 06 implements.
     // Users register systems via the script-side API (see engine/script).
     //
-    // Call site: `world.query<reads<A>, writes<B>>(body)` — see the brief
+    // Call site: `registry.query<reads<A>, writes<B>>(body)` — see the brief
     // for Lane 06 (Issue #6). The body receives one `std::span<const R>`
     // per Reads type then one `std::span<W>` per Writes type, fired once
     // per chunk so iteration stays column-at-a-time.
@@ -102,6 +102,6 @@ struct writes {};
 
 // Lane 06 internal: template definitions for `add`, `get`, `remove`,
 // `query` live in the impl header, which is pulled in here so users of
-// `World.h` see the full template bodies. The header above stays
+// `EcsRegistry.h` see the full template bodies. The header above stays
 // declarations-only for everything an external lane should grep against.
-#include "World_Internal.h"
+#include "EcsRegistry_Internal.h"
