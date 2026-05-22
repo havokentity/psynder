@@ -4,6 +4,7 @@
 #include "core/Types.h"
 #include "math/Batch.h"
 #include "math/Math.h"
+#include "math/VectorStack.h"
 
 #include <algorithm>
 #include <chrono>
@@ -143,6 +144,158 @@ void bench_mat4_mul(const BenchOpts& o) {
     std::printf("math,mat4_mul,scalar,%zu,%.3f\n", static_cast<size_t>(o.n), ns_per);
 }
 
+void bench_vector_stack_points_soa(const BenchOpts& o) {
+    const math::Mat4 m = sample_transform();
+    math::Vec3SoaBuffer in(o.n);
+    math::Vec3SoaBuffer out(o.n);
+    f32* x = in.x_data();
+    f32* y = in.y_data();
+    f32* z = in.z_data();
+    f32* ox = out.x_data();
+    f32* oy = out.y_data();
+    f32* oz = out.z_data();
+    for (usize i = 0; i < o.n; ++i) {
+        x[i] = (static_cast<f32>(i % 97) - 48.0f) * 0.25f;
+        y[i] = (static_cast<f32>(i % 53) - 26.0f) * 0.5f;
+        z[i] = (static_cast<f32>(i % 29) - 14.0f) * 0.75f;
+    }
+
+    math::VectorStack stack;
+    stack.reserve_ops(1);
+    auto fn = [&]() {
+        stack.clear();
+        stack.transform_points(m, in.view(), out.mutable_view());
+        stack.flush();
+        do_not_optimize(ox[o.n / 2]);
+        do_not_optimize(oy[o.n / 2]);
+        do_not_optimize(oz[o.n / 2]);
+    };
+    const double ns_per = median_ns_per_elem(fn, o.n, o.iters);
+    std::printf("math,vector_stack_points_soa,%s,%zu,%.3f\n",
+                math::vector_stack_backend(),
+                static_cast<size_t>(o.n),
+                ns_per);
+}
+
+void bench_vector_stack_points_aos(const BenchOpts& o) {
+    const math::Mat4 m = sample_transform();
+    std::vector<math::Vec3> in(o.n);
+    std::vector<math::Vec3> out(o.n);
+    for (usize i = 0; i < o.n; ++i) {
+        in[i] = math::Vec3{
+            (static_cast<f32>(i % 97) - 48.0f) * 0.25f,
+            (static_cast<f32>(i % 53) - 26.0f) * 0.5f,
+            (static_cast<f32>(i % 29) - 14.0f) * 0.75f,
+        };
+    }
+
+    math::VectorStack stack;
+    stack.reserve_ops(1);
+    auto fn = [&]() {
+        stack.clear();
+        stack.transform_points(m, in.data(), out.data(), out.size());
+        stack.flush();
+        do_not_optimize(out[o.n / 2]);
+    };
+    const double ns_per = median_ns_per_elem(fn, o.n, o.iters);
+    std::printf("math,vector_stack_points_aos,%s,%zu,%.3f\n",
+                math::vector_stack_backend(),
+                static_cast<size_t>(o.n),
+                ns_per);
+}
+
+void bench_integrate_positions_aos_scalar(const BenchOpts& o) {
+    std::vector<math::Vec3> positions(o.n);
+    std::vector<math::Vec3> velocities(o.n);
+    for (usize i = 0; i < o.n; ++i) {
+        positions[i] = math::Vec3{
+            (static_cast<f32>(i % 97) - 48.0f) * 0.25f,
+            (static_cast<f32>(i % 53) - 26.0f) * 0.5f,
+            (static_cast<f32>(i % 29) - 14.0f) * 0.75f,
+        };
+        velocities[i] = math::Vec3{
+            (static_cast<f32>(i % 31) - 15.0f) * 0.01f,
+            (static_cast<f32>(i % 43) - 21.0f) * 0.02f,
+            (static_cast<f32>(i % 67) - 33.0f) * 0.03f,
+        };
+    }
+
+    auto fn = [&]() {
+        for (usize i = 0; i < o.n; ++i) {
+            positions[i] = math::add(positions[i], math::mul(velocities[i], 1.0f / 60.0f));
+        }
+        do_not_optimize(positions[o.n / 2]);
+    };
+    const double ns_per = median_ns_per_elem(fn, o.n, o.iters);
+    std::printf("math,integrate_positions_aos,scalar,%zu,%.3f\n", static_cast<size_t>(o.n), ns_per);
+}
+
+void bench_vector_stack_integrate_soa(const BenchOpts& o) {
+    math::Vec3SoaBuffer positions(o.n);
+    math::Vec3SoaBuffer velocities(o.n);
+    f32* px = positions.x_data();
+    f32* py = positions.y_data();
+    f32* pz = positions.z_data();
+    f32* vx = velocities.x_data();
+    f32* vy = velocities.y_data();
+    f32* vz = velocities.z_data();
+    for (usize i = 0; i < o.n; ++i) {
+        px[i] = (static_cast<f32>(i % 97) - 48.0f) * 0.25f;
+        py[i] = (static_cast<f32>(i % 53) - 26.0f) * 0.5f;
+        pz[i] = (static_cast<f32>(i % 29) - 14.0f) * 0.75f;
+        vx[i] = (static_cast<f32>(i % 31) - 15.0f) * 0.01f;
+        vy[i] = (static_cast<f32>(i % 43) - 21.0f) * 0.02f;
+        vz[i] = (static_cast<f32>(i % 67) - 33.0f) * 0.03f;
+    }
+
+    math::VectorStack stack;
+    stack.reserve_ops(1);
+    auto fn = [&]() {
+        stack.clear();
+        stack.integrate_positions(positions.mutable_view(), velocities.view(), 1.0f / 60.0f);
+        stack.flush();
+        do_not_optimize(px[o.n / 2]);
+        do_not_optimize(py[o.n / 2]);
+        do_not_optimize(pz[o.n / 2]);
+    };
+    const double ns_per = median_ns_per_elem(fn, o.n, o.iters);
+    std::printf("math,vector_stack_integrate_soa,%s,%zu,%.3f\n",
+                math::vector_stack_backend(),
+                static_cast<size_t>(o.n),
+                ns_per);
+}
+
+void bench_vector_stack_integrate_aos(const BenchOpts& o) {
+    std::vector<math::Vec3> positions(o.n);
+    std::vector<math::Vec3> velocities(o.n);
+    for (usize i = 0; i < o.n; ++i) {
+        positions[i] = math::Vec3{
+            (static_cast<f32>(i % 97) - 48.0f) * 0.25f,
+            (static_cast<f32>(i % 53) - 26.0f) * 0.5f,
+            (static_cast<f32>(i % 29) - 14.0f) * 0.75f,
+        };
+        velocities[i] = math::Vec3{
+            (static_cast<f32>(i % 31) - 15.0f) * 0.01f,
+            (static_cast<f32>(i % 43) - 21.0f) * 0.02f,
+            (static_cast<f32>(i % 67) - 33.0f) * 0.03f,
+        };
+    }
+
+    math::VectorStack stack;
+    stack.reserve_ops(1);
+    auto fn = [&]() {
+        stack.clear();
+        stack.integrate_positions(positions.data(), velocities.data(), positions.size(), 1.0f / 60.0f);
+        stack.flush();
+        do_not_optimize(positions[o.n / 2]);
+    };
+    const double ns_per = median_ns_per_elem(fn, o.n, o.iters);
+    std::printf("math,vector_stack_integrate_aos,%s,%zu,%.3f\n",
+                math::vector_stack_backend(),
+                static_cast<size_t>(o.n),
+                ns_per);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -155,5 +308,10 @@ int main(int argc, char** argv) {
     bench_transform_points(o);
     bench_transform_dirs(o);
     bench_mat4_mul(o);
+    bench_vector_stack_points_soa(o);
+    bench_vector_stack_points_aos(o);
+    bench_integrate_positions_aos_scalar(o);
+    bench_vector_stack_integrate_soa(o);
+    bench_vector_stack_integrate_aos(o);
     return 0;
 }
