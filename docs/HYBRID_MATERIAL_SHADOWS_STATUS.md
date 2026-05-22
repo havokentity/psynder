@@ -53,6 +53,8 @@ and before ending a session so crash recovery has a concrete resume point.
     - agent: `019e4f5e-5378-7773-8125-bc9f82121a1e`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-lmbake-material-policy`
     - owns `tools/`
+    - PR: https://github.com/havokentity/psynder/pull/140
+    - status: complete; bake-side material policy table and parser tokens
   - `codex/agent-samples-hybrid-migration`
     - agent: `019e4f5e-63c9-7ba2-9016-75ac61719901`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-samples-hybrid-migration`
@@ -86,6 +88,7 @@ and before ending a session so crash recovery has a concrete resume point.
 - RT worker complete with PR #138 targeting the integration branch; test update
   required for new 0..8 bounce clamp.
 - Samples worker complete with PR #139 targeting the integration branch.
+- Bake worker complete with PR #140 targeting the integration branch.
 
 ## Next Multi-Agent Step
 
