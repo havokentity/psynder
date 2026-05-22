@@ -16,6 +16,14 @@ using namespace psynder;
 
 namespace {
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+inline constexpr const char* kBatchTransformBackend = "neon4";
+#elif defined(__x86_64__) || defined(_M_X64)
+inline constexpr const char* kBatchTransformBackend = "sse4";
+#else
+inline constexpr const char* kBatchTransformBackend = "scalar";
+#endif
+
 struct BenchOpts {
     bool smoke = false;
     usize n = 1u << 16;
@@ -83,7 +91,10 @@ void bench_transform_points(const BenchOpts& o) {
         do_not_optimize(out[o.n / 2]);
     };
     const double ns_per = median_ns_per_elem(fn, o.n, o.iters);
-    std::printf("math,transform_points,scalar,%zu,%.3f\n", static_cast<size_t>(o.n), ns_per);
+    std::printf("math,transform_points,%s,%zu,%.3f\n",
+                kBatchTransformBackend,
+                static_cast<size_t>(o.n),
+                ns_per);
 }
 
 void bench_transform_dirs(const BenchOpts& o) {
@@ -103,7 +114,10 @@ void bench_transform_dirs(const BenchOpts& o) {
         do_not_optimize(out[o.n / 2]);
     };
     const double ns_per = median_ns_per_elem(fn, o.n, o.iters);
-    std::printf("math,transform_dirs,scalar,%zu,%.3f\n", static_cast<size_t>(o.n), ns_per);
+    std::printf("math,transform_dirs,%s,%zu,%.3f\n",
+                kBatchTransformBackend,
+                static_cast<size_t>(o.n),
+                ns_per);
 }
 
 void bench_mat4_mul(const BenchOpts& o) {

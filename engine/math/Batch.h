@@ -7,12 +7,10 @@
 // of the Vec3↔Vec4 packing. This header exposes the array form the
 // renderer actually wants.
 //
-// Wave B ships the scalar 4-component homogeneous transform — readable,
-// correct, no SIMD intrinsics required so it builds on every host we
-// care about. Wave C can vectorize (8-wide AVX2 / 4-wide NEON) behind
-// the same signature; the contract here is "matches the scalar
-// `mul(m, Vec4{in[i], 1}).xyz` exactly", so a vectorized replacement
-// drops in transparently.
+// The hot loop uses a 4-wide SIMD block where the platform gives us one
+// cheaply, then falls through to the same scalar tail. The contract here is
+// "matches `mul(m, Vec4{in[i], 1}).xyz`", so callers never care which backend
+// ran.
 //
 // Header-only by design — the body is short and consumers want it inlined
 // inside their per-frame loops.
@@ -22,6 +20,13 @@
 #include "math/Math.h"
 
 #include "core/Types.h"
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
 
 namespace psynder::math {
 
@@ -34,6 +39,8 @@ namespace psynder::math {
 #endif
 
 namespace detail {
+
+static_assert(sizeof(Vec3) == sizeof(f32) * 3u, "Vec3 batch SIMD assumes tightly packed xyz");
 
 struct Mat4LinearRows {
     f32 m00, m01, m02;
@@ -71,6 +78,99 @@ PSY_FORCEINLINE Vec3 transform_dir_one(const Mat4LinearRows& r, Vec3 v) noexcept
     };
 }
 
+PSY_FORCEINLINE void transform_point_block4(const Mat4LinearRows& r,
+                                            f32 tx,
+                                            f32 ty,
+                                            f32 tz,
+                                            const Vec3* PSY_MATH_RESTRICT src,
+                                            Vec3* PSY_MATH_RESTRICT dst) noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const float32x4x3_t v = vld3q_f32(reinterpret_cast<const f32*>(src));
+
+    float32x4_t x = vfmaq_n_f32(vmulq_n_f32(v.val[0], r.m00), v.val[1], r.m01);
+    x = vaddq_f32(vfmaq_n_f32(x, v.val[2], r.m02), vdupq_n_f32(tx));
+
+    float32x4_t y = vfmaq_n_f32(vmulq_n_f32(v.val[0], r.m10), v.val[1], r.m11);
+    y = vaddq_f32(vfmaq_n_f32(y, v.val[2], r.m12), vdupq_n_f32(ty));
+
+    float32x4_t z = vfmaq_n_f32(vmulq_n_f32(v.val[0], r.m20), v.val[1], r.m21);
+    z = vaddq_f32(vfmaq_n_f32(z, v.val[2], r.m22), vdupq_n_f32(tz));
+
+    const float32x4x3_t out{{x, y, z}};
+    vst3q_f32(reinterpret_cast<f32*>(dst), out);
+#elif defined(__x86_64__) || defined(_M_X64)
+    const __m128 x = _mm_setr_ps(src[0].x, src[1].x, src[2].x, src[3].x);
+    const __m128 y = _mm_setr_ps(src[0].y, src[1].y, src[2].y, src[3].y);
+    const __m128 z = _mm_setr_ps(src[0].z, src[1].z, src[2].z, src[3].z);
+
+    __m128 ox = _mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(r.m00)), _mm_mul_ps(y, _mm_set1_ps(r.m01)));
+    ox = _mm_add_ps(_mm_add_ps(ox, _mm_mul_ps(z, _mm_set1_ps(r.m02))), _mm_set1_ps(tx));
+
+    __m128 oy = _mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(r.m10)), _mm_mul_ps(y, _mm_set1_ps(r.m11)));
+    oy = _mm_add_ps(_mm_add_ps(oy, _mm_mul_ps(z, _mm_set1_ps(r.m12))), _mm_set1_ps(ty));
+
+    __m128 oz = _mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(r.m20)), _mm_mul_ps(y, _mm_set1_ps(r.m21)));
+    oz = _mm_add_ps(_mm_add_ps(oz, _mm_mul_ps(z, _mm_set1_ps(r.m22))), _mm_set1_ps(tz));
+
+    alignas(16) f32 xs[4];
+    alignas(16) f32 ys[4];
+    alignas(16) f32 zs[4];
+    _mm_store_ps(xs, ox);
+    _mm_store_ps(ys, oy);
+    _mm_store_ps(zs, oz);
+    for (int lane = 0; lane < 4; ++lane)
+        dst[lane] = Vec3{xs[lane], ys[lane], zs[lane]};
+#else
+    for (int lane = 0; lane < 4; ++lane)
+        dst[lane] = transform_point_one(r, tx, ty, tz, src[lane]);
+#endif
+}
+
+PSY_FORCEINLINE void transform_dir_block4(const Mat4LinearRows& r,
+                                          const Vec3* PSY_MATH_RESTRICT src,
+                                          Vec3* PSY_MATH_RESTRICT dst) noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const float32x4x3_t v = vld3q_f32(reinterpret_cast<const f32*>(src));
+
+    float32x4_t x = vfmaq_n_f32(vmulq_n_f32(v.val[0], r.m00), v.val[1], r.m01);
+    x = vfmaq_n_f32(x, v.val[2], r.m02);
+
+    float32x4_t y = vfmaq_n_f32(vmulq_n_f32(v.val[0], r.m10), v.val[1], r.m11);
+    y = vfmaq_n_f32(y, v.val[2], r.m12);
+
+    float32x4_t z = vfmaq_n_f32(vmulq_n_f32(v.val[0], r.m20), v.val[1], r.m21);
+    z = vfmaq_n_f32(z, v.val[2], r.m22);
+
+    const float32x4x3_t out{{x, y, z}};
+    vst3q_f32(reinterpret_cast<f32*>(dst), out);
+#elif defined(__x86_64__) || defined(_M_X64)
+    const __m128 x = _mm_setr_ps(src[0].x, src[1].x, src[2].x, src[3].x);
+    const __m128 y = _mm_setr_ps(src[0].y, src[1].y, src[2].y, src[3].y);
+    const __m128 z = _mm_setr_ps(src[0].z, src[1].z, src[2].z, src[3].z);
+
+    __m128 ox = _mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(r.m00)), _mm_mul_ps(y, _mm_set1_ps(r.m01)));
+    ox = _mm_add_ps(ox, _mm_mul_ps(z, _mm_set1_ps(r.m02)));
+
+    __m128 oy = _mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(r.m10)), _mm_mul_ps(y, _mm_set1_ps(r.m11)));
+    oy = _mm_add_ps(oy, _mm_mul_ps(z, _mm_set1_ps(r.m12)));
+
+    __m128 oz = _mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(r.m20)), _mm_mul_ps(y, _mm_set1_ps(r.m21)));
+    oz = _mm_add_ps(oz, _mm_mul_ps(z, _mm_set1_ps(r.m22)));
+
+    alignas(16) f32 xs[4];
+    alignas(16) f32 ys[4];
+    alignas(16) f32 zs[4];
+    _mm_store_ps(xs, ox);
+    _mm_store_ps(ys, oy);
+    _mm_store_ps(zs, oz);
+    for (int lane = 0; lane < 4; ++lane)
+        dst[lane] = Vec3{xs[lane], ys[lane], zs[lane]};
+#else
+    for (int lane = 0; lane < 4; ++lane)
+        dst[lane] = transform_dir_one(r, src[lane]);
+#endif
+}
+
 }  // namespace detail
 
 // Transform `n` points by `m`, treating each input as homogeneous w = 1
@@ -91,14 +191,7 @@ PSY_FORCEINLINE void transform_points(const Mat4& m, const Vec3* in, Vec3* out, 
 
     usize i = 0;
     for (; i + 4 <= n; i += 4) {
-        const Vec3 p0 = detail::transform_point_one(r, tx, ty, tz, src[i + 0]);
-        const Vec3 p1 = detail::transform_point_one(r, tx, ty, tz, src[i + 1]);
-        const Vec3 p2 = detail::transform_point_one(r, tx, ty, tz, src[i + 2]);
-        const Vec3 p3 = detail::transform_point_one(r, tx, ty, tz, src[i + 3]);
-        dst[i + 0] = p0;
-        dst[i + 1] = p1;
-        dst[i + 2] = p2;
-        dst[i + 3] = p3;
+        detail::transform_point_block4(r, tx, ty, tz, src + i, dst + i);
     }
     for (; i < n; ++i) {
         dst[i] = detail::transform_point_one(r, tx, ty, tz, src[i]);
@@ -115,14 +208,7 @@ PSY_FORCEINLINE void transform_dirs(const Mat4& m, const Vec3* in, Vec3* out, us
 
     usize i = 0;
     for (; i + 4 <= n; i += 4) {
-        const Vec3 d0 = detail::transform_dir_one(r, src[i + 0]);
-        const Vec3 d1 = detail::transform_dir_one(r, src[i + 1]);
-        const Vec3 d2 = detail::transform_dir_one(r, src[i + 2]);
-        const Vec3 d3 = detail::transform_dir_one(r, src[i + 3]);
-        dst[i + 0] = d0;
-        dst[i + 1] = d1;
-        dst[i + 2] = d2;
-        dst[i + 3] = d3;
+        detail::transform_dir_block4(r, src + i, dst + i);
     }
     for (; i < n; ++i) {
         dst[i] = detail::transform_dir_one(r, src[i]);
