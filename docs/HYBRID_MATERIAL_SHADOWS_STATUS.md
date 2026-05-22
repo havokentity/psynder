@@ -40,10 +40,15 @@ and before ending a session so crash recovery has a concrete resume point.
     - agent: `019e4f5e-2a6d-7130-aabc-560b806db969`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-rt-material-bounces`
     - owns `engine/render/rt/`
+    - PR: https://github.com/havokentity/psynder/pull/138
+    - status: complete; configurable 0..8 reflection bounces
+    - integration note: tests must update old 9-clamps-to-1 assertion
   - `codex/agent-raster-projected-shadows`
     - agent: `019e4f5e-4446-7c92-b0b5-bda7eeb67060`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-raster-projected-shadows`
     - owns `engine/render/raster/`
+    - PR: https://github.com/havokentity/psynder/pull/137
+    - status: complete; projected shadow draw helper
   - `codex/agent-lmbake-material-policy`
     - agent: `019e4f5e-5378-7773-8125-bc9f82121a1e`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-lmbake-material-policy`
@@ -52,6 +57,9 @@ and before ending a session so crash recovery has a concrete resume point.
     - agent: `019e4f5e-63c9-7ba2-9016-75ac61719901`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-samples-hybrid-migration`
     - owns `samples/` and `tests/`
+    - PR: https://github.com/havokentity/psynder/pull/139
+    - status: complete; samples 11/12 use `MaterialLibrary` instance IDs
+    - integration note: sample 13 still needs per-primitive material support/adapter
   - `codex/agent-scene-validation`
     - agent: `019e4f5e-10ad-73e0-8494-8ae43823cec7`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-scene-validation`
@@ -74,6 +82,10 @@ and before ending a session so crash recovery has a concrete resume point.
   edits in their assigned worktrees. Ownership split is still clean.
 - Scene worker complete with PR #135 targeting the integration branch.
 - Asset worker complete with PR #136 targeting the integration branch.
+- Raster worker complete with PR #137 targeting the integration branch.
+- RT worker complete with PR #138 targeting the integration branch; test update
+  required for new 0..8 bounce clamp.
+- Samples worker complete with PR #139 targeting the integration branch.
 
 ## Next Multi-Agent Step
 
