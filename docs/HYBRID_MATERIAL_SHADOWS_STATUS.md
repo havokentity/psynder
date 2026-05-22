@@ -34,6 +34,8 @@ and before ending a session so crash recovery has a concrete resume point.
     - agent: `019e4f6d-dbbb-7850-b66f-676828e5eac8`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-asset-async-texture`
     - owns `engine/asset/`
+    - PR: https://github.com/havokentity/psynder/pull/136
+    - status: complete; async texture/PPM/.lmt foundation; tested asset target/unit
   - `codex/agent-rt-material-bounces`
     - agent: `019e4f5e-2a6d-7130-aabc-560b806db969`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-rt-material-bounces`
@@ -71,6 +73,7 @@ and before ending a session so crash recovery has a concrete resume point.
 - Second monitor pass: no completions yet, but all six workers have lane-local
   edits in their assigned worktrees. Ownership split is still clean.
 - Scene worker complete with PR #135 targeting the integration branch.
+- Asset worker complete with PR #136 targeting the integration branch.
 
 ## Next Multi-Agent Step
 
