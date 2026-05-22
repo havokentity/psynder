@@ -210,13 +210,16 @@ class WindowApp {
                     const SceneCreateOptions& options =
                         SceneCreateOptions::without_default_camera()) noexcept {
         for (u32 i = 0; i < loaded_scene_count_; ++i) {
-            if (loaded_scenes_[i] == &scene)
+            if (loaded_scenes_[i] == &scene) {
+                bind_scene_authoring(scene);
                 return true;
+            }
         }
         if (loaded_scene_count_ >= kMaxLoadedScenes)
             return false;
         const u32 scene_index = loaded_scene_count_;
         loaded_scenes_[loaded_scene_count_++] = &scene;
+        bind_scene_authoring(scene);
         on_scene_created(scene, scene_index, options);
         return true;
     }
@@ -355,6 +358,10 @@ class WindowApp {
 
    private:
     void destroy() noexcept {
+        for (u32 i = 0; i < loaded_scene_count_; ++i) {
+            if (loaded_scenes_[i])
+                loaded_scenes_[i]->clear_mesh_spawner(this);
+        }
         if (window_) {
             platform::destroy_window(window_);
             window_ = nullptr;
@@ -378,6 +385,8 @@ class WindowApp {
             loaded_scenes_[i] = other.loaded_scenes_[i] == &other.default_scene_
                                     ? &default_scene_
                                     : other.loaded_scenes_[i];
+            if (loaded_scenes_[i])
+                bind_scene_authoring(*loaded_scenes_[i]);
         }
         active_scene_ = active_was_default_scene ? &default_scene_ : other.active_scene_;
         active_runtime_ = active_scene_ ? &active_scene_->runtime() : nullptr;
@@ -439,6 +448,23 @@ class WindowApp {
         for (u32 i = 0; i < engine_frame_ms_count_; ++i)
             sum += engine_frame_ms_ring_[i];
         return sum / static_cast<f32>(engine_frame_ms_count_);
+    }
+
+    void bind_scene_authoring(scene::Scene& scene) noexcept {
+        scene.bind_mesh_spawner(this, &WindowApp::spawn_mesh_for_scene);
+    }
+
+    static Entity spawn_mesh_for_scene(void* user,
+                                       scene::Scene& scene,
+                                       const render::MeshDesc& mesh_desc,
+                                       const scene::LocalTransform& local,
+                                       scene::SceneNode parent,
+                                       scene::RenderableFlags flags,
+                                       scene::ObjectMobility mobility) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return {};
+        return app->rendering_system_.spawn_mesh(scene, mesh_desc, local, parent, flags, mobility);
     }
 
     [[nodiscard]] f32 render_target_aspect() const noexcept {

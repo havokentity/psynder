@@ -17,6 +17,10 @@
 #include <mutex>
 #include <vector>
 
+namespace psynder::render {
+struct MeshDesc;
+}
+
 namespace psynder::scene {
 
 enum class GeometryKind : u8 {
@@ -427,6 +431,14 @@ inline void gather_scene_render_items(EcsRegistry& registry,
 
 class Scene {
    public:
+    using SpawnMeshFn = Entity (*)(void* user,
+                                   Scene& scene,
+                                   const ::psynder::render::MeshDesc& mesh_desc,
+                                   const LocalTransform& local,
+                                   SceneNode parent,
+                                   RenderableFlags flags,
+                                   ObjectMobility mobility);
+
     explicit Scene(EcsRegistry& registry = EcsRegistry::Get()) noexcept
         : registry_(&registry)
         , environment_(runtime_.environment) {
@@ -455,6 +467,20 @@ class Scene {
     [[nodiscard]] const Environment& environment() const noexcept { return environment_; }
     [[nodiscard]] SceneRuntime& runtime() noexcept { return runtime_; }
     [[nodiscard]] const SceneRuntime& runtime() const noexcept { return runtime_; }
+
+    void bind_mesh_spawner(void* user, SpawnMeshFn fn) noexcept {
+        mesh_spawner_user_ = user;
+        mesh_spawner_ = fn;
+    }
+
+    void clear_mesh_spawner(void* user) noexcept {
+        if (mesh_spawner_user_ == user) {
+            mesh_spawner_user_ = nullptr;
+            mesh_spawner_ = nullptr;
+        }
+    }
+
+    [[nodiscard]] bool can_spawn_mesh() const noexcept { return mesh_spawner_ != nullptr; }
 
     void set_structural_deferred(bool on) noexcept { registry_->set_structural_deferred(on); }
     void apply_structural_changes() { registry_->apply_structural_changes(); }
@@ -494,6 +520,17 @@ class Scene {
         const Entity entity = create_entity(local, parent);
         attach_renderable(entity, renderable);
         return entity;
+    }
+
+    [[nodiscard]] Entity spawn_mesh(
+        const ::psynder::render::MeshDesc& mesh_desc,
+        const LocalTransform& local = {},
+        SceneNode parent = kInvalidSceneNode,
+        RenderableFlags flags = RenderableFlags::Visible,
+        ObjectMobility mobility = ObjectMobility::Dynamic) {
+        if (!mesh_spawner_)
+            return {};
+        return mesh_spawner_(mesh_spawner_user_, *this, mesh_desc, local, parent, flags, mobility);
     }
 
     bool destroy_entity(Entity entity) {
@@ -606,11 +643,15 @@ class Scene {
         environment_.bind_runtime(runtime_.environment);
         default_camera_entity_ = other.default_camera_entity_;
         render_item_capacity_ = other.render_item_capacity_;
+        mesh_spawner_user_ = other.mesh_spawner_user_;
+        mesh_spawner_ = other.mesh_spawner_;
 
         other.registry_ = &EcsRegistry::Get();
         other.environment_.bind_runtime(other.runtime_.environment);
         other.default_camera_entity_ = {};
         other.render_item_capacity_ = 0u;
+        other.mesh_spawner_user_ = nullptr;
+        other.mesh_spawner_ = nullptr;
     }
 
     EcsRegistry* registry_ = nullptr;
@@ -620,6 +661,8 @@ class Scene {
     Environment environment_{};
     Entity default_camera_entity_{};
     u32 render_item_capacity_ = 0u;
+    void* mesh_spawner_user_ = nullptr;
+    SpawnMeshFn mesh_spawner_ = nullptr;
 };
 
 }  // namespace psynder::scene

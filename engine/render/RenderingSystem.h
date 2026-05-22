@@ -247,6 +247,17 @@ class RenderingSystem {
         return create_mesh_entity(scene, mesh_desc, material, local, parent, flags, mobility);
     }
 
+    [[nodiscard]] Entity spawn_mesh(
+        scene::Scene& scene,
+        const MeshDesc& mesh_desc,
+        const scene::LocalTransform& local = {},
+        scene::SceneNode parent = scene::kInvalidSceneNode,
+        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
+        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
+        return create_mesh_entity(scene, mesh_desc, MaterialDesc{}, local, parent, flags, mobility)
+            .entity;
+    }
+
     SceneRenderStats build(scene::Scene& scene) {
         build_scene_render_queues(scene, queues_);
         SceneRenderStats stats{};

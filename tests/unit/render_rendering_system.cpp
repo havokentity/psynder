@@ -218,6 +218,46 @@ TEST_CASE("rendering system mesh entities use pooled handles", "[render][renderi
     REQUIRE(scene.destroy_entity(third.entity));
 }
 
+TEST_CASE("scene spawn mesh delegates to bound rendering system", "[render][rendering_system]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+
+    scene.bind_mesh_spawner(
+        &renderer,
+        [](void* user,
+           scene::Scene& target_scene,
+           const render::MeshDesc& mesh_desc,
+           const scene::LocalTransform& local,
+           scene::SceneNode parent,
+           scene::RenderableFlags flags,
+           scene::ObjectMobility mobility) -> Entity {
+            auto* bound_renderer = static_cast<render::RenderingSystem*>(user);
+            return bound_renderer->spawn_mesh(target_scene, mesh_desc, local, parent, flags, mobility);
+        });
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+
+    const Entity entity = scene.spawn_mesh(mesh_desc);
+
+    REQUIRE(entity.valid());
+    REQUIRE(renderer.meshes().live_count() == 1u);
+
+    const auto* renderable = registry.get<scene::RenderableComponent>(entity);
+    REQUIRE(renderable != nullptr);
+    REQUIRE(renderable->geometry == scene::GeometryKind::Mesh);
+    REQUIRE(renderable->material.valid());
+    REQUIRE(scene.materials().valid(renderable->material));
+
+    REQUIRE(scene.destroy_entity(entity));
+}
+
 TEST_CASE("rendering system builds material batches for CPU effects", "[render][rendering_system]") {
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
