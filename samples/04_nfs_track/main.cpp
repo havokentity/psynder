@@ -591,20 +591,8 @@ inline math::Mat4 yaw_from_forward(math::Vec3 fwd) noexcept {
 
 }  // namespace
 
-platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 04 (NFS track lap)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = 640;
-    desc.render_height = 360;
-    desc.scale_mode = platform::ScaleMode::Integer;
-    return desc;
-}
-
 int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
-    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     render::Framebuffer& fb = app_host.framebuffer();
@@ -863,8 +851,7 @@ int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
         view.target = fb;
         view.view = math::look_at_rh(eye, tgt, v3(0.0f, 1.0f, 0.0f));
         view.projection = math::perspective_rh(60.0f * math::kDegToRad,
-                                               static_cast<f32>(desc.render_width) /
-                                                   static_cast<f32>(desc.render_height),
+                                               static_cast<f32>(fb.width) / static_cast<f32>(fb.height),
                                                0.2f,
                                                400.0f);
         view.tile_w = 64;
@@ -984,11 +971,7 @@ int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
 struct NfsTrackSample {
     static constexpr std::string_view log_name() noexcept { return "sample_04"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 04"; }
-
-    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
-        return make_window_desc(args);
-    }
+    static constexpr const char* display_name = "Psynder sample 04 (NFS track lap)";
 
     static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
         return {.depth_buffer = true};
