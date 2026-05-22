@@ -162,6 +162,13 @@ class MaterialLibrary {
                 flags_};
     }
 
+    [[nodiscard]] bool slot(MaterialId id, u32& out) const noexcept {
+        if (!valid(id))
+            return false;
+        out = handle_index(id);
+        return true;
+    }
+
     [[nodiscard]] u32 slot_count() const noexcept { return static_cast<u32>(generation_.size()); }
     [[nodiscard]] u32 live_count() const noexcept {
         u32 count = 0;

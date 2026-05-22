@@ -5,18 +5,19 @@
 
 #include "render/SceneRenderer.h"
 
+#include <array>
+
 using namespace psynder;
 
 namespace {
 
-scene::RenderableComponent renderable(render::MaterialId material, u32 geometry_id) {
-    scene::RenderableComponent out{};
-    out.geometry = scene::GeometryKind::Mesh;
-    out.geometry_id = geometry_id;
-    out.material = material;
-    out.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
-    return out;
-}
+constexpr std::array<render::raster::Vertex, 3> kVerts{{
+    {{-0.5f, -0.5f, 0.0f}, {0, 0, 1}, {0, 0}, {0, 0}, 0xFFFFFFFFu},
+    {{0.5f, -0.5f, 0.0f}, {0, 0, 1}, {1, 0}, {0, 0}, 0xFFFFFFFFu},
+    {{0.0f, 0.5f, 0.0f}, {0, 0, 1}, {0, 1}, {0, 0}, 0xFFFFFFFFu},
+}};
+
+constexpr std::array<u32, 3> kIndices{0, 1, 2};
 
 }  // namespace
 
@@ -25,6 +26,7 @@ TEST_CASE("scene renderer queues split raster, transparent, RT, and shadow work"
     auto& world = scene::World::Get();
     world.set_structural_deferred(false);
     scene::RuntimeScene scene{world};
+    render::SceneRenderer renderer;
 
     render::MaterialDesc opaque_desc{};
     opaque_desc.flags = render::Material_RasterVisible | render::Material_RtVisible |
@@ -40,9 +42,19 @@ TEST_CASE("scene renderer queues split raster, transparent, RT, and shadow work"
     probe_only_desc.flags = render::Material_RtVisible;
     const render::MaterialId probe_only = scene.materials().create(probe_only_desc);
 
-    const Entity a = scene.create_renderable(renderable(opaque, 1u));
-    const Entity b = scene.create_renderable(renderable(glass, 2u));
-    const Entity c = scene.create_renderable(renderable(probe_only, 3u));
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    const render::MeshId mesh_a = renderer.meshes().create_mesh(mesh_desc);
+    const render::MeshId mesh_b = renderer.meshes().create_mesh(mesh_desc);
+    const render::MeshId mesh_c = renderer.meshes().create_mesh(mesh_desc);
+
+    const Entity a = scene.create_renderable(renderer.make_mesh_renderable(mesh_a, opaque));
+    const Entity b = scene.create_renderable(renderer.make_mesh_renderable(mesh_b, glass));
+    const Entity c = scene.create_renderable(renderer.make_mesh_renderable(mesh_c, probe_only));
 
     render::SceneRenderQueues queues;
     render::build_scene_render_queues(scene, queues);
@@ -59,4 +71,45 @@ TEST_CASE("scene renderer queues split raster, transparent, RT, and shadow work"
     scene.destroy_entity(a);
     scene.destroy_entity(b);
     scene.destroy_entity(c);
+}
+
+TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene_renderer]") {
+    auto& world = scene::World::Get();
+    world.set_structural_deferred(false);
+    scene::RuntimeScene scene{world};
+    render::SceneRenderer renderer;
+
+    render::MaterialDesc material_desc{};
+    material_desc.flags = render::Material_RasterVisible;
+    const render::MaterialId material = scene.materials().create(material_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    const render::MeshId mesh = renderer.meshes().create_mesh(mesh_desc);
+    const Entity entity = scene.create_renderable(renderer.make_mesh_renderable(mesh, material));
+
+    std::array<u32, 16 * 16> pixels{};
+    render::Framebuffer fb{};
+    fb.pixels = reinterpret_cast<u8*>(pixels.data());
+    fb.width = 16;
+    fb.height = 16;
+    fb.pitch = 16 * sizeof(u32);
+    fb.format = render::PixelFormat::RGBA8;
+
+    render::raster::ViewState view{};
+    view.target = fb;
+    view.view = math::identity4();
+    view.projection = math::identity4();
+
+    const render::SceneRenderStats stats = renderer.render_raster(scene, view);
+    REQUIRE(stats.submitted == 1u);
+    REQUIRE(stats.raster_draws == 1u);
+    REQUIRE(stats.raster_triangles == 1u);
+    REQUIRE(stats.raster_skipped == 0u);
+
+    scene.destroy_entity(entity);
 }

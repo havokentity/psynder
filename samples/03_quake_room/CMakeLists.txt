@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Sample 03 — M3 demo. Walking-POV BSP room. Synthetic 4-leaf BSP map built
 # in-memory; WASD + mouse-look camera; PVS-driven leaf walk; faces submitted
-# through Rasterizer::submit() with per-face vertex colours so the BSP
+# through the hybrid renderer facade with per-face vertex colours so the BSP
 # structure reads at a glance.
 file(GLOB SRC CONFIGURE_DEPENDS *.cpp)
 if(SRC STREQUAL "")

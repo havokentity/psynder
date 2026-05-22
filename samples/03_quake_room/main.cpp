@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Psynder — Sample 03 / M3 demo. Walking-POV "Quake room": a small BSP map
 // built in-memory at startup, walked first-person with WASD + mouse-look,
-// rendered face-by-face through the public Rasterizer::submit() API.
+// rendered face-by-face through the hybrid scene renderer facade.
 //
 // Wave A's `lm_qbsp` compiler exists, but its output isn't wired into a
 // shippable .psybsp file under VFS yet. So we synthesise a tiny 4-leaf map
@@ -13,7 +13,7 @@
 //   1. Read keys + mouse via platform::input(); integrate camera.
 //   2. walk_visible_leaves(map, eye, emit, ...) -> set of visible leaves.
 //   3. For each visible leaf, look up its face range -> push DrawItems
-//      into the rasterizer.
+//      through the hybrid renderer facade.
 //   4. Present.
 //
 // CLI flags:
@@ -33,6 +33,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/raster/Raster.h"
 #include "ui/console/ConsoleOverlay.h"
 #include "world/bsp/Bsp.h"
@@ -463,7 +464,7 @@ void build_world(World& w) {
 // ─── Visibility callback context ─────────────────────────────────────────
 struct DrawCtx {
     const World* world = nullptr;
-    render::raster::Rasterizer* rasterizer = nullptr;
+    render::SceneRenderer* renderer = nullptr;
     u32 draw_count = 0;
 };
 
@@ -488,7 +489,7 @@ void emit_leaf_faces(const world::bsp::BspLeaf& leaf, void* user) {
         item.index_count = idx_cnt;
         item.model = math::identity4();
         item.material = render::raster::MaterialId{face.material};
-        ctx->rasterizer->submit(item);
+        ctx->renderer->submit_raster_draw(item);
         ++ctx->draw_count;
     }
 }
@@ -571,7 +572,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f});  // in Room A
     controller.set_look(0.0f, 0.0f);
 
-    auto& rasterizer = render::raster::Rasterizer::Get();
+    render::SceneRenderer renderer;
 
     PSY_LOG_INFO("Psynder sample 03 running{}",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -635,15 +636,15 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                                                200.0f);
         view.tile_w = 64;
         view.tile_h = 64;
-        rasterizer.begin_frame(view);
+        renderer.begin_raster_frame(view);
 
         // ── PVS walk → DrawItem per visible face ────────────────────────
         DrawCtx ctx{};
         ctx.world = &w;
-        ctx.rasterizer = &rasterizer;
+        ctx.renderer = &renderer;
         world::bsp::walk_visible_leaves(w.map, eye, &emit_leaf_faces, &ctx);
 
-        rasterizer.end_frame();
+        renderer.end_raster_frame();
 
         // Editor F2/~ toggle + PLAY/EDIT badge bottom-right (lane 18). Drawn
         // after the rasterizer so the badge composites on top of the scene.

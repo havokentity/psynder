@@ -2,9 +2,9 @@
 // Psynder — Sample 02 / M2 demo. Rotating "crate room" — a small set of
 // unit cubes spinning on the floor, viewed through a perspective camera.
 //
-// Wave-B brings the rasterizer up to tiled-binner + bilinear + Z (lane 07
-// landed those in this wave). Sample 02 is the demo target for M2 per
-// DESIGN.md §13: rotating crate room with the new pipeline. The crates now
+// Sample 02 submits a small RuntimeScene through the hybrid scene renderer.
+// Raster remains the internal backend that performs tiled-binner + bilinear +
+// Z. The crates now
 // carry a real per-pixel procedural wooden-crate texture: each cube vertex
 // is white and the whole RGBA8 chunk is bound on the DrawItem via
 // `lightmap_texels`/`w`/`h`, so `end_frame` routes the draw onto the
@@ -34,8 +34,9 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/Texture.h"
-#include "render/raster/Raster.h"
+#include "scene/SceneEcs.h"
 #include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
@@ -268,13 +269,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    auto& rasterizer = render::raster::Rasterizer::Get();
-
     // Procedural wooden-crate texture, built once and owned here so its
-    // storage outlives every end_frame() that samples it. Each crate's
-    // DrawItem points `lightmap_texels` at this buffer (pitch == width), so
-    // the rasterizer's per-pixel surface_cached path samples it through the
-    // cube's 0..1 face `uv` and multiplies by the white vertex colour.
+    // storage outlives every hybrid renderer submission that samples it.
     const render::Texture2D crate_tex = build_crate_texture();
     const render::TextureView crate_view = crate_tex.view();
 
@@ -287,6 +283,28 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                          static_cast<u32>(kCubeVerts.size()),
                          cube_idx.data(),
                          static_cast<u32>(cube_idx.size()));
+
+    scene::World world;
+    world.set_structural_deferred(false);
+    scene::RuntimeScene scene{world};
+    render::SceneRenderer renderer;
+
+    render::MeshDesc cube_mesh_desc{};
+    cube_mesh_desc.vertices = kCubeVerts.data();
+    cube_mesh_desc.vertex_count = static_cast<u32>(kCubeVerts.size());
+    cube_mesh_desc.indices = cube_idx.data();
+    cube_mesh_desc.index_count = static_cast<u32>(cube_idx.size());
+    cube_mesh_desc.base_color = crate_view;
+    cube_mesh_desc.local_bounds = math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}};
+    const render::MeshId cube_mesh = renderer.meshes().create_mesh(cube_mesh_desc);
+
+    render::MaterialDesc crate_material{};
+    crate_material.flags = render::Material_RasterVisible;
+    const render::MaterialId crate_material_id = scene.materials().create(crate_material);
+
+    std::array<Entity, kCratePositions.size()> crates{};
+    for (Entity& crate : crates)
+        crate = scene.create_renderable(renderer.make_mesh_renderable(cube_mesh, crate_material_id));
 
     PSY_LOG_INFO("Psynder sample 02 running{}{}",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -363,33 +381,18 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         view.tile_w = 64;
         view.tile_h = 64;
 
-        rasterizer.begin_frame(view);
-
         for (usize i = 0; i < kCratePositions.size(); ++i) {
             const math::Vec3 pos = kCratePositions[i];
             // Each crate spins at a slightly different rate to make the
             // depth interactions visible.
             const f32 spin = t * (0.35f + 0.12f * static_cast<f32>(i));
-            const math::Mat4 tr = math::translate(pos);
-            const math::Mat4 ro =
-                math::rotate_quat(math::quat_from_axis_angle(math::Vec3{0, 1, 0}, spin));
-
-            render::raster::DrawItem item{};
-            item.vertices = kCubeVerts.data();
-            item.vertex_count = static_cast<u32>(kCubeVerts.size());
-            item.indices = cube_idx.data();
-            item.index_count = static_cast<u32>(cube_idx.size());
-            item.model = math::mul(tr, ro);
-            // Bind the procedural crate chunk: forces the SurfaceCached path
-            // so the inner loop computes white × crate(uv) per pixel. Buffer
-            // is owned by `crate_tex` above and outlives this loop.
-            item.lightmap_texels = crate_view.texels;
-            item.lightmap_w = crate_view.width;
-            item.lightmap_h = crate_view.height;
-            rasterizer.submit(item);
+            scene::LocalTransform transform{};
+            transform.translation = pos;
+            transform.rotation = math::quat_from_axis_angle(math::Vec3{0, 1, 0}, spin);
+            scene.set_transform(crates[i], transform);
         }
 
-        rasterizer.end_frame();
+        const render::SceneRenderStats render_stats = renderer.render_raster(scene, view);
 
         // Debug HUD overlay — toggle via `r_debug_hud full` console var.
         // The HUD reads the per-frame stats we filled at the top of the
@@ -409,8 +412,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                     sum += frame_ms_ring[i];
                 return sum / static_cast<f32>(n);
             }();
-            stats.draw_calls = kCratePositions.size();
-            stats.triangles = kCratePositions.size() * 12u;
+            stats.draw_calls = render_stats.raster_draws;
+            stats.triangles = render_stats.raster_triangles;
             stats.active_voices = 0;
             ui::imm::draw_debug_hud(fb, stats);
         }

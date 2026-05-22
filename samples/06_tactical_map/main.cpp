@@ -42,6 +42,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/Texture.h"
 #include "render/raster/Raster.h"
 #include "world/outdoor/Terrain.h"
@@ -678,7 +679,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     const auto towers = make_watchtowers(hm_desc);
 
-    auto& rasterizer = render::raster::Rasterizer::Get();
+    render::SceneRenderer renderer;
 
     PSY_LOG_INFO("Psynder sample 06 running{}",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
@@ -731,7 +732,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         view_state.projection = cam.proj;
         view_state.tile_w = 64;
         view_state.tile_h = 64;
-        rasterizer.begin_frame(view_state);
+        renderer.begin_raster_frame(view_state);
 
         // Watchtowers — scale the unit cube to tower dimensions, translate
         // to the terrain surface + half-height.
@@ -753,7 +754,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             item.lightmap_texels = facade_view.texels;
             item.lightmap_w = facade_view.width;
             item.lightmap_h = facade_view.height;
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
 
         // Helicopter — body + 4-blade rotor.
@@ -769,7 +770,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             item.indices = heli_body.indices.data();
             item.index_count = static_cast<u32>(heli_body.indices.size());
             item.model = math::mul(trs, math::mul(heli_yaw, scl));
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
         // Rotor: 4 thin blades sitting 0.9m above the body, spinning around
         // the helicopter's local Y axis.
@@ -799,10 +800,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 math::mul(heli_yaw,
                           math::mul(rotor_spin, math::mul(blade_rot, math::mul(blade_off, scl)))));
             item.model = m;
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
 
-        rasterizer.end_frame();
+        renderer.end_raster_frame();
 
         // Engine overlay suite (lane 18): `~` drop-down console + F1 debug HUD
         // + F2 Play/Edit badge. One call, drawn over the rendered scene.

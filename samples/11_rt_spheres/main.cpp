@@ -5,7 +5,7 @@
 // mirror and saturated-diffuse spheres plus a couple of boxes, all built as
 // `render::rt::Bvh8` BLAS instances inside one `render::rt::Tlas`. Two point
 // lights orbit the room. The sample hands its TLAS, materials, reflectivity,
-// camera, and lights to `render::rt::FrameRenderer`, which owns the primary
+// camera, and lights to the hybrid scene renderer, which owns the primary
 // pass, shadow packets, optional single-bounce reflections, and upsample.
 //
 // Navigation is the shared `psynder::samples::CharacterController`: FreeCam by
@@ -31,6 +31,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
 #include "ui/console/ConsoleOverlay.h"
@@ -299,7 +300,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     // -- CPU framebuffer + shared RT renderer. -----------------------------
     std::vector<u32>& final_pixels = app_host.pixels();
     render::Framebuffer& fb = app_host.framebuffer();
-    render::rt::FrameRenderer rt_frame_renderer;
+    render::SceneRenderer renderer;
     ui::imm::DebugHudFrameHistory hud_history{};
 
     std::vector<u32> instance_colors(materials.size());
@@ -399,7 +400,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.instance_reflectivity_count =
             static_cast<u32>(instance_reflectivity.size());
         rt_input.materials.default_rgba8 = pack_rgba8(70, 70, 80);
-        rt_frame_renderer.render(rt_input, rt_config, final_pixels.data());
+        renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
         ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
         ui::console::draw(fb);

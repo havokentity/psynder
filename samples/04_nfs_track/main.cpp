@@ -43,6 +43,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/raster/Raster.h"
 #include "ui/rml/DataBind.h"
 #include "ui/rml/Rml.h"
@@ -608,7 +609,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    auto& rasterizer = render::raster::Rasterizer::Get();
+    render::SceneRenderer renderer;
 
     // ─── Track build ────────────────────────────────────────────────────
     const auto track_segs = build_oval_track();
@@ -868,7 +869,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                                                400.0f);
         view.tile_w = 64;
         view.tile_h = 64;
-        rasterizer.begin_frame(view);
+        renderer.begin_raster_frame(view);
 
         // ── Track submit ────────────────────────────────────────────
         {
@@ -878,7 +879,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             item.indices = track_mesh.indices.data();
             item.index_count = static_cast<u32>(track_mesh.indices.size());
             item.model = math::identity4();
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
 
         // ── Chassis submit ──────────────────────────────────────────
@@ -895,7 +896,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             item.indices = cube_idx.data();
             item.index_count = static_cast<u32>(cube_idx.size());
             item.model = math::mul(trs, math::mul(yaw_mat, scl));
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
 
         // ── Wheel submits — four cylinders, oriented so the spin axis
@@ -926,11 +927,11 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 item.indices = wheel_mesh.indices.data();
                 item.index_count = static_cast<u32>(wheel_mesh.indices.size());
                 item.model = math::mul(trs, math::mul(yaw_mat, axis_align));
-                rasterizer.submit(item);
+                renderer.submit_raster_draw(item);
             }
         }
 
-        rasterizer.end_frame();
+        renderer.end_raster_frame();
 
         // ── HUD update + render (Wave-E) ────────────────────────────────
         //

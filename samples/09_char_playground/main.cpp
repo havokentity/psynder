@@ -61,6 +61,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/raster/Raster.h"
 
 #include <algorithm>
@@ -257,7 +258,7 @@ Block make_block(
     return b;
 }
 
-void submit_block(render::raster::Rasterizer& r, const Block& b, const u32* cube_idx, u32 idx_count) {
+void submit_block(render::SceneRenderer& r, const Block& b, const u32* cube_idx, u32 idx_count) {
     render::raster::DrawItem item{};
     item.vertices = b.mesh.data();
     item.vertex_count = static_cast<u32>(b.mesh.size());
@@ -265,7 +266,7 @@ void submit_block(render::raster::Rasterizer& r, const Block& b, const u32* cube
     item.index_count = idx_count;
     // Unit cube -> full extent: scale by 2 * half.
     item.model = pose_model(b.center, b.rot, v3(b.half.x * 2.0f, b.half.y * 2.0f, b.half.z * 2.0f));
-    r.submit(item);
+    r.submit_raster_draw(item);
 }
 
 }  // namespace
@@ -290,7 +291,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    auto& rasterizer = render::raster::Rasterizer::Get();
+    render::SceneRenderer renderer;
 
     // ─── Physics world + course ─────────────────────────────────────────
     auto& world = physics::World::Get();
@@ -552,11 +553,11 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                                                200.0f);
         view.tile_w = 64;
         view.tile_h = 64;
-        rasterizer.begin_frame(view);
+        renderer.begin_raster_frame(view);
 
         // ── Course. ─────────────────────────────────────────────────────
         for (const Block& b : course)
-            submit_block(rasterizer, b, cube_idx.data(), static_cast<u32>(cube_idx.size()));
+            submit_block(renderer, b, cube_idx.data(), static_cast<u32>(cube_idx.size()));
 
         // ── Capsule (centre = resolved physics position). ──────────────
         {
@@ -566,10 +567,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             item.indices = capsule_mesh.indices.data();
             item.index_count = static_cast<u32>(capsule_mesh.indices.size());
             item.model = pose_model(center, math::Quat{0, 0, 0, 1}, v3(kRadius, kRadius, kRadius));
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
 
-        rasterizer.end_frame();
+        renderer.end_raster_frame();
 
         // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
         if (input != nullptr) {

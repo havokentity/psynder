@@ -7,7 +7,7 @@
 // sphere — reused across dozens of TLAS instances; that reuse is exactly
 // what the TLAS is for). The field is lit by six orbiting colored point
 // lights, each casting traced shadows. The sample now hands its TLAS,
-// camera, lights, and instance materials to `psynder::render::rt::FrameRenderer`;
+// camera, lights, and instance materials to the hybrid scene renderer;
 // the engine owns primary visibility, AO, 8-wide shadow packets, shading,
 // and upsample.
 //
@@ -36,6 +36,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
 #include "ui/console/ConsoleOverlay.h"
@@ -423,7 +424,7 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
     for (u32 i = 0; i < kFieldCount; ++i)
         instance_colors[i] = field[i].color;
     instance_colors[kFieldCount] = pack_rgba8(55, 55, 65);
-    render::rt::FrameRenderer rt_frame_renderer;
+    render::SceneRenderer renderer;
 
     render::Framebuffer& fb = app_host.framebuffer();
 
@@ -504,7 +505,7 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
             render::rt::frame_render_config_from_console(kFbW, kFbH, kShadowW, kShadowH, kRtTile);
 
         render::rt::FrameRenderStats rt_stats{};
-        rt_frame_renderer.render(rt_input, rt_config, final_pixels.data(), &rt_stats);
+        renderer.render_rt(rt_input, rt_config, final_pixels.data(), &rt_stats);
 
         if (smoke_frames > 0 && frame == 0) {
             PSY_LOG_INFO("sample_12 RT renderer: workers={}, hint={}, scheduled_jobs={}, tiles={}",

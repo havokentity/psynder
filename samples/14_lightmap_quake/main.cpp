@@ -2,7 +2,7 @@
 // Psynder — Sample 14 / offline-baked lightmaps. Walking-POV "Quake room"
 // lit entirely by a lightmap that this sample bakes at startup with the real
 // `lm_bake` library (tools/lm_bake), then renders back through the public
-// Rasterizer::submit() API. Press B to toggle baked vs. flat (unbaked).
+// hybrid renderer facade. Press B to toggle baked vs. flat (unbaked).
 //
 // ─── Scene: a deliberate twin of sample 13 (RT Quake) for bake-vs-RT A/B ────
 //
@@ -87,6 +87,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/Texture.h"
 #include "render/raster/Raster.h"
 #include "ui/console/ConsoleOverlay.h"
@@ -142,7 +143,7 @@ void clear_depth_far(render::Framebuffer& fb) noexcept {
 //
 // Two axis-aligned box rooms joined by a doorway corridor — the exact layout
 // sample 13 raytraces. Every quad is fan-triangulated into a shared
-// vertex/index pool (rendered via Rasterizer::submit, sample_03 style). The
+// vertex/index pool (rendered via the hybrid facade, sample_03 style). The
 // SAME triangles are pushed into a bake::BakeScene so the lightmap we bake
 // lines up 1:1 with what we draw. Per-vertex we store the surface albedo in
 // `albedo` so the toggle can pick flat-albedo or albedo×chunk.
@@ -768,7 +769,7 @@ void set_quad_uvs_and_albedo(World& w) {
 // ─── Visibility callback ──────────────────────────────────────────────────
 struct DrawCtx {
     const World* world = nullptr;
-    render::raster::Rasterizer* rasterizer = nullptr;
+    render::SceneRenderer* renderer = nullptr;
     // Render-vertex buffer (positions/uv/normal/color all constant — colour is
     // always the face albedo; the lightmap modulates it per pixel via the
     // chunk). Submitted as the vertex buffer for every face.
@@ -808,7 +809,7 @@ void emit_leaf_faces(const world::bsp::BspLeaf& leaf, void* user) {
             item.lightmap_w = chunk_view.width;
             item.lightmap_h = chunk_view.height;
         }
-        ctx->rasterizer->submit(item);
+        ctx->renderer->submit_raster_draw(item);
         ++ctx->draw_count;
         ctx->tri_count += idx_cnt / 3u;
     }
@@ -920,7 +921,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     // CPU framebuffer + depth.
     render::Framebuffer& fb = app_host.framebuffer();
 
-    auto& rasterizer = render::raster::Rasterizer::Get();
+    render::SceneRenderer renderer;
 
     PSY_LOG_INFO("Psynder sample 14 running{} — B toggles baked/unbaked",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -1005,17 +1006,17 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                                                200.0f);
         view.tile_w = 64;
         view.tile_h = 64;
-        rasterizer.begin_frame(view);
+        renderer.begin_raster_frame(view);
 
         DrawCtx ctx{};
         ctx.world = &w;
-        ctx.rasterizer = &rasterizer;
+        ctx.renderer = &renderer;
         ctx.verts = verts.data();
         ctx.vert_count = static_cast<u32>(w.verts.size());
         ctx.show_baked = show_baked;
         world::bsp::walk_visible_leaves(w.map, eye, &emit_leaf_faces, &ctx);
 
-        rasterizer.end_frame();
+        renderer.end_raster_frame();
 
         // Editor F2/~ toggle + PLAY/EDIT badge.
         (void)editor::sample_step(*input, fb);

@@ -46,6 +46,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/SceneRenderer.h"
 #include "render/raster/Raster.h"
 
 #include <array>
@@ -276,7 +277,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    auto& rasterizer = render::raster::Rasterizer::Get();
+    render::SceneRenderer renderer;
 
     // ─── Physics world ──────────────────────────────────────────────────
     auto& world = physics::World::Get();
@@ -492,7 +493,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                                                200.0f);
         view.tile_w = 64;
         view.tile_h = 64;
-        rasterizer.begin_frame(view);
+        renderer.begin_raster_frame(view);
 
         // ── Ground (static; identity pose). ────────────────────────────
         {
@@ -504,7 +505,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             item.model = pose_model(world.get_position(ground.id),
                                     world.get_rotation(ground.id),
                                     math::mul(ground.half, 2.0f));  // unit cube → full extent
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
 
         // ── Stacked boxes. ──────────────────────────────────────────────
@@ -521,7 +522,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             item.indices = cube_idx.data();
             item.index_count = static_cast<u32>(cube_idx.size());
             item.model = pose_model(p, r, math::mul(boxes[i].half, 2.0f));
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
 
         // ── Spheres. ────────────────────────────────────────────────────
@@ -538,10 +539,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             item.indices = sphere_meshes[i].indices.data();
             item.index_count = static_cast<u32>(sphere_meshes[i].indices.size());
             item.model = pose_model(p, r, v3(spheres[i].radius, spheres[i].radius, spheres[i].radius));
-            rasterizer.submit(item);
+            renderer.submit_raster_draw(item);
         }
 
-        rasterizer.end_frame();
+        renderer.end_raster_frame();
 
         // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
         if (auto* in = platform::input()) {
