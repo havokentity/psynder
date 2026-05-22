@@ -10,7 +10,8 @@ published.
 ### Engine RT / reusable frame renderer
 - Added `render::rt::FrameRenderer`, a reusable CPU raytraced frame renderer
   that owns primary visibility, direct lighting, 8-wide shadow packets,
-  ambient occlusion, denoising integration, and low-resolution upsampling.
+  ambient occlusion, denoising integration, optional mirror bounces, and
+  low-resolution upsampling.
 - Promoted common RT app/sample helpers into the engine RT API:
   `FrameCamera`, `FrameLight`, `make_frame_camera`, `primary_ray`, `reflect`,
   `upsample_bilinear_rgba8`, and row scheduling helpers for custom RT passes.
@@ -18,6 +19,9 @@ published.
   auto chunk selection, batch controls, and scheduler dump commands.
 - Expanded RT ambient occlusion controls: AO enable/debug, sample count,
   radius, ambient strength, direct-light strength, and denoise toggle.
+- Added `r_rt_frame_reflection_bounces` so demos/tools can switch the engine
+  reflection path between 0 and 1 bounce; the renderer hard-skips reflection
+  rays when the bounce count is zero or the material table has no reflectors.
 - Optimized BVH/TLAS traversal and denoising code paths used by the heavier RT
   demos.
 
@@ -25,12 +29,13 @@ published.
 - Refactored `sample_12_rt_showcase` to hand TLAS, camera, lights, and
   instance materials to the engine `FrameRenderer` instead of carrying a local
   renderer implementation.
-- Swept the RT-facing samples (`sample_05_hybrid_night`, `sample_11_rt_spheres`,
+- Swept the RT-facing samples (`sample_05_rt_shadow_packets`, `sample_11_rt_spheres`,
   `sample_12_rt_showcase`, and `sample_13_rt_quake`) to use shared engine RT
   camera/light/helper APIs rather than duplicated sample-local structs and
   functions.
-- Added row-parallel scheduling to the hand-written RT passes in samples 05,
-  11, and 13 through the shared RT scheduler API.
+- Removed sample-local RT frame loops from samples 05, 11, and 13; the demos
+  now demonstrate engine-owned shadow packets, AO plumbing, debug HUD history,
+  and optional reflection bounces through `FrameRenderer`.
 - Kept smoke-mode behavior deterministic for the RT samples while improving the
   runtime tuning surface for interactive/perf testing.
 
@@ -297,7 +302,7 @@ End-to-end `lm_pak` fixture pipeline cooks real assets at build time.
 | sample_02_textured_quad | M2 | ✅ smoke ✅ visual (4 spinning cubes) |
 | sample_03_quake_room | M3 | ✅ smoke ✅ PVS branches verified |
 | sample_04_nfs_track | M4 + M7 HUD | ✅ smoke (Pacejka lap + RmlUi dashboard) |
-| sample_05_hybrid_night | M5 | ✅ smoke (raytraced shadows + 3 lights) |
+| sample_05_rt_shadow_packets | M5 | ✅ smoke (raytraced shadows + 3 lights) |
 | sample_06_tactical_map | M6 | ✅ smoke (raymarch terrain + helicopter) |
 
 ### Test + demo status
@@ -352,7 +357,7 @@ subsystem stack rather than rendering a stub clear-color.
   ~5.5 m back / ~2.2 m up, look-target pushed 6 m ahead. Wheels are
   12-sided cylinders built at startup.
 
-### Wave C / sample_05 / Hybrid night (M5) (#102)
+### Wave C / sample_05 / RT shadow packets (M5) (#102)
 - Night scene with **raytraced dynamic-light shadows**. Ground plane
   + 5 colored cubes (red/green/blue/yellow/magenta). 3 orbiting RGB
   point lights at different radii / speeds.
@@ -387,7 +392,7 @@ subsystem stack rather than rendering a stub clear-color.
 | sample_02_textured_quad | M2 | smoke ✓ visual ✓ (4 spinning cubes) |
 | sample_03_quake_room | M3 | smoke ✓ (PVS branches verified) |
 | sample_04_nfs_track | M4 | smoke ✓ (auto-driver laps the oval) |
-| sample_05_hybrid_night | M5 | smoke ✓ |
+| sample_05_rt_shadow_packets | M5 | smoke ✓ |
 
 Sample_06 (tactical map / M6) and any wired HUD samples are Wave D scope.
 

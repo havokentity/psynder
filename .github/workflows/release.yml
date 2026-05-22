@@ -91,7 +91,7 @@ jobs:
               'Psynder - macOS (Apple Silicon, arm64)' \
               'Requires macOS 14.0+. No external runtime deps: zstd, fmt and' \
               'Lua are statically linked. Present uses CAMetalLayer (system).' \
-              'Run a sample: ./sample_05_hybrid_night' > "${OUT}/RUNTIME.txt"
+              'Run a sample: ./sample_05_rt_shadow_packets' > "${OUT}/RUNTIME.txt"
           else
             printf '%s\n' \
               'Psynder - Linux (x86-64)' \
@@ -100,7 +100,7 @@ jobs:
               'the Xrandr/Xcursor/Xi/Xinerama/Xext/Xfixes extensions, plus' \
               'libpipewire-0.3 OR libasound2 for audio. The renderer is pure-CPU;' \
               'no GPU driver is required (X11/Wayland software present paths).' \
-              'Run a sample: ./sample_05_hybrid_night' > "${OUT}/RUNTIME.txt"
+              'Run a sample: ./sample_05_rt_shadow_packets' > "${OUT}/RUNTIME.txt"
           fi
           cd "${GITHUB_WORKSPACE}/dist"
           tar czf "${PKG}.tar.gz" "${PKG}"
@@ -132,7 +132,7 @@ jobs:
             'if not already installed: https://aka.ms/vs/17/release/vc_redist.x64.exe',
             'Present uses DXGI flip-model (system D3D11/DXGI). The renderer itself',
             'is pure-CPU; the GPU is only used for the final scaled blit.',
-            'Run a sample: .\sample_05_hybrid_night.exe'
+            'Run a sample: .\sample_05_rt_shadow_packets.exe'
           )
           Set-Content -Path "$Out/RUNTIME.txt" -Value $notes -Encoding ASCII
           $Zip = "$env:GITHUB_WORKSPACE/dist/$Pkg.zip"

@@ -452,9 +452,7 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
     std::array<Light, kNumLights> lights{};
 
-    // 60-sample ring of frame-times (ms) for the debug HUD strip chart.
-    constexpr u32 kFrameHistory = 60;
-    std::array<f32, kFrameHistory> frame_ms_ring{};
+    ui::imm::DebugHudFrameHistory hud_history{};
     u64 prev_frame_ticks = t0;
     // Smoke-mode frame-time stand-in (60 FPS budget = 1/60 s).
     constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
@@ -470,7 +468,7 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
                 ? kSmokeFrameMs
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
-        frame_ms_ring[frame % kFrameHistory] = frame_ms;
+        hud_history.push(frame_ms);
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
@@ -522,31 +520,11 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
             }
         }
 
-        // Debug HUD overlay — `r_debug_hud full` enables. Per-frame stats
-        // plus an avg over the populated prefix of the ring.
-        {
-            ui::imm::DebugHudStats stats{};
-            stats.frame_ms = frame_ms;
-            stats.avg_frame_ms = [&]() noexcept {
-                const u32 n = std::min<u32>(frame + 1u, kFrameHistory);
-                if (n == 0u)
-                    return 0.0f;
-                f32 sum = 0.0f;
-                for (u32 i = 0; i < n; ++i)
-                    sum += frame_ms_ring[i];
-                return sum / static_cast<f32>(n);
-            }();
-            stats.draw_calls = 1;  // single rasterized full-screen blit
-            stats.triangles = 0;   // raytraced — no rasterized geometry
-            stats.active_voices = 0;
-            ui::imm::draw_debug_hud(fb, stats);
-        }
+        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
 
         ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);
 
-        // Bump unconditionally each iteration so the frame_ms_ring populates
-        // in interactive runs (smoke_frames == 0) too.
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {
             PSY_LOG_INFO("sample_12: smoke target reached ({}); {} instances, {} lights; exiting",

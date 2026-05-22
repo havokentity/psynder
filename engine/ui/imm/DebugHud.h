@@ -44,6 +44,20 @@ struct DebugHudStats {
     usize active_voices = 0;
 };
 
+struct DebugHudFrameHistory {
+    static constexpr u32 kCapacity = 60;
+
+    f32 samples[kCapacity]{};
+    u32 frame_index = 0;
+
+    void push(f32 frame_ms) noexcept;
+    [[nodiscard]] f32 average_ms() const noexcept;
+    [[nodiscard]] DebugHudStats make_stats(f32 frame_ms,
+                                           usize draw_calls = 0,
+                                           usize triangles = 0,
+                                           usize active_voices = 0) const noexcept;
+};
+
 // Stored cvar mirror. `r_debug_hud` host-side wires this up; tests poke
 // the value directly.
 DebugHudMode debug_hud_mode() noexcept;

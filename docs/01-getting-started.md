@@ -55,7 +55,7 @@ build/mac-release/bin/sample_01_triangle           # M1: textured triangle
 build/mac-release/bin/sample_02_textured_quad      # M2: 4 spinning cubes
 build/mac-release/bin/sample_03_quake_room         # M3: walking POV through BSP
 build/mac-release/bin/sample_04_nfs_track          # M4 + M7: NFS-style lap with HUD
-build/mac-release/bin/sample_05_hybrid_night       # M5: raytraced shadows
+build/mac-release/bin/sample_05_rt_shadow_packets  # M5: RT shadow packets
 build/mac-release/bin/sample_06_tactical_map       # M6: heightmap flyover
 ```
 

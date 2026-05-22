@@ -85,12 +85,17 @@ struct FrameMaterialTable {
     // RGBA8, one color per TLAS instance. Used first when present.
     const u32* instance_rgba8 = nullptr;
     u32 instance_count = 0;
+    const f32* instance_reflectivity = nullptr;
+    u32 instance_reflectivity_count = 0;
 
     // RGB in 0..1, one color per primitive. Used when no instance color matches.
     const math::Vec3* primitive_rgb = nullptr;
     u32 primitive_count = 0;
+    const f32* primitive_reflectivity = nullptr;
+    u32 primitive_reflectivity_count = 0;
 
     u32 default_rgba8 = 0xFF413737u;
+    f32 default_reflectivity = 0.0f;
 };
 
 struct FrameRenderConfig {
@@ -116,6 +121,8 @@ struct FrameRenderConfig {
     f32 ambient_scale = 3.0f;
     f32 direct_scale = 18.0f;
     f32 attenuation_quadratic = 0.06f;
+    u32 reflection_bounces = 0;  // Currently 0 or 1.
+    f32 reflection_scale = 1.0f;
 };
 
 struct FrameRenderInput {
@@ -143,6 +150,7 @@ struct FrameRendererConsoleOverrides {
     std::string_view ao_radius;
     std::string_view ao_strength;
     std::string_view ao_lit_strength;
+    std::string_view reflection_bounces;
 };
 
 void ensure_frame_renderer_console_registered();
@@ -166,6 +174,10 @@ class FrameRenderer {
         f32 r = 0.0f;
         f32 g = 0.0f;
         f32 b = 0.0f;
+        f32 reflectivity = 0.0f;
+        f32 refl_r = 0.0f;
+        f32 refl_g = 0.0f;
+        f32 refl_b = 0.0f;
     };
 
     std::vector<PixelHit> hits_;

@@ -891,7 +891,7 @@ psynder/
 │   ├── 02_textured_quad/
 │   ├── 03_quake_room/
 │   ├── 04_nfs_track/
-│   ├── 05_hybrid_night/
+│   ├── 05_rt_shadow_packets/
 │   └── 06_tactical_map/     ← large outdoor IGI / Delta Force-style map demo
 ├── third_party/             ← xatlas, zstd, miniaudio (reference only), Lua, RmlUi, FreeType, etc.
 └── tests/
@@ -937,11 +937,12 @@ A demo at every milestone — no engine work without a screenshot.
 - **Editor:** heightmap sculpt tools (raise/lower/smooth/paint), brush CSG for placing simple buildings, spline track editor.
 - **Demo:** one lap of a test track (sample 04).
 
-### M5 — Hybrid raytracing (weeks 31–40)
+### M5 — RT shadow packets (weeks 31–40)
 - BVH8 build + packet traversal (intersect kernel + RNG borrowed from dmonte; everything else fresh).
 - Dynamic shadow rays + denoiser.
 - Tiled light list, headlights.
-- **Demo:** night scene with raytraced headlights and AO (sample 05).
+- **Demo:** night scene with colored dynamic lights and 8-wide raytraced
+  shadow packets (sample 05).
 
 ### M6 — Large outdoor FPS maps + sandbox editor (weeks 41–48)
 - Extended heightmap world: kilometre-scale view distances, sparse population, scattered structures.

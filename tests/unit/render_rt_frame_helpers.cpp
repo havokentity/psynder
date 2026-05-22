@@ -51,6 +51,25 @@ TEST_CASE("render rt frame helpers: reflect mirrors incident direction around no
     REQUIRE(approx_eq(reflected.z, 0.0f));
 }
 
+TEST_CASE("render rt frame renderer: reflection bounce cvar clamps to implemented paths",
+          "[render_rt][frame_helpers]") {
+    render::rt::FrameRendererConsoleOverrides overrides{};
+    overrides.reflection_bounces = "9";
+    render::rt::apply_frame_renderer_console_overrides(overrides);
+
+    render::rt::FrameRenderConfig config =
+        render::rt::frame_render_config_from_console(16u, 16u, 16u, 16u, 8u);
+    REQUIRE(config.reflection_bounces == 1u);
+
+    overrides.reflection_bounces = "0";
+    render::rt::apply_frame_renderer_console_overrides(overrides);
+    config = render::rt::frame_render_config_from_console(16u, 16u, 16u, 16u, 8u);
+    REQUIRE(config.reflection_bounces == 0u);
+
+    overrides.reflection_bounces = "1";
+    render::rt::apply_frame_renderer_console_overrides(overrides);
+}
+
 TEST_CASE("render rt frame scheduler: explicit row batch clamps to work",
           "[render_rt][frame_helpers]") {
     render::rt::FrameRowScheduleConfig config{};
