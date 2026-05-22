@@ -4,12 +4,26 @@
 
 #include "core/Types.h"
 #include "platform/App.h"
+#include "render/Color.h"
+
+#include <algorithm>
 #include <cmath>
 #include <string_view>
 
 using namespace psynder;
 
 namespace {
+
+u8 sine_channel(f64 seconds, f64 frequency, f64 phase = 0.0) noexcept {
+    const f64 value = 127.5 + 127.5 * std::sin(seconds * frequency + phase);
+    return static_cast<u8>(std::clamp(value, 0.0, 255.0));
+}
+
+u32 animated_clear_color(f64 seconds) noexcept {
+    return render::rgba8(sine_channel(seconds, 1.7),
+                         sine_channel(seconds, 1.1, 1.0),
+                         sine_channel(seconds, 0.9, 2.0));
+}
 
 struct ClearSample {
     static constexpr std::string_view log_name() noexcept { return "sample_00"; }
@@ -19,13 +33,7 @@ struct ClearSample {
         // Drive the colour off frame index in smoke mode so the captured
         // frame is identical across hosts (golden-image determinism). Real
         // runs use elapsed wall-clock time so the animation looks smooth.
-        const f64 t = ctx.seconds;
-        const u8 r = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.7));
-        const u8 g = static_cast<u8>(127.0 + 127.0 * std::sin(t * 1.1 + 1.0));
-        const u8 b = static_cast<u8>(127.0 + 127.0 * std::sin(t * 0.9 + 2.0));
-        const u32 rgba = (static_cast<u32>(r)) | (static_cast<u32>(g) << 8) |
-                         (static_cast<u32>(b) << 16) | (0xFFu << 24);
-        return app::FrameClear::color_only(rgba);
+        return app::FrameClear::color_only(animated_clear_color(ctx.seconds));
     }
 };
 
