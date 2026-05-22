@@ -12,7 +12,6 @@
 #include "platform/Platform.h"
 #include "render/FrameStats.h"
 #include "render/Framebuffer.h"
-#include "render/GeometryTools.h"
 #include "render/PngWriter.h"
 #include "render/RenderingSystem.h"
 #include "scene/SceneEcs.h"
@@ -240,70 +239,6 @@ class WindowApp {
 
     void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
         rendering_system_.reserve_scene_capacity(renderables, meshes);
-    }
-
-    [[nodiscard]] render::MeshId create_mesh(const render::MeshDesc& mesh_desc) {
-        return rendering_system_.meshes().create_mesh(mesh_desc);
-    }
-
-    [[nodiscard]] scene::RenderableComponent make_mesh_renderable(
-        render::MeshId mesh,
-        render::MaterialId material,
-        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
-        math::Aabb local_bounds = math::aabb_empty(),
-        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) const {
-        return rendering_system_.make_mesh_renderable(mesh, material, flags, local_bounds, mobility);
-    }
-
-    [[nodiscard]] render::SceneMeshEntity create_mesh_entity(
-        scene::Scene& scene,
-        const render::MeshDesc& mesh_desc,
-        render::MaterialId material,
-        const scene::LocalTransform& local = {},
-        scene::SceneNode parent = scene::kInvalidSceneNode,
-        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
-        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
-        return rendering_system_.create_mesh_entity(scene,
-                                                    mesh_desc,
-                                                    material,
-                                                    local,
-                                                    parent,
-                                                    flags,
-                                                    mobility);
-    }
-
-    [[nodiscard]] render::SceneMeshEntity create_mesh_entity(
-        scene::Scene& scene,
-        const render::MeshDesc& mesh_desc,
-        const render::MaterialDesc& material,
-        const scene::LocalTransform& local = {},
-        scene::SceneNode parent = scene::kInvalidSceneNode,
-        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
-        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
-        return rendering_system_.create_mesh_entity(scene,
-                                                    mesh_desc,
-                                                    material,
-                                                    local,
-                                                    parent,
-                                                    flags,
-                                                    mobility);
-    }
-
-    [[nodiscard]] render::SceneMeshEntity create_raster_mesh_entity(
-        scene::Scene& scene,
-        const render::MeshDesc& mesh_desc,
-        const scene::LocalTransform& local = {},
-        scene::SceneNode parent = scene::kInvalidSceneNode,
-        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
-        render::MaterialDesc material{};
-        material.flags = render::MaterialFlags::RasterVisible;
-        return create_mesh_entity(scene,
-                                  mesh_desc,
-                                  material,
-                                  local,
-                                  parent,
-                                  scene::RenderableFlags::Visible,
-                                  mobility);
     }
 
     render::SceneRenderStats render_scene(scene::Scene& scene) {

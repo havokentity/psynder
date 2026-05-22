@@ -5,6 +5,8 @@
 // sampled by the engine raster path.
 //
 #include "platform/App.h"
+#include "render/EntityHelpers.h"
+#include "render/GeometryTools.h"
 
 using namespace psynder;
 
@@ -25,7 +27,10 @@ struct TriangleSample {
         crate.load_ppm("assets/crate.ppm");
 
         const render::MeshDesc triangle_mesh_desc = render::geometry_tools::textured_triangle(&crate);
-        triangle_entity = app.create_raster_mesh_entity(scene, triangle_mesh_desc).entity;
+        triangle_entity = render::entity_helpers::create_mesh_entity(app.rendering_system(),
+                                                                     scene,
+                                                                     triangle_mesh_desc)
+                              .entity;
     }
 
     void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {

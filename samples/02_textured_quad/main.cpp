@@ -32,7 +32,9 @@
 #include "math/Math.h"
 #include "platform/App.h"
 #include "platform/Platform.h"
+#include "render/EntityHelpers.h"
 #include "render/Framebuffer.h"
+#include "render/GeometryTools.h"
 #include "render/raster/Raster.h"
 #include "render/Texture.h"
 #include "scene/SceneEcs.h"
@@ -223,7 +225,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
     cube_mesh_desc.base_color = crate_view;
-    const render::MeshId cube_mesh = app_host.create_mesh(cube_mesh_desc);
+    const render::MeshId cube_mesh = app_host.rendering_system().meshes().create_mesh(cube_mesh_desc);
 
     render::MaterialDesc crate_material{};
     crate_material.flags = render::MaterialFlags::RasterVisible;
@@ -245,7 +247,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     std::array<Entity, kCratePositions.size()> crates{};
     for (Entity& crate : crates)
-        crate = scene.create_renderable(app_host.make_mesh_renderable(cube_mesh, crate_material_id));
+        crate = scene.create_renderable(render::entity_helpers::make_mesh_renderable(
+            app_host.rendering_system(),
+            cube_mesh,
+            crate_material_id));
     app_host.set_scene(scene);
 
     PSY_LOG_INFO("Psynder sample 02 running{}{}",
