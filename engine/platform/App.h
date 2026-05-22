@@ -154,6 +154,10 @@ class WindowApp {
     [[nodiscard]] const scene::Scene& default_scene() const noexcept { return default_scene_; }
     [[nodiscard]] scene::Scene* active_scene() noexcept { return active_scene_; }
     [[nodiscard]] const scene::Scene* active_scene() const noexcept { return active_scene_; }
+    [[nodiscard]] scene::Environment& environment() noexcept { return *active_environment_; }
+    [[nodiscard]] const scene::Environment& environment() const noexcept {
+        return *active_environment_;
+    }
     [[nodiscard]] u32 loaded_scene_count() const noexcept { return loaded_scene_count_; }
     [[nodiscard]] std::span<scene::Scene* const> loaded_scenes() noexcept {
         return {loaded_scenes_.data(), loaded_scene_count_};
@@ -198,12 +202,14 @@ class WindowApp {
                        SceneCreateOptions::without_default_camera()) noexcept {
         if (load_scene(scene, options)) {
             active_scene_ = &scene;
+            active_environment_ = &scene.environment();
             active_scene_rendered_ = false;
         }
     }
 
     void clear_scene() noexcept {
         active_scene_ = nullptr;
+        active_environment_ = nullptr;
         active_scene_rendered_ = false;
     }
 
@@ -306,8 +312,8 @@ class WindowApp {
 
     void engine_frame_begin(FrameClear clear) noexcept {
         active_scene_rendered_ = false;
-        if (active_scene_ && active_scene_->environment().clear_enabled())
-            apply_environment_clear(active_scene_->environment());
+        if (active_environment_ && active_environment_->clear_enabled())
+            apply_environment_clear(*active_environment_);
         if (clear.color)
             render::clear_framebuffer_color(framebuffer_, clear.color_rgba8);
         if (clear.depth)
@@ -414,6 +420,7 @@ class WindowApp {
                                     : other.loaded_scenes_[i];
         }
         active_scene_ = active_was_default_scene ? &default_scene_ : other.active_scene_;
+        active_environment_ = active_scene_ ? &active_scene_->environment() : nullptr;
         active_scene_rendered_ = other.active_scene_rendered_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
@@ -428,6 +435,7 @@ class WindowApp {
         other.engine_frame_ms_head_ = 0;
         other.engine_frame_ms_count_ = 0;
         other.active_scene_ = nullptr;
+        other.active_environment_ = nullptr;
         other.active_scene_rendered_ = false;
         other.loaded_scenes_ = {};
         other.loaded_scene_count_ = 0;
@@ -449,6 +457,7 @@ class WindowApp {
     std::array<scene::Scene*, kMaxLoadedScenes> loaded_scenes_{};
     u32 loaded_scene_count_ = 0;
     scene::Scene* active_scene_ = nullptr;
+    scene::Environment* active_environment_ = nullptr;
     bool active_scene_rendered_ = false;
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
