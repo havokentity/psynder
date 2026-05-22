@@ -61,6 +61,12 @@ and before ending a session so crash recovery has a concrete resume point.
   - RT/baker material policy
   - sample/test migration targets
 
+## Monitor Log
+
+- Current monitor pass: six workers dispatched; no worker completed in the
+  first 60-second wait. Worktrees are present and clean from the orchestrator
+  view.
+
 ## Next Multi-Agent Step
 
 1. Current shared contract branch is committed and pushed.
