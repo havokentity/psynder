@@ -34,7 +34,7 @@ namespace psynder::app {
 struct SceneCreateOptions {
     bool add_default_camera = false;
     scene::CameraComponent default_camera{};
-    scene::LocalTransform default_camera_transform{};
+    scene::LocalTransform default_camera_transform{math::Vec3{0.0f, 0.0f, 2.5f}};
 };
 
 struct WindowAppOptions {
