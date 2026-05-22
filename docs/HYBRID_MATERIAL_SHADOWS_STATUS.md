@@ -119,6 +119,10 @@ and before ending a session so crash recovery has a concrete resume point.
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-scene-prewarm-pools`
     - owns `engine/scene/`
     - task: prewarm/fixed-capacity behavior for dynamic scene updates
+    - status: complete; commit `2957fec`; capacity/prewarm APIs for
+      `SceneGraph`, `World`, and `RuntimeScene`
+    - integration note: includes focused tests under `tests/`; orchestrator
+      should review/own that cross-lane coverage during merge
   - `codex/agent-math-hotpath`
     - agent: `019e4fc0-d2ef-7c11-8c88-20ef0553a663`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-math-hotpath`
