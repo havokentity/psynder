@@ -127,6 +127,11 @@ and before ending a session so crash recovery has a concrete resume point.
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-samples-perf-graph`
     - owns `samples/` and `tests/`
     - task: sample perf graph/debug HUD allocation hygiene and validation
+    - status: complete; commit `823e58b`; prewarmed sample geometry vectors,
+      stopped per-frame sample 12 CLI cvar reapplication, skipped HUD stats
+      construction when debug HUD is off, added compact-HUD smoke coverage
+    - integration note: lane 25 needs a core/UI allocation counter hook to
+      prove hard zero-allocation HUD draws
 - Math/SIMD finding for this wave: `engine/simd` has real SIMD support and
   runtime dispatch, but `engine/math` Mat4/quaternion/batch helpers are still
   largely scalar; batch transform helpers are the first lane-02 target.
