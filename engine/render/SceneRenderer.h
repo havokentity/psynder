@@ -4,6 +4,7 @@
 #pragma once
 
 #include "render/Geometry.h"
+#include "render/MaterialBatcher.h"
 #include "render/Material.h"
 #include "render/rt/FrameRenderer.h"
 #include "scene/SceneEcs.h"
@@ -69,6 +70,7 @@ struct SceneRenderStats {
     u32 raster_skipped = 0;
     u32 rt_visible = 0;
     u32 rt_shadow_casters = 0;
+    u32 material_batches = 0;
 };
 
 struct SceneMeshEntity {
@@ -82,6 +84,9 @@ class SceneRenderer {
     [[nodiscard]] MeshLibrary& meshes() noexcept { return meshes_; }
     [[nodiscard]] const MeshLibrary& meshes() const noexcept { return meshes_; }
     [[nodiscard]] const SceneRenderQueues& queues() const noexcept { return queues_; }
+    [[nodiscard]] const MaterialBatcher& material_batches() const noexcept {
+        return material_batches_;
+    }
 
     void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
         const u32 mesh_capacity = meshes == 0u ? renderables : meshes;
@@ -91,6 +96,7 @@ class SceneRenderer {
         queues_.raster_transparent.reserve(renderables / 4u);
         queues_.rt_visible.reserve(renderables);
         queues_.rt_shadow_casters.reserve(renderables);
+        material_batches_.reserve(renderables, renderables);
     }
 
     [[nodiscard]] scene::RenderableComponent make_mesh_renderable(
@@ -130,6 +136,8 @@ class SceneRenderer {
         stats.submitted = static_cast<u32>(queues_.all.size());
         stats.rt_visible = static_cast<u32>(queues_.rt_visible.size());
         stats.rt_shadow_casters = static_cast<u32>(queues_.rt_shadow_casters.size());
+        material_batches_.build(queues_.all, scene.materials());
+        stats.material_batches = material_batches_.batch_count();
         return stats;
     }
 
@@ -255,6 +263,7 @@ class SceneRenderer {
 
     MeshLibrary meshes_{};
     SceneRenderQueues queues_{};
+    MaterialBatcher material_batches_{};
     SceneRenderStats direct_raster_stats_{};
     rt::FrameRenderer rt_renderer_{};
 };

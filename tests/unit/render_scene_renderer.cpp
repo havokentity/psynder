@@ -150,3 +150,60 @@ TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_ren
     scene.destroy_entity(first.entity);
     scene.destroy_entity(second.entity);
 }
+
+TEST_CASE("scene renderer builds material batches for CPU effects", "[render][scene_renderer]") {
+    auto& world = scene::World::Get();
+    world.set_structural_deferred(false);
+    scene::RuntimeScene scene{world};
+    render::SceneRenderer renderer;
+    renderer.reserve_scene_capacity(4u);
+
+    render::MaterialDesc scrolling_desc{};
+    scrolling_desc.flags = render::Material_RasterVisible;
+    scrolling_desc.cpu_effect.type = render::MaterialCpuEffect::UvScroll;
+    scrolling_desc.cpu_effect.uv_scroll_u = 0.25f;
+    scrolling_desc.cpu_effect.uv_scroll_v = -0.5f;
+    const render::MaterialId scrolling = scene.materials().create(scrolling_desc);
+
+    render::MaterialDesc static_desc{};
+    static_desc.flags = render::Material_RasterVisible;
+    const render::MaterialId static_material = scene.materials().create(static_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+
+    const render::SceneMeshEntity a = renderer.create_mesh_entity(scene, mesh_desc, scrolling);
+    const render::SceneMeshEntity b = renderer.create_mesh_entity(scene, mesh_desc, static_material);
+    const render::SceneMeshEntity c = renderer.create_mesh_entity(scene, mesh_desc, scrolling);
+
+    const render::SceneRenderStats stats = renderer.build(scene);
+    REQUIRE(stats.submitted == 3u);
+    REQUIRE(stats.material_batches == 2u);
+
+    const auto batches = renderer.material_batches().batches();
+    REQUIRE(batches.size() == 2u);
+    REQUIRE(batches[0].material == scrolling);
+    REQUIRE(batches[0].cpu_effect == render::MaterialCpuEffect::UvScroll);
+    REQUIRE(batches[0].count == 2u);
+    REQUIRE(batches[1].material == static_material);
+    REQUIRE(batches[1].cpu_effect == render::MaterialCpuEffect::None);
+    REQUIRE(batches[1].count == 1u);
+
+    const auto scrolling_indices = renderer.material_batches().indices_for(batches[0]);
+    REQUIRE(scrolling_indices.size() == 2u);
+    REQUIRE(renderer.queues().all[scrolling_indices[0]].entity == a.entity);
+    REQUIRE(renderer.queues().all[scrolling_indices[1]].entity == c.entity);
+
+    const render::MaterialView material_view = scene.materials().view();
+    REQUIRE(material_view.cpu_effect[batches[0].material_slot] == render::MaterialCpuEffect::UvScroll);
+    REQUIRE(material_view.uv_scroll_u[batches[0].material_slot] == 0.25f);
+    REQUIRE(material_view.uv_scroll_v[batches[0].material_slot] == -0.5f);
+
+    scene.destroy_entity(a.entity);
+    scene.destroy_entity(b.entity);
+    scene.destroy_entity(c.entity);
+}
