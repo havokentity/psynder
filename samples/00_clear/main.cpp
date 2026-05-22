@@ -9,6 +9,7 @@ using namespace psynder;
 
 namespace {
 
+// Smoke mode feeds deterministic seconds, so golden captures stay stable.
 u32 animated_clear_color(double seconds) noexcept {
     return render::rgba8(render::sine_channel8(seconds, 1.7),
                          render::sine_channel8(seconds, 1.1, 1.0),
@@ -16,13 +17,10 @@ u32 animated_clear_color(double seconds) noexcept {
 }
 
 struct ClearSample {
-    static constexpr const char* log_name() noexcept { return "sample_00"; }
-    static constexpr const char* display_name() noexcept { return "Psynder sample 00 (clear)"; }
+    static constexpr const char* log_name = "sample_00";
+    static constexpr const char* display_name = "Psynder sample 00 (clear)";
 
     static app::FrameClear frame_clear(const app::WindowFrameContext& ctx) noexcept {
-        // Drive the colour off frame index in smoke mode so the captured
-        // frame is identical across hosts (golden-image determinism). Real
-        // runs use elapsed wall-clock time so the animation looks smooth.
         return app::FrameClear::color_only(animated_clear_color(ctx.seconds));
     }
 };

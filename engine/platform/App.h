@@ -303,6 +303,8 @@ std::string_view sample_log_name(const Sample& sample) noexcept {
         return sample.log_name();
     } else if constexpr (requires { Sample::log_name(); }) {
         return Sample::log_name();
+    } else if constexpr (requires { std::string_view{Sample::log_name}; }) {
+        return std::string_view{Sample::log_name};
     } else {
         return "app";
     }
@@ -314,6 +316,8 @@ std::string_view sample_display_name(const Sample& sample) noexcept {
         return sample.display_name();
     } else if constexpr (requires { Sample::display_name(); }) {
         return Sample::display_name();
+    } else if constexpr (requires { std::string_view{Sample::display_name}; }) {
+        return std::string_view{Sample::display_name};
     } else {
         return sample_log_name(sample);
     }
