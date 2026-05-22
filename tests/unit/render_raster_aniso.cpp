@@ -274,7 +274,7 @@ TEST_CASE(
     "rasterizer survives all settings",
     "[raster][aniso][cvar]") {
     auto& c = console::Console::Get();
-    c.RegisterCVar("r_anisotropy", "1", "", 0);
+    c.RegisterCVar("r_anisotropy", "1", "", console::CVarFlags::None);
 
     auto mesh = test_mesh::colored_triangle();
     Image img(64, 64);

@@ -287,8 +287,9 @@ std::vector<CompletionMatch> BuildCompletions(const TokenInfo& token,
                 // Execute() would reject anyway, so suggest + reject
                 // stay consistent.
                 for (std::size_t i = 0; i < cv->allowed_values.size(); ++i) {
-                    const u32 mask =
-                        (i < cv->allowed_value_flags.size()) ? cv->allowed_value_flags[i] : 0u;
+                    const CVarValueFlags mask = (i < cv->allowed_value_flags.size())
+                                                    ? cv->allowed_value_flags[i]
+                                                    : CVarValueFlags::Any;
                     if (!cvar_value_allowed_on_this_platform(mask))
                         continue;
                     const auto& v = cv->allowed_values[i];

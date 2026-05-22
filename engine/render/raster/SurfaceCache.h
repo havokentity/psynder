@@ -17,38 +17,9 @@
 #pragma once
 
 #include "core/Types.h"
+#include "render/raster/Raster.h"
 
 namespace psynder::render::raster {
-
-// ─── Shading path tag ────────────────────────────────────────────────────
-// One byte on each DrawCmd after eligibility. Selected per-draw — never
-// per-pixel — so SIMD lanes stay coherent (DESIGN.md §7.6).
-enum class ShadingPath : u8 {
-    OnTheFly = 0,       // sample base texture, sample lightmap, multiply
-    SurfaceCached = 1,  // sample pre-multiplied combined chunk
-};
-
-// ─── DrawItem.flags bits (lane-07 internal contract) ─────────────────────
-// Bits 0 / 1 are pre-existing (alpha-test / affine). Bits 2–6 are
-// eligibility hints set by the lane 18 / lane 10 caller; the rasterizer
-// reads them in classify_surface().
-//
-// Public-header layout is unchanged — only bit semantics within the
-// existing one-byte `flags` field are added.
-namespace draw_flags {
-inline constexpr u8 kAlphaTest = 1u << 0;
-inline constexpr u8 kAffine = 1u << 1;
-inline constexpr u8 kLightmapNearest = 1u << 2;
-inline constexpr u8 kNoDynamicLights = 1u << 3;
-inline constexpr u8 kNoNormalMap = 1u << 4;
-inline constexpr u8 kLdrLightmap = 1u << 5;
-inline constexpr u8 kStableMip = 1u << 6;
-inline constexpr u8 kForceShadingPath = 1u << 7;  // used by r_force_shading_path
-
-// All eligibility hints set ⇒ candidate for surface cache.
-inline constexpr u8 kEligibleMask =
-    kLightmapNearest | kNoDynamicLights | kNoNormalMap | kLdrLightmap | kStableMip;
-}  // namespace draw_flags
 
 // ─── Surface-cache entry header ──────────────────────────────────────────
 // One slot in the slab. The payload (pre-multiplied texels) lives right
@@ -189,7 +160,7 @@ struct SurfaceDesc {
     u32 surface_id = 0;        // typically = MaterialId.raw
     u32 lightmap_version = 0;  // bumped by lane 10 on bake / atlas swap
     u32 mip_level = 0;         // current stable mip for this surface
-    u8 flags = 0;              // DrawItem.flags
+    DrawFlags flags = DrawFlags::None;
 };
 
 // ─── Eligibility & dispatch ──────────────────────────────────────────────

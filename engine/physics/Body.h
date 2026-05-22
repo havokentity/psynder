@@ -14,6 +14,30 @@
 
 namespace psynder::physics::detail {
 
+enum class BodyFlags : u8 {
+    None = 0,
+    Kinematic = 1u << 0,
+    Sleeping = 1u << 1,
+    Static = 1u << 2,
+};
+
+[[nodiscard]] constexpr u8 body_flags_bits(BodyFlags flags) noexcept {
+    return static_cast<u8>(flags);
+}
+
+[[nodiscard]] constexpr BodyFlags operator|(BodyFlags a, BodyFlags b) noexcept {
+    return static_cast<BodyFlags>(body_flags_bits(a) | body_flags_bits(b));
+}
+
+[[nodiscard]] constexpr u8 operator&(BodyFlags a, BodyFlags b) noexcept {
+    return static_cast<u8>(body_flags_bits(a) & body_flags_bits(b));
+}
+
+constexpr BodyFlags& operator|=(BodyFlags& a, BodyFlags b) noexcept {
+    a = a | b;
+    return a;
+}
+
 // Inertia tensor in body-local space. Stored as a diagonal — Wave-A shapes
 // (sphere, capsule, box, convex hull) all have well-defined principal axes
 // aligned with the body's local frame after construction. Off-diagonal
@@ -54,12 +78,8 @@ struct Body {
 
     // ─── Bookkeeping ──────────────────────────────────────────────────
     u32 gen = 1;   // for stale-handle detection
-    u8 flags = 0;  // bit 0: kinematic, bit 1: sleeping
+    BodyFlags flags = BodyFlags::None;
     u8 _pad[3] = {};
 };
-
-inline constexpr u8 kFlagKinematic = 1u << 0;
-inline constexpr u8 kFlagSleeping = 1u << 1;
-inline constexpr u8 kFlagStatic = 1u << 2;
 
 }  // namespace psynder::physics::detail

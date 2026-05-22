@@ -735,20 +735,20 @@ void ensure_frame_scheduler_console_registered() {
     g_frame_parallel = con.RegisterCVar("r_rt_sample_parallel",
                                         "1",
                                         "Enable engine RT row/frame parallel scheduling (0/1)",
-                                        console::CVAR_ARCHIVE);
+                                        console::CVarFlags::Archive);
     g_frame_cores_hint = con.RegisterCVar("r_rt_sample_cpu_cores_hint",
                                           "0",
                                           "Preferred engine RT worker cores (0=auto perf-cores-2)",
-                                          console::CVAR_ARCHIVE);
+                                          console::CVarFlags::Archive);
     g_frame_batch_rows = con.RegisterCVar("r_rt_sample_batch_rows",
                                           "0",
                                           "Rows per engine RT row-scheduler chunk (0=auto)",
-                                          console::CVAR_ARCHIVE);
+                                          console::CVarFlags::Archive);
     g_frame_min_rows =
         con.RegisterCVar("r_rt_sample_min_rows_per_core",
                          "8",
                          "Minimum engine RT row-scheduler rows per worker chunk in auto mode",
-                         console::CVAR_ARCHIVE);
+                         console::CVarFlags::Archive);
 
     con.RegisterCommand(
         "r_rt_sample_sched_dump",
@@ -874,42 +874,42 @@ void ensure_frame_renderer_console_registered() {
         con.RegisterCVar("r_rt_sample_parallel_max_chunks",
                          "4",
                          "Maximum auto-mode engine RT jobs (explicit core hint overrides this)",
-                         console::CVAR_ARCHIVE);
+                         console::CVarFlags::Archive);
     g_frame_ao = con.RegisterCVar("r_rt_sample_ao",
                                   "0",
                                   "Enable engine RT ambient occlusion (0/1)",
-                                  console::CVAR_ARCHIVE);
+                                  console::CVarFlags::Archive);
     g_frame_ao_samples = con.RegisterCVar("r_rt_sample_ao_samples",
                                           "4",
                                           "Engine RT AO rays per low-res hit pixel (1..8)",
-                                          console::CVAR_ARCHIVE);
+                                          console::CVarFlags::Archive);
     g_frame_ao_radius = con.RegisterCVar("r_rt_sample_ao_radius",
                                          "3.0",
                                          "Engine RT AO ray max distance in world units",
-                                         console::CVAR_ARCHIVE);
+                                         console::CVarFlags::Archive);
     g_frame_ao_strength = con.RegisterCVar("r_rt_sample_ao_strength",
                                            "1.00",
                                            "Engine RT AO ambient darkening strength (0..1)",
-                                           console::CVAR_ARCHIVE);
+                                           console::CVarFlags::Archive);
     g_frame_ao_lit_strength = con.RegisterCVar(
         "r_rt_sample_ao_lit_strength",
         "0.75",
         "Extra engine RT AO multiplier applied to direct lighting for visible contact AO (0..1)",
-        console::CVAR_ARCHIVE);
+        console::CVarFlags::Archive);
     g_frame_ao_denoise = con.RegisterCVar("r_rt_sample_ao_denoise",
                                           "1",
                                           "Edge-aware denoise engine RT AO visibility (0/1)",
-                                          console::CVAR_ARCHIVE);
+                                          console::CVarFlags::Archive);
     g_frame_ao_debug =
         con.RegisterCVar("r_rt_sample_ao_debug",
                          "0",
                          "Show engine RT AO visibility as grayscale when AO is enabled (0/1)",
-                         console::CVAR_ARCHIVE);
+                         console::CVarFlags::Archive);
     g_frame_reflection_bounces =
         con.RegisterCVar("r_rt_frame_reflection_bounces",
                          "1",
                          "Engine RT mirror reflection bounces (0=off, 1..8 mirror segments)",
-                         console::CVAR_ARCHIVE);
+                         console::CVarFlags::Archive);
 
     register_frame_renderer_dump_command("r_rt_frame_sched_dump",
                                          "Print engine RT frame renderer scheduler settings");

@@ -45,6 +45,54 @@ enum class DrawBlendMode : u8 {
     Multiply = 1,
 };
 
+enum class DrawFlags : u8 {
+    None = 0,
+    AlphaTest = 1u << 0,
+    Affine = 1u << 1,
+    LightmapNearest = 1u << 2,
+    NoDynamicLights = 1u << 3,
+    NoNormalMap = 1u << 4,
+    LdrLightmap = 1u << 5,
+    StableMip = 1u << 6,
+    ForceShadingPath = 1u << 7,
+    EligibleMask = LightmapNearest | NoDynamicLights | NoNormalMap | LdrLightmap | StableMip,
+};
+
+[[nodiscard]] constexpr u8 draw_flags_bits(DrawFlags flags) noexcept {
+    return static_cast<u8>(flags);
+}
+
+[[nodiscard]] constexpr DrawFlags operator|(DrawFlags a, DrawFlags b) noexcept {
+    return static_cast<DrawFlags>(draw_flags_bits(a) | draw_flags_bits(b));
+}
+
+[[nodiscard]] constexpr u8 operator&(DrawFlags a, DrawFlags b) noexcept {
+    return draw_flags_bits(a) & draw_flags_bits(b);
+}
+
+[[nodiscard]] constexpr DrawFlags operator~(DrawFlags flags) noexcept {
+    return static_cast<DrawFlags>(~draw_flags_bits(flags));
+}
+
+constexpr DrawFlags& operator|=(DrawFlags& a, DrawFlags b) noexcept {
+    a = a | b;
+    return a;
+}
+
+[[nodiscard]] constexpr DrawFlags draw_flags_without(DrawFlags flags,
+                                                     DrawFlags without) noexcept {
+    return static_cast<DrawFlags>(draw_flags_bits(flags) & ~draw_flags_bits(without));
+}
+
+[[nodiscard]] constexpr bool draw_flags_has_all(DrawFlags flags, DrawFlags mask) noexcept {
+    return (draw_flags_bits(flags) & draw_flags_bits(mask)) == draw_flags_bits(mask);
+}
+
+enum class ShadingPath : u8 {
+    OnTheFly = 0,
+    SurfaceCached = 1,
+};
+
 // Pre-projected blob/decal shadow input. Callers provide the receiver-space
 // geometry and UVs up front; raster only interpolates UV/alpha and uses the
 // existing multiplicative no-depth-write path.
@@ -71,7 +119,7 @@ struct DrawItem {
     u32 index_count = 0;
     math::Mat4 model;
     MaterialId material;
-    u8 flags = 0;
+    DrawFlags flags = DrawFlags::None;
     CullMode cull = CullMode::Back;
     DrawBlendMode blend = DrawBlendMode::Opaque;
     f32 blend_opacity = 1.0f;

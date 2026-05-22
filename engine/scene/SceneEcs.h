@@ -27,27 +27,69 @@ enum class ObjectMobility : u8 {
     Dynamic = 1,
 };
 
-enum RenderableFlags : u32 {
-    Renderable_Visible = 1u << 0,
-    Renderable_CastsShadowOverride = 1u << 1,
-    Renderable_ReceivesShadowOverride = 1u << 2,
-
-    Renderable_DefaultFlags = Renderable_Visible,
+enum class RenderableFlags : u32 {
+    None = 0,
+    Visible = 1u << 0,
+    CastsShadowOverride = 1u << 1,
+    ReceivesShadowOverride = 1u << 2,
 };
 
-enum RenderableValidationIssue : u32 {
-    RenderableValidation_None = 0u,
-    RenderableValidation_NotVisible = 1u << 0,
-    RenderableValidation_NoGeometry = 1u << 1,
-    RenderableValidation_DynamicStaticBake = 1u << 2,
+[[nodiscard]] constexpr u32 renderable_flags_bits(RenderableFlags flags) noexcept {
+    return static_cast<u32>(flags);
+}
+
+[[nodiscard]] constexpr RenderableFlags operator|(RenderableFlags a,
+                                                  RenderableFlags b) noexcept {
+    return static_cast<RenderableFlags>(renderable_flags_bits(a) | renderable_flags_bits(b));
+}
+
+[[nodiscard]] constexpr u32 operator&(RenderableFlags a, RenderableFlags b) noexcept {
+    return renderable_flags_bits(a) & renderable_flags_bits(b);
+}
+
+constexpr RenderableFlags& operator|=(RenderableFlags& a, RenderableFlags b) noexcept {
+    a = a | b;
+    return a;
+}
+
+enum class RenderableValidationIssue : u32 {
+    None = 0u,
+    NotVisible = 1u << 0,
+    NoGeometry = 1u << 1,
+    DynamicStaticBake = 1u << 2,
 };
+
+[[nodiscard]] constexpr u32 renderable_validation_issue_bits(
+    RenderableValidationIssue issue) noexcept {
+    return static_cast<u32>(issue);
+}
+
+[[nodiscard]] constexpr RenderableValidationIssue operator|(
+    RenderableValidationIssue a,
+    RenderableValidationIssue b) noexcept {
+    return static_cast<RenderableValidationIssue>(renderable_validation_issue_bits(a) |
+                                                  renderable_validation_issue_bits(b));
+}
+
+[[nodiscard]] constexpr u32 operator&(RenderableValidationIssue a,
+                                      RenderableValidationIssue b) noexcept {
+    return renderable_validation_issue_bits(a) & renderable_validation_issue_bits(b);
+}
+
+constexpr RenderableValidationIssue& operator|=(RenderableValidationIssue& a,
+                                                RenderableValidationIssue b) noexcept {
+    a = a | b;
+    return a;
+}
 
 struct RenderableValidation {
-    u32 issues = RenderableValidation_None;
+    RenderableValidationIssue issues = RenderableValidationIssue::None;
 
-    [[nodiscard]] constexpr bool ok() const noexcept { return issues == RenderableValidation_None; }
+    [[nodiscard]] constexpr bool ok() const noexcept {
+        return issues == RenderableValidationIssue::None;
+    }
     [[nodiscard]] constexpr bool has(RenderableValidationIssue issue) const noexcept {
-        return (issues & static_cast<u32>(issue)) != 0u;
+        return (issues & issue) != 0u;
     }
 };
 
@@ -64,7 +106,7 @@ PSYNDER_COMPONENT(RenderableComponent) {
     GeometryKind geometry = GeometryKind::None;
     u32 geometry_id = 0u;
     ::psynder::render::MaterialId material{};
-    u32 flags = Renderable_DefaultFlags;
+    RenderableFlags flags = RenderableFlags::Visible;
     ObjectMobility mobility = ObjectMobility::Dynamic;
     math::Aabb local_bounds{};
 };
@@ -77,7 +119,7 @@ struct SceneRenderItem {
     GeometryKind geometry = GeometryKind::None;
     u32 geometry_id = 0u;
     ::psynder::render::MaterialId material{};
-    u32 flags = 0u;
+    RenderableFlags flags = RenderableFlags::None;
     ObjectMobility mobility = ObjectMobility::Dynamic;
 };
 
@@ -90,7 +132,7 @@ struct ScenePrewarmConfig {
 };
 
 inline bool renderable_is_visible(const RenderableComponent& renderable) noexcept {
-    return (renderable.flags & Renderable_Visible) != 0u;
+    return (renderable.flags & RenderableFlags::Visible) != 0u;
 }
 
 inline bool renderable_has_geometry(const RenderableComponent& renderable) noexcept {
@@ -110,7 +152,7 @@ inline RenderableComponent make_renderable(GeometryKind geometry,
                                            ::psynder::render::MaterialId material,
                                            const math::Aabb& local_bounds,
                                            ObjectMobility mobility = ObjectMobility::Dynamic,
-                                           u32 flags = Renderable_DefaultFlags) noexcept {
+                                           RenderableFlags flags = RenderableFlags::Visible) noexcept {
     RenderableComponent renderable{};
     renderable.geometry = geometry;
     renderable.geometry_id = geometry_id;
@@ -125,7 +167,7 @@ inline RenderableComponent make_static_renderable(GeometryKind geometry,
                                                   u32 geometry_id,
                                                   ::psynder::render::MaterialId material,
                                                   const math::Aabb& local_bounds,
-                                                  u32 flags = Renderable_DefaultFlags) noexcept {
+                                                  RenderableFlags flags = RenderableFlags::Visible) noexcept {
     return make_renderable(geometry, geometry_id, material, local_bounds, ObjectMobility::Static, flags);
 }
 
@@ -133,18 +175,18 @@ inline RenderableComponent make_dynamic_renderable(GeometryKind geometry,
                                                    u32 geometry_id,
                                                    ::psynder::render::MaterialId material,
                                                    const math::Aabb& local_bounds,
-                                                   u32 flags = Renderable_DefaultFlags) noexcept {
+                                                   RenderableFlags flags = RenderableFlags::Visible) noexcept {
     return make_renderable(geometry, geometry_id, material, local_bounds, ObjectMobility::Dynamic, flags);
 }
 
 inline RenderableValidation validate_renderable_for_static_bake(const RenderableComponent& renderable) noexcept {
     RenderableValidation validation{};
     if (!renderable_is_visible(renderable))
-        validation.issues |= RenderableValidation_NotVisible;
+        validation.issues |= RenderableValidationIssue::NotVisible;
     if (!renderable_has_geometry(renderable))
-        validation.issues |= RenderableValidation_NoGeometry;
+        validation.issues |= RenderableValidationIssue::NoGeometry;
     if (!renderable_is_static(renderable))
-        validation.issues |= RenderableValidation_DynamicStaticBake;
+        validation.issues |= RenderableValidationIssue::DynamicStaticBake;
     return validation;
 }
 
@@ -195,7 +237,7 @@ inline bool set_renderable_material(EcsRegistry& registry, Entity entity, ::psyn
     return true;
 }
 
-inline bool set_renderable_flags(EcsRegistry& registry, Entity entity, u32 flags) {
+inline bool set_renderable_flags(EcsRegistry& registry, Entity entity, RenderableFlags flags) {
     auto* renderable = registry.get<RenderableComponent>(entity);
     if (!renderable)
         return false;
@@ -280,7 +322,8 @@ inline void gather_scene_render_items(EcsRegistry& registry,
             usize chunk_count = 0u;
             for (usize i = 0; i < n; ++i) {
                 const RenderableComponent& r = renderables[i];
-                if ((r.flags & Renderable_Visible) == 0u || r.geometry == GeometryKind::None)
+                if ((r.flags & RenderableFlags::Visible) == 0u ||
+                    r.geometry == GeometryKind::None)
                     continue;
                 const SceneNode node = nodes[i].node;
                 if (!graph.alive(node))
@@ -388,7 +431,7 @@ class Scene {
     RenderableValidation validate_renderable_for_static_bake(Entity entity) {
         auto* renderable = registry_->get<RenderableComponent>(entity);
         if (!renderable)
-            return RenderableValidation{RenderableValidation_NoGeometry};
+            return RenderableValidation{RenderableValidationIssue::NoGeometry};
         return ::psynder::scene::validate_renderable_for_static_bake(*renderable);
     }
 

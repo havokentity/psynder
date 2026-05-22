@@ -9,6 +9,7 @@
 #include "EdgeEq.h"
 #include "core/Types.h"
 #include "render/Framebuffer.h"
+#include "render/raster/Raster.h"
 
 #include <cstddef>
 
@@ -26,8 +27,7 @@ struct PSY_CACHELINE_ALIGN DrawCmd {
     const TriSetup* tris = nullptr;
     u32 tri_count = 0;
     u32 material_id = 0;
-    u32 flags = 0;  // bit 0: alpha test, bit 1: affine,
-                    // bits 2-7: surface-cache eligibility
+    DrawFlags flags = DrawFlags::None;
     // Surface-cache dispatch (DESIGN.md §7.6).
     u8 shading_path = 0;  // ShadingPath enum
     // Per-draw EWA anisotropy cap (1/2/4/8/16). 1 ⇒ no anisotropy; the

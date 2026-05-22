@@ -524,7 +524,7 @@ void ensure_init(State& s) noexcept {
     con.RegisterCVar("r_debug_hud",
                      "off",
                      "Debug HUD overlay: off | compact | full.",
-                     0,
+                     psynder::console::CVarFlags::None,
                      [](const psynder::console::CVar& v) {
                          using ui::imm::DebugHudMode;
                          ui::imm::set_debug_hud_mode(v.value == "full"      ? DebugHudMode::Full
@@ -539,7 +539,7 @@ void ensure_init(State& s) noexcept {
     if (auto* res = con.RegisterCVar("r_resolution",
                                      "1280x720",
                                      "Window resolution (windowed): WIDTHxHEIGHT.",
-                                     0,
+                                     psynder::console::CVarFlags::None,
                                      [](const psynder::console::CVar& v) {
                                          u32 w = 0, h = 0;
                                          if (parse_resolution(v.value, w, h))
@@ -551,7 +551,7 @@ void ensure_init(State& s) noexcept {
             con.RegisterCVar("r_fullscreen",
                              "0",
                              "Borderless full-screen (frame stretched to fit): 0 | 1.",
-                             0,
+                             psynder::console::CVarFlags::None,
                              [](const psynder::console::CVar& v) {
                                  platform::request_fullscreen(v.value == "1" || v.value == "true");
                              })) {
@@ -568,7 +568,7 @@ void ensure_init(State& s) noexcept {
     con.RegisterCVar("r_console_watermark",
                      "Copyright (c) Rajesh D'Monte 2026 - MIT License",
                      "Top-right console watermark text.",
-                     psynder::console::CVAR_ARCHIVE);
+                     psynder::console::CVarFlags::Archive);
 
     con.RegisterCommand(
         "r_terrain_autotune",

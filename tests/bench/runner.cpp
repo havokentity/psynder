@@ -159,7 +159,7 @@ BenchResult bench_raster_pipeline_tile(u32 tile_size, u64 iters) {
         "r_tile_size",
         "64",
         "Per-tile rasterizer tile dimension (32 / 64 / 128). See ADR-002.",
-        0);
+        console::CVarFlags::None);
     console::Console::Get().SetCVarOverride("r_tile_size", std::to_string(tile_size));
 
     std::vector<u32> pixels(static_cast<usize>(W) * H, 0);

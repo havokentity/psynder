@@ -37,19 +37,19 @@ namespace {
 PSY_CVAR(r_rt_denoise_parallel,
          "1",
          "Enable parallel row scheduling for RT denoiser (0/1)",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 PSY_CVAR(r_rt_denoise_cpu_cores_hint,
          "0",
          "Preferred RT denoiser cores (0=auto; auto uses perf-cores-2)",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 PSY_CVAR(r_rt_denoise_batch_rows,
          "0",
          "Rows per RT denoiser job batch (0=auto from core hint)",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 PSY_CVAR(r_rt_denoise_min_rows_per_core,
          "8",
          "Minimum rows per RT denoiser worker chunk in auto mode",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 
 struct DenoiseSchedSnapshot {
     bool valid = false;

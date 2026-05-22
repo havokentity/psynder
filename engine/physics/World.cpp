@@ -41,7 +41,7 @@ WorldState& world_state() {
 // because they share the body buffer with the orchestrator).
 static void integrate_forces(WorldState& w, f32 dt) noexcept {
     for (Body& b : w.bodies) {
-        if (b.inv_mass == 0.0f || (b.flags & kFlagSleeping))
+        if (b.inv_mass == 0.0f || (b.flags & BodyFlags::Sleeping) != 0u)
             continue;
         b.linear_velocity = math::add(b.linear_velocity, math::mul(w.gravity, dt));
         // External forces accumulated via the public API in Wave B (apply_force).
@@ -63,7 +63,7 @@ static void integrate_forces(WorldState& w, f32 dt) noexcept {
 
 static void integrate_positions(WorldState& w, f32 dt) noexcept {
     for (Body& b : w.bodies) {
-        if (b.inv_mass == 0.0f || (b.flags & kFlagSleeping))
+        if (b.inv_mass == 0.0f || (b.flags & BodyFlags::Sleeping) != 0u)
             continue;
         b.position = math::add(b.position, math::mul(b.linear_velocity, dt));
 
@@ -211,7 +211,7 @@ BodyId World::create_body(const BodyDesc& desc) {
     b.restitution = desc.restitution;
     b.shape = static_cast<u8>(desc.shape);
     b.half_extent = desc.half_extent;
-    b.flags = (desc.mass <= 0.0f) ? detail::kFlagStatic : 0;
+    b.flags = (desc.mass <= 0.0f) ? detail::BodyFlags::Static : detail::BodyFlags::None;
 
     // Inertia
     math::Vec3 In;

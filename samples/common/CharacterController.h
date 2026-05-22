@@ -269,7 +269,7 @@ class CharacterController {
                 "0",
                 "Disable character-controller world-bounds collision + gravity "
                 "(free flythrough). 0 = collide, 1 = noclip.",
-                console::CVAR_CHEAT);
+                console::CVarFlags::Cheat);
         }
     }
 

@@ -201,7 +201,7 @@ class RenderingSystem {
     [[nodiscard]] scene::RenderableComponent make_mesh_renderable(
         MeshId mesh,
         MaterialId material,
-        u32 flags = scene::Renderable_DefaultFlags,
+        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
         math::Aabb local_bounds = math::aabb_empty(),
         scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) const {
         scene::RenderableComponent out{};
@@ -225,7 +225,7 @@ class RenderingSystem {
         MaterialId material,
         const scene::LocalTransform& local = {},
         scene::SceneNode parent = scene::kInvalidSceneNode,
-        u32 flags = scene::Renderable_DefaultFlags,
+        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
         scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
         const MeshId mesh = meshes_.create_mesh(mesh_desc);
         const Entity entity = scene.create_renderable(
@@ -351,7 +351,7 @@ class RenderingSystem {
         draw.cull =
             cull_from_material(material_view.winding[material_slot], mesh_view.cull[mesh_slot]);
         if (material_view.blend[material_slot] == MaterialBlendMode::AlphaTest)
-            draw.flags |= raster::draw_flags::kAlphaTest;
+            draw.flags |= raster::DrawFlags::AlphaTest;
         const TextureView texture = mesh_view.base_color_asset[mesh_slot] != nullptr
                                         ? mesh_view.base_color_asset[mesh_slot]->view()
                                         : mesh_view.base_color[mesh_slot];

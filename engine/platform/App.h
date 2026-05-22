@@ -140,7 +140,7 @@ class WindowApp {
     [[nodiscard]] scene::RenderableComponent make_mesh_renderable(
         render::MeshId mesh,
         render::MaterialId material,
-        u32 flags = scene::Renderable_DefaultFlags,
+        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
         math::Aabb local_bounds = math::aabb_empty(),
         scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) const {
         return rendering_system_.make_mesh_renderable(mesh, material, flags, local_bounds, mobility);
@@ -152,7 +152,7 @@ class WindowApp {
         render::MaterialId material,
         const scene::LocalTransform& local = {},
         scene::SceneNode parent = scene::kInvalidSceneNode,
-        u32 flags = scene::Renderable_DefaultFlags,
+        scene::RenderableFlags flags = scene::RenderableFlags::Visible,
         scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
         return rendering_system_.create_mesh_entity(scene,
                                                     mesh_desc,

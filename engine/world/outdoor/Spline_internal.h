@@ -7,9 +7,8 @@
 // N points along the curve and laying down a quad per pair of samples.
 //
 // The strip is marked as a drivable physics surface (DESIGN.md §9.2 calls
-// out the contact label for lane 13). Wave-A flags it with DrawItem::flags
-// bit 0; the physics lane consumes the same triangle data to build its
-// triangle-mesh collider.
+// out the contact label for lane 13). The physics lane consumes the same
+// triangle data to build its triangle-mesh collider.
 
 #pragma once
 
@@ -26,11 +25,24 @@
 
 namespace psynder::world::outdoor::detail {
 
-// DrawItem::flags bit assignments for terrain-emitted strips. The renderer
-// (lane 07) ignores everything except bit 7 (skybox); we use bit 0 for
-// "drivable" so the physics lane can filter on it without re-parsing the
-// vertex stream.
-inline constexpr u8 kDrawItemFlagDrivable = 0x01;
+enum class SplineStripFlags : u8 {
+    None = 0,
+    Drivable = 1u << 0,
+};
+
+[[nodiscard]] constexpr u8 spline_strip_flags_bits(SplineStripFlags flags) noexcept {
+    return static_cast<u8>(flags);
+}
+
+[[nodiscard]] constexpr SplineStripFlags operator|(SplineStripFlags a,
+                                                  SplineStripFlags b) noexcept {
+    return static_cast<SplineStripFlags>(spline_strip_flags_bits(a) |
+                                         spline_strip_flags_bits(b));
+}
+
+[[nodiscard]] constexpr u8 operator&(SplineStripFlags a, SplineStripFlags b) noexcept {
+    return static_cast<u8>(spline_strip_flags_bits(a) & spline_strip_flags_bits(b));
+}
 
 // Evaluate a cubic Bezier at parameter t∈[0,1]. Standard de-Casteljau.
 PSY_FORCEINLINE math::Vec3 bezier_eval(const SplineRoadSegment& seg, f32 t) noexcept {
@@ -116,7 +128,7 @@ PSY_FORCEINLINE void frame_at(const SplineRoadSegment& seg,
 struct ExtrudedStrip {
     std::vector<render::raster::Vertex> vertices;
     std::vector<u32> indices;
-    u8 flags = kDrawItemFlagDrivable;
+    SplineStripFlags flags = SplineStripFlags::Drivable;
 };
 
 // Extrude a single Bezier segment into a textured strip. `samples` is the
@@ -184,7 +196,7 @@ inline ExtrudedStrip extrude_segment(const SplineRoadSegment& seg,
         strip.indices.push_back(R1);
     }
 
-    strip.flags = kDrawItemFlagDrivable;
+    strip.flags = SplineStripFlags::Drivable;
     return strip;
 }
 

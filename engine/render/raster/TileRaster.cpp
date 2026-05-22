@@ -456,8 +456,8 @@ void rasterize_tile(const Framebuffer& fb,
         i64 e2_row = eval_edge2(t, px, py);
 
         const bool has_tex = (tex != nullptr);
-        const bool alpha_test = (d.flags & draw_flags::kAlphaTest) != 0;
-        const bool affine = affine_mode || (d.flags & draw_flags::kAffine) != 0;
+        const bool alpha_test = (d.flags & DrawFlags::AlphaTest) != 0u;
+        const bool affine = affine_mode || (d.flags & DrawFlags::Affine) != 0u;
         const bool multiply_blend = d.blend_mode == 1u;
 
         // Dispatch tag — DESIGN.md §7.6. Picked once per draw; the inner

@@ -89,18 +89,18 @@ struct Cvars {
             "r_affine",
             "0",
             "1 = affine texture mapping (retro PS1 look); 0 = perspective-correct",
-            console::CVAR_ARCHIVE);
+            console::CVarFlags::Archive);
         r_tile_size = console::Console::Get().RegisterCVar(
             "r_tile_size",
             "64",
             "Per-tile rasterizer tile dimension (32 / 64 / 128). See ADR-002.",
-            console::CVAR_ARCHIVE);
+            console::CVarFlags::Archive);
         r_anisotropy = console::Console::Get().RegisterCVar(
             "r_anisotropy",
             "1",
             "Max anisotropic sample count for the EWA filter (1/2/4/8/16). "
             "1 = bilinear/trilinear only. DESIGN.md §7.5.",
-            console::CVAR_ARCHIVE);
+            console::CVarFlags::Archive);
     }
 };
 PSY_FORCEINLINE Cvars& cvars() noexcept {

@@ -39,7 +39,7 @@ struct Image {
 };
 
 f64 bench_one(Image& img, u32 tile_size, u32 iters) {
-    console::Console::Get().RegisterCVar("r_tile_size", "64", "", 0);
+    console::Console::Get().RegisterCVar("r_tile_size", "64", "", console::CVarFlags::None);
     console::Console::Get().SetCVarOverride("r_tile_size", std::to_string(tile_size));
 
     auto mesh = test_mesh::fullscreen_quad();

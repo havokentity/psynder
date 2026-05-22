@@ -23,8 +23,8 @@
 // spheres. An orbit camera (mirrors sample 05's `make_orbit_camera`) frames
 // the stack.
 //
-// Because the engine does not expose an explicit sleep flag on the public API
-// (and Wave-A never sets `kFlagSleeping`), "at rest" is derived here from each
+// Because the engine does not expose an explicit sleep flag on the public API,
+// "at rest" is derived here from each
 // body's per-frame world-space displacement: a body whose centre moves less
 // than a small epsilon over a frame is reported as settled. The smoke log
 // prints active/settled counts plus the apex box Y and a tracked sphere Y so

@@ -30,14 +30,14 @@ namespace psynder::render::post {
 // Cvars.cpp got dropped by the linker because nothing referenced it.)
 namespace {
 
-PSY_CVAR(r_dither, "0", "Post-resolve dither mode: 0=off, 1=Bayer 4x4, 2=blue-noise.", console::CVAR_ARCHIVE);
+PSY_CVAR(r_dither, "0", "Post-resolve dither mode: 0=off, 1=Bayer 4x4, 2=blue-noise.", console::CVarFlags::Archive);
 
-PSY_CVAR(r_scanline, "0", "Enable retro CRT scanline filter (0/1).", console::CVAR_ARCHIVE);
+PSY_CVAR(r_scanline, "0", "Enable retro CRT scanline filter (0/1).", console::CVarFlags::Archive);
 
 PSY_CVAR(r_scanline_strength,
          "0.2",
          "Scanline darkening strength on odd rows (0..1).",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 
 detail::DitherMode parse_dither_cvar(const console::CVar* cv) noexcept {
     if (!cv)

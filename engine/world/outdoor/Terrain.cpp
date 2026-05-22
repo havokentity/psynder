@@ -73,15 +73,15 @@ RaySlot g_ray_slots[kMaxTerrains];
 PSY_CVAR(r_terrain_cpu_cores_hint,
          "0",
          "Preferred terrain CPU cores (0=auto; auto uses perf-cores-2 when possible)",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 PSY_CVAR(r_terrain_batch_rows,
          "0",
          "Rows per terrain job batch (0=auto from core hint)",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 PSY_CVAR(r_terrain_min_rows_per_core,
          "8",
          "Minimum rows per terrain worker chunk in auto mode",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 
 struct TerrainSchedSnapshot {
     bool valid = false;
@@ -313,7 +313,7 @@ void TerrainMesh::render_cdlod(const math::Mat4& /*view*/, const math::Mat4& /*p
         item.indices = c.indices.data();
         item.index_count = static_cast<u32>(c.indices.size());
         item.model = math::identity4();
-        item.flags = 0;
+        item.flags = render::raster::DrawFlags::None;
         rast.submit(item);
     }
 }

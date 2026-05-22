@@ -338,7 +338,7 @@ void build_face_draws(const BspGeometry& geom,
         } else {
             di.material = render::raster::MaterialId{f.material};
         }
-        di.flags = 0;
+        di.flags = render::raster::DrawFlags::None;
         out.push_back(di);
     }
 }

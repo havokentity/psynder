@@ -33,9 +33,9 @@ namespace psynder::render::post {
 
 namespace {
 
-PSY_CVAR(r_fog_enable, "1", "Volumetric fog enable (0/1).", console::CVAR_ARCHIVE);
+PSY_CVAR(r_fog_enable, "1", "Volumetric fog enable (0/1).", console::CVarFlags::Archive);
 
-PSY_CVAR(r_fog_density, "1.0", "Volumetric fog density multiplier (0..N).", console::CVAR_ARCHIVE);
+PSY_CVAR(r_fog_density, "1.0", "Volumetric fog density multiplier (0..N).", console::CVarFlags::Archive);
 
 f32 cvar_density(f32 fallback) noexcept {
     if (const auto* cv = console::Console::Get().FindCVar("r_fog_density")) {

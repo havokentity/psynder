@@ -147,7 +147,7 @@ TEST_CASE("rendering system filters static baked and projected raster shadow que
     const Entity static_entity =
         scene.create_renderable(renderer.make_mesh_renderable(mesh_a,
                                                               static_material,
-                                                              scene::Renderable_DefaultFlags,
+                                                              scene::RenderableFlags::Visible,
                                                               mesh_desc.local_bounds,
                                                               scene::ObjectMobility::Static));
     const Entity dynamic_entity =

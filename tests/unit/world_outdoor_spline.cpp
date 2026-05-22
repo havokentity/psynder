@@ -65,7 +65,7 @@ TEST_CASE("Extruded strip has the expected vertex / index counts", "[world_outdo
     REQUIRE(strip.vertices.size() == 16u);  // 2 verts per sample × 8 samples
     REQUIRE(strip.indices.size() == 42u);   // 6 indices per quad × 7 quads
     REQUIRE((strip.indices.size() % 3u) == 0u);
-    REQUIRE((strip.flags & pwod::kDrawItemFlagDrivable) != 0u);
+    REQUIRE((strip.flags & pwod::SplineStripFlags::Drivable) != 0u);
 }
 
 TEST_CASE("Straight extrusion produces a flat strip of the requested width",

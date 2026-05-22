@@ -5,7 +5,7 @@
 // Wave-A scaffold: undo / redo, favourites (f1..fN magic), input history
 // (kMaxHistoryDepth, persisted), smart-resolve, bracket-batch transactions,
 // cvar archive (SaveArchivedCvars) and load (LoadFromFile), per-allowed-
-// value platform tags (CVAR_VALUE_*), and cross-cvar dependency predicates
+// value platform tags, and cross-cvar dependency predicates
 // (requires_predicate + requires_hint).
 //
 // Naming: the Wave-A surface uses snake_case (`tokenize_line`,
@@ -39,32 +39,62 @@
 
 namespace psynder::console {
 
-enum CVarFlag : u32 {
-    CVAR_NONE = 0,
-    CVAR_ARCHIVE = 1u << 0,   // persist to psynder.cfg
-    CVAR_READONLY = 1u << 1,  // engine-set, user cannot mutate
-    CVAR_CHEAT = 1u << 2,     // requires dev_cheats 1
-    CVAR_PLATFORM_MAC = 1u << 3,
-    CVAR_PLATFORM_WIN = 1u << 4,
-    CVAR_PLATFORM_LINUX = 1u << 5,
+enum class CVarFlags : u32 {
+    None = 0,
+    Archive = 1u << 0,        // persist to psynder.cfg
+    ReadOnly = 1u << 1,       // engine-set, user cannot mutate
+    Cheat = 1u << 2,          // requires dev_cheats 1
+    PlatformMac = 1u << 3,
+    PlatformWin = 1u << 4,
+    PlatformLinux = 1u << 5,
 };
 
-enum CVarValueFlag : u32 {
-    CVAR_VALUE_ANY = 0,
-    CVAR_VALUE_MAC = 1u << 0,
-    CVAR_VALUE_WIN = 1u << 1,
-    CVAR_VALUE_LINUX = 1u << 2,
+[[nodiscard]] constexpr u32 cvar_flags_bits(CVarFlags flags) noexcept {
+    return static_cast<u32>(flags);
+}
+
+[[nodiscard]] constexpr CVarFlags operator|(CVarFlags a, CVarFlags b) noexcept {
+    return static_cast<CVarFlags>(cvar_flags_bits(a) | cvar_flags_bits(b));
+}
+
+[[nodiscard]] constexpr u32 operator&(CVarFlags a, CVarFlags b) noexcept {
+    return cvar_flags_bits(a) & cvar_flags_bits(b);
+}
+
+constexpr CVarFlags& operator|=(CVarFlags& a, CVarFlags b) noexcept {
+    a = a | b;
+    return a;
+}
+
+enum class CVarValueFlags : u32 {
+    Any = 0,
+    Mac = 1u << 0,
+    Win = 1u << 1,
+    Linux = 1u << 2,
 };
+
+[[nodiscard]] constexpr u32 cvar_value_flags_bits(CVarValueFlags flags) noexcept {
+    return static_cast<u32>(flags);
+}
+
+[[nodiscard]] constexpr CVarValueFlags operator|(CVarValueFlags a,
+                                                CVarValueFlags b) noexcept {
+    return static_cast<CVarValueFlags>(cvar_value_flags_bits(a) | cvar_value_flags_bits(b));
+}
+
+[[nodiscard]] constexpr u32 operator&(CVarValueFlags a, CVarValueFlags b) noexcept {
+    return cvar_value_flags_bits(a) & cvar_value_flags_bits(b);
+}
 
 struct CVar {
     std::string name;
     std::string value;
     std::string default_value;
     std::string description;
-    u32 flags = 0;
+    CVarFlags flags = CVarFlags::None;
 
     std::vector<std::string> allowed_values;
-    std::vector<u32> allowed_value_flags;
+    std::vector<CVarValueFlags> allowed_value_flags;
 
     std::function<bool()> requires_predicate;
     std::string requires_hint;
@@ -126,7 +156,7 @@ class Console {
     CVar* RegisterCVar(std::string name,
                        std::string default_value,
                        std::string description,
-                       u32 flags = 0,
+                       CVarFlags flags = CVarFlags::None,
                        std::function<void(const CVar&)> on_change = {});
     Command* RegisterCommand(std::string name, std::string description, CommandCallback callback);
 
@@ -162,7 +192,7 @@ class Console {
     void EnumerateCommands(std::string_view prefix, const std::function<void(Command&)>& visitor);
 
     // ─── Persistence ─────────────────────────────────────────────────
-    // SaveArchivedCvars writes every CVAR_ARCHIVE cvar whose value
+    // SaveArchivedCvars writes every archived cvar whose value
     // differs from its default to `path`, as `<name> <value>` lines
     // (values with spaces are double-quoted). Returns the line count
     // written, or -1 on file error.
@@ -271,8 +301,8 @@ inline std::vector<std::string_view> TokenizeLine(std::string_view line, std::st
 // Per-platform helpers. Snake_case is the Wave-A scaffold name; the
 // PascalCase versions are the dmonte names and forward to them.
 const char* current_platform_name();
-bool cvar_value_allowed_on_this_platform(u32 value_flags);
-inline bool CVarValueAllowedOnThisPlatform(u32 value_flags) {
+bool cvar_value_allowed_on_this_platform(CVarValueFlags value_flags);
+inline bool CVarValueAllowedOnThisPlatform(CVarValueFlags value_flags) {
     return cvar_value_allowed_on_this_platform(value_flags);
 }
 inline const char* CurrentPlatformName() {

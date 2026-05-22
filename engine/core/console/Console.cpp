@@ -135,7 +135,7 @@ Console& Console::Get() {
 CVar* Console::RegisterCVar(std::string name,
                             std::string default_value,
                             std::string description,
-                            u32 flags,
+                            CVarFlags flags,
                             std::function<void(const CVar&)> on_change) {
     auto [it, inserted] = cvars_.try_emplace(name);
     auto& v = it->second;
@@ -184,25 +184,25 @@ bool Console::SetCVarOverride(std::string_view name, std::string_view value) {
 // ─── Platform-visibility / per-value gate helpers (TU-local) ─────────────
 namespace {
 
-// A cvar carrying a CVAR_PLATFORM_* bit that doesn't match the current
+// A cvar carrying a platform bit that doesn't match the current
 // build is hidden from listing + autocomplete. Registration / set /
 // archive paths still work so a shared psynder.cfg round-trips cleanly
 // across hosts.
-inline bool cvar_visible_on_this_platform(u32 flags) {
+inline bool cvar_visible_on_this_platform(CVarFlags flags) {
 #if defined(__APPLE__)
-    if ((flags & CVAR_PLATFORM_WIN) != 0)
+    if ((flags & CVarFlags::PlatformWin) != 0u)
         return false;
-    if ((flags & CVAR_PLATFORM_LINUX) != 0)
+    if ((flags & CVarFlags::PlatformLinux) != 0u)
         return false;
 #elif defined(_WIN32)
-    if ((flags & CVAR_PLATFORM_MAC) != 0)
+    if ((flags & CVarFlags::PlatformMac) != 0u)
         return false;
-    if ((flags & CVAR_PLATFORM_LINUX) != 0)
+    if ((flags & CVarFlags::PlatformLinux) != 0u)
         return false;
 #else
-    if ((flags & CVAR_PLATFORM_MAC) != 0)
+    if ((flags & CVarFlags::PlatformMac) != 0u)
         return false;
-    if ((flags & CVAR_PLATFORM_WIN) != 0)
+    if ((flags & CVarFlags::PlatformWin) != 0u)
         return false;
 #endif
     return true;
@@ -215,7 +215,8 @@ inline bool cvar_visible_on_this_platform(u32 flags) {
 std::string allowed_values_for_current_platform_csv(const CVar& v) {
     std::string out;
     for (std::size_t i = 0; i < v.allowed_values.size(); ++i) {
-        u32 mask = (i < v.allowed_value_flags.size()) ? v.allowed_value_flags[i] : 0u;
+        CVarValueFlags mask =
+            (i < v.allowed_value_flags.size()) ? v.allowed_value_flags[i] : CVarValueFlags::Any;
         if (!cvar_value_allowed_on_this_platform(mask))
             continue;
         if (!out.empty())
@@ -225,31 +226,32 @@ std::string allowed_values_for_current_platform_csv(const CVar& v) {
     return out;
 }
 
-// Find the CVAR_VALUE_* mask aligned with `value` inside the cvar's
-// allowed set. Returns 0 (CVAR_VALUE_ANY) if the value isn't in the set.
-u32 value_flags_for(const CVar& v, std::string_view value) {
+// Find the value-platform mask aligned with `value` inside the cvar's
+// allowed set. Returns CVarValueFlags::Any if the value isn't in the set.
+CVarValueFlags value_flags_for(const CVar& v, std::string_view value) {
     for (std::size_t i = 0; i < v.allowed_values.size(); ++i) {
         if (v.allowed_values[i] != value)
             continue;
-        return (i < v.allowed_value_flags.size()) ? v.allowed_value_flags[i] : 0u;
+        return (i < v.allowed_value_flags.size()) ? v.allowed_value_flags[i]
+                                                  : CVarValueFlags::Any;
     }
-    return 0u;
+    return CVarValueFlags::Any;
 }
 
 // Human-readable platform list (e.g. "macOS", "Windows/Linux") for the
 // platform-mismatch error.
-std::string platforms_from_mask(u32 mask) {
+std::string platforms_from_mask(CVarValueFlags mask) {
     std::string s;
     auto add = [&](const char* p) {
         if (!s.empty())
             s += "/";
         s += p;
     };
-    if (mask & CVAR_VALUE_MAC)
+    if ((mask & CVarValueFlags::Mac) != 0u)
         add("macOS");
-    if (mask & CVAR_VALUE_WIN)
+    if ((mask & CVarValueFlags::Win) != 0u)
         add("Windows");
-    if (mask & CVAR_VALUE_LINUX)
+    if ((mask & CVarValueFlags::Linux) != 0u)
         add("Linux");
     return s;
 }
@@ -257,15 +259,15 @@ std::string platforms_from_mask(u32 mask) {
 }  // namespace
 
 // ─── Public free functions ───────────────────────────────────────────────
-bool cvar_value_allowed_on_this_platform(u32 value_flags) {
-    if (value_flags == 0u)
-        return true;  // CVAR_VALUE_ANY
+bool cvar_value_allowed_on_this_platform(CVarValueFlags value_flags) {
+    if (value_flags == CVarValueFlags::Any)
+        return true;
 #if defined(__APPLE__)
-    return (value_flags & CVAR_VALUE_MAC) != 0u;
+    return (value_flags & CVarValueFlags::Mac) != 0u;
 #elif defined(_WIN32)
-    return (value_flags & CVAR_VALUE_WIN) != 0u;
+    return (value_flags & CVarValueFlags::Win) != 0u;
 #else
-    return (value_flags & CVAR_VALUE_LINUX) != 0u;
+    return (value_flags & CVarValueFlags::Linux) != 0u;
 #endif
 }
 
@@ -528,12 +530,12 @@ ExecuteResult Console::Execute(std::string_view line) {
                 fmt::format("{} = \"{}\"  (default \"{}\")", v->name, v->value, v->default_value);
             return result;
         }
-        if ((v->flags & CVAR_READONLY) != 0) {
+        if ((v->flags & CVarFlags::ReadOnly) != 0u) {
             result.ok = false;
             result.error = fmt::format("cvar '{}' is read-only", v->name);
             return result;
         }
-        if ((v->flags & CVAR_CHEAT) != 0) {
+        if ((v->flags & CVarFlags::Cheat) != 0u) {
             auto* cheat = FindCVar("dev_cheats");
             if (cheat == nullptr || !cheat->GetBool()) {
                 result.ok = false;
@@ -608,7 +610,7 @@ ExecuteResult Console::Execute(std::string_view line) {
         // error so the interactive caller knows the value won't take
         // effect on this host.
         if (!v->allowed_value_flags.empty()) {
-            u32 mask = value_flags_for(*v, new_value);
+            CVarValueFlags mask = value_flags_for(*v, new_value);
             if (!cvar_value_allowed_on_this_platform(mask)) {
                 std::string platforms = platforms_from_mask(mask);
                 std::string available = allowed_values_for_current_platform_csv(*v);
@@ -1060,7 +1062,7 @@ int Console::SaveArchivedCvars(const std::string& path) {
 
     int n = 0;
     for (auto& [name, cv] : cvars_) {
-        if ((cv.flags & CVAR_ARCHIVE) == 0)
+        if ((cv.flags & CVarFlags::Archive) == 0u)
             continue;
         if (cv.value == cv.default_value)
             continue;
