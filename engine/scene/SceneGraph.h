@@ -92,6 +92,8 @@ class SceneGraph {
     std::vector<math::Mat4> world_;
     std::vector<u8> local_dirty_;
     std::vector<u8> effective_dirty_;
+    std::vector<u8> dirty_queued_;
+    std::vector<u32> dirty_roots_;
     std::vector<std::vector<u32>> nodes_by_depth_;
     std::vector<AnalyticSphereDesc> analytic_spheres_;
     u32 live_nodes_ = 0;

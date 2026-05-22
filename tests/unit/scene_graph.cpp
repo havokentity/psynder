@@ -52,6 +52,23 @@ TEST_CASE("scene graph: one parent edit updates the whole dirty subtree in one p
     REQUIRE_THAT(static_cast<double>(world.m[14]), Catch::Matchers::WithinAbs(3.0, 1e-5));
 }
 
+TEST_CASE("scene graph: one leaf edit skips clean static siblings", "[scene][scene_graph][dirty]") {
+    SceneGraph graph;
+    SceneNode root = graph.create_node(kInvalidSceneNode, trs({1.0f, 0.0f, 0.0f}));
+    SceneNode dynamic_leaf = graph.create_node(root, trs({0.0f, 2.0f, 0.0f}));
+    [[maybe_unused]] SceneNode static_leaf = graph.create_node(root, trs({0.0f, 0.0f, 3.0f}));
+    graph.update_world_transforms();
+
+    graph.set_local_transform(dynamic_leaf, trs({0.0f, 20.0f, 0.0f}));
+    SceneGraphUpdateStats stats = graph.update_world_transforms();
+    REQUIRE(stats.nodes_visited == 1u);
+    REQUIRE(stats.transforms_updated == 1u);
+
+    const math::Mat4& world = graph.world_matrix(dynamic_leaf);
+    REQUIRE_THAT(static_cast<double>(world.m[12]), Catch::Matchers::WithinAbs(1.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(world.m[13]), Catch::Matchers::WithinAbs(20.0, 1e-5));
+}
+
 TEST_CASE("scene graph: analytic spheres gather from cached world transforms",
           "[scene][scene_graph]") {
     SceneGraph graph;

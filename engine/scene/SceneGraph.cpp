@@ -3,10 +3,7 @@
 
 #include "scene/SceneGraph.h"
 
-#include "jobs/JobSystem.h"
-
 #include <algorithm>
-#include <atomic>
 #include <limits>
 
 namespace psynder::scene {
@@ -57,6 +54,8 @@ void SceneGraph::clear() {
     world_.clear();
     local_dirty_.clear();
     effective_dirty_.clear();
+    dirty_queued_.clear();
+    dirty_roots_.clear();
     nodes_by_depth_.clear();
     analytic_spheres_.clear();
     live_nodes_ = 0;
@@ -77,6 +76,8 @@ SceneNode SceneGraph::create_node(SceneNode parent, const LocalTransform& local)
     world_.push_back(local_[index]);
     local_dirty_.push_back(1u);
     effective_dirty_.push_back(1u);
+    dirty_queued_.push_back(1u);
+    dirty_roots_.push_back(index);
     if (nodes_by_depth_.size() <= depth_[index])
         nodes_by_depth_.resize(static_cast<usize>(depth_[index]) + 1u);
     nodes_by_depth_[depth_[index]].push_back(index);
@@ -105,6 +106,8 @@ bool SceneGraph::destroy_node(SceneNode node) {
     parent_[index] = kInvalidIndex;
     local_dirty_[index] = 0u;
     effective_dirty_[index] = 0u;
+    if (index < dirty_queued_.size())
+        dirty_queued_[index] = 0u;
     --live_nodes_;
     rebuild_depth_lists();
     return true;
@@ -169,45 +172,67 @@ const math::Mat4& SceneGraph::world_matrix(SceneNode node) const noexcept {
 }
 
 void SceneGraph::mark_dirty(SceneNode node) {
-    if (valid_index(node))
-        local_dirty_[node.index()] = 1u;
+    if (!valid_index(node))
+        return;
+    const u32 index = node.index();
+    local_dirty_[index] = 1u;
+    if (index < dirty_queued_.size() && dirty_queued_[index] != 0u)
+        return;
+    if (dirty_queued_.size() <= index)
+        dirty_queued_.resize(static_cast<usize>(index) + 1u, 0u);
+    dirty_queued_[index] = 1u;
+    dirty_roots_.push_back(index);
 }
 
 SceneGraphUpdateStats SceneGraph::update_world_transforms(u32 parallel_threshold) {
+    (void)parallel_threshold;
     SceneGraphUpdateStats stats{};
     stats.depth_levels = static_cast<u32>(nodes_by_depth_.size());
-    std::atomic<u32> updated{0u};
 
-    auto update_one = [&](u32 index) {
-        if (alive_[index] == 0u)
+    auto has_dirty_ancestor = [&](u32 index) {
+        for (u32 p = parent_[index]; p != kInvalidIndex; p = parent_[p]) {
+            if (alive_[p] != 0u && local_dirty_[p] != 0u)
+                return true;
+        }
+        return false;
+    };
+
+    auto update_subtree = [&](auto& self, u32 index, bool parent_dirty) -> void {
+        if (index >= alive_.size() || alive_[index] == 0u)
             return;
+        ++stats.nodes_visited;
         const u32 p = parent_[index];
-        const bool parent_dirty = p != kInvalidIndex && effective_dirty_[p] != 0u;
         const bool dirty = local_dirty_[index] != 0u || parent_dirty;
         effective_dirty_[index] = dirty ? 1u : 0u;
         if (dirty) {
             world_[index] = p == kInvalidIndex ? local_[index] : math::mul(world_[p], local_[index]);
             local_dirty_[index] = 0u;
-            updated.fetch_add(1u, std::memory_order_relaxed);
+            ++stats.transforms_updated;
         }
+        for (u32 child = first_child_[index]; child != kInvalidIndex; child = next_sibling_[child])
+            self(self, child, dirty);
     };
 
-    for (const std::vector<u32>& level : nodes_by_depth_) {
-        stats.nodes_visited += static_cast<u32>(level.size());
-        if (level.size() >= parallel_threshold) {
-            if (jobs::JobSystem::Get().worker_count() == 0u)
-                jobs::JobSystem::Get().start(0);
-            jobs::JobSystem::Get().parallel_for(0, level.size(), 64, [&](usize begin, usize end) {
-                for (usize i = begin; i < end; ++i)
-                    update_one(level[i]);
-            });
-        } else {
-            for (u32 index : level)
-                update_one(index);
-        }
+    for (u32 index : dirty_roots_) {
+        if (index >= alive_.size() || alive_[index] == 0u || local_dirty_[index] == 0u)
+            continue;
+        if (has_dirty_ancestor(index))
+            continue;
+        update_subtree(update_subtree, index, false);
     }
 
-    stats.transforms_updated = updated.load(std::memory_order_relaxed);
+    for (u32 index : dirty_roots_) {
+        if (index < dirty_queued_.size())
+            dirty_queued_[index] = 0u;
+    }
+    dirty_roots_.clear();
+
+    if (stats.transforms_updated == 0u) {
+        for (u32 index = 0; index < local_dirty_.size(); ++index) {
+            if (alive_[index] != 0u && local_dirty_[index] != 0u)
+                mark_dirty(make_handle(index, generation_[index]));
+        }
+    }
     return stats;
 }
 
