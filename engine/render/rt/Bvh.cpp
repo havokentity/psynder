@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -37,6 +38,12 @@ using detail::kSahBuckets;
 using detail::kTraversalCost;
 
 namespace {
+
+u64 telemetry_now_ns() noexcept {
+    using Clock = std::chrono::steady_clock;
+    return static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
+}
 
 // Compute primitive AABB + centroid for the source triangles.
 struct PrimRef {
@@ -707,6 +714,7 @@ void Tlas::reserve(u32 count) {
 }
 
 void Tlas::build(const InstanceDesc* instances, u32 count) {
+    const u64 telemetry_start = telemetry_now_ns();
     auto& s = detail::state_of(*this);
     s.instances.assign(instances, instances + count);
     s.blas_states.resize(count);
@@ -718,6 +726,8 @@ void Tlas::build(const InstanceDesc* instances, u32 count) {
     if (count == 0) {
         s.as_built_cost = 0.0f;
         s.refit_cost = 0.0f;
+        s.telemetry_total_ns += telemetry_now_ns() - telemetry_start;
+        ++s.telemetry_build_count;
         return;
     }
 
@@ -753,13 +763,18 @@ void Tlas::build(const InstanceDesc* instances, u32 count) {
     rebuild_wide_from_binary(s.binary_nodes, s.wide_nodes);
     s.as_built_cost = tree_sah_cost(s.binary_nodes);
     s.refit_cost = s.as_built_cost;
+    s.telemetry_total_ns += telemetry_now_ns() - telemetry_start;
+    ++s.telemetry_build_count;
 }
 
 bool Tlas::update_instance_transform(u32 instance, const math::Mat4& transform) {
+    const u64 telemetry_start = telemetry_now_ns();
     auto& s = detail::state_of(*this);
     if (instance >= s.instances.size())
         return false;
     s.instances[instance].transform = transform;
+    s.telemetry_total_ns += telemetry_now_ns() - telemetry_start;
+    ++s.telemetry_transform_update_count;
     return true;
 }
 
@@ -769,6 +784,7 @@ u32 Tlas::instance_count() const noexcept {
 }
 
 void Tlas::refit() {
+    const u64 telemetry_start = telemetry_now_ns();
     auto& s = detail::state_of(*this);
     const u32 count = static_cast<u32>(s.instances.size());
     if (count == 0 || s.binary_nodes.empty())
@@ -813,6 +829,8 @@ void Tlas::refit() {
     refit_node(refit_node, 0);
     rebuild_wide_from_binary(s.binary_nodes, s.wide_nodes);
     s.refit_cost = tree_sah_cost(s.binary_nodes);
+    s.telemetry_total_ns += telemetry_now_ns() - telemetry_start;
+    ++s.telemetry_refit_count;
 }
 
 Hit Tlas::intersect(const Ray& ray) const {

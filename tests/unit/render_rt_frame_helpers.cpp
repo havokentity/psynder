@@ -198,6 +198,89 @@ TEST_CASE("render rt frame renderer: material cast flag controls shadow packets"
     REQUIRE(shadowed < unshadowed);
 }
 
+TEST_CASE("render rt frame renderer: telemetry reports fixed stage ids and counters",
+          "[render_rt][frame_helpers][telemetry]") {
+    render::rt::Triangle tri{
+        math::Vec3{-1.0f, -1.0f, 5.0f},
+        math::Vec3{1.0f, -1.0f, 5.0f},
+        math::Vec3{0.0f, 1.0f, 5.0f},
+    };
+    render::rt::Bvh8 blas;
+    blas.build(&tri, 1u);
+    render::rt::Tlas::InstanceDesc instance{&blas, math::identity4()};
+    render::rt::Tlas tlas;
+    tlas.build(&instance, 1u);
+    REQUIRE(tlas.update_instance_transform(0u, math::identity4()));
+    tlas.refit();
+
+    render::rt::FrameLight light{};
+    light.position = {0.0f, 0.0f, 0.0f};
+    light.intensity = 2.0f;
+    light.range = 10.0f;
+
+    render::rt::FrameRenderInput input{};
+    input.tlas = &tlas;
+    input.camera = render::rt::make_frame_camera({0.0f, 0.0f, 0.0f},
+                                                 {0.0f, 0.0f, 1.0f},
+                                                 1.0f,
+                                                 30.0f * math::kDegToRad);
+    input.lights = &light;
+    input.light_count = 1u;
+    input.materials.default_rgba8 = 0xFFFFFFFFu;
+    input.materials.default_reflectivity = 1.0f;
+
+    render::rt::FrameRenderConfig config{};
+    config.output_width = 8u;
+    config.output_height = 8u;
+    config.trace_width = 8u;
+    config.trace_height = 8u;
+    config.tile_size = 4u;
+    config.parallel = false;
+    config.ambient_occlusion = true;
+    config.ao_samples = 1u;
+    config.ao_denoise = true;
+    config.reflection_bounces = 1u;
+
+    std::array<u32, 8u * 8u> pixels{};
+    render::rt::FrameRenderStats stats{};
+    render::rt::FrameRenderer renderer;
+    renderer.render(input, config, pixels.data(), &stats);
+
+    const auto counter = [&](render::rt::FrameTelemetryCounter id) -> u64 {
+        return stats.telemetry.counters[static_cast<usize>(id)];
+    };
+    const auto stage_ns = [&](render::rt::FrameTelemetryStage id) -> u64 {
+        return stats.telemetry.stage_ns[static_cast<usize>(id)];
+    };
+
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::OutputPixels) == 64u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::TracePixels) == 64u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::Tiles) == 4u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::TilePasses) >= 5u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::TlasInstances) == 1u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::TlasNodes) > 0u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::TlasBuilds) == 1u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::TlasRefits) == 1u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::TlasTransformUpdates) == 1u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::PrimaryRays) == 64u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::HitPixels) > 0u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::ReflectionRays) > 0u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::AoRays) > 0u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::AoShadowPackets) > 0u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::DirectShadowRays) > 0u);
+    REQUIRE(counter(render::rt::FrameTelemetryCounter::DirectShadowPackets) > 0u);
+
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::SceneInputPrep) > 0u);
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::TlasRefitUpdate) > 0u);
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::PrimaryTrace) > 0u);
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::ReflectionBounces) > 0u);
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::AmbientOcclusion) > 0u);
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::DenoiseAo) > 0u);
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::DirectLightingShadowPackets) > 0u);
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::CompositeUpsample) > 0u);
+    REQUIRE(stage_ns(render::rt::FrameTelemetryStage::WorkerTileScheduling) > 0u);
+}
+
 TEST_CASE("render rt frame scheduler: explicit row batch clamps to work",
           "[render_rt][frame_helpers]") {
     render::rt::FrameRowScheduleConfig config{};

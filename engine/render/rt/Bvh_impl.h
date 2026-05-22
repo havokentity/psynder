@@ -38,6 +38,10 @@ struct TlasState {
     std::vector<Bvh8Node> wide_nodes;
     f32 as_built_cost = 0.0f;
     f32 refit_cost = 0.0f;
+    u64 telemetry_total_ns = 0;
+    u64 telemetry_build_count = 0;
+    u64 telemetry_refit_count = 0;
+    u64 telemetry_transform_update_count = 0;
 };
 
 // Defined in Bvh.cpp. Looks up (or lazily creates) state keyed by `this`.

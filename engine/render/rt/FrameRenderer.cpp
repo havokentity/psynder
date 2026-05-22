@@ -3,6 +3,7 @@
 
 #include "render/rt/FrameRenderer.h"
 
+#include "Bvh_impl.h"
 #include "core/console/Console.h"
 #include "core/hardware/CpuFeatures.h"
 #include "jobs/JobSystem.h"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <string>
 
@@ -33,6 +35,55 @@ console::CVar* g_frame_reflection_bounces = nullptr;
 
 inline constexpr u32 kMaxReflectionBounces = 8u;
 inline constexpr u32 kStackPacketLights = 16u;
+
+usize telemetry_index(FrameTelemetryStage stage) noexcept {
+    return static_cast<usize>(stage);
+}
+
+usize telemetry_index(FrameTelemetryCounter counter) noexcept {
+    return static_cast<usize>(counter);
+}
+
+u64 telemetry_now_ns() noexcept {
+    using Clock = std::chrono::steady_clock;
+    return static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
+}
+
+void telemetry_add_stage(FrameRenderTelemetry* telemetry,
+                         FrameTelemetryStage stage,
+                         u64 nanoseconds) noexcept {
+    if (telemetry)
+        telemetry->stage_ns[telemetry_index(stage)] += nanoseconds;
+}
+
+void telemetry_add_counter(FrameRenderTelemetry* telemetry,
+                           FrameTelemetryCounter counter,
+                           u64 value) noexcept {
+    if (telemetry)
+        telemetry->counters[telemetry_index(counter)] += value;
+}
+
+void telemetry_set_counter(FrameRenderTelemetry* telemetry,
+                           FrameTelemetryCounter counter,
+                           u64 value) noexcept {
+    if (telemetry)
+        telemetry->counters[telemetry_index(counter)] = value;
+}
+
+struct TelemetryStageTimer {
+    FrameRenderTelemetry* telemetry = nullptr;
+    FrameTelemetryStage stage = FrameTelemetryStage::SceneInputPrep;
+    u64 start_ns = 0;
+
+    TelemetryStageTimer(FrameRenderTelemetry* in_telemetry, FrameTelemetryStage in_stage) noexcept
+        : telemetry(in_telemetry), stage(in_stage), start_ns(in_telemetry ? telemetry_now_ns() : 0) {}
+
+    ~TelemetryStageTimer() {
+        if (telemetry)
+            telemetry_add_stage(telemetry, stage, telemetry_now_ns() - start_ns);
+    }
+};
 
 PSY_FORCEINLINE u32 pack_rgba8(u32 r, u32 g, u32 b) noexcept {
     return (r & 0xFFu) | ((g & 0xFFu) << 8) | ((b & 0xFFu) << 16) | (0xFFu << 24);
@@ -60,12 +111,25 @@ f32 hash_unit_float(u32 x) noexcept {
 }
 
 template <class Fn>
-u32 parallel_tiles(u32 width, u32 height, const FrameRenderConfig& config, Fn&& body) {
+u32 parallel_tiles(u32 width,
+                   u32 height,
+                   const FrameRenderConfig& config,
+                   Fn&& body,
+                   FrameRenderTelemetry* telemetry = nullptr) {
+    const u64 schedule_start = telemetry ? telemetry_now_ns() : 0u;
     const u32 tile = std::max(1u, config.tile_size);
     const u32 tiles_x = (width + tile - 1u) / tile;
     const u32 tiles_y = (height + tile - 1u) / tile;
     const u32 tile_count = tiles_x * tiles_y;
     if (!config.parallel || tile_count <= 1u) {
+        if (telemetry) {
+            telemetry_add_stage(telemetry,
+                                FrameTelemetryStage::WorkerTileScheduling,
+                                telemetry_now_ns() - schedule_start);
+            telemetry_add_counter(telemetry, FrameTelemetryCounter::TilePasses, 1u);
+            telemetry_add_counter(telemetry, FrameTelemetryCounter::TileWorkItems, tile_count);
+            telemetry_add_counter(telemetry, FrameTelemetryCounter::WorkerJobs, 1u);
+        }
         body(0u, 0u, width, height);
         return 1u;
     }
@@ -77,6 +141,14 @@ u32 parallel_tiles(u32 width, u32 height, const FrameRenderConfig& config, Fn&& 
     const u32 tile_batch = std::max(1u, config.tile_batch);
     std::atomic<u32> next_tile;
     next_tile.store(0u, std::memory_order_relaxed);
+    if (telemetry) {
+        telemetry_add_stage(telemetry,
+                            FrameTelemetryStage::WorkerTileScheduling,
+                            telemetry_now_ns() - schedule_start);
+        telemetry_add_counter(telemetry, FrameTelemetryCounter::TilePasses, 1u);
+        telemetry_add_counter(telemetry, FrameTelemetryCounter::TileWorkItems, tile_count);
+        telemetry_add_counter(telemetry, FrameTelemetryCounter::WorkerJobs, active_jobs);
+    }
     jobs::JobSystem::Get().parallel_for(0, active_jobs, 1, [&](usize, usize) {
         for (;;) {
             const u32 first_tile = next_tile.fetch_add(tile_batch, std::memory_order_relaxed);
@@ -459,13 +531,16 @@ math::Vec3 trace_reflection_bounces(const FrameRenderInput& input,
                                     u32 bounces,
                                     u32 light_count,
                                     f32 attenuation_quadratic,
-                                    f32 reflection_scale) {
+                                    f32 reflection_scale,
+                                    u64* traced_rays) {
     ReflectionSample samples[kMaxReflectionBounces]{};
     u32 sample_count = 0;
     math::Vec3 color{};
 
     const u32 max_bounces = std::clamp(bounces, 1u, kMaxReflectionBounces);
     for (u32 depth = 0; depth < max_bounces; ++depth) {
+        if (traced_rays)
+            ++*traced_rays;
         const SceneTraceHit hit = trace_scene(input, spheres, ray);
         if (!hit.hit) {
             color = rgba8_to_rgb(sample_sky(ray.direction));
@@ -901,6 +976,7 @@ void FrameRenderer::render(const FrameRenderInput& input,
                            FrameRenderStats* stats) {
     if (stats)
         *stats = {};
+    FrameRenderTelemetry* telemetry = stats ? &stats->telemetry : nullptr;
     if ((!input.tlas && !input.scene_graph) || !output_rgba8 || config.output_width == 0u ||
         config.output_height == 0u)
         return;
@@ -909,162 +985,282 @@ void FrameRenderer::render(const FrameRenderInput& input,
     const u32 trace_h = config.trace_height > 0u ? config.trace_height : config.output_height;
     const u32 light_count = input.lights ? input.light_count : 0u;
     const u32 reflection_bounces = std::min(config.reflection_bounces, kMaxReflectionBounces);
-    const bool reflections_enabled =
-        reflection_bounces > 0u && material_table_has_reflectors(input.materials);
-    if (input.scene_graph)
-        input.scene_graph->gather_analytic_spheres(analytic_spheres_);
-    else
-        analytic_spheres_.clear();
-    build_rt_shadow_instance_mask(input.materials, rt_shadow_instance_mask_);
+    const usize pixels = static_cast<usize>(trace_w) * trace_h;
+    const bool reflections_enabled = [&]() {
+        TelemetryStageTimer timer{telemetry, FrameTelemetryStage::SceneInputPrep};
+        const bool enabled = reflection_bounces > 0u && material_table_has_reflectors(input.materials);
+        if (input.scene_graph)
+            input.scene_graph->gather_analytic_spheres(analytic_spheres_);
+        else
+            analytic_spheres_.clear();
+        build_rt_shadow_instance_mask(input.materials, rt_shadow_instance_mask_);
+        hits_.assign(pixels, PixelHit{});
+        accum_.assign(pixels * 3u, 0.0f);
+        trace_pixels_.assign(pixels, 0u);
+
+        if (config.ambient_occlusion) {
+            ao_raw_.assign(pixels, 1.0f);
+            ao_filtered_.assign(pixels, 1.0f);
+            hit_depth_.assign(pixels, 1.0e6f);
+            hit_normals_.assign(pixels * 3u, 0.0f);
+        }
+        return enabled;
+    }();
     const std::span<const u8> rt_shadow_mask{rt_shadow_instance_mask_.data(),
                                              rt_shadow_instance_mask_.size()};
-    const usize pixels = static_cast<usize>(trace_w) * trace_h;
-    hits_.assign(pixels, PixelHit{});
-    accum_.assign(pixels * 3u, 0.0f);
-    trace_pixels_.assign(pixels, 0u);
 
-    if (config.ambient_occlusion) {
-        ao_raw_.assign(pixels, 1.0f);
-        ao_filtered_.assign(pixels, 1.0f);
-        hit_depth_.assign(pixels, 1.0e6f);
-        hit_normals_.assign(pixels * 3u, 0.0f);
+    telemetry_set_counter(telemetry,
+                          FrameTelemetryCounter::OutputPixels,
+                          static_cast<u64>(config.output_width) * config.output_height);
+    telemetry_set_counter(telemetry, FrameTelemetryCounter::TracePixels, static_cast<u64>(pixels));
+    telemetry_set_counter(telemetry, FrameTelemetryCounter::TileSize, config.tile_size);
+    telemetry_set_counter(telemetry, FrameTelemetryCounter::TileBatch, config.tile_batch);
+    telemetry_set_counter(telemetry, FrameTelemetryCounter::Lights, light_count);
+    telemetry_set_counter(telemetry,
+                          FrameTelemetryCounter::AnalyticSpheres,
+                          static_cast<u64>(analytic_spheres_.size()));
+    telemetry_set_counter(telemetry, FrameTelemetryCounter::PrimaryRays, static_cast<u64>(pixels));
+
+    if (telemetry && input.tlas) {
+        const detail::TlasState& tlas_state = detail::state_of(*input.tlas);
+        const u64 total_ns = tlas_state.telemetry_total_ns;
+        const u64 build_count = tlas_state.telemetry_build_count;
+        const u64 refit_count = tlas_state.telemetry_refit_count;
+        const u64 update_count = tlas_state.telemetry_transform_update_count;
+        telemetry_add_stage(telemetry,
+                            FrameTelemetryStage::TlasRefitUpdate,
+                            total_ns >= observed_tlas_telemetry_ns_ ? total_ns - observed_tlas_telemetry_ns_
+                                                                    : total_ns);
+        telemetry_add_counter(telemetry,
+                              FrameTelemetryCounter::TlasBuilds,
+                              build_count >= observed_tlas_builds_ ? build_count - observed_tlas_builds_
+                                                                   : build_count);
+        telemetry_add_counter(telemetry,
+                              FrameTelemetryCounter::TlasRefits,
+                              refit_count >= observed_tlas_refits_ ? refit_count - observed_tlas_refits_
+                                                                   : refit_count);
+        telemetry_add_counter(telemetry,
+                              FrameTelemetryCounter::TlasTransformUpdates,
+                              update_count >= observed_tlas_transform_updates_
+                                  ? update_count - observed_tlas_transform_updates_
+                                  : update_count);
+        telemetry_set_counter(telemetry,
+                              FrameTelemetryCounter::TlasInstances,
+                              static_cast<u64>(tlas_state.instances.size()));
+        telemetry_set_counter(telemetry,
+                              FrameTelemetryCounter::TlasNodes,
+                              static_cast<u64>(tlas_state.wide_nodes.size()));
+        observed_tlas_telemetry_ns_ = total_ns;
+        observed_tlas_builds_ = build_count;
+        observed_tlas_refits_ = refit_count;
+        observed_tlas_transform_updates_ = update_count;
     }
 
     const u32 tile = std::max(1u, config.tile_size);
     const u32 tile_count = ((trace_w + tile - 1u) / tile) * ((trace_h + tile - 1u) / tile);
-    const u32 scheduled_jobs =
-        parallel_tiles(trace_w, trace_h, config, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
-            for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = x0; x < x1; ++x) {
-                    const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(trace_w);
-                    const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(trace_h);
-                    const Ray ray = primary_ray(input.camera, nx, ny);
-                    const SceneTraceHit h = trace_scene(input, analytic_spheres_, ray);
+    telemetry_set_counter(telemetry, FrameTelemetryCounter::Tiles, tile_count);
 
-                    const usize idx = static_cast<usize>(y) * trace_w + x;
-                    PixelHit ph{};
-                    ph.hit = h.hit;
-                    if (!h.hit) {
-                        trace_pixels_[idx] = sample_sky(ray.direction);
-                        if (config.ambient_occlusion) {
-                            hit_depth_[idx] = 1.0e6f;
-                            hit_normals_[idx * 3u + 1u] = 1.0f;
-                        }
-                    } else {
-                        ph.r = h.rgb.x;
-                        ph.g = h.rgb.y;
-                        ph.b = h.rgb.z;
-                        ph.position = {ray.origin.x + ray.direction.x * h.t,
-                                       ray.origin.y + ray.direction.y * h.t,
-                                       ray.origin.z + ray.direction.z * h.t};
-                        ph.normal = math::normalize(h.normal);
-                        if (math::dot(ph.normal, ray.direction) > 0.0f)
-                            ph.normal = math::mul(ph.normal, -1.0f);
-                        ph.reflectivity = std::clamp(h.reflectivity, 0.0f, 1.0f);
-                        if (config.ambient_occlusion) {
-                            hit_depth_[idx] = h.t;
-                            hit_normals_[idx * 3u + 0u] = ph.normal.x;
-                            hit_normals_[idx * 3u + 1u] = ph.normal.y;
-                            hit_normals_[idx * 3u + 2u] = ph.normal.z;
-                        }
-                        if (reflections_enabled && ph.reflectivity > 0.001f) {
-                            const math::Vec3 rdir = math::normalize(reflect(ray.direction, ph.normal));
-                            Ray rray{};
-                            rray.origin = {ph.position.x + ph.normal.x * 1.0e-3f,
-                                           ph.position.y + ph.normal.y * 1.0e-3f,
-                                           ph.position.z + ph.normal.z * 1.0e-3f};
-                            rray.direction = rdir;
-                            rray.t_min = 1.0e-3f;
-                            rray.t_max = 1.0e3f;
-                            math::Vec3 reflected{};
-                            if (reflection_bounces == 1u) {
-                                const SceneTraceHit rh = trace_scene(input, analytic_spheres_, rray);
-                                if (!rh.hit) {
-                                    reflected = rgba8_to_rgb(sample_sky(rdir));
-                                } else {
-                                    math::Vec3 rn = math::normalize(rh.normal);
-                                    if (math::dot(rn, rray.direction) > 0.0f)
-                                        rn = math::mul(rn, -1.0f);
-                                    const math::Vec3 rpos = {rray.origin.x + rray.direction.x * rh.t,
-                                                             rray.origin.y + rray.direction.y * rh.t,
-                                                             rray.origin.z + rray.direction.z * rh.t};
-                                    reflected =
-                                        shade_shadowed_direct_packet(input,
-                                                                     analytic_spheres_,
-                                                                     rt_shadow_mask,
-                                                                     rpos,
-                                                                     rn,
-                                                                     rh.rgb,
-                                                                     light_count,
-                                                                     config.attenuation_quadratic);
-                                }
-                            } else {
-                                reflected = trace_reflection_bounces(input,
-                                                                     analytic_spheres_,
-                                                                     rt_shadow_mask,
-                                                                     rray,
-                                                                     reflection_bounces,
-                                                                     light_count,
-                                                                     config.attenuation_quadratic,
-                                                                     config.reflection_scale);
+    u32 scheduled_jobs = 0;
+    {
+        TelemetryStageTimer timer{telemetry, FrameTelemetryStage::PrimaryTrace};
+        scheduled_jobs = parallel_tiles(
+            trace_w,
+            trace_h,
+            config,
+            [&](u32 x0, u32 y0, u32 x1, u32 y1) {
+                for (u32 y = y0; y < y1; ++y) {
+                    for (u32 x = x0; x < x1; ++x) {
+                        const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(trace_w);
+                        const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(trace_h);
+                        const Ray ray = primary_ray(input.camera, nx, ny);
+                        const SceneTraceHit h = trace_scene(input, analytic_spheres_, ray);
+
+                        const usize idx = static_cast<usize>(y) * trace_w + x;
+                        PixelHit ph{};
+                        ph.hit = h.hit;
+                        if (!h.hit) {
+                            trace_pixels_[idx] = sample_sky(ray.direction);
+                            if (config.ambient_occlusion) {
+                                hit_depth_[idx] = 1.0e6f;
+                                hit_normals_[idx * 3u + 1u] = 1.0f;
                             }
-                            ph.refl_r = reflected.x;
-                            ph.refl_g = reflected.y;
-                            ph.refl_b = reflected.z;
+                        } else {
+                            ph.r = h.rgb.x;
+                            ph.g = h.rgb.y;
+                            ph.b = h.rgb.z;
+                            ph.position = {ray.origin.x + ray.direction.x * h.t,
+                                           ray.origin.y + ray.direction.y * h.t,
+                                           ray.origin.z + ray.direction.z * h.t};
+                            ph.normal = math::normalize(h.normal);
+                            if (math::dot(ph.normal, ray.direction) > 0.0f)
+                                ph.normal = math::mul(ph.normal, -1.0f);
+                            ph.reflectivity = std::clamp(h.reflectivity, 0.0f, 1.0f);
+                            if (config.ambient_occlusion) {
+                                hit_depth_[idx] = h.t;
+                                hit_normals_[idx * 3u + 0u] = ph.normal.x;
+                                hit_normals_[idx * 3u + 1u] = ph.normal.y;
+                                hit_normals_[idx * 3u + 2u] = ph.normal.z;
+                            }
                         }
+                        hits_[idx] = ph;
                     }
-                    hits_[idx] = ph;
                 }
-            }
-        });
+            },
+            telemetry);
+    }
+
+    if (reflections_enabled) {
+        std::atomic<u64> reflection_rays{0u};
+        TelemetryStageTimer timer{telemetry, FrameTelemetryStage::ReflectionBounces};
+        parallel_tiles(
+            trace_w,
+            trace_h,
+            config,
+            [&](u32 x0, u32 y0, u32 x1, u32 y1) {
+                u64 local_reflection_rays = 0;
+                for (u32 y = y0; y < y1; ++y) {
+                    for (u32 x = x0; x < x1; ++x) {
+                        const usize idx = static_cast<usize>(y) * trace_w + x;
+                        PixelHit& ph = hits_[idx];
+                        if (!ph.hit || ph.reflectivity <= 0.001f)
+                            continue;
+
+                        const f32 nx = (static_cast<f32>(x) + 0.5f) / static_cast<f32>(trace_w);
+                        const f32 ny = (static_cast<f32>(y) + 0.5f) / static_cast<f32>(trace_h);
+                        const Ray primary = primary_ray(input.camera, nx, ny);
+                        const math::Vec3 rdir = math::normalize(reflect(primary.direction, ph.normal));
+                        Ray rray{};
+                        rray.origin = {ph.position.x + ph.normal.x * 1.0e-3f,
+                                       ph.position.y + ph.normal.y * 1.0e-3f,
+                                       ph.position.z + ph.normal.z * 1.0e-3f};
+                        rray.direction = rdir;
+                        rray.t_min = 1.0e-3f;
+                        rray.t_max = 1.0e3f;
+
+                        math::Vec3 reflected{};
+                        if (reflection_bounces == 1u) {
+                            if (telemetry)
+                                ++local_reflection_rays;
+                            const SceneTraceHit rh = trace_scene(input, analytic_spheres_, rray);
+                            if (!rh.hit) {
+                                reflected = rgba8_to_rgb(sample_sky(rdir));
+                            } else {
+                                math::Vec3 rn = math::normalize(rh.normal);
+                                if (math::dot(rn, rray.direction) > 0.0f)
+                                    rn = math::mul(rn, -1.0f);
+                                const math::Vec3 rpos = {rray.origin.x + rray.direction.x * rh.t,
+                                                         rray.origin.y + rray.direction.y * rh.t,
+                                                         rray.origin.z + rray.direction.z * rh.t};
+                                reflected = shade_shadowed_direct_packet(input,
+                                                                         analytic_spheres_,
+                                                                         rt_shadow_mask,
+                                                                         rpos,
+                                                                         rn,
+                                                                         rh.rgb,
+                                                                         light_count,
+                                                                         config.attenuation_quadratic);
+                            }
+                        } else {
+                            reflected = trace_reflection_bounces(input,
+                                                                 analytic_spheres_,
+                                                                 rt_shadow_mask,
+                                                                 rray,
+                                                                 reflection_bounces,
+                                                                 light_count,
+                                                                 config.attenuation_quadratic,
+                                                                 config.reflection_scale,
+                                                                 telemetry ? &local_reflection_rays
+                                                                           : nullptr);
+                        }
+                        ph.refl_r = reflected.x;
+                        ph.refl_g = reflected.y;
+                        ph.refl_b = reflected.z;
+                    }
+                }
+                if (telemetry && local_reflection_rays > 0u)
+                    reflection_rays.fetch_add(local_reflection_rays, std::memory_order_relaxed);
+            },
+            telemetry);
+        telemetry_add_counter(telemetry,
+                              FrameTelemetryCounter::ReflectionRays,
+                              reflection_rays.load(std::memory_order_relaxed));
+    }
 
     if (config.ambient_occlusion) {
         const u32 ao_samples = std::clamp(config.ao_samples, 1u, 8u);
         const f32 ao_radius = std::max(0.01f, config.ao_radius);
-        parallel_tiles(trace_w, trace_h, config, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
-            ShadowPacket8 pkt{};
-            u32 in_pkt = 0;
-            u32 pkt_idx[8]{};
-            bool pkt_real[8]{};
+        std::atomic<u64> ao_rays{0u};
+        std::atomic<u64> ao_packets{0u};
+        {
+            TelemetryStageTimer timer{telemetry, FrameTelemetryStage::AmbientOcclusion};
+            parallel_tiles(
+                trace_w,
+                trace_h,
+                config,
+                [&](u32 x0, u32 y0, u32 x1, u32 y1) {
+                    u64 local_ao_rays = 0;
+                    u64 local_ao_packets = 0;
+                    ShadowPacket8 pkt{};
+                    u32 in_pkt = 0;
+                    u32 pkt_idx[8]{};
+                    bool pkt_real[8]{};
 
-            auto dispatch_ao = [&]() {
-                for (u32 i = in_pkt; i < 8u; ++i) {
-                    fill_dummy_ray(pkt.rays[i]);
-                    pkt_real[i] = false;
-                }
-                trace_scene_shadow_packet(input, analytic_spheres_, rt_shadow_mask, pkt);
-                const f32 weight = 1.0f / static_cast<f32>(ao_samples);
-                for (u32 i = 0; i < 8u; ++i) {
-                    if (pkt_real[i] && !pkt.occluded[i])
-                        ao_raw_[pkt_idx[i]] += weight;
-                }
-                in_pkt = 0;
-            };
+                    auto dispatch_ao = [&]() {
+                        const u32 real_rays = in_pkt;
+                        for (u32 i = in_pkt; i < 8u; ++i) {
+                            fill_dummy_ray(pkt.rays[i]);
+                            pkt_real[i] = false;
+                        }
+                        if (telemetry) {
+                            ++local_ao_packets;
+                            local_ao_rays += real_rays;
+                        }
+                        trace_scene_shadow_packet(input, analytic_spheres_, rt_shadow_mask, pkt);
+                        const f32 weight = 1.0f / static_cast<f32>(ao_samples);
+                        for (u32 i = 0; i < 8u; ++i) {
+                            if (pkt_real[i] && !pkt.occluded[i])
+                                ao_raw_[pkt_idx[i]] += weight;
+                        }
+                        in_pkt = 0;
+                    };
 
-            for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = x0; x < x1; ++x) {
-                    const usize px = static_cast<usize>(y) * trace_w + x;
-                    const PixelHit& ph = hits_[px];
-                    if (!ph.hit)
-                        continue;
-                    ao_raw_[px] = 0.0f;
-                    for (u32 si = 0; si < ao_samples; ++si) {
-                        u32& idx = in_pkt;
-                        pkt.rays[idx] =
-                            ao_ray(ph.position, ph.normal, static_cast<u32>(px), si, ao_radius);
-                        pkt_idx[idx] = static_cast<u32>(px);
-                        pkt_real[idx] = true;
-                        ++idx;
-                        if (idx == 8u)
-                            dispatch_ao();
+                    for (u32 y = y0; y < y1; ++y) {
+                        for (u32 x = x0; x < x1; ++x) {
+                            const usize px = static_cast<usize>(y) * trace_w + x;
+                            const PixelHit& ph = hits_[px];
+                            if (!ph.hit)
+                                continue;
+                            ao_raw_[px] = 0.0f;
+                            for (u32 si = 0; si < ao_samples; ++si) {
+                                u32& idx = in_pkt;
+                                pkt.rays[idx] =
+                                    ao_ray(ph.position, ph.normal, static_cast<u32>(px), si, ao_radius);
+                                pkt_idx[idx] = static_cast<u32>(px);
+                                pkt_real[idx] = true;
+                                ++idx;
+                                if (idx == 8u)
+                                    dispatch_ao();
+                            }
+                        }
                     }
-                }
-            }
-            if (in_pkt > 0u)
-                dispatch_ao();
-        });
+                    if (in_pkt > 0u)
+                        dispatch_ao();
+                    if (telemetry && local_ao_rays > 0u)
+                        ao_rays.fetch_add(local_ao_rays, std::memory_order_relaxed);
+                    if (telemetry && local_ao_packets > 0u)
+                        ao_packets.fetch_add(local_ao_packets, std::memory_order_relaxed);
+                },
+                telemetry);
+        }
+        telemetry_add_counter(telemetry,
+                              FrameTelemetryCounter::AoRays,
+                              ao_rays.load(std::memory_order_relaxed));
+        telemetry_add_counter(telemetry,
+                              FrameTelemetryCounter::AoShadowPackets,
+                              ao_packets.load(std::memory_order_relaxed));
 
         if (config.ao_denoise) {
+            TelemetryStageTimer timer{telemetry, FrameTelemetryStage::DenoiseAo};
             DenoiseInput ao_in{};
             ao_in.shadow_visibility = ao_raw_.data();
             ao_in.depth = hit_depth_.data();
@@ -1073,155 +1269,192 @@ void FrameRenderer::render(const FrameRenderInput& input,
             ao_in.height = trace_h;
             denoise_shadows(ao_in, ao_filtered_.data());
         } else {
+            TelemetryStageTimer timer{telemetry, FrameTelemetryStage::DenoiseAo};
             ao_filtered_ = ao_raw_;
         }
     }
 
-    parallel_tiles(trace_w, trace_h, config, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
-        auto shade_tile = [&](auto& pkts, auto& in_pkt, auto& pkt_idx, auto& pkt_real) {
-            auto dispatch = [&](u32 li) {
-                ShadowPacket8& pkt = pkts[li];
-                const FrameLight& light = input.lights[li];
-                for (u32 i = in_pkt[li]; i < 8u; ++i) {
-                    fill_dummy_ray(pkt.rays[i]);
-                    pkt_real[static_cast<usize>(li) * 8u + i] = 0u;
-                }
-                trace_scene_shadow_packet(input, analytic_spheres_, rt_shadow_mask, pkt);
-                for (u32 i = 0; i < 8u; ++i) {
-                    if (pkt_real[static_cast<usize>(li) * 8u + i] == 0u || pkt.occluded[i])
-                        continue;
-                    const usize px = pkt_idx[static_cast<usize>(li) * 8u + i];
-                    const PixelHit& ph = hits_[px];
-                    math::Vec3 to_light = math::sub(light.position, ph.position);
-                    const f32 d2 = math::dot(to_light, to_light);
-                    const f32 d = std::sqrt(d2);
-                    if (d > light.range || d < 1.0e-4f)
-                        continue;
-                    const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                    const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
-                    if (ndotl <= 0.0f)
-                        continue;
-                    const f32 atten = 1.0f / (1.0f + d * d * config.attenuation_quadratic);
-                    const f32 k = ndotl * atten * light.intensity;
-                    accum_[px * 3u + 0u] += ph.r * light.r * k;
-                    accum_[px * 3u + 1u] += ph.g * light.g * k;
-                    accum_[px * 3u + 2u] += ph.b * light.b * k;
-                }
-                in_pkt[li] = 0u;
-            };
+    std::atomic<u64> direct_shadow_rays{0u};
+    std::atomic<u64> direct_shadow_packets{0u};
+    {
+        TelemetryStageTimer timer{telemetry, FrameTelemetryStage::DirectLightingShadowPackets};
+        parallel_tiles(
+            trace_w,
+            trace_h,
+            config,
+            [&](u32 x0, u32 y0, u32 x1, u32 y1) {
+                u64 local_shadow_rays = 0;
+                u64 local_shadow_packets = 0;
+                auto shade_tile = [&](auto& pkts, auto& in_pkt, auto& pkt_idx, auto& pkt_real) {
+                    auto dispatch = [&](u32 li) {
+                        ShadowPacket8& pkt = pkts[li];
+                        const FrameLight& light = input.lights[li];
+                        const u32 real_rays = in_pkt[li];
+                        for (u32 i = in_pkt[li]; i < 8u; ++i) {
+                            fill_dummy_ray(pkt.rays[i]);
+                            pkt_real[static_cast<usize>(li) * 8u + i] = 0u;
+                        }
+                        if (telemetry) {
+                            ++local_shadow_packets;
+                            local_shadow_rays += real_rays;
+                        }
+                        trace_scene_shadow_packet(input, analytic_spheres_, rt_shadow_mask, pkt);
+                        for (u32 i = 0; i < 8u; ++i) {
+                            if (pkt_real[static_cast<usize>(li) * 8u + i] == 0u || pkt.occluded[i])
+                                continue;
+                            const usize px = pkt_idx[static_cast<usize>(li) * 8u + i];
+                            const PixelHit& ph = hits_[px];
+                            math::Vec3 to_light = math::sub(light.position, ph.position);
+                            const f32 d2 = math::dot(to_light, to_light);
+                            const f32 d = std::sqrt(d2);
+                            if (d > light.range || d < 1.0e-4f)
+                                continue;
+                            const math::Vec3 ld = math::mul(to_light, 1.0f / d);
+                            const f32 ndotl = std::max(0.0f, math::dot(ph.normal, ld));
+                            if (ndotl <= 0.0f)
+                                continue;
+                            const f32 atten = 1.0f / (1.0f + d * d * config.attenuation_quadratic);
+                            const f32 k = ndotl * atten * light.intensity;
+                            accum_[px * 3u + 0u] += ph.r * light.r * k;
+                            accum_[px * 3u + 1u] += ph.g * light.g * k;
+                            accum_[px * 3u + 2u] += ph.b * light.b * k;
+                        }
+                        in_pkt[li] = 0u;
+                    };
 
-            for (u32 y = y0; y < y1; ++y) {
-                for (u32 x = x0; x < x1; ++x) {
-                    const usize px = static_cast<usize>(y) * trace_w + x;
-                    const PixelHit& ph = hits_[px];
-                    if (!ph.hit)
-                        continue;
+                    for (u32 y = y0; y < y1; ++y) {
+                        for (u32 x = x0; x < x1; ++x) {
+                            const usize px = static_cast<usize>(y) * trace_w + x;
+                            const PixelHit& ph = hits_[px];
+                            if (!ph.hit)
+                                continue;
+
+                            for (u32 li = 0; li < light_count; ++li) {
+                                const FrameLight& light = input.lights[li];
+                                math::Vec3 to_light = math::sub(light.position, ph.position);
+                                const f32 d2 = math::dot(to_light, to_light);
+                                const f32 d = std::sqrt(d2);
+                                if (d > light.range || d < 1.0e-4f)
+                                    continue;
+                                const math::Vec3 ld = math::mul(to_light, 1.0f / d);
+                                if (math::dot(ph.normal, ld) <= 0.0f)
+                                    continue;
+
+                                const math::Vec3 origin = {ph.position.x + ph.normal.x * 1.0e-3f,
+                                                           ph.position.y + ph.normal.y * 1.0e-3f,
+                                                           ph.position.z + ph.normal.z * 1.0e-3f};
+                                u32& idx = in_pkt[li];
+                                pkts[li].rays[idx].origin = origin;
+                                pkts[li].rays[idx].direction = ld;
+                                pkts[li].rays[idx].t_min = 1.0e-4f;
+                                pkts[li].rays[idx].t_max = d - 1.0e-3f;
+                                pkt_idx[static_cast<usize>(li) * 8u + idx] = static_cast<u32>(px);
+                                pkt_real[static_cast<usize>(li) * 8u + idx] = 1u;
+                                ++idx;
+                                if (idx == 8u)
+                                    dispatch(li);
+                            }
+                        }
+                    }
 
                     for (u32 li = 0; li < light_count; ++li) {
-                        const FrameLight& light = input.lights[li];
-                        math::Vec3 to_light = math::sub(light.position, ph.position);
-                        const f32 d2 = math::dot(to_light, to_light);
-                        const f32 d = std::sqrt(d2);
-                        if (d > light.range || d < 1.0e-4f)
-                            continue;
-                        const math::Vec3 ld = math::mul(to_light, 1.0f / d);
-                        if (math::dot(ph.normal, ld) <= 0.0f)
-                            continue;
-
-                        const math::Vec3 origin = {ph.position.x + ph.normal.x * 1.0e-3f,
-                                                   ph.position.y + ph.normal.y * 1.0e-3f,
-                                                   ph.position.z + ph.normal.z * 1.0e-3f};
-                        u32& idx = in_pkt[li];
-                        pkts[li].rays[idx].origin = origin;
-                        pkts[li].rays[idx].direction = ld;
-                        pkts[li].rays[idx].t_min = 1.0e-4f;
-                        pkts[li].rays[idx].t_max = d - 1.0e-3f;
-                        pkt_idx[static_cast<usize>(li) * 8u + idx] = static_cast<u32>(px);
-                        pkt_real[static_cast<usize>(li) * 8u + idx] = 1u;
-                        ++idx;
-                        if (idx == 8u)
+                        if (in_pkt[li] > 0u)
                             dispatch(li);
                     }
-                }
-            }
+                };
 
-            for (u32 li = 0; li < light_count; ++li) {
-                if (in_pkt[li] > 0u)
-                    dispatch(li);
-            }
-        };
-
-        if (light_count <= kStackPacketLights) {
-            std::array<ShadowPacket8, kStackPacketLights> pkts{};
-            std::array<u32, kStackPacketLights> in_pkt{};
-            std::array<u32, kStackPacketLights * 8u> pkt_idx{};
-            std::array<u8, kStackPacketLights * 8u> pkt_real{};
-            shade_tile(pkts, in_pkt, pkt_idx, pkt_real);
-        } else {
-            thread_local std::vector<ShadowPacket8> tls_pkts;
-            thread_local std::vector<u32> tls_in_pkt;
-            thread_local std::vector<u32> tls_pkt_idx;
-            thread_local std::vector<u8> tls_pkt_real;
-            tls_pkts.resize(light_count);
-            tls_in_pkt.assign(light_count, 0u);
-            tls_pkt_idx.resize(static_cast<usize>(light_count) * 8u);
-            tls_pkt_real.assign(static_cast<usize>(light_count) * 8u, 0u);
-            shade_tile(tls_pkts, tls_in_pkt, tls_pkt_idx, tls_pkt_real);
-        }
-    });
-
-    parallel_tiles(trace_w, trace_h, config, [&](u32 x0, u32 y0, u32 x1, u32 y1) {
-        for (u32 y = y0; y < y1; ++y) {
-            for (u32 x = x0; x < x1; ++x) {
-                const usize idx = static_cast<usize>(y) * trace_w + x;
-                if (config.ambient_occlusion && config.ao_debug) {
-                    const f32 ao_visibility = std::clamp(ao_filtered_[idx], 0.0f, 1.0f);
-                    const u32 v = clamp_u8(ao_visibility * 255.0f);
-                    trace_pixels_[idx] = pack_rgba8(v, v, v);
-                    continue;
-                }
-                const PixelHit& ph = hits_[idx];
-                if (!ph.hit)
-                    continue;
-
-                f32 ambient_scale = config.ambient_scale;
-                f32 direct_scale = 1.0f;
-                if (config.ambient_occlusion) {
-                    const f32 ao_visibility = std::clamp(ao_filtered_[idx], 0.0f, 1.0f);
-                    ambient_scale *=
-                        1.0f - std::clamp(config.ao_strength, 0.0f, 1.0f) * (1.0f - ao_visibility);
-                    direct_scale = 1.0f - std::clamp(config.ao_lit_strength, 0.0f, 1.0f) *
-                                              (1.0f - ao_visibility);
-                }
-
-                const f32 r = ph.r * ambient_scale +
-                              accum_[idx * 3u + 0u] * config.direct_scale * direct_scale;
-                const f32 g = ph.g * ambient_scale +
-                              accum_[idx * 3u + 1u] * config.direct_scale * direct_scale;
-                const f32 b = ph.b * ambient_scale +
-                              accum_[idx * 3u + 2u] * config.direct_scale * direct_scale;
-                if (reflections_enabled && ph.reflectivity > 0.001f) {
-                    const f32 k = std::clamp(ph.reflectivity * config.reflection_scale, 0.0f, 1.0f);
-                    trace_pixels_[idx] =
-                        pack_rgba8(clamp_u8(r * (1.0f - k) + ph.refl_r * 255.0f * k),
-                                   clamp_u8(g * (1.0f - k) + ph.refl_g * 255.0f * k),
-                                   clamp_u8(b * (1.0f - k) + ph.refl_b * 255.0f * k));
+                if (light_count <= kStackPacketLights) {
+                    std::array<ShadowPacket8, kStackPacketLights> pkts{};
+                    std::array<u32, kStackPacketLights> in_pkt{};
+                    std::array<u32, kStackPacketLights * 8u> pkt_idx{};
+                    std::array<u8, kStackPacketLights * 8u> pkt_real{};
+                    shade_tile(pkts, in_pkt, pkt_idx, pkt_real);
                 } else {
-                    trace_pixels_[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
+                    thread_local std::vector<ShadowPacket8> tls_pkts;
+                    thread_local std::vector<u32> tls_in_pkt;
+                    thread_local std::vector<u32> tls_pkt_idx;
+                    thread_local std::vector<u8> tls_pkt_real;
+                    tls_pkts.resize(light_count);
+                    tls_in_pkt.assign(light_count, 0u);
+                    tls_pkt_idx.resize(static_cast<usize>(light_count) * 8u);
+                    tls_pkt_real.assign(static_cast<usize>(light_count) * 8u, 0u);
+                    shade_tile(tls_pkts, tls_in_pkt, tls_pkt_idx, tls_pkt_real);
                 }
-            }
-        }
-    });
+                if (telemetry && local_shadow_rays > 0u)
+                    direct_shadow_rays.fetch_add(local_shadow_rays, std::memory_order_relaxed);
+                if (telemetry && local_shadow_packets > 0u)
+                    direct_shadow_packets.fetch_add(local_shadow_packets, std::memory_order_relaxed);
+            },
+            telemetry);
+    }
+    telemetry_add_counter(telemetry,
+                          FrameTelemetryCounter::DirectShadowRays,
+                          direct_shadow_rays.load(std::memory_order_relaxed));
+    telemetry_add_counter(telemetry,
+                          FrameTelemetryCounter::DirectShadowPackets,
+                          direct_shadow_packets.load(std::memory_order_relaxed));
 
-    if (trace_w == config.output_width && trace_h == config.output_height) {
-        std::copy(trace_pixels_.begin(), trace_pixels_.end(), output_rgba8);
-    } else {
-        upsample_bilinear(trace_pixels_.data(),
-                          trace_w,
-                          trace_h,
-                          output_rgba8,
-                          config.output_width,
-                          config.output_height);
+    {
+        TelemetryStageTimer timer{telemetry, FrameTelemetryStage::CompositeUpsample};
+        parallel_tiles(
+            trace_w,
+            trace_h,
+            config,
+            [&](u32 x0, u32 y0, u32 x1, u32 y1) {
+                for (u32 y = y0; y < y1; ++y) {
+                    for (u32 x = x0; x < x1; ++x) {
+                        const usize idx = static_cast<usize>(y) * trace_w + x;
+                        if (config.ambient_occlusion && config.ao_debug) {
+                            const f32 ao_visibility = std::clamp(ao_filtered_[idx], 0.0f, 1.0f);
+                            const u32 v = clamp_u8(ao_visibility * 255.0f);
+                            trace_pixels_[idx] = pack_rgba8(v, v, v);
+                            continue;
+                        }
+                        const PixelHit& ph = hits_[idx];
+                        if (!ph.hit)
+                            continue;
+
+                        f32 ambient_scale = config.ambient_scale;
+                        f32 direct_scale = 1.0f;
+                        if (config.ambient_occlusion) {
+                            const f32 ao_visibility = std::clamp(ao_filtered_[idx], 0.0f, 1.0f);
+                            ambient_scale *= 1.0f - std::clamp(config.ao_strength, 0.0f, 1.0f) *
+                                                        (1.0f - ao_visibility);
+                            direct_scale = 1.0f - std::clamp(config.ao_lit_strength, 0.0f, 1.0f) *
+                                                      (1.0f - ao_visibility);
+                        }
+
+                        const f32 r = ph.r * ambient_scale +
+                                      accum_[idx * 3u + 0u] * config.direct_scale * direct_scale;
+                        const f32 g = ph.g * ambient_scale +
+                                      accum_[idx * 3u + 1u] * config.direct_scale * direct_scale;
+                        const f32 b = ph.b * ambient_scale +
+                                      accum_[idx * 3u + 2u] * config.direct_scale * direct_scale;
+                        if (reflections_enabled && ph.reflectivity > 0.001f) {
+                            const f32 k =
+                                std::clamp(ph.reflectivity * config.reflection_scale, 0.0f, 1.0f);
+                            trace_pixels_[idx] =
+                                pack_rgba8(clamp_u8(r * (1.0f - k) + ph.refl_r * 255.0f * k),
+                                           clamp_u8(g * (1.0f - k) + ph.refl_g * 255.0f * k),
+                                           clamp_u8(b * (1.0f - k) + ph.refl_b * 255.0f * k));
+                        } else {
+                            trace_pixels_[idx] = pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
+                        }
+                    }
+                }
+            },
+            telemetry);
+
+        if (trace_w == config.output_width && trace_h == config.output_height) {
+            std::copy(trace_pixels_.begin(), trace_pixels_.end(), output_rgba8);
+        } else {
+            upsample_bilinear(trace_pixels_.data(),
+                              trace_w,
+                              trace_h,
+                              output_rgba8,
+                              config.output_width,
+                              config.output_height);
+        }
     }
 
     if (stats) {
@@ -1243,6 +1476,9 @@ void FrameRenderer::render(const FrameRenderInput& input,
         stats->ao_avg = config.ambient_occlusion && stats->hit_pixels > 0
                             ? ao_sum / static_cast<f32>(stats->hit_pixels)
                             : 1.0f;
+        telemetry_set_counter(&stats->telemetry,
+                              FrameTelemetryCounter::HitPixels,
+                              static_cast<u64>(stats->hit_pixels));
     }
 }
 
