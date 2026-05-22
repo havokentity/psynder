@@ -210,6 +210,8 @@ class WindowApp {
 
     void engine_frame_begin(FrameClear clear) noexcept {
         active_scene_rendered_ = false;
+        if (active_scene_)
+            apply_environment_clear(active_scene_->environment());
         if (clear.color)
             render::clear_framebuffer_color(framebuffer_, clear.color_rgba8);
         if (clear.depth)
@@ -364,6 +366,13 @@ class WindowApp {
 
     [[nodiscard]] f32 render_target_aspect() const noexcept {
         return height_ == 0u ? 1.0f : static_cast<f32>(width_) / static_cast<f32>(height_);
+    }
+
+    void apply_environment_clear(const scene::EnvironmentSettings& environment) noexcept {
+        if (environment.clear_color)
+            render::clear_framebuffer_color(framebuffer_, environment.clear_color_rgba8);
+        if (environment.clear_depth)
+            render::clear_framebuffer_depth(framebuffer_);
     }
 
     void draw_no_camera_notice() noexcept {

@@ -20,11 +20,8 @@ struct TriangleSample {
     scene::Scene scene{};
     Entity triangle_entity{};
 
-    static app::FrameClear frame_clear(const app::WindowFrameContext&) noexcept {
-        return app::FrameClear::color_only(0xFF202028u);
-    }
-
     void started(app::WindowApp& app) {
+        scene.environment().clear_color_rgba8 = 0xFF202028u;
         crate.load_ppm("assets/crate.ppm");
 
         render::MaterialDesc triangle_material{};

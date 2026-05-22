@@ -102,6 +102,21 @@ TEST_CASE("scene creates transform-backed renderable entities for shared rendere
     REQUIRE(scene.destroy_entity(entity));
 }
 
+TEST_CASE("scene owns environment clear settings", "[scene][render_submission][environment]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    scene::Scene scene{registry};
+    REQUIRE(scene.environment().clear_color);
+    REQUIRE(scene.environment().clear_depth);
+    REQUIRE(scene.environment().clear_color_rgba8 == 0xFF000000u);
+
+    scene.environment().clear_color_rgba8 = 0xFF202028u;
+    scene.environment().clear_depth = false;
+    REQUIRE(scene.environment().clear_color_rgba8 == 0xFF202028u);
+    REQUIRE_FALSE(scene.environment().clear_depth);
+}
+
 TEST_CASE("scene camera is a transform-backed hierarchy entity",
           "[scene][render_submission][camera]") {
     auto& registry = scene::EcsRegistry::Get();
