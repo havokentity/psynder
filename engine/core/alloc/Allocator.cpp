@@ -23,6 +23,7 @@
 
 #include "Allocator.h"
 #include "FlightRecorder.h"
+#include "FrameAllocGuard.h"
 #include "Heatmap.h"
 
 #include "../Tracy.h"
@@ -91,6 +92,12 @@ PSY_FORCEINLINE void account_sub(Tag tag, usize bytes) {
 
 PSY_FORCEINLINE usize round_up(usize value, usize align) {
     return (value + align - 1) & ~(align - 1);
+}
+
+PSY_FORCEINLINE PageBlock record_page_alloc(PageBlock block) noexcept {
+    if (block.ptr && block.bytes)
+        frame_alloc_guard_record_alloc(block.bytes);
+    return block;
 }
 
 }  // namespace
@@ -225,14 +232,14 @@ PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
                                    MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES,
                                    PAGE_READWRITE);
             if (p)
-                return {p, large_aligned};
+                return record_page_alloc({p, large_aligned});
         }
     }
     void* p = VirtualAlloc(nullptr, aligned, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!p)
         return {};
     // VirtualAlloc zero-fills committed pages on Windows; no memset needed.
-    return {p, aligned};
+    return record_page_alloc({p, aligned});
 
 #elif defined(__APPLE__)
     // macOS: mach_vm_allocate with VM_FLAGS_SUPERPAGE_SIZE_2MB when the
@@ -255,14 +262,14 @@ PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
         kern_return_t kr = mach_vm_allocate(mach_task_self(), &addr, aligned, flags);
         if (kr == KERN_SUCCESS) {
             // mach_vm_allocate zero-fills.
-            return {reinterpret_cast<void*>(addr), aligned};
+            return record_page_alloc({reinterpret_cast<void*>(addr), aligned});
         }
         // Fall through to mmap on superpage refusal.
     }
     void* p = mmap(nullptr, aligned, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (p == MAP_FAILED)
         return {};
-    return {p, aligned};
+    return record_page_alloc({p, aligned});
 
 #else
     // Linux: mmap + madvise(MADV_HUGEPAGE) when caller asked for hugepages
@@ -277,7 +284,7 @@ PageBlock page_alloc(usize bytes, bool prefer_hugepage) {
         (void)madvise(p, aligned, MADV_HUGEPAGE);
     }
 #endif
-    return {p, aligned};
+    return record_page_alloc({p, aligned});
 #endif
 }
 
@@ -286,6 +293,7 @@ void page_free(PageBlock block) {
     if (!block.ptr || block.bytes == 0)
         return;
     PSY_FLIGHT_RECORD(-1, block.bytes, Tag::Misc);
+    frame_alloc_guard_record_free(block.bytes);
     PSY_ZONE_FREE(block.ptr);
 #if defined(_WIN32)
     VirtualFree(block.ptr, 0, MEM_RELEASE);

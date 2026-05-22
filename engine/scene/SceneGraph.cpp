@@ -78,6 +78,10 @@ void SceneGraph::reserve_nodes(u32 count) {
     analytic_spheres_.reserve(count);
 }
 
+void SceneGraph::reserve_analytic_spheres(u32 count) {
+    analytic_spheres_.reserve(count);
+}
+
 SceneNode SceneGraph::create_node(SceneNode parent, const LocalTransform& local) {
     const u32 parent_index = valid_index(parent) ? parent.index() : kInvalidIndex;
     const u32 index = static_cast<u32>(generation_.size());

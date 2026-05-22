@@ -92,33 +92,45 @@ u32 Archetype::column_index(ComponentId id) const noexcept {
 }
 
 Chunk* Archetype::acquire_chunk_with_room(ChunkPool& pool) {
-    if (!chunks_.empty()) {
-        Chunk* c = chunks_.back();
-        if (c->header.row_count < capacity_per_chunk_)
+    for (auto it = chunks_.rbegin(); it != chunks_.rend(); ++it) {
+        Chunk* c = *it;
+        if (c && c->header.row_count < capacity_per_chunk_)
             return c;
     }
     Chunk* c = pool.acquire();
     if (!c)
         return nullptr;
-    c->header.archetype_id = id_;
-    c->header.row_count = 0;
-    c->header.capacity = capacity_per_chunk_;
-    c->header.column_count = static_cast<u32>(components_.size());
-    c->header.dirty_mask = 0;
-    c->header.version_stamps_offset = static_cast<u32>(sizeof(ChunkHeader));
-    c->header.first_column_offset = entity_column_offset_;
-    c->header.next_chunk_raw = 0;
-    // Zero the version-stamp array.
-    std::memset(c->at(c->header.version_stamps_offset), 0, sizeof(u32) * c->header.column_count);
+    prepare_chunk(c);
     chunks_.push_back(c);
     return c;
+}
+
+void Archetype::reserve_rows(ChunkPool& pool, u32 rows) {
+    if (capacity_per_chunk_ == 0u || rows == 0u)
+        return;
+    const u32 wanted_chunks = (rows + capacity_per_chunk_ - 1u) / capacity_per_chunk_;
+    if (wanted_chunks <= chunks_.size())
+        return;
+
+    chunks_.reserve(wanted_chunks);
+    while (chunks_.size() < wanted_chunks) {
+        Chunk* c = pool.acquire();
+        if (!c)
+            return;
+        prepare_chunk(c);
+        chunks_.push_back(c);
+    }
 }
 
 Archetype::RowRef Archetype::append_row(ChunkPool& pool) {
     Chunk* c = acquire_chunk_with_room(pool);
     if (!c)
         return RowRef{0xFFFFFFFFu, 0xFFFFFFFFu};
-    const u32 ci = static_cast<u32>(chunks_.size() - 1);
+    u32 ci = 0u;
+    for (; ci < chunks_.size(); ++ci) {
+        if (chunks_[ci] == c)
+            break;
+    }
     const u32 row = c->header.row_count;
     ++c->header.row_count;
     ++total_rows_;
@@ -196,6 +208,18 @@ void Archetype::release_all(ChunkPool& pool) noexcept {
     }
     chunks_.clear();
     total_rows_ = 0;
+}
+
+void Archetype::prepare_chunk(Chunk* c) noexcept {
+    c->header.archetype_id = id_;
+    c->header.row_count = 0;
+    c->header.capacity = capacity_per_chunk_;
+    c->header.column_count = static_cast<u32>(components_.size());
+    c->header.dirty_mask = 0;
+    c->header.version_stamps_offset = static_cast<u32>(sizeof(ChunkHeader));
+    c->header.first_column_offset = entity_column_offset_;
+    c->header.next_chunk_raw = 0;
+    std::memset(c->at(c->header.version_stamps_offset), 0, sizeof(u32) * c->header.column_count);
 }
 
 }  // namespace psynder::scene::detail

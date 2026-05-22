@@ -56,19 +56,30 @@ TEST_CASE("scene graph: one parent edit updates the whole dirty subtree in one p
 
 TEST_CASE("scene graph: one leaf edit skips clean static siblings", "[scene][scene_graph][dirty]") {
     SceneGraph graph;
+    graph.reserve_nodes(8);
     SceneNode root = graph.create_node(kInvalidSceneNode, trs({1.0f, 0.0f, 0.0f}));
     SceneNode dynamic_leaf = graph.create_node(root, trs({0.0f, 2.0f, 0.0f}));
-    [[maybe_unused]] SceneNode static_leaf = graph.create_node(root, trs({0.0f, 0.0f, 3.0f}));
+    SceneNode static_leaf = graph.create_node(root, trs({0.0f, 0.0f, 3.0f}));
     graph.update_world_transforms();
+
+    const u32 node_capacity = graph.node_capacity();
+    const u32 dirty_capacity = graph.dirty_root_capacity();
+    const math::Mat4 static_world_before = graph.world_matrix(static_leaf);
 
     graph.set_local_transform(dynamic_leaf, trs({0.0f, 20.0f, 0.0f}));
     SceneGraphUpdateStats stats = graph.update_world_transforms();
     REQUIRE(stats.nodes_visited == 1u);
     REQUIRE(stats.transforms_updated == 1u);
+    REQUIRE(graph.node_capacity() == node_capacity);
+    REQUIRE(graph.dirty_root_capacity() == dirty_capacity);
 
     const math::Mat4& world = graph.world_matrix(dynamic_leaf);
     REQUIRE_THAT(static_cast<double>(world.m[12]), Catch::Matchers::WithinAbs(1.0, 1e-5));
     REQUIRE_THAT(static_cast<double>(world.m[13]), Catch::Matchers::WithinAbs(20.0, 1e-5));
+    const math::Mat4& static_world_after = graph.world_matrix(static_leaf);
+    REQUIRE(static_world_after.m[12] == static_world_before.m[12]);
+    REQUIRE(static_world_after.m[13] == static_world_before.m[13]);
+    REQUIRE(static_world_after.m[14] == static_world_before.m[14]);
 }
 
 TEST_CASE("scene graph: transform columns are cache-line aligned SoA",

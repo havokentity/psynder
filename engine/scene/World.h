@@ -57,6 +57,15 @@ class World {
     void destroy(Entity e);
     bool alive(Entity e) const noexcept;
 
+    void reserve_entities(u32 count);
+    void reserve_structural_changes(u32 op_count, u32 byte_count);
+
+    template <class... Ts>
+    void reserve_archetype(u32 row_count);
+
+    u32 entity_capacity() const noexcept;
+    u32 chunk_live_count() const noexcept;
+
     template <class T>
     void add(Entity e, const T& component);
 

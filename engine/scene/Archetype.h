@@ -45,6 +45,9 @@ class Archetype {
     std::span<const u32> column_offsets() const noexcept { return column_offsets_; }
     std::span<const u32> column_sizes() const noexcept { return column_sizes_; }
     u32 capacity() const noexcept { return capacity_per_chunk_; }
+    u32 row_capacity() const noexcept {
+        return capacity_per_chunk_ * static_cast<u32>(chunks_.size());
+    }
     u32 row_size() const noexcept { return row_size_; }
     bool empty() const noexcept { return total_rows_ == 0; }
     u32 total_rows() const noexcept { return total_rows_; }
@@ -57,6 +60,11 @@ class Archetype {
     // Acquire a chunk with at least one free row. Allocates from the pool
     // if all current chunks are full.
     Chunk* acquire_chunk_with_room(ChunkPool& pool);
+
+    // Pre-acquire enough chunks for `rows` live rows without changing
+    // row_count. This keeps structural creation out of the allocator once
+    // gameplay has entered the fixed-capacity path.
+    void reserve_rows(ChunkPool& pool, u32 rows);
 
     // Append a default-zeroed row to the archetype. Returns (chunk_index,
     // row_in_chunk).
@@ -115,6 +123,8 @@ class Archetype {
     std::vector<u32> column_sizes_;        // bytes per element
 
     std::vector<Chunk*> chunks_;
+
+    void prepare_chunk(Chunk* c) noexcept;
 };
 
 }  // namespace psynder::scene::detail

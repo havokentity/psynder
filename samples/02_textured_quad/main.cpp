@@ -399,7 +399,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         // The HUD reads the per-frame stats we filled at the top of the
         // loop; if the cvar is `off` the call early-returns. Stays drawn
         // after the rasterizer so it composites on top of the scene.
-        {
+        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
             ui::imm::DebugHudStats stats{};
             stats.frame_ms = frame_ms;
             stats.avg_frame_ms = [&]() noexcept {

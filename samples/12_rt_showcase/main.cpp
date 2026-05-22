@@ -25,6 +25,8 @@
 //   --rt-ao-strength=F       Override AO ambient strength for capture/perf checks.
 //   --rt-ao-lit-strength=F   Override AO direct-light strength for capture/perf checks.
 //   --rt-cores=N             Override sample RT worker chunk target for smoke/perf checks.
+//   --debug-hud=off|compact|full
+//                            Force the IMM debug HUD for smoke/perf graph checks.
 
 #include "core/AppArgs.h"
 #include "core/Log.h"
@@ -69,11 +71,22 @@ struct Args : app::AppArgs {
     std::string rt_ao_radius;
     std::string rt_ao_strength;
     std::string rt_ao_lit_strength;
+    int debug_hud = -1;
 };
 
 int parse_bool_arg(std::string_view v) noexcept {
     u32 value = 0;
     return app::parse_u32_decimal(v, value) && value != 0u ? 1 : 0;
+}
+
+int parse_debug_hud_arg(std::string_view v) noexcept {
+    if (v == "off" || v == "0")
+        return 0;
+    if (v == "compact" || v == "1")
+        return 1;
+    if (v == "full" || v == "2")
+        return 2;
+    return -1;
 }
 
 Args parse_sample12_args(int argc, char** argv) {
@@ -92,6 +105,8 @@ Args parse_sample12_args(int argc, char** argv) {
     constexpr std::string_view kAoLitStrengthSp = "--rt-ao-lit-strength";
     constexpr std::string_view kRtCoresEq = "--rt-cores=";
     constexpr std::string_view kRtCoresSp = "--rt-cores";
+    constexpr std::string_view kDebugHudEq = "--debug-hud=";
+    constexpr std::string_view kDebugHudSp = "--debug-hud";
     for (int i = 1; i < argc; ++i) {
         if (app::consume_common_arg(argc, argv, i, a))
             continue;
@@ -124,6 +139,10 @@ Args parse_sample12_args(int argc, char** argv) {
             a.rt_cores_hint = std::string(s.substr(kRtCoresEq.size()));
         } else if (s == kRtCoresSp && i + 1 < argc) {
             a.rt_cores_hint = argv[++i];
+        } else if (s.starts_with(kDebugHudEq)) {
+            a.debug_hud = parse_debug_hud_arg(s.substr(kDebugHudEq.size()));
+        } else if (s == kDebugHudSp && i + 1 < argc) {
+            a.debug_hud = parse_debug_hud_arg(std::string_view{argv[++i]});
         }
     }
     return a;
@@ -375,6 +394,9 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
     const u32 smoke_frames = args.smoke_frames;
     render::rt::ensure_frame_renderer_console_registered();
     apply_rt_arg_overrides(args);
+    if (args.debug_hud >= 0) {
+        ui::imm::set_debug_hud_mode(static_cast<ui::imm::DebugHudMode>(args.debug_hud));
+    }
     render::rt::ensure_denoise_console_commands_registered();
     const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
@@ -387,12 +409,15 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
     std::array<FieldInstance, kFieldCount> field = make_field_instances();
 
     std::vector<render::rt::Triangle> cube_tris;
+    cube_tris.reserve(12);
     emit_unit_cube(cube_tris);
 
     std::vector<render::rt::Triangle> sphere_tris;
+    sphere_tris.reserve(2u * 14u * (10u - 1u));
     emit_unit_sphere(sphere_tris, /*stacks=*/10, /*slices=*/14);
 
     std::vector<render::rt::Triangle> ground_tris;
+    ground_tris.reserve(2);
     emit_ground(ground_tris, /*half=*/14.0f);
 
     render::rt::Bvh8 cube_blas;
@@ -501,7 +526,6 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
         orbit_lights(static_cast<f32>(t), lights);
         const Camera cam = make_orbit_camera(static_cast<f32>(t), aspect);
-        apply_rt_arg_overrides(args);
         render::rt::FrameRenderInput rt_input{};
         rt_input.tlas = &tlas;
         rt_input.camera = cam;
@@ -532,7 +556,9 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
             }
         }
 
-        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
+            ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        }
 
         ui::console::draw(fb);  // drop-down console (`~`) overlays everything
         window->present(fb);

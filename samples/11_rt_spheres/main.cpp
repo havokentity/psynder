@@ -238,10 +238,13 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     // room shell. Per-instance placement + scale lives on the TLAS
     // InstanceDesc; the material is keyed off the instance index.
     std::vector<render::rt::Triangle> sphere_tris;
+    sphere_tris.reserve(2u * 24u * (14u - 1u));
     emit_unit_sphere(sphere_tris, /*stacks=*/14, /*slices=*/24);
     std::vector<render::rt::Triangle> cube_tris;
+    cube_tris.reserve(12);
     emit_unit_cube(cube_tris);
     std::vector<render::rt::Triangle> room_tris;
+    room_tris.reserve(10);
     emit_room(room_tris, kRoomHalf, kWallHeight);
 
     render::rt::Bvh8 sphere_blas;
@@ -262,6 +265,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     };
 
     std::vector<InstanceInfo> scene;
+    scene.reserve(11);
     // 8 spheres in a loose ring + 1 big mirror in the middle.
     scene.push_back(
         {&sphere_blas, {0.0f, 1.3f, 0.0f}, 1.3f, {0.95f, 0.95f, 0.97f, 0.92f}});  // hero mirror
@@ -401,7 +405,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(70, 70, 80);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
+            ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        }
         ui::console::draw(fb);
         window->present(fb);
 

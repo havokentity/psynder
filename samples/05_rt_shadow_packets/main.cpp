@@ -199,9 +199,11 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     std::array<CubeInstance, kNumCubes> cube_instances = make_cube_instances();
 
     std::vector<render::rt::Triangle> cube_tris;
+    cube_tris.reserve(12);
     emit_unit_cube(cube_tris);
 
     std::vector<render::rt::Triangle> ground_tris;
+    ground_tris.reserve(2);
     emit_ground(ground_tris, /*half=*/8.0f);
 
     render::rt::Bvh8 cube_blas;
@@ -290,7 +292,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(60, 60, 70);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
+            ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        }
         ui::console::draw(fb);
         window->present(fb);
 
