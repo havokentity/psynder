@@ -54,6 +54,8 @@ and before ending a session so crash recovery has a concrete resume point.
     - agent: `019e4f5e-10ad-73e0-8494-8ae43823cec7`
     - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-scene-validation`
     - owns `engine/scene/`
+    - PR: https://github.com/havokentity/psynder/pull/135
+    - status: complete; commit `184cb06`; tested mac-debug scene/render-scene
 - The earlier read-only scouts have completed:
   - scene/ECS layout
   - render/material queues
@@ -68,6 +70,7 @@ and before ending a session so crash recovery has a concrete resume point.
   view.
 - Second monitor pass: no completions yet, but all six workers have lane-local
   edits in their assigned worktrees. Ownership split is still clean.
+- Scene worker complete with PR #135 targeting the integration branch.
 
 ## Next Multi-Agent Step
 
