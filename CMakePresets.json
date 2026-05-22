@@ -156,6 +156,7 @@
     { "name": "linux-debug",     "configurePreset": "linux-debug",    "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
     { "name": "linux-release",   "configurePreset": "linux-release",  "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
     { "name": "win-debug",       "configurePreset": "win-debug",      "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
-    { "name": "win-release",     "configurePreset": "win-release",    "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } }
+    { "name": "win-release",     "configurePreset": "win-release",    "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
+    { "name": "win-clang-release", "configurePreset": "win-clang-release", "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } }
   ]
 }

@@ -30,6 +30,9 @@ jobs:
           - os: windows-2022
             runner: windows-2022
             preset: win-release
+          - os: windows-2025-vs2026
+            runner: windows-2025-vs2026
+            preset: win-clang-release
 
     steps:
       - uses: actions/checkout@v4
