@@ -29,7 +29,25 @@ and before ending a session so crash recovery has a concrete resume point.
 
 ## Active Agents
 
-- No code-writing workers are active right now.
+- Code-writing worktrees prepared from `origin/integration/wave-hybrid-material-shadows`:
+  - `codex/agent-asset-async-texture`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-asset-async-texture`
+    - owns `engine/asset/`
+  - `codex/agent-rt-material-bounces`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-rt-material-bounces`
+    - owns `engine/render/rt/`
+  - `codex/agent-raster-projected-shadows`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-raster-projected-shadows`
+    - owns `engine/render/raster/`
+  - `codex/agent-lmbake-material-policy`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-lmbake-material-policy`
+    - owns `tools/`
+  - `codex/agent-samples-hybrid-migration`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-samples-hybrid-migration`
+    - owns `samples/` and `tests/`
+  - `codex/agent-scene-validation`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-scene-validation`
+    - owns `engine/scene/`
 - The earlier read-only scouts have completed:
   - scene/ECS layout
   - render/material queues
