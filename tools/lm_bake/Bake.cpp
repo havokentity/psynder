@@ -46,6 +46,48 @@ bool read_le(std::span<const u8> bytes, usize off, T& out) {
     return true;
 }
 
+BakeMaterial resolve_material(const BakeScene& scene, const BakeTriangle& tri) {
+    if (tri.material_id != kInvalidBakeMaterialId && tri.material_id < scene.materials.size())
+        return scene.materials[tri.material_id];
+    BakeMaterial material{};
+    material.albedo = tri.albedo;
+    material.emissive_color = tri.emissive_color;
+    material.emissive = tri.emissive;
+    material.roughness = tri.roughness;
+    material.flags = tri.material_flags;
+    return material;
+}
+
+BakeMaterial resolve_material(const BakeScene& scene, u32 tri_index) {
+    if (tri_index >= scene.triangles.size())
+        return {};
+    return resolve_material(scene, scene.triangles[tri_index]);
+}
+
+bool material_casts_baked_shadow(const BakeScene& scene, u32 tri_index) {
+    const BakeMaterial material = resolve_material(scene, tri_index);
+    return (material.flags & BakeMaterial_CastBakedShadow) != 0u;
+}
+
+bool material_receives_baked_light(const BakeMaterial& material) {
+    return (material.flags & BakeMaterial_ReceiveBakedLight) != 0u;
+}
+
+bool material_emits_baked_light(const BakeMaterial& material) {
+    return (material.flags & BakeMaterial_EmitBakedLight) != 0u && material.emissive > 0.0f;
+}
+
+bool material_visible_to_indirect_gather(const BakeMaterial& material) {
+    return (material.flags & (BakeMaterial_CastBakedShadow | BakeMaterial_ReceiveBakedLight |
+                              BakeMaterial_EmitBakedLight)) != 0u;
+}
+
+math::Vec3 emitted_radiance(const BakeMaterial& material) {
+    if (!material_emits_baked_light(material))
+        return {0.0f, 0.0f, 0.0f};
+    return math::mul(material.emissive_color, material.emissive);
+}
+
 // Möller–Trumbore single-ray triangle intersect. Returns (hit, t).
 struct TriHit {
     bool hit = false;
@@ -78,6 +120,8 @@ bool occluded(const BakeScene& scene, math::Vec3 ro, math::Vec3 rd, f32 t_max, u
     for (u32 i = 0; i < scene.triangles.size(); ++i) {
         if (i == self_tri)
             continue;
+        if (!material_casts_baked_shadow(scene, i))
+            continue;
         const auto& tri = scene.triangles[i];
         auto h = intersect_tri(ro, rd, tri.v0, tri.v1, tri.v2, t_max);
         if (h.hit)
@@ -99,6 +143,8 @@ ClosestHit closest_hit_bf(const BakeScene& scene, math::Vec3 ro, math::Vec3 rd, 
     ClosestHit best;
     for (u32 i = 0; i < scene.triangles.size(); ++i) {
         if (i == self_tri)
+            continue;
+        if (!material_visible_to_indirect_gather(resolve_material(scene, i)))
             continue;
         const auto& tri = scene.triangles[i];
         auto h = intersect_tri(ro, rd, tri.v0, tri.v1, tri.v2, t_max);
@@ -209,6 +255,7 @@ BakedSurface bake_triangle_direct(const BakeScene& scene, u32 ti, const BakeOpti
     if (ti >= scene.triangles.size())
         return surf;
     const BakeTriangle& tri = scene.triangles[ti];
+    const BakeMaterial material = resolve_material(scene, ti);
     TriBasis basis = build_basis(tri);
 
     surf.width = opt.lightmap_resolution;
@@ -224,37 +271,40 @@ BakedSurface bake_triangle_direct(const BakeScene& scene, u32 ti, const BakeOpti
             math::Vec3 p = math::add(ts.world, math::mul(basis.normal, opt.ray_epsilon));
 
             // Loop over lights. Direct illumination Lambertian: I/r² * max(N·L, 0).
-            f32 r = 0, g = 0, b = 0;
-            for (const auto& light : scene.lights) {
-                math::Vec3 L{};
-                f32 t_max = 0;
-                f32 atten = 0;
-                if (light.kind == LightKind::kPoint) {
-                    L = math::sub(light.position, p);
-                    f32 dist = std::sqrt(math::dot(L, L));
-                    if (dist < 1e-6f)
+            math::Vec3 emitted = emitted_radiance(material);
+            f32 r = emitted.x, g = emitted.y, b = emitted.z;
+            if (material_receives_baked_light(material)) {
+                for (const auto& light : scene.lights) {
+                    math::Vec3 L{};
+                    f32 t_max = 0;
+                    f32 atten = 0;
+                    if (light.kind == LightKind::kPoint) {
+                        L = math::sub(light.position, p);
+                        f32 dist = std::sqrt(math::dot(L, L));
+                        if (dist < 1e-6f)
+                            continue;
+                        L = math::mul(L, 1.0f / dist);
+                        t_max = dist;
+                        atten = light.intensity / (dist * dist);
+                    } else {
+                        // Directional: `direction` points along the light's
+                        // travel; flip for the incoming vector.
+                        L = math::mul(light.direction, -1.0f);
+                        f32 ln = std::sqrt(math::dot(L, L));
+                        if (ln > 1e-9f)
+                            L = math::mul(L, 1.0f / ln);
+                        t_max = 1e6f;
+                        atten = light.intensity;
+                    }
+                    f32 ndotl = std::max(0.0f, math::dot(basis.normal, L));
+                    if (ndotl <= 0.0f)
                         continue;
-                    L = math::mul(L, 1.0f / dist);
-                    t_max = dist;
-                    atten = light.intensity / (dist * dist);
-                } else {
-                    // Directional: `direction` points along the light's
-                    // travel; flip for the incoming vector.
-                    L = math::mul(light.direction, -1.0f);
-                    f32 ln = std::sqrt(math::dot(L, L));
-                    if (ln > 1e-9f)
-                        L = math::mul(L, 1.0f / ln);
-                    t_max = 1e6f;
-                    atten = light.intensity;
+                    if (occluded(scene, p, L, t_max, ti))
+                        continue;
+                    r += atten * ndotl * light.color.x;
+                    g += atten * ndotl * light.color.y;
+                    b += atten * ndotl * light.color.z;
                 }
-                f32 ndotl = std::max(0.0f, math::dot(basis.normal, L));
-                if (ndotl <= 0.0f)
-                    continue;
-                if (occluded(scene, p, L, t_max, ti))
-                    continue;
-                r += atten * ndotl * light.color.x;
-                g += atten * ndotl * light.color.y;
-                b += atten * ndotl * light.color.z;
             }
             surf.pixels[px + 0] = r;
             surf.pixels[px + 1] = g;
@@ -337,6 +387,7 @@ void apply_bounce(const BakeScene& scene,
     constexpr f32 kPi = std::numbers::pi_v<f32>;
     for (u32 ti = 0; ti < scene.triangles.size(); ++ti) {
         const BakeTriangle& tri = scene.triangles[ti];
+        const BakeMaterial material = resolve_material(scene, ti);
         BakedSurface& surf = out_atlas.surfaces[ti];
         const BakedSurface& direct = direct_layer[ti];
         // Build basis once per triangle.
@@ -352,39 +403,40 @@ void apply_bounce(const BakeScene& scene,
                     surf.pixels[px + 2] = 0;
                     continue;
                 }
-                math::Vec3 p = math::add(ts.world, math::mul(basis.normal, opt.ray_epsilon));
-
                 math::Vec3 indirect{0, 0, 0};
                 u32 n_ok = 0;
-                for (u32 s = 0; s < opt.indirect_samples_per_bounce; ++s) {
-                    // Stratify (u, v) on √N × √N grid plus per-sample jitter.
-                    u32 grid =
-                        static_cast<u32>(std::sqrt(static_cast<f32>(opt.indirect_samples_per_bounce))) +
-                        1u;
-                    u32 sx = s % grid;
-                    u32 sy = s / grid;
-                    u32 h = mix32(ti * 73856093u + i * 19349663u + j * 83492791u,
-                                  bounce_index * 49979693u + s * 39916801u,
-                                  0xa5a5a5a5u);
-                    f32 ju = (static_cast<f32>(sx) + u32_to_f01(h)) / static_cast<f32>(grid);
-                    f32 jv = (static_cast<f32>(sy) + u32_to_f01(h ^ 0xdeadbeefu)) /
-                             static_cast<f32>(grid);
-                    if (ju >= 1.0f)
-                        ju = 1.0f - 1e-4f;
-                    if (jv >= 1.0f)
-                        jv = 1.0f - 1e-4f;
-                    math::Vec3 dir = cosine_hemisphere(basis.normal, ju, jv);
-                    f32 dn = std::sqrt(math::dot(dir, dir));
-                    if (dn > 1e-9f)
-                        dir = math::mul(dir, 1.0f / dn);
-                    ClosestHit ch = closest_hit_bf(scene, p, dir, 1e6f, ti);
-                    if (ch.tri < 0)
-                        continue;
-                    math::Vec3 hit_p = math::add(p, math::mul(dir, ch.t));
-                    math::Vec3 L =
-                        sample_surface_radiance(scene, prev_atlas, static_cast<u32>(ch.tri), hit_p);
-                    indirect = math::add(indirect, L);
-                    ++n_ok;
+                if (material_receives_baked_light(material)) {
+                    math::Vec3 p = math::add(ts.world, math::mul(basis.normal, opt.ray_epsilon));
+                    for (u32 s = 0; s < opt.indirect_samples_per_bounce; ++s) {
+                        // Stratify (u, v) on √N × √N grid plus per-sample jitter.
+                        u32 grid = static_cast<u32>(
+                                       std::sqrt(static_cast<f32>(opt.indirect_samples_per_bounce))) +
+                                   1u;
+                        u32 sx = s % grid;
+                        u32 sy = s / grid;
+                        u32 h = mix32(ti * 73856093u + i * 19349663u + j * 83492791u,
+                                      bounce_index * 49979693u + s * 39916801u,
+                                      0xa5a5a5a5u);
+                        f32 ju = (static_cast<f32>(sx) + u32_to_f01(h)) / static_cast<f32>(grid);
+                        f32 jv = (static_cast<f32>(sy) + u32_to_f01(h ^ 0xdeadbeefu)) /
+                                 static_cast<f32>(grid);
+                        if (ju >= 1.0f)
+                            ju = 1.0f - 1e-4f;
+                        if (jv >= 1.0f)
+                            jv = 1.0f - 1e-4f;
+                        math::Vec3 dir = cosine_hemisphere(basis.normal, ju, jv);
+                        f32 dn = std::sqrt(math::dot(dir, dir));
+                        if (dn > 1e-9f)
+                            dir = math::mul(dir, 1.0f / dn);
+                        ClosestHit ch = closest_hit_bf(scene, p, dir, 1e6f, ti);
+                        if (ch.tri < 0)
+                            continue;
+                        math::Vec3 hit_p = math::add(p, math::mul(dir, ch.t));
+                        math::Vec3 L =
+                            sample_surface_radiance(scene, prev_atlas, static_cast<u32>(ch.tri), hit_p);
+                        indirect = math::add(indirect, L);
+                        ++n_ok;
+                    }
                 }
                 // PDF for cosine-weighted is cosθ / π. Lambertian BRDF is
                 // albedo / π. cosθ from the geometry term cancels with the
@@ -392,9 +444,9 @@ void apply_bounce(const BakeScene& scene,
                 // = `albedo`. So mean(L) * albedo is the indirect contribution.
                 f32 inv = (n_ok > 0) ? (1.0f / static_cast<f32>(n_ok)) : 0.0f;
                 math::Vec3 ind = math::mul(indirect, inv);
-                f32 r = direct.pixels[px + 0] + tri.albedo.x * ind.x;
-                f32 g = direct.pixels[px + 1] + tri.albedo.y * ind.y;
-                f32 b = direct.pixels[px + 2] + tri.albedo.z * ind.z;
+                f32 r = direct.pixels[px + 0] + material.albedo.x * ind.x;
+                f32 g = direct.pixels[px + 1] + material.albedo.y * ind.y;
+                f32 b = direct.pixels[px + 2] + material.albedo.z * ind.z;
                 surf.pixels[px + 0] = r;
                 surf.pixels[px + 1] = g;
                 surf.pixels[px + 2] = b;
@@ -572,6 +624,11 @@ void print_help() {
                  "  --bounces N      indirect bounces (Wave-B: 0=direct only, 2-4 recommended)\n"
                  "  --samples N      hemisphere gather samples per texel per bounce (default 16)\n"
                  "\n"
+                 "Bake material flags: cast shadow=1, receive light=2, emit light=4.\n"
+                 "Text scenes may define `material ID R G B FLAGS` and triangles may use\n"
+                 "`material=N`, `flags=N`, `cast_shadow=0|1`, `receive_light=0|1`,\n"
+                 "`emit_light=0|1`, `emissive=N`, and `emissive_rgb=R,G,B`.\n"
+                 "\n"
                  ".psyscene is a tiny ad-hoc text format (see Bake.cpp::parse_scene)\n"
                  "good for round-trip tests. Real scenes will come out of lm_qbsp +\n"
                  "lm_cook in Wave-B.\n");
@@ -581,12 +638,94 @@ namespace {
 
 // A very small text scene format for CLI testing. Each line is one of:
 //
+//   material ID ALBEDO_R ALBEDO_G ALBEDO_B [FLAGS] [EMISSIVE [EM_R EM_G EM_B]]
 //   tri V0X V0Y V0Z V1X V1Y V1Z V2X V2Y V2Z
+//       [ALBEDO_R ALBEDO_G ALBEDO_B] [material=N] [flags=N]
+//       [cast_shadow=0|1] [receive_light=0|1] [emit_light=0|1]
+//       [emissive=N] [emissive_rgb=R,G,B]
 //   light_point X Y Z R G B INTENSITY
 //   light_dir   DX DY DZ R G B INTENSITY
 //
 // Comments start with #. This is intentionally minimal — production scenes
 // flow through .psybsp / .lmm assets and the engine, not this CLI shim.
+bool parse_u32_text(std::string_view text, u32& out) {
+    std::string tmp(text);
+    char* e = nullptr;
+    unsigned long v = std::strtoul(tmp.c_str(), &e, 0);
+    if (e == tmp.c_str())
+        return false;
+    out = static_cast<u32>(v);
+    return true;
+}
+
+bool parse_f32_text(std::string_view text, f32& out) {
+    std::string tmp(text);
+    char* e = nullptr;
+    out = std::strtof(tmp.c_str(), &e);
+    return e != tmp.c_str();
+}
+
+bool parse_vec3_csv(std::string_view text, math::Vec3& out) {
+    const usize c0 = text.find(',');
+    if (c0 == std::string_view::npos)
+        return false;
+    const usize c1 = text.find(',', c0 + 1);
+    if (c1 == std::string_view::npos)
+        return false;
+    f32 x = 0.0f, y = 0.0f, z = 0.0f;
+    if (!parse_f32_text(text.substr(0, c0), x))
+        return false;
+    if (!parse_f32_text(text.substr(c0 + 1, c1 - c0 - 1), y))
+        return false;
+    if (!parse_f32_text(text.substr(c1 + 1), z))
+        return false;
+    out = {x, y, z};
+    return true;
+}
+
+bool split_key_value(const std::string& token, std::string_view key, std::string_view& value) {
+    if (token.size() <= key.size() + 1u)
+        return false;
+    if (token.compare(0, key.size(), key.data(), key.size()) != 0)
+        return false;
+    if (token[key.size()] != '=')
+        return false;
+    value = std::string_view(token).substr(key.size() + 1u);
+    return true;
+}
+
+void set_flag(u32& flags, u32 flag, bool enabled) {
+    if (enabled)
+        flags |= flag;
+    else
+        flags &= ~flag;
+}
+
+void parse_material_key_values(std::span<const std::string> tokens,
+                               BakeMaterial& material,
+                               u32* material_id) {
+    for (const std::string& token : tokens) {
+        std::string_view value;
+        u32 u = 0;
+        f32 f = 0.0f;
+        if (material_id && split_key_value(token, "material", value) && parse_u32_text(value, u)) {
+            *material_id = u;
+        } else if (split_key_value(token, "flags", value) && parse_u32_text(value, u)) {
+            material.flags = u;
+        } else if (split_key_value(token, "cast_shadow", value) && parse_u32_text(value, u)) {
+            set_flag(material.flags, BakeMaterial_CastBakedShadow, u != 0u);
+        } else if (split_key_value(token, "receive_light", value) && parse_u32_text(value, u)) {
+            set_flag(material.flags, BakeMaterial_ReceiveBakedLight, u != 0u);
+        } else if (split_key_value(token, "emit_light", value) && parse_u32_text(value, u)) {
+            set_flag(material.flags, BakeMaterial_EmitBakedLight, u != 0u);
+        } else if (split_key_value(token, "emissive", value) && parse_f32_text(value, f)) {
+            material.emissive = f;
+        } else if (split_key_value(token, "emissive_rgb", value)) {
+            parse_vec3_csv(value, material.emissive_color);
+        }
+    }
+}
+
 bool parse_scene(std::string_view text, BakeScene& out, std::string& err) {
     usize i = 0;
     while (i < text.size()) {
@@ -619,11 +758,55 @@ bool parse_scene(std::string_view text, BakeScene& out, std::string& err) {
             v = std::strtof(s.c_str(), &e);
             return e != s.c_str();
         };
-        if (cmd == "tri" && tok.size() >= 10) {
+        if (cmd == "material" && tok.size() >= 5) {
+            u32 id = 0;
+            if (!parse_u32_text(tok[1], id)) {
+                err = "bake: bad material id";
+                return false;
+            }
+            BakeMaterial material{};
+            f32 a[3];
+            if (!pf(tok[2], a[0]) || !pf(tok[3], a[1]) || !pf(tok[4], a[2])) {
+                err = "bake: bad material albedo";
+                return false;
+            }
+            material.albedo = {a[0], a[1], a[2]};
+            usize kv_start = 5;
+            if (tok.size() > kv_start) {
+                u32 flags = 0;
+                if (parse_u32_text(tok[kv_start], flags)) {
+                    material.flags = flags;
+                    ++kv_start;
+                }
+            }
+            if (tok.size() > kv_start) {
+                f32 emissive = 0.0f;
+                if (pf(tok[kv_start], emissive)) {
+                    material.emissive = emissive;
+                    ++kv_start;
+                }
+            }
+            if (tok.size() >= kv_start + 3u) {
+                f32 rgb[3];
+                if (pf(tok[kv_start], rgb[0]) && pf(tok[kv_start + 1u], rgb[1]) &&
+                    pf(tok[kv_start + 2u], rgb[2])) {
+                    material.emissive_color = {rgb[0], rgb[1], rgb[2]};
+                    kv_start += 3u;
+                }
+            }
+            if (tok.size() > kv_start)
+                parse_material_key_values(std::span<const std::string>(tok.data() + kv_start,
+                                                                       tok.size() - kv_start),
+                                          material,
+                                          nullptr);
+            if (id >= out.materials.size())
+                out.materials.resize(static_cast<usize>(id) + 1u);
+            out.materials[id] = material;
+        } else if (cmd == "tri" && tok.size() >= 10) {
             BakeTriangle t{};
             f32 vals[9];
             for (int k = 0; k < 9; ++k) {
-                if (!pf(tok[1 + k], vals[k])) {
+                if (!pf(tok[static_cast<usize>(1 + k)], vals[k])) {
                     err = "bake: bad tri";
                     return false;
                 }
@@ -633,19 +816,39 @@ bool parse_scene(std::string_view text, BakeScene& out, std::string& err) {
             t.v2 = {vals[6], vals[7], vals[8]};
             t.normal = math::normalize(math::cross(math::sub(t.v1, t.v0), math::sub(t.v2, t.v0)));
             // Optional 3 trailing floats: albedo RGB.
+            usize kv_start = 10;
             if (tok.size() >= 13) {
                 f32 a[3];
                 if (pf(tok[10], a[0]) && pf(tok[11], a[1]) && pf(tok[12], a[2])) {
                     t.albedo = {a[0], a[1], a[2]};
+                    kv_start = 13;
                 }
             }
+            BakeMaterial material{};
+            material.albedo = t.albedo;
+            material.emissive_color = t.emissive_color;
+            material.emissive = t.emissive;
+            material.roughness = t.roughness;
+            material.flags = t.material_flags;
+            u32 material_id = t.material_id;
+            if (tok.size() > kv_start)
+                parse_material_key_values(std::span<const std::string>(tok.data() + kv_start,
+                                                                       tok.size() - kv_start),
+                                          material,
+                                          &material_id);
+            t.albedo = material.albedo;
+            t.emissive_color = material.emissive_color;
+            t.emissive = material.emissive;
+            t.roughness = material.roughness;
+            t.material_flags = material.flags;
+            t.material_id = material_id;
             out.triangles.push_back(t);
         } else if (cmd == "light_point" && tok.size() >= 8) {
             BakeLight l{};
             l.kind = LightKind::kPoint;
             f32 v[7];
             for (int k = 0; k < 7; ++k)
-                if (!pf(tok[1 + k], v[k])) {
+                if (!pf(tok[static_cast<usize>(1 + k)], v[k])) {
                     err = "bake: bad point light";
                     return false;
                 }
@@ -658,7 +861,7 @@ bool parse_scene(std::string_view text, BakeScene& out, std::string& err) {
             l.kind = LightKind::kDirectional;
             f32 v[7];
             for (int k = 0; k < 7; ++k)
-                if (!pf(tok[1 + k], v[k])) {
+                if (!pf(tok[static_cast<usize>(1 + k)], v[k])) {
                     err = "bake: bad dir light";
                     return false;
                 }
