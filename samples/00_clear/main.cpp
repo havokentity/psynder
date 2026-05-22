@@ -15,18 +15,7 @@ namespace {
 
 struct ClearSample {
     static constexpr std::string_view log_name() noexcept { return "sample_00"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 00"; }
-
-    static platform::WindowDesc window_desc(const app::AppArgs&) noexcept {
-        platform::WindowDesc desc{};
-        desc.title = "Psynder — sample 00 (clear)";
-        desc.window_width = 1280;
-        desc.window_height = 720;
-        desc.render_width = 640;
-        desc.render_height = 360;
-        desc.scale_mode = platform::ScaleMode::Integer;
-        return desc;
-    }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 00 (clear)"; }
 
     void frame(app::WindowFrameContext& ctx) {
         // Drive the colour off frame index in smoke mode so the captured

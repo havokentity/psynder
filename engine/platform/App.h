@@ -26,6 +26,17 @@ struct WindowAppOptions {
     bool depth_buffer = false;
 };
 
+inline platform::WindowDesc default_window_desc(std::string_view title = "Psynder") {
+    platform::WindowDesc desc{};
+    desc.title.assign(title.data(), title.size());
+    desc.window_width = 1280;
+    desc.window_height = 720;
+    desc.render_width = 640;
+    desc.render_height = 360;
+    desc.scale_mode = platform::ScaleMode::Integer;
+    return desc;
+}
+
 // Owns the standard app/sample process boilerplate: common CLI args, one
 // platform window, a CPU RGBA8 framebuffer backing store, optional depth, PNG
 // capture, and deterministic cleanup. Samples keep only their scene/update code.
@@ -295,6 +306,17 @@ WindowAppOptions sample_window_options(const Sample& sample, const ArgsT& args) 
     }
 }
 
+template <class Sample, class ArgsT>
+platform::WindowDesc sample_window_desc(const Sample& sample, const ArgsT& args) {
+    if constexpr (requires { sample.window_desc(args); }) {
+        return sample.window_desc(args);
+    } else if constexpr (requires { Sample::window_desc(args); }) {
+        return Sample::window_desc(args);
+    } else {
+        return default_window_desc(sample_display_name(sample));
+    }
+}
+
 template <class Sample>
 void sample_started(Sample& sample, WindowApp& app) {
     if constexpr (requires { sample.started(app); }) {
@@ -358,7 +380,7 @@ int run_window_sample(int argc, char** argv) {
     const std::string_view log_name = detail::sample_log_name(sample);
     const std::string_view display_name = detail::sample_display_name(sample);
 
-    WindowApp app{args, sample.window_desc(args), detail::sample_window_options(sample, args)};
+    WindowApp app{args, detail::sample_window_desc(sample, args), detail::sample_window_options(sample, args)};
     if (!app) {
         PSY_LOG_ERROR("{}: failed to create window", log_name);
         return EXIT_FAILURE;
