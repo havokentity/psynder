@@ -10,7 +10,6 @@
 #include "render/TextureGenerators.h"
 
 #include <array>
-#include <cmath>
 
 using namespace psynder;
 
@@ -32,6 +31,13 @@ struct TexturedQuadSample {
     render::Texture2D crate_texture{};
     std::array<Entity, kCratePositions.size()> crates{};
 
+    static app::SceneCreateOptions scene_options(const app::AppArgs&) noexcept {
+        app::SceneCreateOptions options{};
+        options.camera.position = math::Vec3{0.0f, 1.5f, 1.5f};
+        options.camera.look_at = math::Vec3{0.0f, 0.0f, -3.0f};
+        return options;
+    }
+
     void started(app::WindowApp& app) {
         crate_texture = render::texture_generators::wooden_crate();
 
@@ -48,23 +54,6 @@ struct TexturedQuadSample {
         render::MaterialDesc crate_material{};
         crate_material.flags = render::MaterialFlags::RasterVisible;
         const render::MaterialId crate_material_id = scene.materials().create(crate_material);
-
-        scene::LocalTransform camera_rig_transform{};
-        camera_rig_transform.translation = math::Vec3{0.0f, 1.5f, 1.5f};
-        const Entity camera_rig = scene.create_entity(camera_rig_transform);
-
-        const render::Framebuffer& framebuffer = app.framebuffer();
-        scene::CameraComponent camera_component{};
-        camera_component.aspect =
-            framebuffer.height == 0u ? 1.0f
-                                     : static_cast<f32>(framebuffer.width) /
-                                           static_cast<f32>(framebuffer.height);
-        scene::LocalTransform camera_transform{};
-        camera_transform.rotation =
-            math::quat_from_axis_angle(math::Vec3{1.0f, 0.0f, 0.0f}, -std::atan2(1.5f, 4.5f));
-        const Entity camera_entity =
-            scene.create_camera(camera_component, camera_transform, scene.node(camera_rig));
-        scene.set_active_camera(camera_entity);
 
         std::array<scene::LocalTransform, kCratePositions.size()> crate_transforms{};
         for (usize i = 0; i < kCratePositions.size(); ++i)

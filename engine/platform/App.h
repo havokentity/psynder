@@ -697,13 +697,18 @@ std::string_view sample_display_name(const Sample& sample) noexcept {
 
 template <class Sample, class ArgsT>
 WindowAppOptions sample_window_options(const Sample& sample, const ArgsT& args) noexcept {
+    WindowAppOptions options{};
     if constexpr (requires { sample.window_options(args); }) {
-        return sample.window_options(args);
+        options = sample.window_options(args);
     } else if constexpr (requires { Sample::window_options(args); }) {
-        return Sample::window_options(args);
-    } else {
-        return {};
+        options = Sample::window_options(args);
     }
+    if constexpr (requires { sample.scene_options(args); }) {
+        options.default_scene = sample.scene_options(args);
+    } else if constexpr (requires { Sample::scene_options(args); }) {
+        options.default_scene = Sample::scene_options(args);
+    }
+    return options;
 }
 
 template <class Sample, class ArgsT>
