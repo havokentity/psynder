@@ -16,9 +16,10 @@ namespace psynder::render {
 
 struct MeshTag {};
 using MeshId = Handle<MeshTag>;
+using Vertex = raster::Vertex;
 
 struct MeshDesc {
-    const raster::Vertex* vertices = nullptr;
+    const Vertex* vertices = nullptr;
     u32 vertex_count = 0;
     const u32* indices = nullptr;
     u32 index_count = 0;

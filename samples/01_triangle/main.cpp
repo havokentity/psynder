@@ -4,14 +4,8 @@
 // Texture: 32×32 PPM under assets/crate.ppm. Loaded once at startup and
 // sampled by the engine raster path.
 //
-#include "core/Types.h"
-#include "math/Math.h"
 #include "platform/App.h"
 #include "render/Color.h"
-#include "render/Geometry.h"
-#include "render/raster/Raster.h"
-#include "render/Texture.h"
-#include "scene/SceneEcs.h"
 
 #include <array>
 
@@ -19,7 +13,7 @@ using namespace psynder;
 
 namespace {
 
-const std::array<render::raster::Vertex, 3> kTriangleVerts{{
+const std::array<render::Vertex, 3> kTriangleVerts{{
     {{-0.6f, -0.4f, 0.0f}, {0, 0, 1}, {0.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
     {{0.6f, -0.4f, 0.0f}, {0, 0, 1}, {1.0f, 1.0f}, {0, 0}, 0xFFFFFFFFu},
     {{0.0f, 0.6f, 0.0f}, {0, 0, 1}, {0.5f, 0.0f}, {0, 0}, 0xFFFFFFFFu},
