@@ -56,9 +56,26 @@ void SceneGraph::clear() {
     effective_dirty_.clear();
     dirty_queued_.clear();
     dirty_roots_.clear();
-    nodes_by_depth_.clear();
     analytic_spheres_.clear();
     live_nodes_ = 0;
+    max_depth_ = 0;
+}
+
+void SceneGraph::reserve_nodes(u32 count) {
+    generation_.reserve(count);
+    alive_.reserve(count);
+    parent_.reserve(count);
+    first_child_.reserve(count);
+    next_sibling_.reserve(count);
+    prev_sibling_.reserve(count);
+    depth_.reserve(count);
+    local_.reserve(count);
+    world_.reserve(count);
+    local_dirty_.reserve(count);
+    effective_dirty_.reserve(count);
+    dirty_queued_.reserve(count);
+    dirty_roots_.reserve(count);
+    analytic_spheres_.reserve(count);
 }
 
 SceneNode SceneGraph::create_node(SceneNode parent, const LocalTransform& local) {
@@ -78,9 +95,7 @@ SceneNode SceneGraph::create_node(SceneNode parent, const LocalTransform& local)
     effective_dirty_.push_back(1u);
     dirty_queued_.push_back(1u);
     dirty_roots_.push_back(index);
-    if (nodes_by_depth_.size() <= depth_[index])
-        nodes_by_depth_.resize(static_cast<usize>(depth_[index]) + 1u);
-    nodes_by_depth_[depth_[index]].push_back(index);
+    max_depth_ = std::max(max_depth_, depth_[index]);
     if (parent_index != kInvalidIndex)
         attach_child(parent_index, index);
     ++live_nodes_;
@@ -109,7 +124,7 @@ bool SceneGraph::destroy_node(SceneNode node) {
     if (index < dirty_queued_.size())
         dirty_queued_[index] = 0u;
     --live_nodes_;
-    rebuild_depth_lists();
+    recompute_depth_bounds();
     return true;
 }
 
@@ -137,7 +152,7 @@ bool SceneGraph::set_parent(SceneNode node, SceneNode parent) {
     if (parent_index != kInvalidIndex)
         attach_child(parent_index, index);
     update_subtree_depths(index, parent_index == kInvalidIndex ? 0u : depth_[parent_index] + 1u);
-    rebuild_depth_lists();
+    recompute_depth_bounds();
     mark_dirty(node);
     return true;
 }
@@ -187,7 +202,7 @@ void SceneGraph::mark_dirty(SceneNode node) {
 SceneGraphUpdateStats SceneGraph::update_world_transforms(u32 parallel_threshold) {
     (void)parallel_threshold;
     SceneGraphUpdateStats stats{};
-    stats.depth_levels = static_cast<u32>(nodes_by_depth_.size());
+    stats.depth_levels = live_nodes_ == 0u ? 0u : max_depth_ + 1u;
 
     auto has_dirty_ancestor = [&](u32 index) {
         for (u32 p = parent_[index]; p != kInvalidIndex; p = parent_[p]) {
@@ -291,14 +306,12 @@ void SceneGraph::detach_child(u32 child_index) noexcept {
     next_sibling_[child_index] = kInvalidIndex;
 }
 
-void SceneGraph::rebuild_depth_lists() {
-    nodes_by_depth_.clear();
+void SceneGraph::recompute_depth_bounds() noexcept {
+    max_depth_ = 0u;
     for (u32 i = 0; i < alive_.size(); ++i) {
         if (alive_[i] == 0u)
             continue;
-        if (nodes_by_depth_.size() <= depth_[i])
-            nodes_by_depth_.resize(static_cast<usize>(depth_[i]) + 1u);
-        nodes_by_depth_[depth_[i]].push_back(i);
+        max_depth_ = std::max(max_depth_, depth_[i]);
     }
 }
 
