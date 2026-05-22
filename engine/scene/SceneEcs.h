@@ -33,6 +33,22 @@ enum RenderableFlags : u32 {
     Renderable_DefaultFlags = Renderable_Visible,
 };
 
+enum RenderableValidationIssue : u32 {
+    RenderableValidation_None = 0u,
+    RenderableValidation_NotVisible = 1u << 0,
+    RenderableValidation_NoGeometry = 1u << 1,
+    RenderableValidation_DynamicStaticBake = 1u << 2,
+};
+
+struct RenderableValidation {
+    u32 issues = RenderableValidation_None;
+
+    [[nodiscard]] constexpr bool ok() const noexcept { return issues == RenderableValidation_None; }
+    [[nodiscard]] constexpr bool has(RenderableValidationIssue issue) const noexcept {
+        return (issues & static_cast<u32>(issue)) != 0u;
+    }
+};
+
 PSYNDER_COMPONENT(TransformComponent) {
     LocalTransform local{};
 };
@@ -62,6 +78,141 @@ struct SceneRenderItem {
     u32 flags = 0u;
     ObjectMobility mobility = ObjectMobility::Dynamic;
 };
+
+inline bool renderable_is_visible(const RenderableComponent& renderable) noexcept {
+    return (renderable.flags & Renderable_Visible) != 0u;
+}
+
+inline bool renderable_has_geometry(const RenderableComponent& renderable) noexcept {
+    return renderable.geometry != GeometryKind::None;
+}
+
+inline bool renderable_is_static(const RenderableComponent& renderable) noexcept {
+    return renderable.mobility == ObjectMobility::Static;
+}
+
+inline bool renderable_is_dynamic(const RenderableComponent& renderable) noexcept {
+    return renderable.mobility == ObjectMobility::Dynamic;
+}
+
+inline RenderableComponent make_renderable(GeometryKind geometry,
+                                           u32 geometry_id,
+                                           ::psynder::render::MaterialId material,
+                                           const math::Aabb& local_bounds,
+                                           ObjectMobility mobility = ObjectMobility::Dynamic,
+                                           u32 flags = Renderable_DefaultFlags) noexcept {
+    RenderableComponent renderable{};
+    renderable.geometry = geometry;
+    renderable.geometry_id = geometry_id;
+    renderable.material = material;
+    renderable.flags = flags;
+    renderable.mobility = mobility;
+    renderable.local_bounds = local_bounds;
+    return renderable;
+}
+
+inline RenderableComponent make_static_renderable(GeometryKind geometry,
+                                                  u32 geometry_id,
+                                                  ::psynder::render::MaterialId material,
+                                                  const math::Aabb& local_bounds,
+                                                  u32 flags = Renderable_DefaultFlags) noexcept {
+    return make_renderable(geometry, geometry_id, material, local_bounds, ObjectMobility::Static, flags);
+}
+
+inline RenderableComponent make_dynamic_renderable(GeometryKind geometry,
+                                                   u32 geometry_id,
+                                                   ::psynder::render::MaterialId material,
+                                                   const math::Aabb& local_bounds,
+                                                   u32 flags = Renderable_DefaultFlags) noexcept {
+    return make_renderable(geometry, geometry_id, material, local_bounds, ObjectMobility::Dynamic, flags);
+}
+
+inline RenderableValidation validate_renderable_for_static_bake(
+    const RenderableComponent& renderable) noexcept {
+    RenderableValidation validation{};
+    if (!renderable_is_visible(renderable))
+        validation.issues |= RenderableValidation_NotVisible;
+    if (!renderable_has_geometry(renderable))
+        validation.issues |= RenderableValidation_NoGeometry;
+    if (!renderable_is_static(renderable))
+        validation.issues |= RenderableValidation_DynamicStaticBake;
+    return validation;
+}
+
+inline bool renderable_can_participate_in_static_bake(const RenderableComponent& renderable) noexcept {
+    return validate_renderable_for_static_bake(renderable).ok();
+}
+
+inline bool update_renderable(World& world, Entity entity, const RenderableComponent& renderable) {
+    if (!world.alive(entity) || !world.get<RenderableComponent>(entity))
+        return false;
+    world.add<RenderableComponent>(entity, renderable);
+    return true;
+}
+
+inline bool set_renderable_mobility(World& world, Entity entity, ObjectMobility mobility) {
+    auto* renderable = world.get<RenderableComponent>(entity);
+    if (!renderable)
+        return false;
+    RenderableComponent updated = *renderable;
+    updated.mobility = mobility;
+    world.add<RenderableComponent>(entity, updated);
+    return true;
+}
+
+inline bool mark_renderable_static(World& world, Entity entity) {
+    return set_renderable_mobility(world, entity, ObjectMobility::Static);
+}
+
+inline bool mark_renderable_dynamic(World& world, Entity entity) {
+    return set_renderable_mobility(world, entity, ObjectMobility::Dynamic);
+}
+
+inline bool get_renderable_mobility(World& world, Entity entity, ObjectMobility& out) {
+    auto* renderable = world.get<RenderableComponent>(entity);
+    if (!renderable)
+        return false;
+    out = renderable->mobility;
+    return true;
+}
+
+inline bool set_renderable_material(World& world,
+                                    Entity entity,
+                                    ::psynder::render::MaterialId material) {
+    auto* renderable = world.get<RenderableComponent>(entity);
+    if (!renderable)
+        return false;
+    RenderableComponent updated = *renderable;
+    updated.material = material;
+    world.add<RenderableComponent>(entity, updated);
+    return true;
+}
+
+inline bool set_renderable_flags(World& world, Entity entity, u32 flags) {
+    auto* renderable = world.get<RenderableComponent>(entity);
+    if (!renderable)
+        return false;
+    RenderableComponent updated = *renderable;
+    updated.flags = flags;
+    world.add<RenderableComponent>(entity, updated);
+    return true;
+}
+
+inline bool set_renderable_geometry(World& world,
+                                    Entity entity,
+                                    GeometryKind geometry,
+                                    u32 geometry_id,
+                                    const math::Aabb& local_bounds) {
+    auto* renderable = world.get<RenderableComponent>(entity);
+    if (!renderable)
+        return false;
+    RenderableComponent updated = *renderable;
+    updated.geometry = geometry;
+    updated.geometry_id = geometry_id;
+    updated.local_bounds = local_bounds;
+    world.add<RenderableComponent>(entity, updated);
+    return true;
+}
 
 inline Entity create_scene_entity(World& world,
                                   SceneGraph& graph,
@@ -169,6 +320,33 @@ class RuntimeScene {
             return false;
         world_->add<RenderableComponent>(entity, renderable);
         return true;
+    }
+
+    bool update_renderable(Entity entity, const RenderableComponent& renderable) {
+        return ::psynder::scene::update_renderable(*world_, entity, renderable);
+    }
+
+    bool set_renderable_mobility(Entity entity, ObjectMobility mobility) {
+        return ::psynder::scene::set_renderable_mobility(*world_, entity, mobility);
+    }
+
+    bool mark_renderable_static(Entity entity) {
+        return ::psynder::scene::mark_renderable_static(*world_, entity);
+    }
+
+    bool mark_renderable_dynamic(Entity entity) {
+        return ::psynder::scene::mark_renderable_dynamic(*world_, entity);
+    }
+
+    bool get_renderable_mobility(Entity entity, ObjectMobility& out) {
+        return ::psynder::scene::get_renderable_mobility(*world_, entity, out);
+    }
+
+    RenderableValidation validate_renderable_for_static_bake(Entity entity) {
+        auto* renderable = world_->get<RenderableComponent>(entity);
+        if (!renderable)
+            return RenderableValidation{RenderableValidation_NoGeometry};
+        return ::psynder::scene::validate_renderable_for_static_bake(*renderable);
     }
 
     SceneGraphUpdateStats update_transforms(u32 parallel_threshold = 128u) {
