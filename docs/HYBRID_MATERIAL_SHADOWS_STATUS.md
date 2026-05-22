@@ -89,6 +89,15 @@ and before ending a session so crash recovery has a concrete resume point.
   required for new 0..8 bounce clamp.
 - Samples worker complete with PR #139 targeting the integration branch.
 - Bake worker complete with PR #140 targeting the integration branch.
+- Local integration merge complete:
+  - merged #135, #136, #137, #138, #139, #140 into
+    `integration/wave-hybrid-material-shadows`
+  - added integration fix `tests: expect expanded RT bounce clamp`
+  - `cmake --build --preset mac-release` passed
+  - `build/mac-release/bin/psynder_unit` passed: 682 test cases, 248139 assertions
+  - `ctest --test-dir build/mac-release -R sample_ --output-on-failure` passed:
+    12/12 sample smokes
+  - `git diff --check` passed
 
 ## Next Multi-Agent Step
 
