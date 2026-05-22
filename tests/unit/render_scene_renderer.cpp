@@ -5,6 +5,7 @@
 
 #include "render/SceneRenderer.h"
 
+#include <algorithm>
 #include <array>
 
 using namespace psynder;
@@ -17,7 +18,7 @@ constexpr std::array<render::raster::Vertex, 3> kVerts{{
     {{0.0f, 0.5f, 0.0f}, {0, 0, 1}, {0, 1}, {0, 0}, 0xFFFFFFFFu},
 }};
 
-constexpr std::array<u32, 3> kIndices{0, 1, 2};
+constexpr std::array<u32, 3> kIndices{0, 2, 1};
 
 }  // namespace
 
@@ -110,6 +111,7 @@ TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene
     REQUIRE(stats.raster_draws == 1u);
     REQUIRE(stats.raster_triangles == 1u);
     REQUIRE(stats.raster_skipped == 0u);
+    REQUIRE(std::ranges::any_of(pixels, [](u32 p) { return p != 0u; }));
 
     REQUIRE(scene.destroy_entity(entity));
 }
