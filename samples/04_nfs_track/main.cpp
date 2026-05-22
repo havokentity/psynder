@@ -43,7 +43,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/raster/Raster.h"
 #include "ui/rml/DataBind.h"
 #include "ui/rml/Rml.h"
@@ -609,7 +609,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     // ─── Track build ────────────────────────────────────────────────────
     const auto track_segs = build_oval_track();

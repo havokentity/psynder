@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Psynder — render geometry handles shared by the hybrid scene renderer.
+// Psynder — render geometry handles shared by the hybrid rendering system.
 
 #pragma once
 

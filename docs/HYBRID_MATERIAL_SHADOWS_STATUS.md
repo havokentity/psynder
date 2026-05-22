@@ -181,7 +181,7 @@ and before ending a session so crash recovery has a concrete resume point.
 
 ## Decisions Captured
 
-- `SceneRenderer` / `HybridRenderer` is the common renderer path.
+- `RenderingSystem` / `HybridRenderer` is the common renderer path.
 - Scene submission stays ECS/DOTS-oriented: renderables are ECS components,
   material identity is a handle, and queues hold compact item indices.
 - Material policy is surface-level data. Object mobility is per renderable.
@@ -217,7 +217,7 @@ and before ending a session so crash recovery has a concrete resume point.
   - Hardened scene render gathering against parallel ECS query callbacks using
     thread-local chunk scratch plus a short append lock.
 
-- `engine/render/SceneRenderer.h`
+- `engine/render/RenderingSystem.h`
   - Added queues for:
     - `raster_shadow_casters`
     - `raster_shadow_receivers`
@@ -275,7 +275,7 @@ and before ending a session so crash recovery has a concrete resume point.
 
 - Promote sample-local PPM/texture loading into engine asset/texture code.
 - Make asset loaders async by design, and keep samples on async loading paths.
-- Continue migrating samples to `SceneRenderer` / `HybridRenderer`.
+- Continue migrating samples to `RenderingSystem` / `HybridRenderer`.
 - Split base texture policy from baked lightmap payload policy.
 - Make the lightmap baker consume shared scene/material policy instead of
   sample-local bake structures.
@@ -286,7 +286,7 @@ and before ending a session so crash recovery has a concrete resume point.
 ## Current Modified Files
 
 - `engine/render/Material.h`
-- `engine/render/SceneRenderer.h`
+- `engine/render/RenderingSystem.h`
 - `engine/render/raster/Raster.cpp`
 - `engine/render/raster/Raster.h`
 - `engine/render/raster/TileBin.h`
@@ -300,6 +300,6 @@ and before ending a session so crash recovery has a concrete resume point.
 - `tests/CMakeLists.txt`
 - `tests/unit/render_raster_tile.cpp`
 - `tests/unit/render_rt_frame_helpers.cpp`
-- `tests/unit/render_scene_renderer.cpp`
+- `tests/unit/render_rendering_system.cpp`
 - `tests/unit/scene_render_submission.cpp`
 - `docs/HYBRID_MATERIAL_SHADOWS_STATUS.md`

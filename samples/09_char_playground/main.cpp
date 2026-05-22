@@ -61,7 +61,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/raster/Raster.h"
 
 #include <algorithm>
@@ -258,7 +258,7 @@ Block make_block(
     return b;
 }
 
-void submit_block(render::SceneRenderer& r, const Block& b, const u32* cube_idx, u32 idx_count) {
+void submit_block(render::RenderingSystem& r, const Block& b, const u32* cube_idx, u32 idx_count) {
     render::raster::DrawItem item{};
     item.vertices = b.mesh.data();
     item.vertex_count = static_cast<u32>(b.mesh.size());
@@ -291,7 +291,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     // ─── Physics world + course ─────────────────────────────────────────
     auto& world = physics::World::Get();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Psynder — Sample 03 / M3 demo. Walking-POV "Quake room": a small BSP map
 // built in-memory at startup, walked first-person with WASD + mouse-look,
-// rendered face-by-face through the hybrid scene renderer facade.
+// rendered face-by-face through the hybrid rendering system facade.
 //
 // Wave A's `lm_qbsp` compiler exists, but its output isn't wired into a
 // shippable .psybsp file under VFS yet. So we synthesise a tiny 4-leaf map
@@ -33,7 +33,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/raster/Raster.h"
 #include "world/bsp/Bsp.h"
 #include "world/bsp/BspFormat.h"
@@ -463,7 +463,7 @@ void build_world(World& w) {
 // ─── Visibility callback context ─────────────────────────────────────────
 struct DrawCtx {
     const World* world = nullptr;
-    render::SceneRenderer* renderer = nullptr;
+    render::RenderingSystem* renderer = nullptr;
     u32 draw_count = 0;
 };
 
@@ -571,7 +571,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f});  // in Room A
     controller.set_look(0.0f, 0.0f);
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     PSY_LOG_INFO("Psynder sample 03 running{}",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)

@@ -87,7 +87,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/Texture.h"
 #include "render/raster/Raster.h"
 #include "world/bsp/Bsp.h"
@@ -768,7 +768,7 @@ void set_quad_uvs_and_albedo(World& w) {
 // ─── Visibility callback ──────────────────────────────────────────────────
 struct DrawCtx {
     const World* world = nullptr;
-    render::SceneRenderer* renderer = nullptr;
+    render::RenderingSystem* renderer = nullptr;
     // Render-vertex buffer (positions/uv/normal/color all constant — colour is
     // always the face albedo; the lightmap modulates it per pixel via the
     // chunk). Submitted as the vertex buffer for every face.
@@ -920,7 +920,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     // CPU framebuffer + depth.
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     PSY_LOG_INFO("Psynder sample 14 running{} — B toggles baked/unbaked",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)

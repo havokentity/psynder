@@ -7,7 +7,7 @@
 // sphere — reused across dozens of TLAS instances; that reuse is exactly
 // what the TLAS is for). The field is lit by six orbiting colored point
 // lights, each casting traced shadows. The sample now hands its TLAS,
-// camera, lights, and instance materials to the hybrid scene renderer;
+// camera, lights, and instance materials to the hybrid rendering system;
 // the engine owns primary visibility, AO, 8-wide shadow packets, shading,
 // and upsample.
 //
@@ -38,7 +38,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
 #include "ui/imm/DebugHud.h"
@@ -457,7 +457,7 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
     // ── CPU framebuffers. ───────────────────────────────────────────────
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     PSY_LOG_INFO("Psynder sample 12 running{} — {} TLAS instances, {} lights",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)

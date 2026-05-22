@@ -3,7 +3,7 @@
 //
 // The scene: a dark ground plane and five colored cubes scattered around it,
 // lit by three orbiting point lights (red / green / blue). The sample hands
-// its TLAS, camera, lights, and instance colors to the hybrid scene renderer;
+// its TLAS, camera, lights, and instance colors to the hybrid rendering system;
 // the engine owns primary visibility, 8-wide shadow packets, lighting, and
 // upsample. The skybox is a vertical gradient.
 //
@@ -24,7 +24,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
 
@@ -234,7 +234,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     PSY_LOG_INFO("Psynder sample 05 running{}",
                  smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)

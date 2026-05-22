@@ -5,7 +5,7 @@
 // mirror and saturated-diffuse spheres plus a couple of boxes, all built as
 // `render::rt::Bvh8` BLAS instances inside one `render::rt::Tlas`. Two point
 // lights orbit the room. The sample hands its TLAS, materials, reflectivity,
-// camera, and lights to the hybrid scene renderer, which owns the primary
+// camera, and lights to the hybrid rendering system, which owns the primary
 // pass, shadow packets, optional single-bounce reflections, and upsample.
 //
 // Navigation is the shared `psynder::samples::CharacterController`: FreeCam by
@@ -31,7 +31,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
 
@@ -311,7 +311,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     // -- CPU framebuffer + shared RT renderer. -----------------------------
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     // -- Shared first-person / free-cam controller (samples/common). ------
     samples::CharacterControllerConfig cc_cfg{};

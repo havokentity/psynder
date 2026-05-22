@@ -7,7 +7,7 @@
 // triangle list, packed into a `render::rt::Bvh8` BLAS, and referenced once
 // from a `render::rt::Tlas`. Two point lights (one per room) light the
 // interior. The sample hands its TLAS, per-triangle materials, camera, and
-// lights to the hybrid scene renderer, which casts primary rays and 8-wide
+// lights to the hybrid rendering system, which casts primary rays and 8-wide
 // shadow packets through the SAME room BVH, so the dividing wall + doorway
 // cast real shadows between the two rooms.
 //
@@ -33,7 +33,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
 
@@ -388,7 +388,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     controller.set_look(0.0f, 0.0f);
 
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     PSY_LOG_INFO("Psynder sample 13 running{}",
                  smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)

@@ -13,7 +13,7 @@
 #include "render/FrameStats.h"
 #include "render/Framebuffer.h"
 #include "render/PngWriter.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "scene/SceneEcs.h"
 
 #include <array>
@@ -113,9 +113,9 @@ class WindowApp {
     [[nodiscard]] const std::vector<u32>& pixels() const noexcept { return pixels_; }
     [[nodiscard]] std::vector<u32>& depth() noexcept { return depth_; }
     [[nodiscard]] const std::vector<u32>& depth() const noexcept { return depth_; }
-    [[nodiscard]] render::SceneRenderer& scene_renderer() noexcept { return scene_renderer_; }
-    [[nodiscard]] const render::SceneRenderer& scene_renderer() const noexcept {
-        return scene_renderer_;
+    [[nodiscard]] render::RenderingSystem& rendering_system() noexcept { return rendering_system_; }
+    [[nodiscard]] const render::RenderingSystem& rendering_system() const noexcept {
+        return rendering_system_;
     }
 
     [[nodiscard]] render::raster::ViewState default_raster_view() noexcept {
@@ -129,11 +129,11 @@ class WindowApp {
     }
 
     void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
-        scene_renderer_.reserve_scene_capacity(renderables, meshes);
+        rendering_system_.reserve_scene_capacity(renderables, meshes);
     }
 
     [[nodiscard]] render::MeshId create_mesh(const render::MeshDesc& mesh_desc) {
-        return scene_renderer_.meshes().create_mesh(mesh_desc);
+        return rendering_system_.meshes().create_mesh(mesh_desc);
     }
 
     [[nodiscard]] scene::RenderableComponent make_mesh_renderable(
@@ -142,7 +142,7 @@ class WindowApp {
         u32 flags = scene::Renderable_DefaultFlags,
         math::Aabb local_bounds = math::aabb_empty(),
         scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) const {
-        return scene_renderer_.make_mesh_renderable(mesh, material, flags, local_bounds, mobility);
+        return rendering_system_.make_mesh_renderable(mesh, material, flags, local_bounds, mobility);
     }
 
     [[nodiscard]] render::SceneMeshEntity create_mesh_entity(
@@ -153,13 +153,13 @@ class WindowApp {
         scene::SceneNode parent = scene::kInvalidSceneNode,
         u32 flags = scene::Renderable_DefaultFlags,
         scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
-        return scene_renderer_.create_mesh_entity(scene,
-                                                  mesh_desc,
-                                                  material,
-                                                  local,
-                                                  parent,
-                                                  flags,
-                                                  mobility);
+        return rendering_system_.create_mesh_entity(scene,
+                                                    mesh_desc,
+                                                    material,
+                                                    local,
+                                                    parent,
+                                                    flags,
+                                                    mobility);
     }
 
     render::SceneRenderStats render_scene(scene::Scene& scene) {
@@ -167,7 +167,7 @@ class WindowApp {
     }
 
     render::SceneRenderStats render_scene(scene::Scene& scene, const render::raster::ViewState& view) {
-        return scene_renderer_.render_raster(scene, view);
+        return rendering_system_.render_raster(scene, view);
     }
 
     void engine_frame_begin(FrameClear clear) noexcept {
@@ -267,7 +267,7 @@ class WindowApp {
         engine_frame_ms_count_ = other.engine_frame_ms_count_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
-        scene_renderer_ = std::move(other.scene_renderer_);
+        rendering_system_ = std::move(other.rendering_system_);
         framebuffer_ = other.framebuffer_;
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
@@ -292,7 +292,7 @@ class WindowApp {
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
-    render::SceneRenderer scene_renderer_{};
+    render::RenderingSystem rendering_system_{};
 
     void record_engine_frame_ms(f32 frame_ms) noexcept {
         engine_frame_ms_ring_[engine_frame_ms_head_] = frame_ms;

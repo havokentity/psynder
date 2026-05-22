@@ -62,7 +62,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/raster/Raster.h"
 
 #include <array>
@@ -367,7 +367,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     // ─── Physics world ──────────────────────────────────────────────────
     auto& world = physics::World::Get();

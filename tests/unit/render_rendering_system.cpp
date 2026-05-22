@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-// Psynder — hybrid scene renderer queue tests.
+// Psynder — hybrid rendering system queue tests.
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 
 #include <algorithm>
 #include <array>
@@ -22,12 +22,12 @@ constexpr std::array<u32, 3> kIndices{0, 2, 1};
 
 }  // namespace
 
-TEST_CASE("scene renderer queues split raster, transparent, RT, and shadow work",
-          "[render][scene_renderer]") {
+TEST_CASE("rendering system queues split raster, transparent, RT, and shadow work",
+          "[render][rendering_system]") {
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
     scene::Scene scene{registry};
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     render::MaterialDesc opaque_desc{};
     opaque_desc.flags = render::Material_RasterVisible | render::Material_RtVisible |
@@ -74,11 +74,11 @@ TEST_CASE("scene renderer queues split raster, transparent, RT, and shadow work"
     REQUIRE(scene.destroy_entity(c));
 }
 
-TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene_renderer]") {
+TEST_CASE("rendering system emits raster draws from mesh handles", "[render][rendering_system]") {
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
     scene::Scene scene{registry};
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     render::MaterialDesc material_desc{};
     material_desc.flags = render::Material_RasterVisible;
@@ -116,12 +116,12 @@ TEST_CASE("scene renderer emits raster draws from mesh handles", "[render][scene
     REQUIRE(scene.destroy_entity(entity));
 }
 
-TEST_CASE("scene renderer filters static baked and projected raster shadow queues",
-          "[render][scene_renderer]") {
+TEST_CASE("rendering system filters static baked and projected raster shadow queues",
+          "[render][rendering_system]") {
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
     scene::Scene scene{registry};
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     render::MaterialDesc static_desc{};
     static_desc.flags = render::Material_RasterVisible | render::Material_CastsRasterShadow |
@@ -173,11 +173,11 @@ TEST_CASE("scene renderer filters static baked and projected raster shadow queue
     REQUIRE(scene.destroy_entity(dynamic_entity));
 }
 
-TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_renderer]") {
+TEST_CASE("rendering system mesh entities use pooled handles", "[render][rendering_system]") {
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
     scene::Scene scene{registry};
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
     renderer.reserve_scene_capacity(8u);
 
     render::MaterialDesc material_desc{};
@@ -210,11 +210,11 @@ TEST_CASE("scene renderer mesh entities use pooled handles", "[render][scene_ren
     REQUIRE(scene.destroy_entity(second.entity));
 }
 
-TEST_CASE("scene renderer builds material batches for CPU effects", "[render][scene_renderer]") {
+TEST_CASE("rendering system builds material batches for CPU effects", "[render][rendering_system]") {
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
     scene::Scene scene{registry};
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
     renderer.reserve_scene_capacity(4u);
 
     render::MaterialDesc scrolling_desc{};

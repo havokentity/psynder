@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Psynder — shared scene-to-renderer queue builder for hybrid raster + RT.
+// Psynder — ECS/DOTS rendering system for hybrid raster + RT scenes.
 
 #pragma once
 
@@ -173,7 +173,7 @@ struct SceneMeshEntity {
     MaterialId material{};
 };
 
-class SceneRenderer {
+class RenderingSystem {
    public:
     [[nodiscard]] MeshLibrary& meshes() noexcept { return meshes_; }
     [[nodiscard]] const MeshLibrary& meshes() const noexcept { return meshes_; }
@@ -392,6 +392,6 @@ class SceneRenderer {
     rt::FrameRenderer rt_renderer_{};
 };
 
-using HybridRenderer = SceneRenderer;
+using HybridRenderer = RenderingSystem;
 
 }  // namespace psynder::render

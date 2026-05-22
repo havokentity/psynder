@@ -42,7 +42,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/Texture.h"
 #include "render/raster/Raster.h"
 #include "world/outdoor/Terrain.h"
@@ -692,7 +692,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     const auto towers = make_watchtowers(hm_desc);
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem renderer;
 
     PSY_LOG_INFO("Psynder sample 06 running{}",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
