@@ -30,6 +30,8 @@ console::CVar* g_frame_ao_denoise = nullptr;
 console::CVar* g_frame_ao_debug = nullptr;
 console::CVar* g_frame_reflection_bounces = nullptr;
 
+inline constexpr u32 kMaxReflectionBounces = 8u;
+
 PSY_FORCEINLINE u32 pack_rgba8(u32 r, u32 g, u32 b) noexcept {
     return (r & 0xFFu) | ((g & 0xFFu) << 8) | ((b & 0xFFu) << 16) | (0xFFu << 24);
 }
@@ -443,6 +445,71 @@ bool material_table_has_reflectors(const FrameMaterialTable& materials) noexcept
     return false;
 }
 
+struct ReflectionSample {
+    math::Vec3 direct{};
+    f32 reflectivity = 0.0f;
+};
+
+math::Vec3 trace_reflection_bounces(const FrameRenderInput& input,
+                                    std::span<const scene::AnalyticSphereInstance> spheres,
+                                    std::span<const u8> rt_shadow_instance_mask,
+                                    Ray ray,
+                                    u32 bounces,
+                                    u32 light_count,
+                                    f32 attenuation_quadratic,
+                                    f32 reflection_scale) {
+    ReflectionSample samples[kMaxReflectionBounces]{};
+    u32 sample_count = 0;
+    math::Vec3 color{};
+
+    const u32 max_bounces = std::clamp(bounces, 1u, kMaxReflectionBounces);
+    for (u32 depth = 0; depth < max_bounces; ++depth) {
+        const SceneTraceHit hit = trace_scene(input, spheres, ray);
+        if (!hit.hit) {
+            color = rgba8_to_rgb(sample_sky(ray.direction));
+            break;
+        }
+
+        math::Vec3 normal = math::normalize(hit.normal);
+        if (math::dot(normal, ray.direction) > 0.0f)
+            normal = math::mul(normal, -1.0f);
+        const math::Vec3 position = {ray.origin.x + ray.direction.x * hit.t,
+                                     ray.origin.y + ray.direction.y * hit.t,
+                                     ray.origin.z + ray.direction.z * hit.t};
+        const math::Vec3 direct = shade_shadowed_direct_packet(input,
+                                                               spheres,
+                                                               rt_shadow_instance_mask,
+                                                               position,
+                                                               normal,
+                                                               hit.rgb,
+                                                               light_count,
+                                                               attenuation_quadratic);
+        const f32 k = std::clamp(hit.reflectivity * reflection_scale, 0.0f, 1.0f);
+        samples[sample_count++] = ReflectionSample{direct, k};
+        color = direct;
+
+        if (depth + 1u >= max_bounces || k <= 0.001f)
+            break;
+
+        const math::Vec3 reflected = math::normalize(reflect(ray.direction, normal));
+        ray.origin = {position.x + normal.x * 1.0e-3f,
+                      position.y + normal.y * 1.0e-3f,
+                      position.z + normal.z * 1.0e-3f};
+        ray.direction = reflected;
+        ray.t_min = 1.0e-3f;
+        ray.t_max = 1.0e3f;
+    }
+
+    for (u32 i = sample_count; i > 0u; --i) {
+        const ReflectionSample& sample = samples[i - 1u];
+        const f32 k = sample.reflectivity;
+        color.x = sample.direct.x * (1.0f - k) + color.x * k;
+        color.y = sample.direct.y * (1.0f - k) + color.y * k;
+        color.z = sample.direct.z * (1.0f - k) + color.z * k;
+    }
+    return color;
+}
+
 void upsample_bilinear(const u32* src, u32 sw, u32 sh, u32* dst, u32 dw, u32 dh) {
     const f32 fx_scale = static_cast<f32>(sw) / static_cast<f32>(dw);
     const f32 fy_scale = static_cast<f32>(sh) / static_cast<f32>(dh);
@@ -763,7 +830,7 @@ void ensure_frame_renderer_console_registered() {
     g_frame_reflection_bounces =
         con.RegisterCVar("r_rt_frame_reflection_bounces",
                          "1",
-                         "Engine RT mirror reflection bounces (0=off, 1=single bounce)",
+                         "Engine RT mirror reflection bounces (0=off, 1..8 mirror segments)",
                          console::CVAR_ARCHIVE);
 
     register_frame_renderer_dump_command("r_rt_frame_sched_dump",
@@ -817,7 +884,8 @@ FrameRenderConfig frame_render_config_from_console(
     config.ao_lit_strength = cvar_f32_clamped(g_frame_ao_lit_strength, 0.75f, 0.0f, 1.0f);
     const int reflection_bounces =
         g_frame_reflection_bounces ? g_frame_reflection_bounces->GetInt() : 0;
-    config.reflection_bounces = static_cast<u32>(std::clamp(reflection_bounces, 0, 1));
+    config.reflection_bounces =
+        static_cast<u32>(std::clamp(reflection_bounces, 0, static_cast<int>(kMaxReflectionBounces)));
     return config;
 }
 
@@ -838,8 +906,9 @@ void FrameRenderer::render(const FrameRenderInput& input,
     const u32 trace_w = config.trace_width > 0u ? config.trace_width : config.output_width;
     const u32 trace_h = config.trace_height > 0u ? config.trace_height : config.output_height;
     const u32 light_count = input.lights ? input.light_count : 0u;
+    const u32 reflection_bounces = std::min(config.reflection_bounces, kMaxReflectionBounces);
     const bool reflections_enabled =
-        config.reflection_bounces > 0u && material_table_has_reflectors(input.materials);
+        reflection_bounces > 0u && material_table_has_reflectors(input.materials);
     if (input.scene_graph)
         input.scene_graph->gather_analytic_spheres(analytic_spheres_);
     else
@@ -905,25 +974,36 @@ void FrameRenderer::render(const FrameRenderInput& input,
                             rray.direction = rdir;
                             rray.t_min = 1.0e-3f;
                             rray.t_max = 1.0e3f;
-                            const SceneTraceHit rh = trace_scene(input, analytic_spheres_, rray);
                             math::Vec3 reflected{};
-                            if (!rh.hit) {
-                                reflected = rgba8_to_rgb(sample_sky(rdir));
+                            if (reflection_bounces == 1u) {
+                                const SceneTraceHit rh = trace_scene(input, analytic_spheres_, rray);
+                                if (!rh.hit) {
+                                    reflected = rgba8_to_rgb(sample_sky(rdir));
+                                } else {
+                                    math::Vec3 rn = math::normalize(rh.normal);
+                                    if (math::dot(rn, rray.direction) > 0.0f)
+                                        rn = math::mul(rn, -1.0f);
+                                    const math::Vec3 rpos = {rray.origin.x + rray.direction.x * rh.t,
+                                                             rray.origin.y + rray.direction.y * rh.t,
+                                                             rray.origin.z + rray.direction.z * rh.t};
+                                    reflected = shade_shadowed_direct_packet(input,
+                                                                             analytic_spheres_,
+                                                                             rt_shadow_mask,
+                                                                             rpos,
+                                                                             rn,
+                                                                             rh.rgb,
+                                                                             light_count,
+                                                                             config.attenuation_quadratic);
+                                }
                             } else {
-                                math::Vec3 rn = math::normalize(rh.normal);
-                                if (math::dot(rn, rray.direction) > 0.0f)
-                                    rn = math::mul(rn, -1.0f);
-                                const math::Vec3 rpos = {rray.origin.x + rray.direction.x * rh.t,
-                                                         rray.origin.y + rray.direction.y * rh.t,
-                                                         rray.origin.z + rray.direction.z * rh.t};
-                                reflected = shade_shadowed_direct_packet(input,
-                                                                         analytic_spheres_,
-                                                                         rt_shadow_mask,
-                                                                         rpos,
-                                                                         rn,
-                                                                         rh.rgb,
-                                                                         light_count,
-                                                                         config.attenuation_quadratic);
+                                reflected = trace_reflection_bounces(input,
+                                                                     analytic_spheres_,
+                                                                     rt_shadow_mask,
+                                                                     rray,
+                                                                     reflection_bounces,
+                                                                     light_count,
+                                                                     config.attenuation_quadratic,
+                                                                     config.reflection_scale);
                             }
                             ph.refl_r = reflected.x;
                             ph.refl_g = reflected.y;

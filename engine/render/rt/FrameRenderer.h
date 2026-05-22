@@ -130,7 +130,7 @@ struct FrameRenderConfig {
     f32 ambient_scale = 3.0f;
     f32 direct_scale = 18.0f;
     f32 attenuation_quadratic = 0.06f;
-    u32 reflection_bounces = 0;  // Currently 0 or 1.
+    u32 reflection_bounces = 0;  // 0=off; higher values trace that many mirror segments.
     f32 reflection_scale = 1.0f;
 };
 
