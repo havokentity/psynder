@@ -10,6 +10,7 @@
 #include "scene/EcsRegistry.h"
 #include "scene/Environment.h"
 #include "scene/SceneGraph.h"
+#include "scene/SceneRuntime.h"
 
 #include <algorithm>
 #include <array>
@@ -426,8 +427,20 @@ inline void gather_scene_render_items(EcsRegistry& registry,
 
 class Scene {
    public:
-    explicit Scene(EcsRegistry& registry = EcsRegistry::Get()) noexcept : registry_(&registry) {
+    explicit Scene(EcsRegistry& registry = EcsRegistry::Get()) noexcept
+        : registry_(&registry)
+        , environment_(runtime_.environment) {
         registry_->set_structural_deferred(false);
+    }
+
+    Scene(const Scene&) = delete;
+    Scene& operator=(const Scene&) = delete;
+
+    Scene(Scene&& other) noexcept { move_from(other); }
+    Scene& operator=(Scene&& other) noexcept {
+        if (this != &other)
+            move_from(other);
+        return *this;
     }
 
     [[nodiscard]] EcsRegistry& registry() noexcept { return *registry_; }
@@ -440,6 +453,8 @@ class Scene {
     }
     [[nodiscard]] Environment& environment() noexcept { return environment_; }
     [[nodiscard]] const Environment& environment() const noexcept { return environment_; }
+    [[nodiscard]] SceneRuntime& runtime() noexcept { return runtime_; }
+    [[nodiscard]] const SceneRuntime& runtime() const noexcept { return runtime_; }
 
     void set_structural_deferred(bool on) noexcept { registry_->set_structural_deferred(on); }
     void apply_structural_changes() { registry_->apply_structural_changes(); }
@@ -582,9 +597,26 @@ class Scene {
     }
 
    private:
+    void move_from(Scene& other) noexcept {
+        registry_ = other.registry_;
+        graph_ = std::move(other.graph_);
+        materials_ = std::move(other.materials_);
+        runtime_ = std::move(other.runtime_);
+        environment_ = std::move(other.environment_);
+        environment_.bind_runtime(runtime_.environment);
+        default_camera_entity_ = other.default_camera_entity_;
+        render_item_capacity_ = other.render_item_capacity_;
+
+        other.registry_ = &EcsRegistry::Get();
+        other.environment_.bind_runtime(other.runtime_.environment);
+        other.default_camera_entity_ = {};
+        other.render_item_capacity_ = 0u;
+    }
+
     EcsRegistry* registry_ = nullptr;
     SceneGraph graph_{};
     ::psynder::render::MaterialLibrary materials_{};
+    SceneRuntime runtime_{};
     Environment environment_{};
     Entity default_camera_entity_{};
     u32 render_item_capacity_ = 0u;

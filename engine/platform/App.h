@@ -203,6 +203,7 @@ class WindowApp {
         if (load_scene(scene, options)) {
             active_scene_ = &scene;
             active_environment_ = &scene.environment();
+            active_runtime_ = &scene.runtime();
             active_scene_rendered_ = false;
         }
     }
@@ -210,6 +211,7 @@ class WindowApp {
     void clear_scene() noexcept {
         active_scene_ = nullptr;
         active_environment_ = nullptr;
+        active_runtime_ = nullptr;
         active_scene_rendered_ = false;
     }
 
@@ -312,8 +314,8 @@ class WindowApp {
 
     void engine_frame_begin(FrameClear clear) noexcept {
         active_scene_rendered_ = false;
-        if (active_environment_ && active_environment_->clear_enabled())
-            apply_environment_clear(*active_environment_);
+        if (active_runtime_ && active_runtime_->environment.clear_enabled())
+            apply_environment_clear(active_runtime_->environment);
         if (clear.color)
             render::clear_framebuffer_color(framebuffer_, clear.color_rgba8);
         if (clear.depth)
@@ -421,6 +423,7 @@ class WindowApp {
         }
         active_scene_ = active_was_default_scene ? &default_scene_ : other.active_scene_;
         active_environment_ = active_scene_ ? &active_scene_->environment() : nullptr;
+        active_runtime_ = active_scene_ ? &active_scene_->runtime() : nullptr;
         active_scene_rendered_ = other.active_scene_rendered_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
@@ -436,6 +439,7 @@ class WindowApp {
         other.engine_frame_ms_count_ = 0;
         other.active_scene_ = nullptr;
         other.active_environment_ = nullptr;
+        other.active_runtime_ = nullptr;
         other.active_scene_rendered_ = false;
         other.loaded_scenes_ = {};
         other.loaded_scene_count_ = 0;
@@ -458,6 +462,7 @@ class WindowApp {
     u32 loaded_scene_count_ = 0;
     scene::Scene* active_scene_ = nullptr;
     scene::Environment* active_environment_ = nullptr;
+    scene::SceneRuntime* active_runtime_ = nullptr;
     bool active_scene_rendered_ = false;
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
@@ -558,11 +563,14 @@ class WindowApp {
         (void)scene.create_camera(camera, transform);
     }
 
-    void apply_environment_clear(const scene::Environment& environment) noexcept {
-        const scene::EnvironmentSettings& settings = environment.settings();
-        if (settings.clear_color)
-            render::clear_framebuffer_color(framebuffer_, settings.clear_color_rgba8);
-        if (settings.clear_depth)
+    void apply_environment_clear(const scene::EnvironmentRuntimeSoA& environment) noexcept {
+        constexpr u32 kMainEnvironment = 0u;
+        const scene::EnvironmentClearFlags flags = environment.clear_flags[kMainEnvironment];
+        if ((flags & scene::EnvironmentClearFlags::Color) != 0u) {
+            render::clear_framebuffer_color(framebuffer_,
+                                            environment.clear_color_rgba8[kMainEnvironment]);
+        }
+        if ((flags & scene::EnvironmentClearFlags::Depth) != 0u)
             render::clear_framebuffer_depth(framebuffer_);
     }
 

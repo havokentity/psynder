@@ -112,22 +112,32 @@ TEST_CASE("scene owns environment clear settings", "[scene][render_submission][e
     REQUIRE(scene.environment().clear_enabled());
     REQUIRE(scene.environment().settings().clear_enabled());
     REQUIRE(scene.environment().settings().clear_color_rgba8 == 0xFF000000u);
+    REQUIRE(scene.runtime().environment.clear_enabled());
+    REQUIRE(scene.runtime().environment.clear_color_rgba8[0] == 0xFF000000u);
 
     scene.environment().set_clear_color(0xFF202028u);
     scene.environment().set_clear_enabled(true, false);
     REQUIRE(scene.environment().settings().clear_color_rgba8 == 0xFF202028u);
     REQUIRE_FALSE(scene.environment().settings().clear_depth);
     REQUIRE(scene.environment().clear_enabled());
+    REQUIRE(scene.runtime().environment.clear_flags[0] == scene::EnvironmentClearFlags::Color);
+    REQUIRE(scene.runtime().environment.clear_color_rgba8[0] == 0xFF202028u);
 
     scene.environment().disable_clear();
     REQUIRE_FALSE(scene.environment().clear_enabled());
     REQUIRE_FALSE(scene.environment().settings().clear_enabled());
+    REQUIRE_FALSE(scene.runtime().environment.clear_enabled());
 
     REQUIRE_FALSE(scene.environment().clouds().enabled);
-    scene.environment().clouds().enabled = true;
-    scene.environment().clouds().coverage = 0.65f;
+    scene::EnvironmentCloudSettings clouds{};
+    clouds.enabled = true;
+    clouds.coverage = 0.65f;
+    scene.environment().set_clouds(clouds);
     REQUIRE(scene.environment().settings().clouds.enabled);
     REQUIRE_THAT(static_cast<double>(scene.environment().settings().clouds.coverage),
+                 Catch::Matchers::WithinAbs(0.65, 1e-5));
+    REQUIRE(scene.runtime().environment.cloud_enabled[0] == 1u);
+    REQUIRE_THAT(static_cast<double>(scene.runtime().environment.cloud_coverage[0]),
                  Catch::Matchers::WithinAbs(0.65, 1e-5));
 }
 
