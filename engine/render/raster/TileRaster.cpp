@@ -654,46 +654,48 @@ void rasterize_tile(const Framebuffer& fb,
             e2_row += ex2_dy;
         }
 
-        // ── HiZ update ───────────────────────────────────────────────
-        // Tighten the per-cell max-z (farthest depth) toward this triangle's
-        // max-vertex z — but ONLY for cells the triangle FULLY covers. For a
-        // fully-covered cell every pixel ends up at min(old, tri_z) <= tri_z_max,
-        // so tri_z_max stays a true upper bound and any_cell_passes() remains
-        // conservative. Tightening a PARTIALLY-covered cell would be unsound:
-        // its uncovered pixels can hold farther geometry, so lowering max_z to
-        // tri_z_max underestimates the cell's farthest depth and would
-        // early-reject a later, genuinely-visible triangle — the intermittent
-        // "black holes" bug. Full coverage is the 4 cell-corner pixel centres
-        // all passing the (top-left-biased) edge tests; the triangle is convex,
-        // so all-corners-inside implies the whole cell is inside.
-        const f32 tri_z_max = std::max({t.v0.z, t.v1.z, t.v2.z});
-        const i32 lx0 = std::max(0, x0 - tile_x0);
-        const i32 ly0 = std::max(0, y0 - tile_y0);
-        const i32 lx1 = std::min(static_cast<i32>(TILE_W), x1 - tile_x0);
-        const i32 ly1 = std::min(static_cast<i32>(TILE_H), y1 - tile_y0);
-        if (lx0 < lx1 && ly0 < ly1) {
-            auto corner_inside = [&](f32 fx, f32 fy) noexcept {
-                const FxQ24_8 qx = FxQ24_8::from_float(fx);
-                const FxQ24_8 qy = FxQ24_8::from_float(fy);
-                return eval_edge0(t, qx, qy) >= 0 && eval_edge1(t, qx, qy) >= 0 &&
-                       eval_edge2(t, qx, qy) >= 0;
-            };
-            const u32 cx0 = static_cast<u32>(lx0) / kHiZCellPx;
-            const u32 cy0 = static_cast<u32>(ly0) / kHiZCellPx;
-            const u32 cx1 = (static_cast<u32>(lx1 - 1) / kHiZCellPx) + 1;
-            const u32 cy1 = (static_cast<u32>(ly1 - 1) / kHiZCellPx) + 1;
-            for (u32 cy = cy0; cy < cy1 && cy < hiz.kRows; ++cy) {
-                for (u32 cx = cx0; cx < cx1 && cx < hiz.kCols; ++cx) {
-                    // Cell pixel extent (screen space) → its 4 corner centres.
-                    const f32 px_l =
-                        static_cast<f32>(tile_x0 + static_cast<i32>(cx * kHiZCellPx)) + 0.5f;
-                    const f32 px_r = px_l + static_cast<f32>(kHiZCellPx - 1);
-                    const f32 py_t =
-                        static_cast<f32>(tile_y0 + static_cast<i32>(cy * kHiZCellPx)) + 0.5f;
-                    const f32 py_b = py_t + static_cast<f32>(kHiZCellPx - 1);
-                    if (corner_inside(px_l, py_t) && corner_inside(px_r, py_t) &&
-                        corner_inside(px_l, py_b) && corner_inside(px_r, py_b)) {
-                        hiz.update_cell(cy * hiz.kCols + cx, tri_z_max);
+        if (!multiply_blend) {
+            // ── HiZ update ───────────────────────────────────────────────
+            // Tighten the per-cell max-z (farthest depth) toward this triangle's
+            // max-vertex z — but ONLY for cells the triangle FULLY covers. For a
+            // fully-covered cell every pixel ends up at min(old, tri_z) <= tri_z_max,
+            // so tri_z_max stays a true upper bound and any_cell_passes() remains
+            // conservative. Tightening a PARTIALLY-covered cell would be unsound:
+            // its uncovered pixels can hold farther geometry, so lowering max_z to
+            // tri_z_max underestimates the cell's farthest depth and would
+            // early-reject a later, genuinely-visible triangle — the intermittent
+            // "black holes" bug. Full coverage is the 4 cell-corner pixel centres
+            // all passing the (top-left-biased) edge tests; the triangle is convex,
+            // so all-corners-inside implies the whole cell is inside.
+            const f32 tri_z_max = std::max({t.v0.z, t.v1.z, t.v2.z});
+            const i32 lx0 = std::max(0, x0 - tile_x0);
+            const i32 ly0 = std::max(0, y0 - tile_y0);
+            const i32 lx1 = std::min(static_cast<i32>(TILE_W), x1 - tile_x0);
+            const i32 ly1 = std::min(static_cast<i32>(TILE_H), y1 - tile_y0);
+            if (lx0 < lx1 && ly0 < ly1) {
+                auto corner_inside = [&](f32 fx, f32 fy) noexcept {
+                    const FxQ24_8 qx = FxQ24_8::from_float(fx);
+                    const FxQ24_8 qy = FxQ24_8::from_float(fy);
+                    return eval_edge0(t, qx, qy) >= 0 && eval_edge1(t, qx, qy) >= 0 &&
+                           eval_edge2(t, qx, qy) >= 0;
+                };
+                const u32 cx0 = static_cast<u32>(lx0) / kHiZCellPx;
+                const u32 cy0 = static_cast<u32>(ly0) / kHiZCellPx;
+                const u32 cx1 = (static_cast<u32>(lx1 - 1) / kHiZCellPx) + 1;
+                const u32 cy1 = (static_cast<u32>(ly1 - 1) / kHiZCellPx) + 1;
+                for (u32 cy = cy0; cy < cy1 && cy < hiz.kRows; ++cy) {
+                    for (u32 cx = cx0; cx < cx1 && cx < hiz.kCols; ++cx) {
+                        // Cell pixel extent (screen space) -> its 4 corner centres.
+                        const f32 px_l =
+                            static_cast<f32>(tile_x0 + static_cast<i32>(cx * kHiZCellPx)) + 0.5f;
+                        const f32 px_r = px_l + static_cast<f32>(kHiZCellPx - 1);
+                        const f32 py_t =
+                            static_cast<f32>(tile_y0 + static_cast<i32>(cy * kHiZCellPx)) + 0.5f;
+                        const f32 py_b = py_t + static_cast<f32>(kHiZCellPx - 1);
+                        if (corner_inside(px_l, py_t) && corner_inside(px_r, py_t) &&
+                            corner_inside(px_l, py_b) && corner_inside(px_r, py_b)) {
+                            hiz.update_cell(cy * hiz.kCols + cx, tri_z_max);
+                        }
                     }
                 }
             }

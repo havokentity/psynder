@@ -45,6 +45,24 @@ enum class DrawBlendMode : u8 {
     Multiply = 1,
 };
 
+// Pre-projected blob/decal shadow input. Callers provide the receiver-space
+// geometry and UVs up front; raster only interpolates UV/alpha and uses the
+// existing multiplicative no-depth-write path.
+struct ProjectedShadowDesc {
+    const Vertex* vertices = nullptr;
+    u32 vertex_count = 0;
+    const u32* indices = nullptr;
+    u32 index_count = 0;
+    math::Mat4 model;
+    // Optional RGBA8 mask sampled through Vertex::uv. If omitted, vertex alpha
+    // alone controls the shadow falloff.
+    const u32* mask_texels = nullptr;
+    u32 mask_w = 0;
+    u32 mask_h = 0;
+    f32 opacity = 1.0f;
+    CullMode cull = CullMode::None;
+};
+
 // ─── DrawItem — the unit the binner sees ─────────────────────────────────
 struct DrawItem {
     const Vertex* vertices = nullptr;
@@ -89,5 +107,9 @@ class Rasterizer {
 
 // Convenience: clear a framebuffer to the given RGBA8.
 void clear_framebuffer(Framebuffer& fb, u32 rgba) noexcept;
+
+// Build a multiplicative DrawItem for precomputed projected/blob shadow
+// geometry. The returned draw performs no material lookup and writes no depth.
+DrawItem make_projected_shadow_draw(const ProjectedShadowDesc& shadow) noexcept;
 
 }  // namespace psynder::render::raster
