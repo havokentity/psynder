@@ -34,7 +34,8 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/Geometry.h"
+#include "render/raster/Raster.h"
 #include "render/Texture.h"
 #include "scene/SceneEcs.h"
 
@@ -283,7 +284,6 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                          static_cast<u32>(cube_idx.size()));
 
     scene::Scene scene{};
-    render::SceneRenderer renderer;
 
     render::MeshDesc cube_mesh_desc{};
     cube_mesh_desc.vertices = kCubeVerts.data();
@@ -292,7 +292,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     cube_mesh_desc.index_count = static_cast<u32>(cube_idx.size());
     cube_mesh_desc.base_color = crate_view;
     cube_mesh_desc.local_bounds = math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}};
-    const render::MeshId cube_mesh = renderer.meshes().create_mesh(cube_mesh_desc);
+    const render::MeshId cube_mesh = app_host.create_mesh(cube_mesh_desc);
 
     render::MaterialDesc crate_material{};
     crate_material.flags = render::Material_RasterVisible;
@@ -300,7 +300,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     std::array<Entity, kCratePositions.size()> crates{};
     for (Entity& crate : crates)
-        crate = scene.create_renderable(renderer.make_mesh_renderable(cube_mesh, crate_material_id));
+        crate = scene.create_renderable(app_host.make_mesh_renderable(cube_mesh, crate_material_id));
 
     PSY_LOG_INFO("Psynder sample 02 running{}{}",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -378,7 +378,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             scene.set_transform(crates[i], transform);
         }
 
-        renderer.render_raster(scene, view);
+        app_host.render_scene(scene, view);
         app_host.engine_frame_post();
         app_host.present();
 

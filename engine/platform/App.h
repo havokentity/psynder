@@ -8,10 +8,13 @@
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/SampleHook.h"
+#include "math/Math.h"
 #include "platform/Platform.h"
 #include "render/FrameStats.h"
 #include "render/Framebuffer.h"
 #include "render/PngWriter.h"
+#include "render/SceneRenderer.h"
+#include "scene/SceneEcs.h"
 
 #include <array>
 #include <concepts>
@@ -110,6 +113,62 @@ class WindowApp {
     [[nodiscard]] const std::vector<u32>& pixels() const noexcept { return pixels_; }
     [[nodiscard]] std::vector<u32>& depth() noexcept { return depth_; }
     [[nodiscard]] const std::vector<u32>& depth() const noexcept { return depth_; }
+    [[nodiscard]] render::SceneRenderer& scene_renderer() noexcept { return scene_renderer_; }
+    [[nodiscard]] const render::SceneRenderer& scene_renderer() const noexcept {
+        return scene_renderer_;
+    }
+
+    [[nodiscard]] render::raster::ViewState default_raster_view() noexcept {
+        render::raster::ViewState view{};
+        view.target = framebuffer_;
+        view.view = math::identity4();
+        view.projection = math::identity4();
+        view.tile_w = 64;
+        view.tile_h = 64;
+        return view;
+    }
+
+    void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
+        scene_renderer_.reserve_scene_capacity(renderables, meshes);
+    }
+
+    [[nodiscard]] render::MeshId create_mesh(const render::MeshDesc& mesh_desc) {
+        return scene_renderer_.meshes().create_mesh(mesh_desc);
+    }
+
+    [[nodiscard]] scene::RenderableComponent make_mesh_renderable(
+        render::MeshId mesh,
+        render::MaterialId material,
+        u32 flags = scene::Renderable_DefaultFlags,
+        math::Aabb local_bounds = math::aabb_empty(),
+        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) const {
+        return scene_renderer_.make_mesh_renderable(mesh, material, flags, local_bounds, mobility);
+    }
+
+    [[nodiscard]] render::SceneMeshEntity create_mesh_entity(
+        scene::Scene& scene,
+        const render::MeshDesc& mesh_desc,
+        render::MaterialId material,
+        const scene::LocalTransform& local = {},
+        scene::SceneNode parent = scene::kInvalidSceneNode,
+        u32 flags = scene::Renderable_DefaultFlags,
+        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
+        return scene_renderer_.create_mesh_entity(scene,
+                                                  mesh_desc,
+                                                  material,
+                                                  local,
+                                                  parent,
+                                                  flags,
+                                                  mobility);
+    }
+
+    render::SceneRenderStats render_scene(scene::Scene& scene) {
+        return render_scene(scene, default_raster_view());
+    }
+
+    render::SceneRenderStats render_scene(scene::Scene& scene, const render::raster::ViewState& view) {
+        return scene_renderer_.render_raster(scene, view);
+    }
 
     void engine_frame_begin(FrameClear clear) noexcept {
         if (clear.color)
@@ -208,6 +267,7 @@ class WindowApp {
         engine_frame_ms_count_ = other.engine_frame_ms_count_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
+        scene_renderer_ = std::move(other.scene_renderer_);
         framebuffer_ = other.framebuffer_;
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
@@ -232,6 +292,7 @@ class WindowApp {
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
+    render::SceneRenderer scene_renderer_{};
 
     void record_engine_frame_ms(f32 frame_ms) noexcept {
         engine_frame_ms_ring_[engine_frame_ms_head_] = frame_ms;
