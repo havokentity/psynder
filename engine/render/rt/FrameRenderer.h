@@ -197,6 +197,7 @@ class FrameRenderer {
     std::vector<f32> hit_depth_;
     std::vector<f32> hit_normals_;
     std::vector<scene::AnalyticSphereInstance> analytic_spheres_;
+    std::vector<u8> rt_shadow_instance_mask_;
 };
 
 }  // namespace psynder::render::rt

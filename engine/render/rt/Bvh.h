@@ -57,6 +57,10 @@ struct ShadowPacket8 {
     bool occluded[8];
 };
 void trace_shadow_packet(const Tlas& tlas, ShadowPacket8& pkt);
+void trace_shadow_packet_masked(const Tlas& tlas,
+                                ShadowPacket8& pkt,
+                                const u8* instance_casts_shadow,
+                                u32 instance_casts_shadow_count);
 
 // Denoiser — edge-aware à-trous, 2 passes guided by depth + normal.
 struct DenoiseInput {

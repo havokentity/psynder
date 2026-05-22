@@ -31,6 +31,19 @@ enum class MaterialCpuEffect : u8 {
     UvScroll = 1,
 };
 
+enum class MaterialRasterShadowMode : u8 {
+    None = 0,
+    ProjectedDecal = 1,
+    BakedLightmap = 2,
+};
+
+enum class MaterialShadowAlphaMode : u8 {
+    Opaque = 0,
+    AlphaTest = 1,
+    AlphaBlend = 2,
+    Disabled = 3,
+};
+
 struct MaterialCpuEffectDesc {
     MaterialCpuEffect type = MaterialCpuEffect::None;
     f32 uv_scroll_u = 0.0f;
@@ -47,11 +60,19 @@ enum MaterialFlags : u32 {
     Material_CastsRasterShadow = 1u << 4,
     Material_ReceivesRasterShadow = 1u << 5,
     Material_Editable = 1u << 6,
+    Material_BakeVisible = 1u << 7,
+    Material_CastsBakedShadow = 1u << 8,
+    Material_ReceivesBakedShadow = 1u << 9,
+    Material_EmissiveBakes = 1u << 10,
 
     Material_DefaultFlags = Material_RasterVisible | Material_RtVisible | Material_CastsRtShadow |
                             Material_ReceivesRtShadow | Material_CastsRasterShadow |
                             Material_ReceivesRasterShadow | Material_Editable,
 };
+
+inline constexpr u32 Material_BakedLightingMask =
+    Material_BakeVisible | Material_CastsBakedShadow | Material_ReceivesBakedShadow |
+    Material_EmissiveBakes;
 
 struct MaterialDesc {
     u32 albedo_rgba8 = 0xFFFFFFFFu;
@@ -63,6 +84,10 @@ struct MaterialDesc {
     MaterialCpuEffectDesc cpu_effect{};
     MaterialWinding winding = MaterialWinding::Ccw;
     MaterialBlendMode blend = MaterialBlendMode::Opaque;
+    MaterialRasterShadowMode raster_shadow_mode = MaterialRasterShadowMode::None;
+    MaterialShadowAlphaMode shadow_alpha = MaterialShadowAlphaMode::Opaque;
+    f32 shadow_opacity = 0.5f;
+    f32 shadow_softness = 0.5f;
     u32 flags = Material_DefaultFlags;
 };
 
@@ -80,6 +105,10 @@ struct MaterialView {
     std::span<const f32> effect_rate;
     std::span<const MaterialWinding> winding;
     std::span<const MaterialBlendMode> blend;
+    std::span<const MaterialRasterShadowMode> raster_shadow_mode;
+    std::span<const MaterialShadowAlphaMode> shadow_alpha;
+    std::span<const f32> shadow_opacity;
+    std::span<const f32> shadow_softness;
     std::span<const u32> flags;
 };
 
@@ -101,6 +130,10 @@ class MaterialLibrary {
         effect_rate_.reserve(count);
         winding_.reserve(count);
         blend_.reserve(count);
+        raster_shadow_mode_.reserve(count);
+        shadow_alpha_.reserve(count);
+        shadow_opacity_.reserve(count);
+        shadow_softness_.reserve(count);
         flags_.reserve(count);
     }
 
@@ -121,6 +154,10 @@ class MaterialLibrary {
         effect_rate_.clear();
         winding_.clear();
         blend_.clear();
+        raster_shadow_mode_.clear();
+        shadow_alpha_.clear();
+        shadow_opacity_.clear();
+        shadow_softness_.clear();
         flags_.clear();
     }
 
@@ -146,6 +183,10 @@ class MaterialLibrary {
             effect_rate_.push_back(1.0f);
             winding_.push_back(MaterialWinding::Ccw);
             blend_.push_back(MaterialBlendMode::Opaque);
+            raster_shadow_mode_.push_back(MaterialRasterShadowMode::None);
+            shadow_alpha_.push_back(MaterialShadowAlphaMode::Opaque);
+            shadow_opacity_.push_back(0.5f);
+            shadow_softness_.push_back(0.5f);
             flags_.push_back(0u);
         }
 
@@ -199,6 +240,10 @@ class MaterialLibrary {
         out.cpu_effect.rate = effect_rate_[i];
         out.winding = winding_[i];
         out.blend = blend_[i];
+        out.raster_shadow_mode = raster_shadow_mode_[i];
+        out.shadow_alpha = shadow_alpha_[i];
+        out.shadow_opacity = shadow_opacity_[i];
+        out.shadow_softness = shadow_softness_[i];
         out.flags = flags_[i];
         return out;
     }
@@ -217,6 +262,10 @@ class MaterialLibrary {
                 effect_rate_,
                 winding_,
                 blend_,
+                raster_shadow_mode_,
+                shadow_alpha_,
+                shadow_opacity_,
+                shadow_softness_,
                 flags_};
     }
 
@@ -259,6 +308,10 @@ class MaterialLibrary {
         effect_rate_[index] = desc.cpu_effect.rate;
         winding_[index] = desc.winding;
         blend_[index] = desc.blend;
+        raster_shadow_mode_[index] = desc.raster_shadow_mode;
+        shadow_alpha_[index] = desc.shadow_alpha;
+        shadow_opacity_[index] = std::clamp(desc.shadow_opacity, 0.0f, 1.0f);
+        shadow_softness_[index] = std::clamp(desc.shadow_softness, 0.0f, 1.0f);
         flags_[index] = desc.flags;
     }
 
@@ -278,6 +331,10 @@ class MaterialLibrary {
     std::vector<f32> effect_rate_;
     std::vector<MaterialWinding> winding_;
     std::vector<MaterialBlendMode> blend_;
+    std::vector<MaterialRasterShadowMode> raster_shadow_mode_;
+    std::vector<MaterialShadowAlphaMode> shadow_alpha_;
+    std::vector<f32> shadow_opacity_;
+    std::vector<f32> shadow_softness_;
     std::vector<u32> flags_;
 };
 

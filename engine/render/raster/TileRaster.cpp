@@ -319,6 +319,17 @@ PSY_FORCEINLINE u32 pack_rgba(f32 r, f32 g, f32 b, f32 a) noexcept {
            (static_cast<u32>(sat(b)) << 16) | (static_cast<u32>(sat(a)) << 24);
 }
 
+PSY_FORCEINLINE u32 multiply_framebuffer_rgba(u32 dst, u32 mask, u8 opacity_u8) noexcept {
+    const f32 opacity = static_cast<f32>(opacity_u8) * (1.0f / 255.0f);
+    const f32 mask_a = static_cast<f32>((mask >> 24) & 0xFFu) * (1.0f / 255.0f);
+    const f32 factor = std::clamp(1.0f - opacity * mask_a, 0.0f, 1.0f);
+    const u32 r = static_cast<u32>(static_cast<f32>(dst & 0xFFu) * factor + 0.5f);
+    const u32 g = static_cast<u32>(static_cast<f32>((dst >> 8) & 0xFFu) * factor + 0.5f);
+    const u32 b = static_cast<u32>(static_cast<f32>((dst >> 16) & 0xFFu) * factor + 0.5f);
+    const u32 a = (dst >> 24) & 0xFFu;
+    return (r & 0xFFu) | ((g & 0xFFu) << 8) | ((b & 0xFFu) << 16) | (a << 24);
+}
+
 }  // namespace
 
 // ─── Binner ──────────────────────────────────────────────────────────────
@@ -447,6 +458,7 @@ void rasterize_tile(const Framebuffer& fb,
         const bool has_tex = (tex != nullptr);
         const bool alpha_test = (d.flags & draw_flags::kAlphaTest) != 0;
         const bool affine = affine_mode || (d.flags & draw_flags::kAffine) != 0;
+        const bool multiply_blend = d.blend_mode == 1u;
 
         // Dispatch tag — DESIGN.md §7.6. Picked once per draw; the inner
         // pixel loop branches on a const bool, never on a per-pixel
@@ -535,9 +547,9 @@ void rasterize_tile(const Framebuffer& fb,
                     bool depth_ok = true;
                     if (row_z) {
                         const f32 zbuf = unpack_depth(row_z[x]);
-                        depth_ok = z < zbuf;
+                        depth_ok = multiply_blend ? (z <= zbuf + 1.0e-4f) : (z < zbuf);
                     }
-                    if (PSY_LIKELY(depth_ok && !alpha_test)) {
+                    if (PSY_LIKELY(depth_ok && !alpha_test && !multiply_blend)) {
                         if (row_z)
                             row_z[x] = pack_depth(z, 0);
                     }
@@ -618,12 +630,16 @@ void rasterize_tile(const Framebuffer& fb,
                         } else {
                             out_rgba = pack_rgba(r, g, b, a);
                         }
-                        row_pix[x] = out_rgba;
+                        row_pix[x] = multiply_blend
+                                         ? multiply_framebuffer_rgba(row_pix[x],
+                                                                    out_rgba,
+                                                                    d.blend_opacity)
+                                         : out_rgba;
 
                         // Late-Z (only matters when alpha test is on; we
                         // approximate by always writing here when depth
                         // wasn't already written above).
-                        if (alpha_test && row_z)
+                        if (alpha_test && !multiply_blend && row_z)
                             row_z[x] = pack_depth(z, 0);
                     }
                 }

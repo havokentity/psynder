@@ -194,6 +194,21 @@ f32 material_reflectivity(const FrameMaterialTable& materials, const Hit& hit) n
     return std::clamp(materials.default_reflectivity, 0.0f, 1.0f);
 }
 
+void build_rt_shadow_instance_mask(const FrameMaterialTable& materials, std::vector<u8>& mask) {
+    mask.clear();
+    if (!materials.library || !materials.instance_materials || materials.instance_material_count == 0u)
+        return;
+    mask.resize(materials.instance_material_count, 1u);
+    for (u32 i = 0; i < materials.instance_material_count; ++i) {
+        const ::psynder::render::MaterialId id = materials.instance_materials[i];
+        ::psynder::render::MaterialDesc material{};
+        if (materials.library->valid(id)) {
+            material = materials.library->get(id);
+            mask[i] = (material.flags & ::psynder::render::Material_CastsRtShadow) != 0u ? 1u : 0u;
+        }
+    }
+}
+
 math::Vec3 rgba8_to_rgb(u32 color) noexcept {
     return {static_cast<f32>(color & 0xFFu) / 255.0f,
             static_cast<f32>((color >> 8) & 0xFFu) / 255.0f,
@@ -283,9 +298,17 @@ bool analytic_spheres_occluded(std::span<const scene::AnalyticSphereInstance> sp
 
 void trace_scene_shadow_packet(const FrameRenderInput& input,
                                std::span<const scene::AnalyticSphereInstance> spheres,
+                               std::span<const u8> rt_shadow_instance_mask,
                                ShadowPacket8& pkt) {
     if (input.tlas) {
-        trace_shadow_packet(*input.tlas, pkt);
+        if (!rt_shadow_instance_mask.empty()) {
+            trace_shadow_packet_masked(*input.tlas,
+                                       pkt,
+                                       rt_shadow_instance_mask.data(),
+                                       static_cast<u32>(rt_shadow_instance_mask.size()));
+        } else {
+            trace_shadow_packet(*input.tlas, pkt);
+        }
     } else {
         for (bool& occ : pkt.occluded)
             occ = false;
@@ -305,6 +328,7 @@ void fill_dummy_ray(Ray& ray) noexcept {
 
 math::Vec3 shade_shadowed_direct_packet(const FrameRenderInput& input,
                                         std::span<const scene::AnalyticSphereInstance> spheres,
+                                        std::span<const u8> rt_shadow_instance_mask,
                                         const math::Vec3& position,
                                         const math::Vec3& normal,
                                         const math::Vec3& albedo,
@@ -324,7 +348,7 @@ math::Vec3 shade_shadowed_direct_packet(const FrameRenderInput& input,
             fill_dummy_ray(pkt.rays[i]);
             pkt_real[i] = 0u;
         }
-        trace_scene_shadow_packet(input, spheres, pkt);
+        trace_scene_shadow_packet(input, spheres, rt_shadow_instance_mask, pkt);
         for (u32 i = 0; i < 8u; ++i) {
             if (pkt_real[i] == 0u || pkt.occluded[i])
                 continue;
@@ -820,6 +844,9 @@ void FrameRenderer::render(const FrameRenderInput& input,
         input.scene_graph->gather_analytic_spheres(analytic_spheres_);
     else
         analytic_spheres_.clear();
+    build_rt_shadow_instance_mask(input.materials, rt_shadow_instance_mask_);
+    const std::span<const u8> rt_shadow_mask{rt_shadow_instance_mask_.data(),
+                                             rt_shadow_instance_mask_.size()};
     const usize pixels = static_cast<usize>(trace_w) * trace_h;
     hits_.assign(pixels, PixelHit{});
     accum_.assign(pixels * 3u, 0.0f);
@@ -891,6 +918,7 @@ void FrameRenderer::render(const FrameRenderInput& input,
                                                          rray.origin.z + rray.direction.z * rh.t};
                                 reflected = shade_shadowed_direct_packet(input,
                                                                          analytic_spheres_,
+                                                                         rt_shadow_mask,
                                                                          rpos,
                                                                          rn,
                                                                          rh.rgb,
@@ -921,7 +949,7 @@ void FrameRenderer::render(const FrameRenderInput& input,
                     fill_dummy_ray(pkt.rays[i]);
                     pkt_real[i] = false;
                 }
-                trace_scene_shadow_packet(input, analytic_spheres_, pkt);
+                trace_scene_shadow_packet(input, analytic_spheres_, rt_shadow_mask, pkt);
                 const f32 weight = 1.0f / static_cast<f32>(ao_samples);
                 for (u32 i = 0; i < 8u; ++i) {
                     if (pkt_real[i] && !pkt.occluded[i])
@@ -979,7 +1007,7 @@ void FrameRenderer::render(const FrameRenderInput& input,
                 fill_dummy_ray(pkt.rays[i]);
                 pkt_real[static_cast<usize>(li) * 8u + i] = 0u;
             }
-            trace_scene_shadow_packet(input, analytic_spheres_, pkt);
+            trace_scene_shadow_packet(input, analytic_spheres_, rt_shadow_mask, pkt);
             for (u32 i = 0; i < 8u; ++i) {
                 if (pkt_real[static_cast<usize>(li) * 8u + i] == 0u || pkt.occluded[i])
                     continue;

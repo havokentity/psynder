@@ -40,6 +40,11 @@ enum class CullMode : u8 {
     None = 2,   // two-sided: rewind back faces to front, draw both sides
 };
 
+enum class DrawBlendMode : u8 {
+    Opaque = 0,
+    Multiply = 1,
+};
+
 // ─── DrawItem — the unit the binner sees ─────────────────────────────────
 struct DrawItem {
     const Vertex* vertices = nullptr;
@@ -50,6 +55,8 @@ struct DrawItem {
     MaterialId material;
     u8 flags = 0;
     CullMode cull = CullMode::Back;
+    DrawBlendMode blend = DrawBlendMode::Opaque;
+    f32 blend_opacity = 1.0f;
     // Optional per-draw baked lightmap chunk (RGBA8, row-major, pitch == w).
     // When set, the draw is forced onto the SurfaceCached shading path and
     // this chunk is sampled bilinearly through the base `uv` — i.e. the inner

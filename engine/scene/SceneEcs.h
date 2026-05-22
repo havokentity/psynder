@@ -9,6 +9,7 @@
 #include "scene/SceneGraph.h"
 #include "scene/World.h"
 
+#include <mutex>
 #include <vector>
 
 namespace psynder::scene {
@@ -17,6 +18,11 @@ enum class GeometryKind : u8 {
     None = 0,
     Mesh = 1,
     AnalyticSphere = 2,
+};
+
+enum class ObjectMobility : u8 {
+    Static = 0,
+    Dynamic = 1,
 };
 
 enum RenderableFlags : u32 {
@@ -41,6 +47,7 @@ PSYNDER_COMPONENT(RenderableComponent) {
     u32 geometry_id = 0u;
     ::psynder::render::MaterialId material{};
     u32 flags = Renderable_DefaultFlags;
+    ObjectMobility mobility = ObjectMobility::Dynamic;
     math::Aabb local_bounds{};
 };
 
@@ -53,6 +60,7 @@ struct SceneRenderItem {
     u32 geometry_id = 0u;
     ::psynder::render::MaterialId material{};
     u32 flags = 0u;
+    ObjectMobility mobility = ObjectMobility::Dynamic;
 };
 
 inline Entity create_scene_entity(World& world,
@@ -83,10 +91,14 @@ inline void gather_scene_render_items(World& world,
                                       const SceneGraph& graph,
                                       std::vector<SceneRenderItem>& out) {
     out.clear();
+    std::mutex append_mutex;
     world.query<reads<SceneNodeComponent, RenderableComponent>, writes<>>(
-        [&](std::span<const SceneNodeComponent> nodes, std::span<const RenderableComponent> renderables) {
+        [&](std::span<const SceneNodeComponent> nodes,
+            std::span<const RenderableComponent> renderables) {
             const usize n = std::min(nodes.size(), renderables.size());
-            out.reserve(out.size() + n);
+            thread_local std::vector<SceneRenderItem> chunk_items;
+            chunk_items.clear();
+            chunk_items.reserve(n);
             for (usize i = 0; i < n; ++i) {
                 const RenderableComponent& r = renderables[i];
                 if ((r.flags & Renderable_Visible) == 0u || r.geometry == GeometryKind::None)
@@ -103,7 +115,13 @@ inline void gather_scene_render_items(World& world,
                 item.geometry_id = r.geometry_id;
                 item.material = r.material;
                 item.flags = r.flags;
-                out.push_back(item);
+                item.mobility = r.mobility;
+                chunk_items.push_back(item);
+            }
+            if (!chunk_items.empty()) {
+                std::scoped_lock lock{append_mutex};
+                out.reserve(out.size() + chunk_items.size());
+                out.insert(out.end(), chunk_items.begin(), chunk_items.end());
             }
         });
 }

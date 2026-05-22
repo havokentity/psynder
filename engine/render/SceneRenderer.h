@@ -3,9 +3,11 @@
 
 #pragma once
 
+#include "core/Log.h"
 #include "render/Geometry.h"
 #include "render/MaterialBatcher.h"
 #include "render/Material.h"
+#include "render/raster/SurfaceCache.h"
 #include "render/rt/FrameRenderer.h"
 #include "scene/SceneEcs.h"
 
@@ -18,27 +20,51 @@ struct SceneRenderQueues {
     std::vector<scene::SceneRenderItem> all;
     std::vector<u32> raster_opaque;
     std::vector<u32> raster_transparent;
+    std::vector<u32> raster_shadow_casters;
+    std::vector<u32> raster_shadow_receivers;
     std::vector<u32> rt_visible;
     std::vector<u32> rt_shadow_casters;
+    std::vector<u32> bake_static;
+    std::vector<u32> bake_shadow_casters;
+    std::vector<u32> bake_shadow_receivers;
+    u32 dynamic_bake_rejected = 0;
 
     void clear() {
         all.clear();
         raster_opaque.clear();
         raster_transparent.clear();
+        raster_shadow_casters.clear();
+        raster_shadow_receivers.clear();
         rt_visible.clear();
         rt_shadow_casters.clear();
+        bake_static.clear();
+        bake_shadow_casters.clear();
+        bake_shadow_receivers.clear();
+        dynamic_bake_rejected = 0;
     }
 
     void reserve_like_all() {
         raster_opaque.reserve(all.size());
         raster_transparent.reserve(all.size());
+        raster_shadow_casters.reserve(all.size() / 4u);
+        raster_shadow_receivers.reserve(all.size());
         rt_visible.reserve(all.size());
         rt_shadow_casters.reserve(all.size());
+        bake_static.reserve(all.size());
+        bake_shadow_casters.reserve(all.size());
+        bake_shadow_receivers.reserve(all.size());
     }
 
     [[nodiscard]] const scene::SceneRenderItem& item(u32 index) const noexcept {
         return all[index];
     }
+};
+
+struct SceneRenderPolicyIssue {
+    Entity entity{};
+    MaterialId material{};
+    scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic;
+    u32 material_flags = 0;
 };
 
 inline void build_scene_render_queues(scene::RuntimeScene& scene, SceneRenderQueues& queues) {
@@ -55,17 +81,73 @@ inline void build_scene_render_queues(scene::RuntimeScene& scene, SceneRenderQue
         if (!materials.slot(item.material, material_slot))
             continue;
         const u32 flags = material_view.flags[material_slot];
+        const bool is_static = item.mobility == scene::ObjectMobility::Static;
         if ((flags & Material_RasterVisible) != 0u) {
             if (material_view.blend[material_slot] == MaterialBlendMode::AlphaBlend)
                 queues.raster_transparent.push_back(item_index);
             else
                 queues.raster_opaque.push_back(item_index);
         }
+        if ((flags & Material_CastsRasterShadow) != 0u &&
+            material_view.raster_shadow_mode[material_slot] ==
+                MaterialRasterShadowMode::ProjectedDecal) {
+            queues.raster_shadow_casters.push_back(item_index);
+        }
+        if ((flags & Material_ReceivesRasterShadow) != 0u)
+            queues.raster_shadow_receivers.push_back(item_index);
         if ((flags & Material_RtVisible) != 0u)
             queues.rt_visible.push_back(item_index);
         if ((flags & Material_CastsRtShadow) != 0u)
             queues.rt_shadow_casters.push_back(item_index);
+        const u32 bake_flags = flags & Material_BakedLightingMask;
+        if (bake_flags != 0u) {
+            if (!is_static) {
+                ++queues.dynamic_bake_rejected;
+            } else {
+                if ((flags & Material_BakeVisible) != 0u)
+                    queues.bake_static.push_back(item_index);
+                if ((flags & Material_CastsBakedShadow) != 0u)
+                    queues.bake_shadow_casters.push_back(item_index);
+                if ((flags & Material_ReceivesBakedShadow) != 0u)
+                    queues.bake_shadow_receivers.push_back(item_index);
+            }
+        }
     }
+}
+
+inline u32 collect_scene_render_policy_issues(scene::RuntimeScene& scene,
+                                              std::vector<SceneRenderPolicyIssue>& out) {
+    out.clear();
+    std::vector<scene::SceneRenderItem> items;
+    scene.update_transforms();
+    scene.gather_render_items(items);
+
+    const MaterialLibrary& materials = scene.materials();
+    const MaterialView material_view = materials.view();
+    for (const scene::SceneRenderItem& item : items) {
+        u32 material_slot = 0;
+        if (!materials.slot(item.material, material_slot))
+            continue;
+        const u32 flags = material_view.flags[material_slot];
+        if (item.mobility == scene::ObjectMobility::Dynamic &&
+            (flags & Material_BakedLightingMask) != 0u) {
+            out.push_back({item.entity, item.material, item.mobility, flags});
+        }
+    }
+    return static_cast<u32>(out.size());
+}
+
+inline u32 warn_scene_render_policy_issues(scene::RuntimeScene& scene) {
+    std::vector<SceneRenderPolicyIssue> issues;
+    const u32 count = collect_scene_render_policy_issues(scene, issues);
+    for (const SceneRenderPolicyIssue& issue : issues) {
+        PSY_LOG_WARN(
+            "scene: dynamic entity {} uses baked material flags 0x{:08X}; bake shadow/lightmap "
+            "participation is ignored until the object is Static",
+            issue.entity.raw,
+            issue.material_flags & Material_BakedLightingMask);
+    }
+    return count;
 }
 
 struct SceneRenderStats {
@@ -73,8 +155,14 @@ struct SceneRenderStats {
     u32 raster_draws = 0;
     u32 raster_triangles = 0;
     u32 raster_skipped = 0;
+    u32 raster_shadow_casters = 0;
+    u32 raster_shadow_receivers = 0;
     u32 rt_visible = 0;
     u32 rt_shadow_casters = 0;
+    u32 bake_static = 0;
+    u32 bake_shadow_casters = 0;
+    u32 bake_shadow_receivers = 0;
+    u32 dynamic_bake_rejected = 0;
     u32 material_batches = 0;
 };
 
@@ -99,8 +187,13 @@ class SceneRenderer {
         queues_.all.reserve(renderables);
         queues_.raster_opaque.reserve(renderables);
         queues_.raster_transparent.reserve(renderables / 4u);
+        queues_.raster_shadow_casters.reserve(renderables / 4u);
+        queues_.raster_shadow_receivers.reserve(renderables);
         queues_.rt_visible.reserve(renderables);
         queues_.rt_shadow_casters.reserve(renderables);
+        queues_.bake_static.reserve(renderables);
+        queues_.bake_shadow_casters.reserve(renderables);
+        queues_.bake_shadow_receivers.reserve(renderables);
         material_batches_.reserve(renderables, renderables);
     }
 
@@ -108,12 +201,14 @@ class SceneRenderer {
         MeshId mesh,
         MaterialId material,
         u32 flags = scene::Renderable_DefaultFlags,
-        math::Aabb local_bounds = math::aabb_empty()) const {
+        math::Aabb local_bounds = math::aabb_empty(),
+        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) const {
         scene::RenderableComponent out{};
         out.geometry = scene::GeometryKind::Mesh;
         out.geometry_id = mesh.raw;
         out.material = material;
         out.flags = flags;
+        out.mobility = mobility;
         if (!math::is_empty(local_bounds)) {
             out.local_bounds = local_bounds;
         } else {
@@ -128,10 +223,12 @@ class SceneRenderer {
                                                      MaterialId material,
                                                      const scene::LocalTransform& local = {},
                                                      scene::SceneNode parent = scene::kInvalidSceneNode,
-                                                     u32 flags = scene::Renderable_DefaultFlags) {
+                                                     u32 flags = scene::Renderable_DefaultFlags,
+                                                     scene::ObjectMobility mobility =
+                                                         scene::ObjectMobility::Dynamic) {
         const MeshId mesh = meshes_.create_mesh(mesh_desc);
-        const Entity entity =
-            scene.create_renderable(make_mesh_renderable(mesh, material, flags), local, parent);
+        const Entity entity = scene.create_renderable(
+            make_mesh_renderable(mesh, material, flags, math::aabb_empty(), mobility), local, parent);
         return {entity, mesh, material};
     }
 
@@ -139,8 +236,14 @@ class SceneRenderer {
         build_scene_render_queues(scene, queues_);
         SceneRenderStats stats{};
         stats.submitted = static_cast<u32>(queues_.all.size());
+        stats.raster_shadow_casters = static_cast<u32>(queues_.raster_shadow_casters.size());
+        stats.raster_shadow_receivers = static_cast<u32>(queues_.raster_shadow_receivers.size());
         stats.rt_visible = static_cast<u32>(queues_.rt_visible.size());
         stats.rt_shadow_casters = static_cast<u32>(queues_.rt_shadow_casters.size());
+        stats.bake_static = static_cast<u32>(queues_.bake_static.size());
+        stats.bake_shadow_casters = static_cast<u32>(queues_.bake_shadow_casters.size());
+        stats.bake_shadow_receivers = static_cast<u32>(queues_.bake_shadow_receivers.size());
+        stats.dynamic_bake_rejected = queues_.dynamic_bake_rejected;
         material_batches_.build(queues_.all, scene.materials());
         stats.material_batches = material_batches_.batch_count();
         return stats;
@@ -240,6 +343,8 @@ class SceneRenderer {
         draw.material = item.material;
         draw.cull =
             cull_from_material(material_view.winding[material_slot], mesh_view.cull[mesh_slot]);
+        if (material_view.blend[material_slot] == MaterialBlendMode::AlphaTest)
+            draw.flags |= raster::draw_flags::kAlphaTest;
         const TextureView texture = mesh_view.base_color[mesh_slot];
         if (texture.valid()) {
             draw.lightmap_texels = texture.texels;
