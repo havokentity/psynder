@@ -31,16 +31,32 @@
 
 namespace psynder::app {
 
+struct DefaultCameraOptions {
+    bool enabled = true;
+    math::Vec3 position{0.0f, 0.0f, 2.5f};
+    math::Vec3 look_at{0.0f, 0.0f, 0.0f};
+    math::Vec3 up{0.0f, 1.0f, 0.0f};
+    f32 fov_y_rad = 60.0f * math::kDegToRad;
+    f32 aspect = 0.0f;
+    f32 near_z = 0.1f;
+    f32 far_z = 100.0f;
+    u32 tile_w = 64;
+    u32 tile_h = 64;
+};
+
 struct SceneCreateOptions {
-    bool add_default_camera = false;
-    scene::CameraComponent default_camera{};
-    scene::LocalTransform default_camera_transform{math::Vec3{0.0f, 0.0f, 2.5f}};
+    DefaultCameraOptions camera{};
+
+    [[nodiscard]] static constexpr SceneCreateOptions without_default_camera() noexcept {
+        SceneCreateOptions options{};
+        options.camera.enabled = false;
+        return options;
+    }
 };
 
 struct WindowAppOptions {
     bool depth_buffer = false;
     bool has_default_scene = true;
-    bool has_default_camera = true;
     SceneCreateOptions default_scene{};
 };
 
@@ -97,11 +113,8 @@ class WindowApp {
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
 
-        default_scene_options_ = options.default_scene;
-        default_scene_options_.add_default_camera = options.has_default_camera;
-
         if (options.has_default_scene)
-            set_scene(default_scene_, default_scene_options_);
+            set_scene(default_scene_, options.default_scene);
     }
 
     WindowApp(const WindowApp&) = delete;
@@ -165,7 +178,9 @@ class WindowApp {
         return view;
     }
 
-    bool load_scene(scene::Scene& scene, const SceneCreateOptions& options = {}) noexcept {
+    bool load_scene(scene::Scene& scene,
+                    const SceneCreateOptions& options =
+                        SceneCreateOptions::without_default_camera()) noexcept {
         for (u32 i = 0; i < loaded_scene_count_; ++i) {
             if (loaded_scenes_[i] == &scene)
                 return true;
@@ -178,7 +193,9 @@ class WindowApp {
         return true;
     }
 
-    void set_scene(scene::Scene& scene, const SceneCreateOptions& options = {}) noexcept {
+    void set_scene(scene::Scene& scene,
+                   const SceneCreateOptions& options =
+                       SceneCreateOptions::without_default_camera()) noexcept {
         if (load_scene(scene, options)) {
             active_scene_ = &scene;
             active_scene_rendered_ = false;
@@ -398,7 +415,6 @@ class WindowApp {
         }
         active_scene_ = active_was_default_scene ? &default_scene_ : other.active_scene_;
         active_scene_rendered_ = other.active_scene_rendered_;
-        default_scene_options_ = other.default_scene_options_;
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         rendering_system_ = std::move(other.rendering_system_);
@@ -415,7 +431,6 @@ class WindowApp {
         other.active_scene_rendered_ = false;
         other.loaded_scenes_ = {};
         other.loaded_scene_count_ = 0;
-        other.default_scene_options_ = {};
         other.framebuffer_ = {};
     }
 
@@ -435,7 +450,6 @@ class WindowApp {
     u32 loaded_scene_count_ = 0;
     scene::Scene* active_scene_ = nullptr;
     bool active_scene_rendered_ = false;
-    SceneCreateOptions default_scene_options_{};
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
@@ -462,15 +476,77 @@ class WindowApp {
         return height_ == 0u ? 1.0f : static_cast<f32>(width_) / static_cast<f32>(height_);
     }
 
+    [[nodiscard]] static math::Quat camera_rotation_towards(math::Vec3 position,
+                                                            math::Vec3 target,
+                                                            math::Vec3 up) noexcept {
+        const math::Vec3 forward = math::normalize(math::sub(target, position));
+        const math::Vec3 safe_forward =
+            math::length(forward) > 0.0f ? forward : math::Vec3{0.0f, 0.0f, -1.0f};
+        math::Vec3 right = math::normalize(math::cross(safe_forward, up));
+        if (math::length(right) <= 0.0f)
+            right = math::Vec3{1.0f, 0.0f, 0.0f};
+        const math::Vec3 camera_up = math::cross(right, safe_forward);
+        const math::Vec3 back = math::mul(safe_forward, -1.0f);
+
+        const f32 m00 = right.x;
+        const f32 m01 = camera_up.x;
+        const f32 m02 = back.x;
+        const f32 m10 = right.y;
+        const f32 m11 = camera_up.y;
+        const f32 m12 = back.y;
+        const f32 m20 = right.z;
+        const f32 m21 = camera_up.z;
+        const f32 m22 = back.z;
+        const f32 trace = m00 + m11 + m22;
+
+        math::Quat q{};
+        if (trace > 0.0f) {
+            const f32 s = std::sqrt(trace + 1.0f) * 2.0f;
+            q.w = 0.25f * s;
+            q.x = (m21 - m12) / s;
+            q.y = (m02 - m20) / s;
+            q.z = (m10 - m01) / s;
+        } else if (m00 > m11 && m00 > m22) {
+            const f32 s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+            q.w = (m21 - m12) / s;
+            q.x = 0.25f * s;
+            q.y = (m01 + m10) / s;
+            q.z = (m02 + m20) / s;
+        } else if (m11 > m22) {
+            const f32 s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+            q.w = (m02 - m20) / s;
+            q.x = (m01 + m10) / s;
+            q.y = 0.25f * s;
+            q.z = (m12 + m21) / s;
+        } else {
+            const f32 s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+            q.w = (m10 - m01) / s;
+            q.x = (m02 + m20) / s;
+            q.y = (m12 + m21) / s;
+            q.z = 0.25f * s;
+        }
+        return math::quat_normalize(q);
+    }
+
     void on_scene_created(scene::Scene& scene,
                           u32,
                           const SceneCreateOptions& options) noexcept {
-        if (!options.add_default_camera)
+        if (!options.camera.enabled)
             return;
-        scene::CameraComponent camera = options.default_camera;
+        scene::CameraComponent camera{};
+        camera.fov_y_rad = options.camera.fov_y_rad;
+        camera.aspect = options.camera.aspect;
+        camera.near_z = options.camera.near_z;
+        camera.far_z = options.camera.far_z;
+        camera.tile_w = options.camera.tile_w;
+        camera.tile_h = options.camera.tile_h;
         if (camera.aspect <= 0.0f)
             camera.aspect = render_target_aspect();
-        (void)scene.create_camera(camera, options.default_camera_transform);
+        scene::LocalTransform transform{};
+        transform.translation = options.camera.position;
+        transform.rotation =
+            camera_rotation_towards(options.camera.position, options.camera.look_at, options.camera.up);
+        (void)scene.create_camera(camera, transform);
     }
 
     void apply_environment_clear(const scene::Environment& environment) noexcept {
