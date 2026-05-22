@@ -986,14 +986,15 @@ void FrameRenderer::render(const FrameRenderInput& input,
                                     const math::Vec3 rpos = {rray.origin.x + rray.direction.x * rh.t,
                                                              rray.origin.y + rray.direction.y * rh.t,
                                                              rray.origin.z + rray.direction.z * rh.t};
-                                    reflected = shade_shadowed_direct_packet(input,
-                                                                             analytic_spheres_,
-                                                                             rt_shadow_mask,
-                                                                             rpos,
-                                                                             rn,
-                                                                             rh.rgb,
-                                                                             light_count,
-                                                                             config.attenuation_quadratic);
+                                    reflected =
+                                        shade_shadowed_direct_packet(input,
+                                                                     analytic_spheres_,
+                                                                     rt_shadow_mask,
+                                                                     rpos,
+                                                                     rn,
+                                                                     rh.rgb,
+                                                                     light_count,
+                                                                     config.attenuation_quadratic);
                                 }
                             } else {
                                 reflected = trace_reflection_bounces(input,

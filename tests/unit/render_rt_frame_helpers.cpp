@@ -193,8 +193,7 @@ TEST_CASE("render rt frame renderer: material cast flag controls shadow packets"
         return pixels[4u * 8u + 4u] & 0xFFu;
     };
 
-    const u32 shadowed =
-        render_center(render::Material_RtVisible | render::Material_CastsRtShadow);
+    const u32 shadowed = render_center(render::Material_RtVisible | render::Material_CastsRtShadow);
     const u32 unshadowed = render_center(render::Material_RtVisible);
     REQUIRE(shadowed < unshadowed);
 }

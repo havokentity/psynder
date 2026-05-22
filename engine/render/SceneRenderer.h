@@ -218,17 +218,19 @@ class SceneRenderer {
         return out;
     }
 
-    [[nodiscard]] SceneMeshEntity create_mesh_entity(scene::RuntimeScene& scene,
-                                                     const MeshDesc& mesh_desc,
-                                                     MaterialId material,
-                                                     const scene::LocalTransform& local = {},
-                                                     scene::SceneNode parent = scene::kInvalidSceneNode,
-                                                     u32 flags = scene::Renderable_DefaultFlags,
-                                                     scene::ObjectMobility mobility =
-                                                         scene::ObjectMobility::Dynamic) {
+    [[nodiscard]] SceneMeshEntity create_mesh_entity(
+        scene::RuntimeScene& scene,
+        const MeshDesc& mesh_desc,
+        MaterialId material,
+        const scene::LocalTransform& local = {},
+        scene::SceneNode parent = scene::kInvalidSceneNode,
+        u32 flags = scene::Renderable_DefaultFlags,
+        scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
         const MeshId mesh = meshes_.create_mesh(mesh_desc);
         const Entity entity = scene.create_renderable(
-            make_mesh_renderable(mesh, material, flags, math::aabb_empty(), mobility), local, parent);
+            make_mesh_renderable(mesh, material, flags, math::aabb_empty(), mobility),
+            local,
+            parent);
         return {entity, mesh, material};
     }
 

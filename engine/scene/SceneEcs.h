@@ -127,8 +127,7 @@ inline RenderableComponent make_dynamic_renderable(GeometryKind geometry,
     return make_renderable(geometry, geometry_id, material, local_bounds, ObjectMobility::Dynamic, flags);
 }
 
-inline RenderableValidation validate_renderable_for_static_bake(
-    const RenderableComponent& renderable) noexcept {
+inline RenderableValidation validate_renderable_for_static_bake(const RenderableComponent& renderable) noexcept {
     RenderableValidation validation{};
     if (!renderable_is_visible(renderable))
         validation.issues |= RenderableValidation_NotVisible;
@@ -176,9 +175,7 @@ inline bool get_renderable_mobility(World& world, Entity entity, ObjectMobility&
     return true;
 }
 
-inline bool set_renderable_material(World& world,
-                                    Entity entity,
-                                    ::psynder::render::MaterialId material) {
+inline bool set_renderable_material(World& world, Entity entity, ::psynder::render::MaterialId material) {
     auto* renderable = world.get<RenderableComponent>(entity);
     if (!renderable)
         return false;
@@ -244,8 +241,7 @@ inline void gather_scene_render_items(World& world,
     out.clear();
     std::mutex append_mutex;
     world.query<reads<SceneNodeComponent, RenderableComponent>, writes<>>(
-        [&](std::span<const SceneNodeComponent> nodes,
-            std::span<const RenderableComponent> renderables) {
+        [&](std::span<const SceneNodeComponent> nodes, std::span<const RenderableComponent> renderables) {
             const usize n = std::min(nodes.size(), renderables.size());
             thread_local std::vector<SceneRenderItem> chunk_items;
             chunk_items.clear();

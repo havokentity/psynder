@@ -124,8 +124,7 @@ TEST_CASE("scene renderer filters static baked and projected raster shadow queue
     render::MaterialDesc static_desc{};
     static_desc.flags = render::Material_RasterVisible | render::Material_CastsRasterShadow |
                         render::Material_ReceivesRasterShadow | render::Material_BakeVisible |
-                        render::Material_CastsBakedShadow |
-                        render::Material_ReceivesBakedShadow;
+                        render::Material_CastsBakedShadow | render::Material_ReceivesBakedShadow;
     static_desc.raster_shadow_mode = render::MaterialRasterShadowMode::ProjectedDecal;
     const render::MaterialId static_material = scene.materials().create(static_desc);
 
@@ -143,12 +142,12 @@ TEST_CASE("scene renderer filters static baked and projected raster shadow queue
     const render::MeshId mesh_a = renderer.meshes().create_mesh(mesh_desc);
     const render::MeshId mesh_b = renderer.meshes().create_mesh(mesh_desc);
 
-    const Entity static_entity = scene.create_renderable(renderer.make_mesh_renderable(
-        mesh_a,
-        static_material,
-        scene::Renderable_DefaultFlags,
-        mesh_desc.local_bounds,
-        scene::ObjectMobility::Static));
+    const Entity static_entity =
+        scene.create_renderable(renderer.make_mesh_renderable(mesh_a,
+                                                              static_material,
+                                                              scene::Renderable_DefaultFlags,
+                                                              mesh_desc.local_bounds,
+                                                              scene::ObjectMobility::Static));
     const Entity dynamic_entity =
         scene.create_renderable(renderer.make_mesh_renderable(mesh_b, dynamic_bake_material));
 
@@ -160,10 +159,8 @@ TEST_CASE("scene renderer filters static baked and projected raster shadow queue
     REQUIRE(stats.bake_shadow_casters == 1u);
     REQUIRE(stats.bake_shadow_receivers == 1u);
     REQUIRE(stats.dynamic_bake_rejected == 1u);
-    REQUIRE(renderer.queues().item(renderer.queues().raster_shadow_casters[0]).entity ==
-            static_entity);
-    REQUIRE(renderer.queues().item(renderer.queues().bake_shadow_casters[0]).entity ==
-            static_entity);
+    REQUIRE(renderer.queues().item(renderer.queues().raster_shadow_casters[0]).entity == static_entity);
+    REQUIRE(renderer.queues().item(renderer.queues().bake_shadow_casters[0]).entity == static_entity);
 
     std::vector<render::SceneRenderPolicyIssue> issues;
     REQUIRE(render::collect_scene_render_policy_issues(scene, issues) == 1u);

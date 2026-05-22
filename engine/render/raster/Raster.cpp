@@ -381,8 +381,7 @@ void Rasterizer::end_frame() {
         cmd.flags = d.flags;
         cmd.aniso_max = frame_aniso_max;
         cmd.blend_mode = static_cast<u8>(d.blend);
-        cmd.blend_opacity =
-            static_cast<u8>(std::clamp(d.blend_opacity, 0.0f, 1.0f) * 255.0f + 0.5f);
+        cmd.blend_opacity = static_cast<u8>(std::clamp(d.blend_opacity, 0.0f, 1.0f) * 255.0f + 0.5f);
         // ── Surface-cache classify (DESIGN.md §7.6 / ADR-001) ───────────
         SurfaceDesc sd{};
         sd.surface_id = d.material.raw;

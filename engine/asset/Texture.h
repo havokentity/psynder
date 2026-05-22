@@ -94,9 +94,7 @@ class TextureLoad {
     bool take_if_ready(TextureData& out) noexcept;
 
    private:
-    friend TextureLoad load_texture_async(TextureLoadDesc desc,
-                                          TextureLoadCallback callback,
-                                          void* user);
+    friend TextureLoad load_texture_async(TextureLoadDesc desc, TextureLoadCallback callback, void* user);
 
     explicit TextureLoad(std::shared_ptr<texture_detail::TextureLoadState> state) noexcept
         : state_(std::move(state)) {}

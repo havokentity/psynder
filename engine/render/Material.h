@@ -70,9 +70,9 @@ enum MaterialFlags : u32 {
                             Material_ReceivesRasterShadow | Material_Editable,
 };
 
-inline constexpr u32 Material_BakedLightingMask =
-    Material_BakeVisible | Material_CastsBakedShadow | Material_ReceivesBakedShadow |
-    Material_EmissiveBakes;
+inline constexpr u32 Material_BakedLightingMask = Material_BakeVisible | Material_CastsBakedShadow |
+                                                  Material_ReceivesBakedShadow |
+                                                  Material_EmissiveBakes;
 
 struct MaterialDesc {
     u32 albedo_rgba8 = 0xFFFFFFFFu;

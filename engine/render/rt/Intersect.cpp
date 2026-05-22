@@ -1000,9 +1000,7 @@ void trace_shadow_packet_impl(const Tlas& tlas,
                     const u32 inst_i = ts.prim_indices[first + k];
                     if (inst_i >= ts.instances.size())
                         continue;
-                    if (!instance_casts_shadow(instance_shadow_mask,
-                                               instance_shadow_mask_count,
-                                               inst_i))
+                    if (!instance_casts_shadow(instance_shadow_mask, instance_shadow_mask_count, inst_i))
                         continue;
                     const u8 live_in = static_cast<u8>(active & ~packed_done);
                     trace_instance_packet(ts, inst_i, pkt, live_in, packed_done);

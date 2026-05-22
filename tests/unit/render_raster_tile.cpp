@@ -168,8 +168,7 @@ TEST_CASE("rasterizer supports multiplicative decal draws for projected shadows"
     const u32 idx = 64u * 128u + 64u;
     const u32 base_sum = (base.pixels[idx] & 0xFFu) + ((base.pixels[idx] >> 8) & 0xFFu) +
                          ((base.pixels[idx] >> 16) & 0xFFu);
-    const u32 shadow_sum = (shadowed.pixels[idx] & 0xFFu) +
-                           ((shadowed.pixels[idx] >> 8) & 0xFFu) +
+    const u32 shadow_sum = (shadowed.pixels[idx] & 0xFFu) + ((shadowed.pixels[idx] >> 8) & 0xFFu) +
                            ((shadowed.pixels[idx] >> 16) & 0xFFu);
     REQUIRE(base.pixels[idx] != 0xFF000000u);
     REQUIRE(shadow_sum < base_sum);

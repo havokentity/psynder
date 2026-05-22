@@ -149,9 +149,7 @@ u8 expand_6_to_8(u32 v) noexcept {
     return static_cast<u8>((v << 2u) | (v >> 4u));
 }
 
-bool append_lmt_mip_as_rgba8(TextureData& out,
-                             const lmt::Texture& source,
-                             const lmt::Mip& mip) {
+bool append_lmt_mip_as_rgba8(TextureData& out, const lmt::Texture& source, const lmt::Mip& mip) {
     const usize source_begin = mip.offset;
     const usize source_end = source_begin + mip.byte_size;
     if (source_begin > source.pixel_data.size() || source_end > source.pixel_data.size())
@@ -188,8 +186,8 @@ bool append_lmt_mip_as_rgba8(TextureData& out,
             if (mip.byte_size != pixel_count * 2u)
                 return false;
             for (usize i = 0; i < pixel_count; ++i) {
-                const u32 packed = static_cast<u32>(src[i * 2u + 0u]) |
-                                   (static_cast<u32>(src[i * 2u + 1u]) << 8u);
+                const u32 packed =
+                    static_cast<u32>(src[i * 2u + 0u]) | (static_cast<u32>(src[i * 2u + 1u]) << 8u);
                 rgba[i * 4u + 0u] = expand_5_to_8((packed >> 11u) & 0x1Fu);
                 rgba[i * 4u + 1u] = expand_6_to_8((packed >> 5u) & 0x3Fu);
                 rgba[i * 4u + 2u] = expand_5_to_8(packed & 0x1Fu);
@@ -224,8 +222,8 @@ bool decode_lmt(std::span<const u8> bytes, TextureData& out) {
     tex.width = source.width;
     tex.height = source.height;
     tex.pixel_format = TexturePixelFormat::RGBA8;
-    tex.color_space =
-        (source.flags & formats::kLmtFlagSRGB) ? TextureColorSpace::SRGB : TextureColorSpace::Linear;
+    tex.color_space = (source.flags & formats::kLmtFlagSRGB) ? TextureColorSpace::SRGB
+                                                             : TextureColorSpace::Linear;
     tex.mips.reserve(source.mips.size());
 
     for (const lmt::Mip& mip : source.mips) {
@@ -241,8 +239,7 @@ bool has_magic(std::span<const u8> bytes, u32 magic) noexcept {
     if (bytes.size() < sizeof(u32))
         return false;
     const u32 found = static_cast<u32>(bytes[0]) | (static_cast<u32>(bytes[1]) << 8u) |
-                      (static_cast<u32>(bytes[2]) << 16u) |
-                      (static_cast<u32>(bytes[3]) << 24u);
+                      (static_cast<u32>(bytes[2]) << 16u) | (static_cast<u32>(bytes[3]) << 24u);
     return found == magic;
 }
 
@@ -319,8 +316,7 @@ bool TextureLoad::take_if_ready(TextureData& out) noexcept {
 
 TextureLoad load_texture_async(TextureLoadDesc desc, TextureLoadCallback callback, void* user) {
     auto state = std::make_shared<texture_detail::TextureLoadState>();
-    auto* payload =
-        new texture_detail::TextureLoadPayload{state, desc.source_format, callback, user};
+    auto* payload = new texture_detail::TextureLoadPayload{state, desc.source_format, callback, user};
     Vfs::Get().read_async(desc.virtual_path, &texture_detail::on_blob_loaded, payload);
     return TextureLoad{std::move(state)};
 }

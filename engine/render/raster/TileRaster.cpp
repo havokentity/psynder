@@ -630,11 +630,10 @@ void rasterize_tile(const Framebuffer& fb,
                         } else {
                             out_rgba = pack_rgba(r, g, b, a);
                         }
-                        row_pix[x] = multiply_blend
-                                         ? multiply_framebuffer_rgba(row_pix[x],
-                                                                    out_rgba,
-                                                                    d.blend_opacity)
-                                         : out_rgba;
+                        row_pix[x] =
+                            multiply_blend
+                                ? multiply_framebuffer_rgba(row_pix[x], out_rgba, d.blend_opacity)
+                                : out_rgba;
 
                         // Late-Z (only matters when alpha test is on; we
                         // approximate by always writing here when depth
