@@ -55,7 +55,7 @@ struct SceneCreateOptions {
 };
 
 struct WindowAppOptions {
-    bool depth_buffer = false;
+    bool depth_buffer = true;
     bool has_default_scene = true;
     SceneCreateOptions default_scene{};
 };

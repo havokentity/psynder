@@ -32,10 +32,6 @@ struct TexturedQuadSample {
     render::Texture2D crate_texture{};
     std::array<Entity, kCratePositions.size()> crates{};
 
-    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
-        return {.depth_buffer = true};
-    }
-
     void started(app::WindowApp& app) {
         crate_texture = render::texture_generators::wooden_crate();
 

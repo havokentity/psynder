@@ -665,10 +665,6 @@ struct QuakeRoomSample {
     static constexpr std::string_view log_name() noexcept { return "sample_03"; }
     static constexpr const char* display_name = "Psynder sample 03 (Quake room)";
 
-    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
-        return {.depth_buffer = true};
-    }
-
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
         return run_sample(args, app_host);
     }
