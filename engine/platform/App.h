@@ -18,6 +18,7 @@
 #include "scene/SceneEcs.h"
 #include "ui/imm/Imm.h"
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstdlib>
@@ -652,11 +653,13 @@ struct WindowFrameContextT {
     platform::Window& window;
     render::Framebuffer& framebuffer;
     const ArgsT& args;
-    u32 frame_index = 0;
     f64 seconds = 0.0;
+    f32 dt = 1.0f / 60.0f;
+    u32 frame_index = 0;
 };
 
 using WindowFrameContext = WindowFrameContextT<AppArgs>;
+static_assert(sizeof(WindowFrameContext) <= kCacheLine);
 
 namespace detail {
 
@@ -909,18 +912,30 @@ int run_window_sample(int argc, char** argv) {
     }
 
     const u64 t0 = platform::Clock::ticks_now();
+    u64 last_frame_ticks = t0;
     u32 frame = 0;
     while (!app.window().should_close()) {
         app.window().poll_events();
+
+        f64 seconds = static_cast<f64>(frame) * (1.0 / 60.0);
+        f32 dt = 1.0f / 60.0f;
+        if (args.smoke_frames == 0) {
+            const u64 now_ticks = platform::Clock::ticks_now();
+            seconds = platform::Clock::seconds(now_ticks - t0);
+            const f64 raw_dt = frame == 0 ? 1.0 / 60.0
+                                          : platform::Clock::seconds(now_ticks - last_frame_ticks);
+            dt = static_cast<f32>(std::clamp(raw_dt, 0.0, 0.1));
+            last_frame_ticks = now_ticks;
+        }
 
         WindowFrameContextT<std::decay_t<decltype(args)>> ctx{
             app,
             app.window(),
             app.framebuffer(),
             args,
+            seconds,
+            dt,
             frame,
-            args.smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
-                                  : platform::Clock::seconds(platform::Clock::ticks_now() - t0),
         };
         WindowFrameCacheReady cr = app.cache_ready();
 
