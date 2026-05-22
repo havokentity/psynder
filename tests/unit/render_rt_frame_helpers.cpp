@@ -6,6 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <array>
 #include <vector>
 
 using namespace psynder;
@@ -68,6 +69,55 @@ TEST_CASE("render rt frame renderer: reflection bounce cvar clamps to implemente
 
     overrides.reflection_bounces = "1";
     render::rt::apply_frame_renderer_console_overrides(overrides);
+}
+
+TEST_CASE("render rt frame renderer: material library drives TLAS instance color",
+          "[render_rt][frame_helpers]") {
+    render::MaterialLibrary materials;
+    render::MaterialDesc desc{};
+    desc.albedo_rgba8 = 0xFF2040C0u;
+    desc.reflectivity = 0.0f;
+    const render::MaterialId material = materials.create(desc);
+
+    render::rt::Triangle tri{
+        math::Vec3{-1.0f, -1.0f, 5.0f},
+        math::Vec3{1.0f, -1.0f, 5.0f},
+        math::Vec3{0.0f, 1.0f, 5.0f},
+    };
+    render::rt::Bvh8 blas;
+    blas.build(&tri, 1u);
+    render::rt::Tlas::InstanceDesc instance{&blas, math::identity4()};
+    render::rt::Tlas tlas;
+    tlas.build(&instance, 1u);
+
+    render::rt::FrameRenderInput input{};
+    input.tlas = &tlas;
+    input.camera = render::rt::make_frame_camera({0.0f, 0.0f, 0.0f},
+                                                 {0.0f, 0.0f, 1.0f},
+                                                 1.0f,
+                                                 30.0f * math::kDegToRad);
+    input.materials.library = &materials;
+    input.materials.instance_materials = &material;
+    input.materials.instance_material_count = 1u;
+
+    render::rt::FrameRenderConfig config{};
+    config.output_width = 8u;
+    config.output_height = 8u;
+    config.trace_width = 8u;
+    config.trace_height = 8u;
+    config.parallel = false;
+    config.ambient_scale = 255.0f;
+    config.direct_scale = 0.0f;
+    config.reflection_bounces = 0u;
+
+    std::array<u32, 8u * 8u> pixels{};
+    render::rt::FrameRenderer renderer;
+    renderer.render(input, config, pixels.data());
+
+    const u32 center = pixels[4u * 8u + 4u];
+    REQUIRE((center & 0xFFu) == 0xC0u);
+    REQUIRE(((center >> 8) & 0xFFu) == 0x40u);
+    REQUIRE(((center >> 16) & 0xFFu) == 0x20u);
 }
 
 TEST_CASE("render rt frame scheduler: explicit row batch clamps to work",
