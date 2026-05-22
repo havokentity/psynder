@@ -50,9 +50,13 @@ void SceneGraph::clear() {
     next_sibling_.clear();
     prev_sibling_.clear();
     depth_.clear();
+    local_translation_.clear();
+    local_rotation_.clear();
+    local_scale_.clear();
     local_.clear();
     world_.clear();
     local_dirty_.clear();
+    local_matrix_dirty_.clear();
     effective_dirty_.clear();
     dirty_queued_.clear();
     dirty_roots_.clear();
@@ -69,9 +73,13 @@ void SceneGraph::reserve_nodes(u32 count) {
     next_sibling_.reserve(count);
     prev_sibling_.reserve(count);
     depth_.reserve(count);
+    local_translation_.reserve(count);
+    local_rotation_.reserve(count);
+    local_scale_.reserve(count);
     local_.reserve(count);
     world_.reserve(count);
     local_dirty_.reserve(count);
+    local_matrix_dirty_.reserve(count);
     effective_dirty_.reserve(count);
     dirty_queued_.reserve(count);
     dirty_roots_.reserve(count);
@@ -93,9 +101,13 @@ SceneNode SceneGraph::create_node(SceneNode parent, const LocalTransform& local)
     next_sibling_.push_back(kInvalidIndex);
     prev_sibling_.push_back(kInvalidIndex);
     depth_.push_back(parent_index == kInvalidIndex ? 0u : depth_[parent_index] + 1u);
-    local_.push_back(local_transform_matrix(local));
-    world_.push_back(local_[index]);
+    local_translation_.push_back(local.translation);
+    local_rotation_.push_back(local.rotation);
+    local_scale_.push_back(local.scale);
+    local_.push_back(math::identity4());
+    world_.push_back(math::identity4());
     local_dirty_.push_back(1u);
+    local_matrix_dirty_.push_back(1u);
     effective_dirty_.push_back(1u);
     dirty_queued_.push_back(1u);
     dirty_roots_.push_back(index);
@@ -124,6 +136,7 @@ bool SceneGraph::destroy_node(SceneNode node) {
     first_child_[index] = kInvalidIndex;
     parent_[index] = kInvalidIndex;
     local_dirty_[index] = 0u;
+    local_matrix_dirty_[index] = 0u;
     effective_dirty_[index] = 0u;
     if (index < dirty_queued_.size())
         dirty_queued_[index] = 0u;
@@ -169,7 +182,14 @@ SceneNode SceneGraph::parent(SceneNode node) const noexcept {
 }
 
 void SceneGraph::set_local_transform(SceneNode node, const LocalTransform& local) {
-    set_local_matrix(node, local_transform_matrix(local));
+    if (!valid_index(node))
+        return;
+    const u32 index = node.index();
+    local_translation_[index] = local.translation;
+    local_rotation_[index] = local.rotation;
+    local_scale_[index] = local.scale;
+    local_matrix_dirty_[index] = 1u;
+    mark_dirty(node);
 }
 
 void SceneGraph::set_local_matrix(SceneNode node, const math::Mat4& local) {
@@ -177,6 +197,7 @@ void SceneGraph::set_local_matrix(SceneNode node, const math::Mat4& local) {
         return;
     const u32 index = node.index();
     local_[index] = local;
+    local_matrix_dirty_[index] = 0u;
     mark_dirty(node);
 }
 
@@ -224,6 +245,12 @@ SceneGraphUpdateStats SceneGraph::update_world_transforms(u32 parallel_threshold
         const bool dirty = local_dirty_[index] != 0u || parent_dirty;
         effective_dirty_[index] = dirty ? 1u : 0u;
         if (dirty) {
+            if (local_matrix_dirty_[index] != 0u) {
+                local_[index] = local_transform_matrix(LocalTransform{local_translation_[index],
+                                                                      local_rotation_[index],
+                                                                      local_scale_[index]});
+                local_matrix_dirty_[index] = 0u;
+            }
             world_[index] = p == kInvalidIndex ? local_[index] : math::mul(world_[p], local_[index]);
             local_dirty_[index] = 0u;
             ++stats.transforms_updated;

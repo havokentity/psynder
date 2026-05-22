@@ -147,9 +147,13 @@ class SceneGraph {
     detail::AlignedVector<u32> next_sibling_;
     detail::AlignedVector<u32> prev_sibling_;
     detail::AlignedVector<u32> depth_;
+    detail::AlignedVector<math::Vec3> local_translation_;
+    detail::AlignedVector<math::Quat> local_rotation_;
+    detail::AlignedVector<math::Vec3> local_scale_;
     detail::AlignedVector<math::Mat4> local_;
     detail::AlignedVector<math::Mat4> world_;
     detail::AlignedVector<u8> local_dirty_;
+    detail::AlignedVector<u8> local_matrix_dirty_;
     detail::AlignedVector<u8> effective_dirty_;
     detail::AlignedVector<u8> dirty_queued_;
     detail::AlignedVector<u32> dirty_roots_;

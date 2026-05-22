@@ -82,6 +82,29 @@ TEST_CASE("scene graph: one leaf edit skips clean static siblings", "[scene][sce
     REQUIRE(static_world_after.m[14] == static_world_before.m[14]);
 }
 
+TEST_CASE("scene graph: set local transform defers world math until update",
+          "[scene][scene_graph][dirty]") {
+    SceneGraph graph;
+    SceneNode root = graph.create_node(kInvalidSceneNode, trs({1.0f, 0.0f, 0.0f}));
+    SceneNode child = graph.create_node(root, trs({0.0f, 2.0f, 0.0f}));
+    graph.update_world_transforms();
+
+    const math::Mat4 world_before = graph.world_matrix(child);
+    graph.set_local_transform(root, trs({5.0f, 0.0f, 0.0f}));
+
+    const math::Mat4& world_before_update = graph.world_matrix(child);
+    REQUIRE(world_before_update.m[12] == world_before.m[12]);
+    REQUIRE(world_before_update.m[13] == world_before.m[13]);
+    REQUIRE(world_before_update.m[14] == world_before.m[14]);
+
+    const SceneGraphUpdateStats stats = graph.update_world_transforms();
+    REQUIRE(stats.transforms_updated == 2u);
+
+    const math::Mat4& world_after = graph.world_matrix(child);
+    REQUIRE_THAT(static_cast<double>(world_after.m[12]), Catch::Matchers::WithinAbs(5.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(world_after.m[13]), Catch::Matchers::WithinAbs(2.0, 1e-5));
+}
+
 TEST_CASE("scene graph: transform columns are cache-line aligned SoA",
           "[scene][scene_graph][cache]") {
     SceneGraph graph;
