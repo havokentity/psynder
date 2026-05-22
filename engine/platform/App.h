@@ -13,6 +13,7 @@
 #include <concepts>
 #include <cstdlib>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -128,19 +129,22 @@ enum class FrameAction {
     Exit,
 };
 
-struct WindowFrameContext {
+template <class ArgsT = AppArgs>
+struct WindowFrameContextT {
     WindowApp& app;
     platform::Window& window;
     render::Framebuffer& framebuffer;
-    const AppArgs& args;
+    const ArgsT& args;
     u32 frame_index = 0;
     f64 seconds = 0.0;
 };
 
+using WindowFrameContext = WindowFrameContextT<AppArgs>;
+
 namespace detail {
 
 template <class Sample>
-AppArgs parse_sample_args(int argc, char** argv) {
+auto parse_sample_args(int argc, char** argv) {
     if constexpr (requires { Sample::parse_args(argc, argv); }) {
         return Sample::parse_args(argc, argv);
     } else {
@@ -170,8 +174,8 @@ std::string_view sample_display_name(const Sample& sample) noexcept {
     }
 }
 
-template <class Sample>
-WindowAppOptions sample_window_options(const Sample& sample, const AppArgs& args) noexcept {
+template <class Sample, class ArgsT>
+WindowAppOptions sample_window_options(const Sample& sample, const ArgsT& args) noexcept {
     if constexpr (requires { sample.window_options(args); }) {
         return sample.window_options(args);
     } else if constexpr (requires { Sample::window_options(args); }) {
@@ -195,8 +199,8 @@ void sample_stopped(Sample& sample, WindowApp& app) {
     }
 }
 
-template <class Sample>
-FrameAction run_sample_frame(Sample& sample, WindowFrameContext& ctx) {
+template <class Sample, class ArgsT>
+FrameAction run_sample_frame(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
     if constexpr (requires { sample.frame(ctx); }) {
         if constexpr (requires {
                           { sample.frame(ctx) } -> std::same_as<FrameAction>;
@@ -215,7 +219,7 @@ FrameAction run_sample_frame(Sample& sample, WindowFrameContext& ctx) {
 
 template <class Sample>
 int run_window_sample(int argc, char** argv) {
-    const AppArgs args = detail::parse_sample_args<Sample>(argc, argv);
+    const auto args = detail::parse_sample_args<Sample>(argc, argv);
     Sample sample{};
     const std::string_view log_name = detail::sample_log_name(sample);
     const std::string_view display_name = detail::sample_display_name(sample);
@@ -234,12 +238,18 @@ int run_window_sample(int argc, char** argv) {
         PSY_LOG_INFO("{} running", display_name);
     }
 
+    if constexpr (requires { sample.run(app, args); }) {
+        const int result = sample.run(app, args);
+        detail::sample_stopped(sample, app);
+        return result;
+    }
+
     const u64 t0 = platform::Clock::ticks_now();
     u32 frame = 0;
     while (!app.window().should_close()) {
         app.window().poll_events();
 
-        WindowFrameContext ctx{
+        WindowFrameContextT<std::decay_t<decltype(args)>> ctx{
             app,
             app.window(),
             app.framebuffer(),

@@ -234,12 +234,7 @@ math::Vec3 sample_sky_lin(math::Vec3 dir) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const app::AppArgs args = app::parse_common_args(argc, argv).args;
-    const u32 smoke_frames = args.smoke_frames;
-    render::rt::ensure_frame_scheduler_console_registered();
-    render::rt::ensure_denoise_console_commands_registered();
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 11 (reflective sphere room, CPU RT)";
     desc.window_width = 1280;
@@ -247,12 +242,15 @@ int main(int argc, char** argv) {
     desc.render_width = kFbW;
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
+    return desc;
+}
 
-    app::WindowApp app_host{args, desc};
-    if (!app_host) {
-        PSY_LOG_ERROR("sample_11: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const u32 smoke_frames = args.smoke_frames;
+    render::rt::ensure_frame_scheduler_console_registered();
+    render::rt::ensure_denoise_console_commands_registered();
+    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     // ── Build the static scene geometry. ────────────────────────────────
@@ -702,3 +700,18 @@ int main(int argc, char** argv) {
 
     return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+
+struct RtSpheresSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_11"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 11"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
+    }
+
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(RtSpheresSample)

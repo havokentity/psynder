@@ -42,6 +42,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/Texture.h"
 #include "render/raster/Raster.h"
 #include "world/outdoor/Terrain.h"
 #include "world/outdoor/TerrainTarget.h"
@@ -54,6 +55,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace psynder;
@@ -397,7 +399,7 @@ PSY_FORCEINLINE f32 facade_hash2(u32 x, u32 y) noexcept {
     return static_cast<f32>(h & 0xFFFFFFu) / static_cast<f32>(0x1000000u);
 }
 
-std::vector<u32> build_facade_texture() {
+render::Texture2D build_facade_texture() {
     const u32 dim = kFacadeDim;
     std::vector<u32> tex(static_cast<usize>(dim) * dim, 0u);
 
@@ -462,7 +464,7 @@ std::vector<u32> build_facade_texture() {
                                                               255u);
         }
     }
-    return tex;
+    return render::Texture2D::from_rgba8(dim, dim, std::move(tex));
 }
 
 // Build a cube with a single per-face colour; populates `verts`/`indices`
@@ -605,11 +607,7 @@ math::Mat4 yaw_mat4(f32 yaw_rad) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const app::AppArgs args = app::parse_common_args(argc, argv).args;
-    const u32 smoke_frames = args.smoke_frames;
-
-    // ─── Platform / framebuffer ──────────────────────────────────────────
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 06 (tactical map flyover, M6)";
     desc.window_width = 1280;
@@ -617,12 +615,13 @@ int main(int argc, char** argv) {
     desc.render_width = kFbW;
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
+    return desc;
+}
 
-    app::WindowApp app_host{args, desc, {.depth_buffer = true}};
-    if (!app_host) {
-        PSY_LOG_ERROR("sample_06: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const u32 smoke_frames = args.smoke_frames;
+    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     render::Framebuffer& fb = app_host.framebuffer();
@@ -649,7 +648,8 @@ int main(int argc, char** argv) {
     // ─── Building facade texture ─────────────────────────────────────────
     // Owned here so its storage outlives every end_frame() that samples it;
     // each tower's DrawItem points `lightmap_texels` at this buffer.
-    const std::vector<u32> facade_tex = build_facade_texture();
+    const render::Texture2D facade_tex = build_facade_texture();
+    const render::TextureView facade_view = facade_tex.view();
 
     // ─── Scene props ─────────────────────────────────────────────────────
     // Towers wear the facade texture, so their verts are white — the
@@ -750,9 +750,9 @@ int main(int argc, char** argv) {
             // Bind the procedural facade chunk: forces the surface_cached path
             // so each pixel is white × facade(uv). Buffer owned by `facade_tex`
             // above and outlives this loop.
-            item.lightmap_texels = facade_tex.data();
-            item.lightmap_w = kFacadeDim;
-            item.lightmap_h = kFacadeDim;
+            item.lightmap_texels = facade_view.texels;
+            item.lightmap_w = facade_view.width;
+            item.lightmap_h = facade_view.height;
             rasterizer.submit(item);
         }
 
@@ -822,3 +822,22 @@ int main(int argc, char** argv) {
 
     return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+
+struct TacticalMapSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_06"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 06"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
+    }
+
+    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
+        return {.depth_buffer = true};
+    }
+
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(TacticalMapSample)

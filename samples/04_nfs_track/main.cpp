@@ -590,10 +590,7 @@ inline math::Mat4 yaw_from_forward(math::Vec3 fwd) noexcept {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const app::AppArgs args = app::parse_common_args(argc, argv).args;
-
-    // ─── Platform / framebuffer ─────────────────────────────────────────
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 04 (NFS track lap)";
     desc.window_width = 1280;
@@ -601,12 +598,12 @@ int main(int argc, char** argv) {
     desc.render_width = 640;
     desc.render_height = 360;
     desc.scale_mode = platform::ScaleMode::Integer;
+    return desc;
+}
 
-    app::WindowApp app_host{args, desc, {.depth_buffer = true}};
-    if (!app_host) {
-        PSY_LOG_ERROR("sample_04: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     render::Framebuffer& fb = app_host.framebuffer();
@@ -988,3 +985,22 @@ int main(int argc, char** argv) {
     world.destroy_body(chassis);
     return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+
+struct NfsTrackSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_04"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 04"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
+    }
+
+    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
+        return {.depth_buffer = true};
+    }
+
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(NfsTrackSample)

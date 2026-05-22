@@ -75,7 +75,7 @@ int parse_bool_arg(std::string_view v) noexcept {
     return app::parse_u32_decimal(v, value) && value != 0u ? 1 : 0;
 }
 
-Args parse_args(int argc, char** argv) {
+Args parse_sample12_args(int argc, char** argv) {
     Args a{};
     constexpr std::string_view kAoEq = "--rt-ao=";
     constexpr std::string_view kAoSp = "--rt-ao";
@@ -358,13 +358,7 @@ void orbit_lights(f32 t_seconds, std::array<Light, kNumLights>& lights) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-    const u32 smoke_frames = args.smoke_frames;
-    render::rt::ensure_frame_renderer_console_registered();
-    apply_rt_arg_overrides(args);
-    render::rt::ensure_denoise_console_commands_registered();
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 12 (raytracing showcase)";
     desc.window_width = 1280;
@@ -372,12 +366,16 @@ int main(int argc, char** argv) {
     desc.render_width = kFbW;
     desc.render_height = kFbH;
     desc.scale_mode = platform::ScaleMode::Linear;
+    return desc;
+}
 
-    app::WindowApp app_host{args, desc};
-    if (!app_host) {
-        PSY_LOG_ERROR("sample_12: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
+    const Args& args = parsed_args;
+    const u32 smoke_frames = args.smoke_frames;
+    render::rt::ensure_frame_renderer_console_registered();
+    apply_rt_arg_overrides(args);
+    render::rt::ensure_denoise_console_commands_registered();
+    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     // ── Build the static scene geometry. ────────────────────────────────
@@ -563,3 +561,18 @@ int main(int argc, char** argv) {
 
     return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+
+struct RtShowcaseSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_12"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 12"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
+    }
+
+    static Args parse_args(int argc, char** argv) { return parse_sample12_args(argc, argv); }
+
+    int run(app::WindowApp& app_host, const Args& args) { return sample_main(args, app_host); }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(RtShowcaseSample)

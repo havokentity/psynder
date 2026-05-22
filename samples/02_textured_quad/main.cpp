@@ -34,6 +34,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
+#include "render/Texture.h"
 #include "render/raster/Raster.h"
 #include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
@@ -44,6 +45,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace psynder;
@@ -123,7 +125,7 @@ u8 clamp_u8(i32 v) noexcept {
     return static_cast<u8>(v < 0 ? 0 : (v > 255 ? 255 : v));
 }
 
-std::vector<u32> build_crate_texture() {
+render::Texture2D build_crate_texture() {
     const u32 dim = kCrateTexDim;
     std::vector<u32> tex(static_cast<usize>(dim) * dim, 0u);
 
@@ -213,7 +215,7 @@ std::vector<u32> build_crate_texture() {
                 pack_rgba(clamp_u8(r), clamp_u8(g), clamp_u8(b), 255);
         }
     }
-    return tex;
+    return render::Texture2D::from_rgba8(dim, dim, std::move(tex));
 }
 
 // 36 indices — two triangles per face, wound CCW in the post-flip screen
@@ -248,9 +250,7 @@ void clear_depth_far(render::Framebuffer& fb) noexcept {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const app::AppArgs args = app::parse_common_args(argc, argv).args;
-
+platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     platform::WindowDesc desc{};
     desc.title = "Psynder — sample 02 (crate room)";
     desc.window_width = 1280;
@@ -258,12 +258,12 @@ int main(int argc, char** argv) {
     desc.render_width = 640;
     desc.render_height = 360;
     desc.scale_mode = platform::ScaleMode::Integer;
+    return desc;
+}
 
-    app::WindowApp app_host{args, desc, {.depth_buffer = true}};
-    if (!app_host) {
-        PSY_LOG_ERROR("sample_02: failed to create window");
-        return EXIT_FAILURE;
-    }
+int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+    const app::AppArgs& args = base_args;
+    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     render::Framebuffer& fb = app_host.framebuffer();
@@ -275,7 +275,8 @@ int main(int argc, char** argv) {
     // DrawItem points `lightmap_texels` at this buffer (pitch == width), so
     // the rasterizer's per-pixel surface_cached path samples it through the
     // cube's 0..1 face `uv` and multiplies by the white vertex colour.
-    const std::vector<u32> crate_tex = build_crate_texture();
+    const render::Texture2D crate_tex = build_crate_texture();
+    const render::TextureView crate_view = crate_tex.view();
 
     // The rasterizer now back-face culls by default, so the cube must be
     // wound consistently with its per-vertex normals or faces drop out as a
@@ -382,9 +383,9 @@ int main(int argc, char** argv) {
             // Bind the procedural crate chunk: forces the SurfaceCached path
             // so the inner loop computes white × crate(uv) per pixel. Buffer
             // is owned by `crate_tex` above and outlives this loop.
-            item.lightmap_texels = crate_tex.data();
-            item.lightmap_w = kCrateTexDim;
-            item.lightmap_h = kCrateTexDim;
+            item.lightmap_texels = crate_view.texels;
+            item.lightmap_w = crate_view.width;
+            item.lightmap_h = crate_view.height;
             rasterizer.submit(item);
         }
 
@@ -431,3 +432,22 @@ int main(int argc, char** argv) {
 
     return EXIT_SUCCESS;
 }
+
+struct TexturedQuadSample {
+    static constexpr std::string_view log_name() noexcept { return "sample_02"; }
+    static constexpr std::string_view display_name() noexcept { return "Psynder sample 02"; }
+
+    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
+        return make_window_desc(args);
+    }
+
+    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
+        return {.depth_buffer = true};
+    }
+
+    int run(app::WindowApp& app_host, const app::AppArgs& args) {
+        return sample_main(args, app_host);
+    }
+};
+
+PSYNDER_WINDOW_SAMPLE_MAIN(TexturedQuadSample)
