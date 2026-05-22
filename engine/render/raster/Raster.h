@@ -9,12 +9,12 @@
 #include "core/Types.h"
 #include "math/Math.h"
 #include "render/Framebuffer.h"
+#include "render/Material.h"
 
 namespace psynder::render::raster {
 
-// ─── Material handles (resolved against the asset cache) ─────────────────
-struct MaterialTag {};
-using MaterialId = Handle<MaterialTag>;
+// ─── Material handles (resolved against the shared material library) ─────
+using MaterialId = ::psynder::render::MaterialId;
 
 struct TextureTag {};
 using TextureId = Handle<TextureTag>;

@@ -6,6 +6,7 @@
 
 #include "core/Types.h"
 #include "math/Math.h"
+#include "render/Material.h"
 #include "render/rt/Bvh.h"
 #include "scene/SceneGraph.h"
 
@@ -82,6 +83,14 @@ FrameRowScheduleStats parallel_frame_rows(u32 rows, const FrameRowScheduleConfig
 }
 
 struct FrameMaterialTable {
+    const ::psynder::render::MaterialLibrary* library = nullptr;
+
+    // Shared material IDs. Preferred path for engine-owned scene submissions.
+    const ::psynder::render::MaterialId* instance_materials = nullptr;
+    u32 instance_material_count = 0;
+    const ::psynder::render::MaterialId* primitive_materials = nullptr;
+    u32 primitive_material_count = 0;
+
     // RGBA8, one color per TLAS instance. Used first when present.
     const u32* instance_rgba8 = nullptr;
     u32 instance_count = 0;

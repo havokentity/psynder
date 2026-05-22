@@ -608,6 +608,17 @@ Polygon meshes land on terrain seamlessly in both backends because they share de
 
 - One transform hierarchy. Top-level partitions: `WorldStatic`, `WorldDynamic`, `Effects`, `UI`. The renderer doesn't care which world system fed a draw; it gets the same `DrawItem` either way.
 - Per-entity bounding boxes and leaf/cell memberships are tracked centrally; when an entity moves, the scene graph notifies every spatial index that contains it. See §9.4 for the index hybrid.
+- Runtime app code should submit entities to a `scene::RuntimeScene`, not
+  hand-write raster or RT frame loops. `RuntimeScene::create_entity()`
+  creates the ECS entity plus its default transform/node binding, and a
+  `RenderableComponent` links geometry to a shared `render::MaterialId`.
+  Raster and RT renderers consume the same gathered scene render items.
+- Materials are data, not shader objects: a cache-coherent
+  `render::MaterialLibrary` stores SoA columns for albedo/texture,
+  winding (`CCW`, `CW`, or two-sided), blend mode, reflectivity, and
+  raster/RT visibility and shadow flags. The future editor panel edits
+  this library over the existing local WebSocket IPC, but the runtime
+  contract works without any editor dependency.
 
 ### 9.4 Spatial query routing — multiple structures, one scene
 

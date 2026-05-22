@@ -137,7 +137,37 @@ u32 sample_sky(math::Vec3 dir) {
     return pack_rgba8(clamp_u8(r), clamp_u8(g), clamp_u8(b));
 }
 
+bool material_desc_for_hit(const FrameMaterialTable& materials,
+                           const Hit& hit,
+                           ::psynder::render::MaterialDesc& out) noexcept {
+    if (!materials.library)
+        return false;
+    if (materials.instance_materials && hit.instance < materials.instance_material_count) {
+        const ::psynder::render::MaterialId id = materials.instance_materials[hit.instance];
+        if (materials.library->valid(id)) {
+            out = materials.library->get(id);
+            return true;
+        }
+    }
+    if (materials.primitive_materials && hit.primitive < materials.primitive_material_count) {
+        const ::psynder::render::MaterialId id = materials.primitive_materials[hit.primitive];
+        if (materials.library->valid(id)) {
+            out = materials.library->get(id);
+            return true;
+        }
+    }
+    return false;
+}
+
 math::Vec3 material_rgb(const FrameMaterialTable& materials, const Hit& hit) {
+    ::psynder::render::MaterialDesc material{};
+    if (material_desc_for_hit(materials, hit, material)) {
+        const u32 color = material.albedo_rgba8;
+        return {static_cast<f32>(color & 0xFFu) / 255.0f,
+                static_cast<f32>((color >> 8) & 0xFFu) / 255.0f,
+                static_cast<f32>((color >> 16) & 0xFFu) / 255.0f};
+    }
+
     u32 color = materials.default_rgba8;
     if (materials.instance_rgba8 && hit.instance < materials.instance_count) {
         color = materials.instance_rgba8[hit.instance];
@@ -153,6 +183,10 @@ math::Vec3 material_rgb(const FrameMaterialTable& materials, const Hit& hit) {
 }
 
 f32 material_reflectivity(const FrameMaterialTable& materials, const Hit& hit) noexcept {
+    ::psynder::render::MaterialDesc material{};
+    if (material_desc_for_hit(materials, hit, material))
+        return std::clamp(material.reflectivity, 0.0f, 1.0f);
+
     if (materials.instance_reflectivity && hit.instance < materials.instance_reflectivity_count)
         return std::clamp(materials.instance_reflectivity[hit.instance], 0.0f, 1.0f);
     if (materials.primitive_reflectivity && hit.primitive < materials.primitive_reflectivity_count)
@@ -344,6 +378,30 @@ math::Vec3 shade_shadowed_direct_packet(const FrameRenderInput& input,
 }
 
 bool material_table_has_reflectors(const FrameMaterialTable& materials) noexcept {
+    if (materials.library) {
+        if (materials.instance_materials) {
+            for (u32 i = 0; i < materials.instance_material_count; ++i) {
+                if (!materials.library->valid(materials.instance_materials[i]))
+                    continue;
+                const ::psynder::render::MaterialDesc material =
+                    materials.library->get(materials.instance_materials[i]);
+                if ((material.flags & ::psynder::render::Material_RtVisible) != 0u &&
+                    material.reflectivity > 0.001f)
+                    return true;
+            }
+        }
+        if (materials.primitive_materials) {
+            for (u32 i = 0; i < materials.primitive_material_count; ++i) {
+                if (!materials.library->valid(materials.primitive_materials[i]))
+                    continue;
+                const ::psynder::render::MaterialDesc material =
+                    materials.library->get(materials.primitive_materials[i]);
+                if ((material.flags & ::psynder::render::Material_RtVisible) != 0u &&
+                    material.reflectivity > 0.001f)
+                    return true;
+            }
+        }
+    }
     if (materials.default_reflectivity > 0.001f)
         return true;
     if (materials.instance_reflectivity) {
