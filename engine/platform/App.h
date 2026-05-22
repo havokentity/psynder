@@ -515,6 +515,13 @@ void sample_stopped(Sample& sample, WindowApp& app) {
 }
 
 template <class Sample, class ArgsT>
+void run_sample_frame_begin(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
+    if constexpr (requires { sample.frame_begin(ctx); }) {
+        sample.frame_begin(ctx);
+    }
+}
+
+template <class Sample, class ArgsT>
 FrameAction run_sample_frame(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
     if constexpr (requires { sample.frame(ctx); }) {
         if constexpr (requires {
@@ -674,6 +681,7 @@ int run_window_sample(int argc, char** argv) {
                                   : platform::Clock::seconds(platform::Clock::ticks_now() - t0),
         };
 
+        detail::run_sample_frame_begin(sample, ctx);
         app.engine_frame_begin(detail::sample_frame_clear(sample, ctx));
         const FrameAction action = detail::run_sample_frame(sample, ctx);
         detail::run_engine_frame_post(sample, ctx);
