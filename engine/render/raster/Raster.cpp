@@ -135,6 +135,22 @@ void Rasterizer::submit(const DrawItem& draw) {
     fs.draw_items[fs.draw_count++] = draw;
 }
 
+DrawItem make_projected_shadow_draw(const ProjectedShadowDesc& shadow) noexcept {
+    DrawItem d{};
+    d.vertices = shadow.vertices;
+    d.vertex_count = shadow.vertex_count;
+    d.indices = shadow.indices;
+    d.index_count = shadow.index_count;
+    d.model = shadow.model;
+    d.cull = shadow.cull;
+    d.blend = DrawBlendMode::Multiply;
+    d.blend_opacity = std::clamp(shadow.opacity, 0.0f, 1.0f);
+    d.lightmap_texels = shadow.mask_texels;
+    d.lightmap_w = shadow.mask_w;
+    d.lightmap_h = shadow.mask_h;
+    return d;
+}
+
 void Rasterizer::end_frame() {
     auto& fs = frame_state();
     if (!fs.in_frame)
