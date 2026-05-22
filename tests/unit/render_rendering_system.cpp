@@ -30,17 +30,17 @@ TEST_CASE("rendering system queues split raster, transparent, RT, and shadow wor
     render::RenderingSystem renderer;
 
     render::MaterialDesc opaque_desc{};
-    opaque_desc.flags = render::Material_RasterVisible | render::Material_RtVisible |
-                        render::Material_CastsRtShadow;
+    opaque_desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::RtVisible |
+                        render::MaterialFlags::CastsRtShadow;
     const render::MaterialId opaque = scene.materials().create(opaque_desc);
 
     render::MaterialDesc glass_desc{};
     glass_desc.blend = render::MaterialBlendMode::AlphaBlend;
-    glass_desc.flags = render::Material_RasterVisible | render::Material_RtVisible;
+    glass_desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::RtVisible;
     const render::MaterialId glass = scene.materials().create(glass_desc);
 
     render::MaterialDesc probe_only_desc{};
-    probe_only_desc.flags = render::Material_RtVisible;
+    probe_only_desc.flags = render::MaterialFlags::RtVisible;
     const render::MaterialId probe_only = scene.materials().create(probe_only_desc);
 
     render::MeshDesc mesh_desc{};
@@ -81,7 +81,7 @@ TEST_CASE("rendering system emits raster draws from mesh handles", "[render][ren
     render::RenderingSystem renderer;
 
     render::MaterialDesc material_desc{};
-    material_desc.flags = render::Material_RasterVisible;
+    material_desc.flags = render::MaterialFlags::RasterVisible;
     const render::MaterialId material = scene.materials().create(material_desc);
 
     render::MeshDesc mesh_desc{};
@@ -124,15 +124,15 @@ TEST_CASE("rendering system filters static baked and projected raster shadow que
     render::RenderingSystem renderer;
 
     render::MaterialDesc static_desc{};
-    static_desc.flags = render::Material_RasterVisible | render::Material_CastsRasterShadow |
-                        render::Material_ReceivesRasterShadow | render::Material_BakeVisible |
-                        render::Material_CastsBakedShadow | render::Material_ReceivesBakedShadow;
+    static_desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::CastsRasterShadow |
+                        render::MaterialFlags::ReceivesRasterShadow | render::MaterialFlags::BakeVisible |
+                        render::MaterialFlags::CastsBakedShadow | render::MaterialFlags::ReceivesBakedShadow;
     static_desc.raster_shadow_mode = render::MaterialRasterShadowMode::ProjectedDecal;
     const render::MaterialId static_material = scene.materials().create(static_desc);
 
     render::MaterialDesc dynamic_bake_desc{};
-    dynamic_bake_desc.flags = render::Material_RasterVisible | render::Material_BakeVisible |
-                              render::Material_CastsBakedShadow;
+    dynamic_bake_desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::BakeVisible |
+                              render::MaterialFlags::CastsBakedShadow;
     const render::MaterialId dynamic_bake_material = scene.materials().create(dynamic_bake_desc);
 
     render::MeshDesc mesh_desc{};
@@ -181,7 +181,7 @@ TEST_CASE("rendering system mesh entities use pooled handles", "[render][renderi
     renderer.reserve_scene_capacity(8u);
 
     render::MaterialDesc material_desc{};
-    material_desc.flags = render::Material_RasterVisible;
+    material_desc.flags = render::MaterialFlags::RasterVisible;
     const render::MaterialId material = scene.materials().create(material_desc);
 
     render::MeshDesc mesh_desc{};
@@ -218,14 +218,14 @@ TEST_CASE("rendering system builds material batches for CPU effects", "[render][
     renderer.reserve_scene_capacity(4u);
 
     render::MaterialDesc scrolling_desc{};
-    scrolling_desc.flags = render::Material_RasterVisible;
+    scrolling_desc.flags = render::MaterialFlags::RasterVisible;
     scrolling_desc.cpu_effect.type = render::MaterialCpuEffect::UvScroll;
     scrolling_desc.cpu_effect.uv_scroll_u = 0.25f;
     scrolling_desc.cpu_effect.uv_scroll_v = -0.5f;
     const render::MaterialId scrolling = scene.materials().create(scrolling_desc);
 
     render::MaterialDesc static_desc{};
-    static_desc.flags = render::Material_RasterVisible;
+    static_desc.flags = render::MaterialFlags::RasterVisible;
     const render::MaterialId static_material = scene.materials().create(static_desc);
 
     render::MeshDesc mesh_desc{};

@@ -441,15 +441,15 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
         render::MaterialDesc material{};
         material.albedo_rgba8 = fi.color;
-        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
-                         render::Material_ReceivesRtShadow;
+        material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::CastsRtShadow |
+                         render::MaterialFlags::ReceivesRtShadow;
         instance_materials[i] = material_library.create(material);
     }
     insts[kFieldCount].blas = &ground_blas;
     insts[kFieldCount].transform = math::identity4();
     render::MaterialDesc ground_material{};
     ground_material.albedo_rgba8 = pack_rgba8(55, 55, 65);
-    ground_material.flags = render::Material_RtVisible | render::Material_ReceivesRtShadow;
+    ground_material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::ReceivesRtShadow;
     instance_materials[kFieldCount] = material_library.create(ground_material);
 
     render::rt::Tlas tlas;

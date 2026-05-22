@@ -35,9 +35,9 @@ TEST_CASE("render material library stores editable raster and RT state in SoA co
     desc.shadow_alpha = render::MaterialShadowAlphaMode::AlphaTest;
     desc.shadow_opacity = 0.75f;
     desc.shadow_softness = 0.25f;
-    desc.flags = render::Material_RasterVisible | render::Material_RtVisible |
-                 render::Material_CastsRtShadow | render::Material_Editable |
-                 render::Material_BakeVisible | render::Material_CastsBakedShadow;
+    desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::RtVisible |
+                 render::MaterialFlags::CastsRtShadow | render::MaterialFlags::Editable |
+                 render::MaterialFlags::BakeVisible | render::MaterialFlags::CastsBakedShadow;
 
     const render::MaterialId id = library.create(desc);
     REQUIRE(library.valid(id));
@@ -54,8 +54,8 @@ TEST_CASE("render material library stores editable raster and RT state in SoA co
     REQUIRE(view.shadow_alpha[0] == render::MaterialShadowAlphaMode::AlphaTest);
     REQUIRE_THAT(static_cast<double>(view.shadow_opacity[0]), Catch::Matchers::WithinAbs(0.75, 1e-6));
     REQUIRE_THAT(static_cast<double>(view.shadow_softness[0]), Catch::Matchers::WithinAbs(0.25, 1e-6));
-    REQUIRE((view.flags[0] & render::Material_CastsRtShadow) != 0u);
-    REQUIRE((view.flags[0] & render::Material_CastsBakedShadow) != 0u);
+    REQUIRE((view.flags[0] & render::MaterialFlags::CastsRtShadow) != 0u);
+    REQUIRE((view.flags[0] & render::MaterialFlags::CastsBakedShadow) != 0u);
 }
 
 TEST_CASE("scene creates transform-backed renderable entities for shared renderers",

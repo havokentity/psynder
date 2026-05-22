@@ -65,7 +65,7 @@ struct SceneRenderPolicyIssue {
     Entity entity{};
     MaterialId material{};
     scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic;
-    u32 material_flags = 0;
+    MaterialFlags material_flags = MaterialFlags::None;
 };
 
 inline void build_scene_render_queues(scene::Scene& scene, SceneRenderQueues& queues) {
@@ -81,35 +81,35 @@ inline void build_scene_render_queues(scene::Scene& scene, SceneRenderQueues& qu
         u32 material_slot = 0;
         if (!materials.slot(item.material, material_slot))
             continue;
-        const u32 flags = material_view.flags[material_slot];
+        const MaterialFlags flags = material_view.flags[material_slot];
         const bool is_static = item.mobility == scene::ObjectMobility::Static;
-        if ((flags & Material_RasterVisible) != 0u) {
+        if ((flags & MaterialFlags::RasterVisible) != 0u) {
             if (material_view.blend[material_slot] == MaterialBlendMode::AlphaBlend)
                 queues.raster_transparent.push_back(item_index);
             else
                 queues.raster_opaque.push_back(item_index);
         }
-        if ((flags & Material_CastsRasterShadow) != 0u &&
+        if ((flags & MaterialFlags::CastsRasterShadow) != 0u &&
             material_view.raster_shadow_mode[material_slot] ==
                 MaterialRasterShadowMode::ProjectedDecal) {
             queues.raster_shadow_casters.push_back(item_index);
         }
-        if ((flags & Material_ReceivesRasterShadow) != 0u)
+        if ((flags & MaterialFlags::ReceivesRasterShadow) != 0u)
             queues.raster_shadow_receivers.push_back(item_index);
-        if ((flags & Material_RtVisible) != 0u)
+        if ((flags & MaterialFlags::RtVisible) != 0u)
             queues.rt_visible.push_back(item_index);
-        if ((flags & Material_CastsRtShadow) != 0u)
+        if ((flags & MaterialFlags::CastsRtShadow) != 0u)
             queues.rt_shadow_casters.push_back(item_index);
         const u32 bake_flags = flags & Material_BakedLightingMask;
         if (bake_flags != 0u) {
             if (!is_static) {
                 ++queues.dynamic_bake_rejected;
             } else {
-                if ((flags & Material_BakeVisible) != 0u)
+                if ((flags & MaterialFlags::BakeVisible) != 0u)
                     queues.bake_static.push_back(item_index);
-                if ((flags & Material_CastsBakedShadow) != 0u)
+                if ((flags & MaterialFlags::CastsBakedShadow) != 0u)
                     queues.bake_shadow_casters.push_back(item_index);
-                if ((flags & Material_ReceivesBakedShadow) != 0u)
+                if ((flags & MaterialFlags::ReceivesBakedShadow) != 0u)
                     queues.bake_shadow_receivers.push_back(item_index);
             }
         }
@@ -129,7 +129,7 @@ inline u32 collect_scene_render_policy_issues(scene::Scene& scene,
         u32 material_slot = 0;
         if (!materials.slot(item.material, material_slot))
             continue;
-        const u32 flags = material_view.flags[material_slot];
+        const MaterialFlags flags = material_view.flags[material_slot];
         if (item.mobility == scene::ObjectMobility::Dynamic &&
             (flags & Material_BakedLightingMask) != 0u) {
             out.push_back({item.entity, item.material, item.mobility, flags});

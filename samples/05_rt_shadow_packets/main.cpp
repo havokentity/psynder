@@ -219,15 +219,15 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         render::MaterialDesc material{};
         material.albedo_rgba8 = cube_instances[i].color;
-        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
-                         render::Material_ReceivesRtShadow;
+        material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::CastsRtShadow |
+                         render::MaterialFlags::ReceivesRtShadow;
         instance_materials[i] = materials.create(material);
     }
     insts[kNumCubes].blas = &ground_blas;
     insts[kNumCubes].transform = math::identity4();
     render::MaterialDesc ground_material{};
     ground_material.albedo_rgba8 = pack_rgba8(60, 60, 70);
-    ground_material.flags = render::Material_RtVisible | render::Material_ReceivesRtShadow;
+    ground_material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::ReceivesRtShadow;
     instance_materials[kNumCubes] = materials.create(ground_material);
 
     render::rt::Tlas tlas;

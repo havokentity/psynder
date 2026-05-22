@@ -281,7 +281,7 @@ void build_rt_shadow_instance_mask(const FrameMaterialTable& materials, std::vec
         ::psynder::render::MaterialDesc material{};
         if (materials.library->valid(id)) {
             material = materials.library->get(id);
-            mask[i] = (material.flags & ::psynder::render::Material_CastsRtShadow) != 0u ? 1u : 0u;
+            mask[i] = (material.flags & ::psynder::render::MaterialFlags::CastsRtShadow) != 0u ? 1u : 0u;
         }
     }
 }
@@ -486,7 +486,7 @@ bool material_table_has_reflectors(const FrameMaterialTable& materials) noexcept
                     continue;
                 const ::psynder::render::MaterialDesc material =
                     materials.library->get(materials.instance_materials[i]);
-                if ((material.flags & ::psynder::render::Material_RtVisible) != 0u &&
+                if ((material.flags & ::psynder::render::MaterialFlags::RtVisible) != 0u &&
                     material.reflectivity > 0.001f)
                     return true;
             }
@@ -497,7 +497,7 @@ bool material_table_has_reflectors(const FrameMaterialTable& materials) noexcept
                     continue;
                 const ::psynder::render::MaterialDesc material =
                     materials.library->get(materials.primitive_materials[i]);
-                if ((material.flags & ::psynder::render::Material_RtVisible) != 0u &&
+                if ((material.flags & ::psynder::render::MaterialFlags::RtVisible) != 0u &&
                     material.reflectivity > 0.001f)
                     return true;
             }

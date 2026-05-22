@@ -301,8 +301,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         material.albedo_rgba8 =
             pack_rgba8(clamp_u8(m.r * 255.0f), clamp_u8(m.g * 255.0f), clamp_u8(m.b * 255.0f));
         material.reflectivity = m.reflectivity;
-        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
-                         render::Material_ReceivesRtShadow;
+        material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::CastsRtShadow |
+                         render::MaterialFlags::ReceivesRtShadow;
         instance_materials[i] = material_library.create(material);
     }
 

@@ -28,7 +28,7 @@ struct TriangleSample {
         crate.load_ppm("assets/crate.ppm");
 
         render::MaterialDesc triangle_material{};
-        triangle_material.flags = render::Material_RasterVisible;
+        triangle_material.flags = render::MaterialFlags::RasterVisible;
         const render::MaterialId triangle_material_id = scene.materials().create(triangle_material);
         const render::MeshDesc triangle_mesh_desc = render::geometry_tools::textured_triangle(&crate);
         triangle_entity = app.create_mesh_entity(scene, triangle_mesh_desc, triangle_material_id).entity;

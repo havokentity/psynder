@@ -226,7 +226,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const render::MeshId cube_mesh = app_host.create_mesh(cube_mesh_desc);
 
     render::MaterialDesc crate_material{};
-    crate_material.flags = render::Material_RasterVisible;
+    crate_material.flags = render::MaterialFlags::RasterVisible;
     const render::MaterialId crate_material_id = scene.materials().create(crate_material);
 
     std::array<Entity, kCratePositions.size()> crates{};

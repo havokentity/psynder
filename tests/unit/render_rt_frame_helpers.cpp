@@ -144,11 +144,11 @@ TEST_CASE("render rt frame renderer: material cast flag controls shadow packets"
     render::rt::Tlas tlas;
     tlas.build(instances.data(), static_cast<u32>(instances.size()));
 
-    auto render_center = [&](u32 blocker_flags) {
+    auto render_center = [&](render::MaterialFlags blocker_flags) {
         render::MaterialLibrary materials;
         render::MaterialDesc receiver_desc{};
         receiver_desc.albedo_rgba8 = 0xFFFFFFFFu;
-        receiver_desc.flags = render::Material_RtVisible | render::Material_ReceivesRtShadow;
+        receiver_desc.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::ReceivesRtShadow;
         const render::MaterialId receiver = materials.create(receiver_desc);
 
         render::MaterialDesc blocker_desc{};
@@ -193,8 +193,8 @@ TEST_CASE("render rt frame renderer: material cast flag controls shadow packets"
         return pixels[4u * 8u + 4u] & 0xFFu;
     };
 
-    const u32 shadowed = render_center(render::Material_RtVisible | render::Material_CastsRtShadow);
-    const u32 unshadowed = render_center(render::Material_RtVisible);
+    const u32 shadowed = render_center(render::MaterialFlags::RtVisible | render::MaterialFlags::CastsRtShadow);
+    const u32 unshadowed = render_center(render::MaterialFlags::RtVisible);
     REQUIRE(shadowed < unshadowed);
 }
 
