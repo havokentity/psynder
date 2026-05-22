@@ -180,13 +180,15 @@ int main(int argc, char** argv) {
             smoke = true;
     }
 
-    const std::array cases = smoke ? std::array<CaseConfig, 4>{{
+    const std::array cases = smoke ? std::array<CaseConfig, 5>{{
+                                         {1, 1000},
                                          {10, 1000},
                                          {100, 1000},
                                          {1000, 400},
                                          {10000, 80},
                                      }}
-                                   : std::array<CaseConfig, 4>{{
+                                   : std::array<CaseConfig, 5>{{
+                                         {1, 400000},
                                          {10, 200000},
                                          {100, 100000},
                                          {1000, 20000},
