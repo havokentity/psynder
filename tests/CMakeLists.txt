@@ -75,6 +75,14 @@ if(PSYNDER_BUILD_SAMPLES)
         set_tests_properties(sample_12_rt_showcase_smoke PROPERTIES
             RESOURCE_LOCK "psynder_platform_singleton"
             TIMEOUT 30)
+        add_test(NAME sample_12_rt_showcase_debug_hud_smoke
+                 COMMAND sample_12_rt_showcase
+                         --smoke-frames=8
+                         --rt-ao=0
+                         --debug-hud=compact)
+        set_tests_properties(sample_12_rt_showcase_debug_hud_smoke PROPERTIES
+            RESOURCE_LOCK "psynder_platform_singleton"
+            TIMEOUT 45)
     endif()
     if(TARGET sample_13_rt_quake)
         add_test(NAME sample_13_rt_quake_smoke

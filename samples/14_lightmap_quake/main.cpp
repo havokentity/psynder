@@ -1028,7 +1028,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         editor::sample_draw(fb);
 
         // Debug HUD overlay (`r_debug_hud full`).
-        {
+        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
             ui::imm::DebugHudStats stats{};
             stats.frame_ms = frame_ms;
             const u32 n = std::min<u32>(frame + 1u, 60u);

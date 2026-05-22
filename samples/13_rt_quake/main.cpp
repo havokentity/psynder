@@ -137,6 +137,11 @@ void push_quad(RoomGeo& g,
 }
 
 void build_room(RoomGeo& g) {
+    constexpr u32 kQuadCount = 18;
+    g.tris.reserve(2u * kQuadCount);
+    g.normals.reserve(2u * kQuadCount);
+    g.colors.reserve(2u * kQuadCount);
+
     constexpr f32 kFloorY = 0.0f;
     constexpr f32 kCeilY = 3.0f;
     constexpr f32 kRoomAZ0 = -8.0f;  // back wall of room A
@@ -457,7 +462,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(140, 140, 150);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        if (ui::imm::debug_hud_mode() != ui::imm::DebugHudMode::Off) {
+            ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
+        }
         ui::console::draw(fb);
         window->present(fb);
 
