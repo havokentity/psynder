@@ -17,25 +17,22 @@ struct TriangleSample {
 
     render::TextureAsset crate{};
 
-    scene::Scene* scene = nullptr;
     Entity triangle_entity{};
 
     void started(app::WindowApp& app) {
-        scene = &app.loaded_scene(0);
-        scene->environment().set_clear_color(0xFF202028u);
+        scene::Scene& scene = app.loaded_scene(0);
+        scene.environment().set_clear_color(0xFF202028u);
         crate.load_ppm("assets/crate.ppm");
 
         const render::MeshDesc triangle_mesh_desc = render::geometry_tools::textured_triangle(&crate);
-        triangle_entity = app.create_raster_mesh_entity(*scene, triangle_mesh_desc).entity;
+        triangle_entity = app.create_raster_mesh_entity(scene, triangle_mesh_desc).entity;
     }
 
     void frame(app::WindowFrameContext& ctx) {
-        if (!scene)
-            return;
         scene::LocalTransform triangle_transform{};
         triangle_transform.rotation =
             math::quat_from_axis_angle(math::Vec3{0, 0, 1}, static_cast<f32>(ctx.seconds) * 0.8f);
-        scene->set_transform(triangle_entity, triangle_transform);
+        ctx.app.loaded_scene(0).set_transform(triangle_entity, triangle_transform);
     }
 };
 
