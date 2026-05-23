@@ -495,9 +495,14 @@ class RenderingSystem {
             cull_from_material(material_view.winding[material_slot], mesh_view.cull[mesh_slot]);
         if (material_view.blend[material_slot] == MaterialBlendMode::AlphaTest)
             draw.flags |= raster::DrawFlags::AlphaTest;
-        const TextureView texture = mesh_view.base_color_asset[mesh_slot] != nullptr
-                                        ? mesh_view.base_color_asset[mesh_slot]->view()
-                                        : mesh_view.base_color[mesh_slot];
+        TextureView texture = material_view.base_color_asset[material_slot] != nullptr
+                                  ? material_view.base_color_asset[material_slot]->view()
+                                  : material_view.base_color[material_slot];
+        if (!texture.valid()) {
+            texture = mesh_view.base_color_asset[mesh_slot] != nullptr
+                          ? mesh_view.base_color_asset[mesh_slot]->view()
+                          : mesh_view.base_color[mesh_slot];
+        }
         if (texture.valid()) {
             draw.lightmap_texels = texture.texels;
             draw.lightmap_w = texture.width;

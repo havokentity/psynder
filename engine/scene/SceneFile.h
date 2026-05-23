@@ -32,6 +32,7 @@ enum class SceneFileChunkType : u32 {
     TransformScale = 0x53584654u,        // TXFS
     Cameras = 0x4D414353u,          // SCAM
     MeshInstances = 0x53454D53u,    // SMES
+    Materials = 0x54414D53u,        // SMAT
 };
 
 struct SceneFileHeader {
@@ -83,6 +84,26 @@ struct SceneFileMeshInstance {
     u8 _pad[3] = {};
 };
 
+struct SceneFileMaterial {
+    u32 name_offset = 0u;
+    u32 base_color_texture_name_offset = 0u;
+    u32 albedo_rgba8 = 0xFFFFFFFFu;
+    ::psynder::render::MaterialFlags flags = ::psynder::render::Material_DefaultFlags;
+    f32 alpha_cutoff = 0.5f;
+    f32 reflectivity = 0.0f;
+    f32 roughness = 1.0f;
+    f32 emissive = 0.0f;
+    ::psynder::render::MaterialWinding winding = ::psynder::render::MaterialWinding::Ccw;
+    ::psynder::render::MaterialBlendMode blend = ::psynder::render::MaterialBlendMode::Opaque;
+    ::psynder::render::MaterialRasterShadowMode raster_shadow_mode =
+        ::psynder::render::MaterialRasterShadowMode::None;
+    ::psynder::render::MaterialShadowAlphaMode shadow_alpha =
+        ::psynder::render::MaterialShadowAlphaMode::Opaque;
+    f32 shadow_opacity = 0.5f;
+    f32 shadow_softness = 0.5f;
+    u8 _pad[20] = {};
+};
+
 struct SceneFileView {
     const SceneFileHeader* header = nullptr;
     std::span<const char> strings;
@@ -92,6 +113,7 @@ struct SceneFileView {
     std::span<const math::Vec3> scales;
     std::span<const SceneFileCamera> cameras;
     std::span<const SceneFileMeshInstance> mesh_instances;
+    std::span<const SceneFileMaterial> materials;
 };
 
 struct SceneFileLoaded {
@@ -189,6 +211,11 @@ struct SceneLoadProgress {
 struct SceneLoadRuntimeHooks {
     void* user = nullptr;
     void (*reserve_render_capacity)(void* user, u32 renderables, u32 meshes) = nullptr;
+    ::psynder::render::MeshId (*resolve_mesh)(void* user, std::string_view mesh_name) = nullptr;
+    ::psynder::render::MaterialId (*resolve_material)(void* user,
+                                                      Scene& scene,
+                                                      const SceneFileView& scene_file,
+                                                      const SceneFileMaterial& material) = nullptr;
 };
 
 struct SceneLoadResult {
@@ -245,6 +272,7 @@ class SceneLoadRequest {
 
     void emit_progress(SceneLoadStage stage, f32 fraction);
     void rebuild_binding_views();
+    void bind_scene_assets(Scene& scene, const SceneFileView& view, SceneLoadRuntimeHooks hooks);
 
     std::string virtual_path_{};
     SceneFileRequest file_request_{};
@@ -268,5 +296,6 @@ static_assert(sizeof(SceneFileChunk) == 16u);
 static_assert(sizeof(SceneFileEnvironment) == 8u);
 static_assert(sizeof(SceneFileCamera) == 64u);
 static_assert(sizeof(SceneFileMeshInstance) == 20u);
+static_assert(sizeof(SceneFileMaterial) == 64u);
 
 }  // namespace psynder::scene

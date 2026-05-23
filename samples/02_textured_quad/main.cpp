@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Psynder - Sample 02 / M2 demo. Rotating textured crate room.
 //
-// Uses engine geometry and texture generators, then submits mesh instances
-// through the shared scene/rendering path.
+// Loads a cooked scene; mesh, material, texture, camera, and environment data
+// are resolved by the engine scene path.
 //
 #include "asset/Precook.h"
 #include "platform/App.h"
-#include "render/GeometryTools.h"
-#include "render/Texture.h"
-#include "render/TextureGenerators.h"
 #include "scene/SceneFile.h"
 
 #include <string_view>
@@ -26,29 +23,12 @@ struct TexturedQuadSample : app::BasicSceneApp {
     static constexpr const char* display_name = "Psynder sample 02 (crate room)";
     static constexpr const char* asset_root = "samples/02_textured_quad";
 
-    render::Texture2D crate_texture{};
-    render::MeshId cube_mesh{};
-    render::MaterialId crate_material_id{};
     scene::SceneLoadRequest scene_load{};
     std::vector<Entity> crates{};
     std::vector<scene::LocalTransform> base_transforms{};
 
-    void started(app::WindowApp& app) {
-        crate_texture = render::texture_generators::wooden_crate();
-
-        auto& scene_ref = scene();
-
-        render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
-        cube_mesh_desc.base_color = crate_texture.view();
-        cube_mesh = app.rendering_system().cached_mesh(cube_mesh_desc);
-
-        render::MaterialDesc crate_material{};
-        crate_material.flags = render::MaterialFlags::RasterVisible;
-        crate_material_id = scene_ref.materials().create(crate_material);
-
+    void started(app::WindowApp&) {
         scene_load
-            .bind_mesh("builtin.unit_cube.crate", cube_mesh)
-            .bind_material("materials.crate.wood", crate_material_id)
             .on_ready([this](const scene::SceneLoadResult& result) {
                 crates.assign(result.mesh_entities.begin(), result.mesh_entities.end());
                 base_transforms.assign(result.base_transforms.begin(),

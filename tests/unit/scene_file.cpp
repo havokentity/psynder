@@ -45,7 +45,7 @@ void append_chunk(std::vector<u8>& bytes,
 }
 
 std::vector<u8> make_scene_blob() {
-    constexpr char strings[] = "\0crateCube\0crate.wood\0";
+    constexpr char strings[] = "\0crateCube\0crate.wood\0textures.procedural.wooden_crate\0";
     const scene::SceneFileEnvironment environment{0xFF182030u, 1u, 1u, {}};
     const math::Vec3 translations[] = {{0.0f, 1.5f, 1.5f}, {-1.3f, 0.0f, -3.0f}};
     const math::Quat rotations[] = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
@@ -57,9 +57,13 @@ std::vector<u8> make_scene_blob() {
     mesh.transform_index = 1u;
     mesh.mesh_name_offset = 1u;
     mesh.material_name_offset = 11u;
+    scene::SceneFileMaterial material_file{};
+    material_file.name_offset = 11u;
+    material_file.base_color_texture_name_offset = 22u;
+    material_file.flags = render::MaterialFlags::RasterVisible;
 
     std::vector<u8> bytes(sizeof(scene::SceneFileHeader) +
-                          7u * sizeof(scene::SceneFileChunk));
+                          8u * sizeof(scene::SceneFileChunk));
     std::vector<scene::SceneFileChunk> chunks;
     append_chunk(bytes,
                  chunks,
@@ -96,6 +100,11 @@ std::vector<u8> make_scene_blob() {
                  scene::SceneFileChunkType::MeshInstances,
                  std::span<const scene::SceneFileMeshInstance>{&mesh, 1u},
                  sizeof(mesh));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::Materials,
+                 std::span<const scene::SceneFileMaterial>{&material_file, 1u},
+                 sizeof(material_file));
 
     scene::SceneFileHeader header{};
     header.file_bytes = static_cast<u32>(bytes.size());
@@ -136,8 +145,11 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(view.translations.size() == 2u);
     REQUIRE(view.cameras.size() == 1u);
     REQUIRE(view.mesh_instances.size() == 1u);
+    REQUIRE(view.materials.size() == 1u);
     REQUIRE(std::string_view{scene::scene_file_string(view, 1u)} == "crateCube");
     REQUIRE(std::string_view{scene::scene_file_string(view, 11u)} == "crate.wood");
+    REQUIRE(std::string_view{scene::scene_file_string(view, 22u)} ==
+            "textures.procedural.wooden_crate");
 
     RegistryReset reset;
     auto& registry = scene::EcsRegistry::Get();

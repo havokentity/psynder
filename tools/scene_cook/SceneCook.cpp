@@ -281,6 +281,7 @@ struct CookScene {
     std::vector<math::Vec3> scales;
     std::vector<scene::SceneFileCamera> cameras;
     std::vector<scene::SceneFileMeshInstance> mesh_instances;
+    std::vector<scene::SceneFileMaterial> materials;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
 };
@@ -364,6 +365,50 @@ struct CookScene {
     return offset;
 }
 
+[[nodiscard]] render::MaterialFlags material_flag_from_name(std::string_view name) noexcept {
+    if (name == "rasterVisible")
+        return render::MaterialFlags::RasterVisible;
+    if (name == "rtVisible")
+        return render::MaterialFlags::RtVisible;
+    if (name == "castsRtShadow")
+        return render::MaterialFlags::CastsRtShadow;
+    if (name == "receivesRtShadow")
+        return render::MaterialFlags::ReceivesRtShadow;
+    if (name == "castsRasterShadow")
+        return render::MaterialFlags::CastsRasterShadow;
+    if (name == "receivesRasterShadow")
+        return render::MaterialFlags::ReceivesRasterShadow;
+    if (name == "editable")
+        return render::MaterialFlags::Editable;
+    if (name == "bakeVisible")
+        return render::MaterialFlags::BakeVisible;
+    if (name == "castsBakedShadow")
+        return render::MaterialFlags::CastsBakedShadow;
+    if (name == "receivesBakedShadow")
+        return render::MaterialFlags::ReceivesBakedShadow;
+    if (name == "emissiveBakes")
+        return render::MaterialFlags::EmissiveBakes;
+    return render::MaterialFlags::None;
+}
+
+[[nodiscard]] render::MaterialFlags read_material_flags(const Json* v,
+                                                        render::MaterialFlags fallback) noexcept {
+    if (!v)
+        return fallback;
+    if (v->kind == Json::Kind::Number)
+        return static_cast<render::MaterialFlags>(static_cast<u32>(v->number));
+    if (v->kind == Json::Kind::String)
+        return material_flag_from_name(v->text);
+    if (!is_array(v))
+        return fallback;
+    render::MaterialFlags out = render::MaterialFlags::None;
+    for (const Json& entry : v->array) {
+        if (entry.kind == Json::Kind::String)
+            out |= material_flag_from_name(entry.text);
+    }
+    return out;
+}
+
 [[nodiscard]] u32 add_transform(CookScene& scene, const Json& object) {
     math::Vec3 translation{0.0f, 0.0f, 0.0f};
     math::Vec3 scale{1.0f, 1.0f, 1.0f};
@@ -430,6 +475,39 @@ struct CookScene {
             camera.tile_h = static_cast<u32>(read_f32(c.field("tileH"), static_cast<f32>(camera.tile_h)));
             camera.active = read_bool(c.field("active"), true) ? 1u : 0u;
             out.cameras.push_back(camera);
+        }
+    }
+
+    if (const Json* materials = root.field("materials")) {
+        if (!is_array(materials)) {
+            error = "materials must be an array";
+            return false;
+        }
+        out.materials.reserve(materials->array.size());
+        for (const Json& m : materials->array) {
+            if (m.kind != Json::Kind::Object) {
+                error = "material entry must be an object";
+                return false;
+            }
+            const Json* name = m.field("name");
+            if (!name || name->kind != Json::Kind::String || name->text.empty()) {
+                error = "material entry requires a non-empty name string";
+                return false;
+            }
+
+            scene::SceneFileMaterial material{};
+            material.name_offset = add_string(out, name->text);
+            if (const Json* base_color_texture = m.field("baseColorTexture");
+                base_color_texture && base_color_texture->kind == Json::Kind::String) {
+                material.base_color_texture_name_offset = add_string(out, base_color_texture->text);
+            }
+            material.albedo_rgba8 = read_color_rgba8(m.field("albedo"), material.albedo_rgba8);
+            material.flags = read_material_flags(m.field("flags"), material.flags);
+            material.alpha_cutoff = read_f32(m.field("alphaCutoff"), material.alpha_cutoff);
+            material.reflectivity = read_f32(m.field("reflectivity"), material.reflectivity);
+            material.roughness = read_f32(m.field("roughness"), material.roughness);
+            material.emissive = read_f32(m.field("emissive"), material.emissive);
+            out.materials.push_back(material);
         }
     }
 
@@ -501,7 +579,7 @@ void append_chunk(std::vector<u8>& bytes,
     std::vector<u8> bytes;
     std::vector<scene::SceneFileChunk> chunks;
     bytes.resize(sizeof(scene::SceneFileHeader));
-    bytes.resize(bytes.size() + 7u * sizeof(scene::SceneFileChunk));
+    bytes.resize(bytes.size() + 8u * sizeof(scene::SceneFileChunk));
 
     append_chunk(bytes,
                  chunks,
@@ -539,6 +617,12 @@ void append_chunk(std::vector<u8>& bytes,
                  std::span<const scene::SceneFileMeshInstance>{scene.mesh_instances.data(),
                                                                scene.mesh_instances.size()},
                  sizeof(scene::SceneFileMeshInstance));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::Materials,
+                 std::span<const scene::SceneFileMaterial>{scene.materials.data(),
+                                                           scene.materials.size()},
+                 sizeof(scene::SceneFileMaterial));
 
     scene::SceneFileHeader header{};
     header.file_bytes = static_cast<u32>(bytes.size());

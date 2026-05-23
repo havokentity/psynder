@@ -14,6 +14,7 @@
 #include "render/Framebuffer.h"
 #include "render/PngWriter.h"
 #include "render/RenderingSystem.h"
+#include "render/TextureGenerators.h"
 #include "scene/SceneEcs.h"
 #include "scene/SceneFile.h"
 #include "ui/imm/Imm.h"
@@ -237,6 +238,8 @@ class WindowApp {
                               scene::SceneLoadRuntimeHooks{
                                   .user = this,
                                   .reserve_render_capacity = &WindowApp::reserve_scene_load_capacity,
+                                  .resolve_mesh = &WindowApp::resolve_scene_load_mesh,
+                                  .resolve_material = &WindowApp::resolve_scene_load_material,
                               });
     }
 
@@ -407,6 +410,7 @@ class WindowApp {
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         rendering_system_ = std::move(other.rendering_system_);
+        scene_textures_ = std::move(other.scene_textures_);
         framebuffer_ = other.framebuffer_;
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
@@ -451,6 +455,12 @@ class WindowApp {
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
     render::RenderingSystem rendering_system_{};
+
+    struct NamedSceneTexture {
+        std::string name;
+        render::Texture2D texture;
+    };
+    std::vector<NamedSceneTexture> scene_textures_{};
 
     void record_engine_frame_ms(f32 frame_ms) noexcept {
         engine_frame_ms_ring_[engine_frame_ms_head_] = frame_ms;
@@ -524,6 +534,79 @@ class WindowApp {
         auto* app = static_cast<WindowApp*>(user);
         if (app)
             app->reserve_scene_capacity(renderables, meshes);
+    }
+
+    static render::MeshId resolve_scene_load_mesh(void* user, std::string_view mesh_name) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return {};
+        if (mesh_name == "builtin.unit_cube" || mesh_name == "builtin.unit_cube.crate")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::UnitCube);
+        if (mesh_name == "builtin.textured_triangle")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::TexturedTriangle);
+        if (mesh_name == "builtin.pyramid")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::Pyramid);
+        if (mesh_name == "builtin.cone")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::Cone);
+        if (mesh_name == "builtin.uv_sphere")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::UvSphere);
+        if (mesh_name == "builtin.geodesic_sphere")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::GeodesicSphere);
+        if (mesh_name == "builtin.sierpinski_tetrahedron") {
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::SierpinskiTetrahedron);
+        }
+        if (mesh_name == "builtin.sierpinski_carpet")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::SierpinskiCarpet);
+        return {};
+    }
+
+    static render::MaterialId resolve_scene_load_material(void* user,
+                                                          scene::Scene& scene,
+                                                          const scene::SceneFileView& scene_file,
+                                                          const scene::SceneFileMaterial& material) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return {};
+
+        render::MaterialDesc desc{};
+        desc.albedo_rgba8 = material.albedo_rgba8;
+        desc.flags = material.flags;
+        desc.alpha_cutoff = material.alpha_cutoff;
+        desc.reflectivity = material.reflectivity;
+        desc.roughness = material.roughness;
+        desc.emissive = material.emissive;
+        desc.winding = material.winding;
+        desc.blend = material.blend;
+        desc.raster_shadow_mode = material.raster_shadow_mode;
+        desc.shadow_alpha = material.shadow_alpha;
+        desc.shadow_opacity = material.shadow_opacity;
+        desc.shadow_softness = material.shadow_softness;
+
+        const std::string_view texture_name =
+            scene::scene_file_string(scene_file, material.base_color_texture_name_offset);
+        desc.base_color = app->scene_texture_view(texture_name);
+        return scene.materials().create(desc);
+    }
+
+    render::TextureView scene_texture_view(std::string_view texture_name) {
+        if (texture_name.empty())
+            return {};
+        for (const NamedSceneTexture& entry : scene_textures_) {
+            if (entry.name == texture_name)
+                return entry.texture.view();
+        }
+
+        render::Texture2D texture{};
+        if (texture_name == "textures.procedural.wooden_crate") {
+            texture = render::texture_generators::wooden_crate();
+        } else if (texture_name == "textures.procedural.checker") {
+            texture = render::texture_generators::checker();
+        } else {
+            texture = render::fallback_checker_texture();
+            PSY_LOG_WARN("scene: unknown texture '{}'; using fallback checker", texture_name);
+        }
+        scene_textures_.push_back(NamedSceneTexture{std::string{texture_name}, std::move(texture)});
+        return scene_textures_.back().texture.view();
     }
 
     [[nodiscard]] f32 render_target_aspect() const noexcept {

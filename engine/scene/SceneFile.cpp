@@ -208,7 +208,11 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
         !load_span(SceneFileChunkType::MeshInstances,
                    sizeof(SceneFileMeshInstance),
                    out.mesh_instances,
-                   "mesh_instances")) {
+                   "mesh_instances") ||
+        !load_span(SceneFileChunkType::Materials,
+                   sizeof(SceneFileMaterial),
+                   out.materials,
+                   "materials")) {
         return false;
     }
 
@@ -480,6 +484,7 @@ bool SceneLoadRequest::update(Scene& scene, SceneLoadRuntimeHooks hooks) {
 
     mesh_entities_.assign(view.mesh_instances.size(), {});
     rebuild_binding_views();
+    bind_scene_assets(scene, view, hooks);
     SceneFileInstantiateResult instantiate{};
     {
         const ScopedImmediateStructural structural_scope{scene};
@@ -540,6 +545,60 @@ void SceneLoadRequest::rebuild_binding_views() {
             .material_name = binding.material_name,
             .material = binding.material,
         });
+    }
+}
+
+void SceneLoadRequest::bind_scene_assets(Scene& scene,
+                                         const SceneFileView& view,
+                                         SceneLoadRuntimeHooks hooks) {
+    if (hooks.resolve_material) {
+        scene.materials().reserve(static_cast<u32>(view.materials.size()));
+        for (const SceneFileMaterial& material_file : view.materials) {
+            const std::string_view material_name{
+                scene_file_string(view, material_file.name_offset)};
+            if (material_name.empty())
+                continue;
+            const auto material_bound =
+                std::find_if(material_binding_views_.begin(),
+                             material_binding_views_.end(),
+                             [&](const SceneMaterialBinding& binding) {
+                                 return binding.material_name == material_name;
+                             });
+            if (material_bound != material_binding_views_.end())
+                continue;
+            const ::psynder::render::MaterialId material =
+                hooks.resolve_material(hooks.user, scene, view, material_file);
+            if (material.valid()) {
+                material_binding_views_.push_back(SceneMaterialBinding{
+                    .material_name = material_name,
+                    .material = material,
+                });
+            }
+        }
+    }
+
+    if (!hooks.resolve_mesh)
+        return;
+
+    for (const SceneFileMeshInstance& mesh_file : view.mesh_instances) {
+        const std::string_view mesh_name{scene_file_string(view, mesh_file.mesh_name_offset)};
+        if (mesh_name.empty())
+            continue;
+        const auto mesh_bound = std::find_if(binding_views_.begin(),
+                                             binding_views_.end(),
+                                             [&](const SceneMeshBinding& binding) {
+                                                 return binding.mesh_name == mesh_name;
+                                             });
+        if (mesh_bound != binding_views_.end())
+            continue;
+        const ::psynder::render::MeshId mesh = hooks.resolve_mesh(hooks.user, mesh_name);
+        if (mesh.valid()) {
+            binding_views_.push_back(SceneMeshBinding{
+                .mesh_name = mesh_name,
+                .mesh = mesh,
+                .material = {},
+            });
+        }
     }
 }
 

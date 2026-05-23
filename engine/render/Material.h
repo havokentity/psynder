@@ -4,6 +4,7 @@
 #pragma once
 
 #include "core/Types.h"
+#include "render/Texture.h"
 
 #include <algorithm>
 #include <span>
@@ -108,6 +109,8 @@ inline constexpr MaterialFlags Material_BakedLightingMask =
 struct MaterialDesc {
     u32 albedo_rgba8 = 0xFFFFFFFFu;
     u32 base_color_texture = 0u;
+    TextureView base_color{};
+    const TextureAsset* base_color_asset = nullptr;
     f32 alpha_cutoff = 0.5f;
     f32 reflectivity = 0.0f;
     f32 roughness = 1.0f;
@@ -125,6 +128,8 @@ struct MaterialDesc {
 struct MaterialView {
     std::span<const u32> albedo_rgba8;
     std::span<const u32> base_color_texture;
+    std::span<const TextureView> base_color;
+    std::span<const TextureAsset* const> base_color_asset;
     std::span<const f32> alpha_cutoff;
     std::span<const f32> reflectivity;
     std::span<const f32> roughness;
@@ -150,6 +155,8 @@ class MaterialLibrary {
         alive_.reserve(count);
         albedo_rgba8_.reserve(count);
         base_color_texture_.reserve(count);
+        base_color_.reserve(count);
+        base_color_asset_.reserve(count);
         alpha_cutoff_.reserve(count);
         reflectivity_.reserve(count);
         roughness_.reserve(count);
@@ -174,6 +181,8 @@ class MaterialLibrary {
         free_.clear();
         albedo_rgba8_.clear();
         base_color_texture_.clear();
+        base_color_.clear();
+        base_color_asset_.clear();
         alpha_cutoff_.clear();
         reflectivity_.clear();
         roughness_.clear();
@@ -203,6 +212,8 @@ class MaterialLibrary {
             alive_.push_back(0u);
             albedo_rgba8_.push_back(0u);
             base_color_texture_.push_back(0u);
+            base_color_.push_back({});
+            base_color_asset_.push_back(nullptr);
             alpha_cutoff_.push_back(0.0f);
             reflectivity_.push_back(0.0f);
             roughness_.push_back(0.0f);
@@ -260,6 +271,8 @@ class MaterialLibrary {
         MaterialDesc out{};
         out.albedo_rgba8 = albedo_rgba8_[i];
         out.base_color_texture = base_color_texture_[i];
+        out.base_color = base_color_[i];
+        out.base_color_asset = base_color_asset_[i];
         out.alpha_cutoff = alpha_cutoff_[i];
         out.reflectivity = reflectivity_[i];
         out.roughness = roughness_[i];
@@ -282,6 +295,8 @@ class MaterialLibrary {
     [[nodiscard]] MaterialView view() const noexcept {
         return {albedo_rgba8_,
                 base_color_texture_,
+                base_color_,
+                base_color_asset_,
                 alpha_cutoff_,
                 reflectivity_,
                 roughness_,
@@ -328,6 +343,8 @@ class MaterialLibrary {
     void write_slot(u32 index, const MaterialDesc& desc) noexcept {
         albedo_rgba8_[index] = desc.albedo_rgba8;
         base_color_texture_[index] = desc.base_color_texture;
+        base_color_[index] = desc.base_color;
+        base_color_asset_[index] = desc.base_color_asset;
         alpha_cutoff_[index] = std::clamp(desc.alpha_cutoff, 0.0f, 1.0f);
         reflectivity_[index] = std::clamp(desc.reflectivity, 0.0f, 1.0f);
         roughness_[index] = std::clamp(desc.roughness, 0.0f, 1.0f);
@@ -351,6 +368,8 @@ class MaterialLibrary {
     std::vector<u32> free_;
     std::vector<u32> albedo_rgba8_;
     std::vector<u32> base_color_texture_;
+    std::vector<TextureView> base_color_;
+    std::vector<const TextureAsset*> base_color_asset_;
     std::vector<f32> alpha_cutoff_;
     std::vector<f32> reflectivity_;
     std::vector<f32> roughness_;
