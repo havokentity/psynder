@@ -680,6 +680,8 @@ class Scene {
         std::span<const LocalTransform> authored_{};
     };
 
+    using CachedSceneGroup = SceneGroupQuery;
+
     explicit Scene(EcsRegistry& registry = EcsRegistry::Get()) noexcept
         : registry_(&registry)
         , environment_(runtime_.environment) {
@@ -940,6 +942,14 @@ class Scene {
         };
     }
 
+    [[nodiscard]] CachedSceneGroup cache_group(std::string_view group_name) {
+        return query_group(group_name);
+    }
+
+    [[nodiscard]] CachedSceneGroup cache_group(SceneGroupId group) {
+        return query_group(group);
+    }
+
     bool attach_camera(Entity entity, const CameraComponent& camera = {}) {
         if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
             return false;
@@ -1111,5 +1121,7 @@ class Scene {
     u32 last_node_capacity_ = 0u;
     std::vector<SceneGroupStorage> groups_{};
 };
+
+using CachedSceneGroup = Scene::CachedSceneGroup;
 
 }  // namespace psynder::scene

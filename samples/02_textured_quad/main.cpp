@@ -24,10 +24,14 @@ struct TexturedQuadSample : app::BasicSceneApp {
 
     scene::SceneLoadRequest scene_load{};
     scene::SceneGroupId crates_group{};
+    scene::CachedSceneGroup crates{};
 
     void started(app::WindowApp&) {
         crates_group = scene().group_id("crates");
         scene_load
+            .on_ready([this](const scene::SceneLoadResult&) {
+                crates = scene().cache_group(crates_group);
+            })
             .on_error([](std::string_view error) { PSY_LOG_ERROR("sample_02: {}", error); });
         scene_load.load_async("assets/crate_room.psyscene");
     }
@@ -39,7 +43,6 @@ struct TexturedQuadSample : app::BasicSceneApp {
         const f32 t = static_cast<f32>(ctx.seconds);
 
         usize i = 0;
-        auto crates = cr.scene().query_group(crates_group);
         for (auto [entity, transform, authored] : crates.transforms()) {
             (void)entity;
             const math::Quat spin = math::quat_from_axis_angle(
