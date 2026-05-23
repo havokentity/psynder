@@ -89,6 +89,7 @@ class EcsRegistry {
     // mode on at frame start; tests and tools that want immediate
     // mutation leave it off. Structural changes queue when on.
     void set_structural_deferred(bool on) noexcept;
+    [[nodiscard]] bool structural_deferred() const noexcept;
     void apply_structural_changes();
 };
 

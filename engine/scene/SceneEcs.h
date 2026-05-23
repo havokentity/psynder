@@ -584,6 +584,9 @@ class Scene {
     }
 
     void set_structural_deferred(bool on) noexcept { registry_->set_structural_deferred(on); }
+    [[nodiscard]] bool structural_deferred() const noexcept {
+        return registry_->structural_deferred();
+    }
     void apply_structural_changes() { registry_->apply_structural_changes(); }
 
     void prewarm_capacity(const ScenePrewarmConfig& config) {

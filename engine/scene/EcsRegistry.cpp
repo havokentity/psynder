@@ -51,6 +51,10 @@ void EcsRegistry::set_structural_deferred(bool on) noexcept {
     detail::EcsRegistryImpl::Get().set_deferred_mode(on);
 }
 
+bool EcsRegistry::structural_deferred() const noexcept {
+    return detail::EcsRegistryImpl::Get().deferred_mode();
+}
+
 void EcsRegistry::apply_structural_changes() {
     detail::EcsRegistryImpl::Get().apply_structural_changes();
 }

@@ -37,7 +37,6 @@ struct TexturedQuadSample : app::BasicSceneApp {
         crate_texture = render::texture_generators::wooden_crate();
 
         auto& scene_ref = scene();
-        scene_ref.set_structural_deferred(false);
 
         render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
         cube_mesh_desc.base_color = crate_texture.view();

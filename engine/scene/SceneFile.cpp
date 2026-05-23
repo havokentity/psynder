@@ -28,6 +28,22 @@ struct LoadPayload {
 
 namespace {
 
+struct ScopedImmediateStructural {
+    explicit ScopedImmediateStructural(Scene& scene) noexcept
+        : scene(&scene)
+        , restore_deferred(scene.structural_deferred()) {
+        scene.set_structural_deferred(false);
+    }
+
+    ~ScopedImmediateStructural() {
+        if (scene)
+            scene->set_structural_deferred(restore_deferred);
+    }
+
+    Scene* scene = nullptr;
+    bool restore_deferred = false;
+};
+
 template <class T>
 [[nodiscard]] const T* as_array(std::span<const u8> bytes,
                                 const SceneFileChunk& chunk,
@@ -417,8 +433,11 @@ bool SceneLoadRequest::update(Scene& scene, SceneLoadRuntimeHooks hooks) {
 
     mesh_entities_.assign(view.mesh_instances.size(), {});
     rebuild_binding_views();
-    const SceneFileInstantiateResult instantiate =
-        instantiate_scene_file(scene, view, binding_views_, mesh_entities_);
+    SceneFileInstantiateResult instantiate{};
+    {
+        const ScopedImmediateStructural structural_scope{scene};
+        instantiate = instantiate_scene_file(scene, view, binding_views_, mesh_entities_);
+    }
     if (instantiate.missing_mesh_bindings != 0u) {
         PSY_LOG_WARN("{}: {} cooked mesh binding(s) were missing",
                      virtual_path_.empty() ? "psyscene" : virtual_path_,
