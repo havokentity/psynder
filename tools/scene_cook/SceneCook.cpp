@@ -3,12 +3,13 @@
 
 #include "SceneCook.h"
 
+#include "BehaviorProgram.h"
+
 #include "core/Types.h"
 #include "math/Math.h"
 #include "scene/SceneFile.h"
 
 #include <cctype>
-#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +25,11 @@
 using namespace psynder;
 
 namespace {
+
+using tools::BehaviorProgram;
+using tools::BehaviorScalarExpr;
+using tools::BehaviorScalarSource;
+using tools::BehaviorSpinOp;
 
 struct Json {
     enum class Kind : u8 {
@@ -444,11 +450,6 @@ struct CookScene {
     return index;
 }
 
-struct BehaviorInput {
-    f32 base = 0.0f;
-    f32 step = 0.0f;
-};
-
 [[nodiscard]] std::string_view trim_view(std::string_view s) noexcept {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())) != 0)
         s.remove_prefix(1u);
@@ -545,53 +546,51 @@ struct BehaviorInput {
     return std::string{source.substr(open + 1u, close - open - 1u)};
 }
 
-[[nodiscard]] BehaviorInput read_behavior_input(const Json* v,
-                                                BehaviorInput fallback = {}) noexcept {
+[[nodiscard]] BehaviorScalarExpr read_behavior_scalar(
+    const Json* v,
+    BehaviorScalarExpr fallback = {}) noexcept {
     if (!v)
         return fallback;
     if (v->kind == Json::Kind::Number)
-        return BehaviorInput{static_cast<f32>(v->number), 0.0f};
+        return BehaviorScalarExpr::constant(static_cast<f32>(v->number));
     if (v->kind != Json::Kind::Object)
         return fallback;
     const Json* type = v->field("type");
     if (type && type->kind == Json::Kind::String && type->text == "linearIndex") {
-        return BehaviorInput{
+        return BehaviorScalarExpr::linear_index(
             read_f32(v->field("base"), fallback.base),
-            read_f32(v->field("step"), fallback.step),
-        };
+            read_f32(v->field("step"), fallback.step));
     }
-    return BehaviorInput{read_f32(v->field("value"), fallback.base), 0.0f};
+    return BehaviorScalarExpr::constant(read_f32(v->field("value"), fallback.base));
 }
 
-[[nodiscard]] bool append_spin_behavior(CookScene& out,
-                                        std::string_view name,
-                                        std::string_view target_group,
-                                        const math::Vec3& axis,
-                                        BehaviorInput speed,
-                                        BehaviorInput phase,
-                                        bool active,
-                                        std::string& error) {
+[[nodiscard]] bool add_spin_op(BehaviorProgram& program,
+                               std::string_view name,
+                               std::string_view target_group,
+                               const math::Vec3& axis,
+                               BehaviorScalarExpr speed,
+                               BehaviorScalarExpr phase,
+                               bool active,
+                               std::string& error) {
     if (target_group.empty()) {
         error = "spin behavior requires a non-empty target group";
         return false;
     }
 
-    scene::SceneFileBehaviorSpinOp spin{};
-    if (!name.empty())
-        spin.name_offset = add_string(out, name);
-    spin.target_group_name_offset = add_string(out, target_group);
+    BehaviorSpinOp spin{};
+    spin.name.assign(name.data(), name.size());
+    spin.target_group.assign(target_group.data(), target_group.size());
     spin.axis = axis;
-    spin.speed_base = speed.base;
-    spin.speed_step = speed.step;
-    spin.phase_base = phase.base;
-    spin.phase_step = phase.step;
-    spin.flags = active ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
-                        : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
-    out.behavior_spin_ops.push_back(spin);
+    spin.speed = speed;
+    spin.phase = phase;
+    spin.active = active;
+    program.spin_ops.push_back(std::move(spin));
     return true;
 }
 
-[[nodiscard]] bool cook_spin_behavior(const Json& behavior, CookScene& out, std::string& error) {
+[[nodiscard]] bool parse_legacy_spin_behavior(const Json& behavior,
+                                              BehaviorProgram& program,
+                                              std::string& error) {
     const Json* target_group = behavior.field("targetGroup");
     if (!target_group || target_group->kind != Json::Kind::String || target_group->text.empty()) {
         error = "spin behavior requires a non-empty targetGroup string";
@@ -603,26 +602,24 @@ struct BehaviorInput {
         name_text = name->text;
     math::Vec3 axis{0.0f, 1.0f, 0.0f};
     (void)read_vec3(behavior.field("axis"), axis);
-    const BehaviorInput speed = read_behavior_input(behavior.field("speed"));
-    const BehaviorInput phase = read_behavior_input(behavior.field("phase"));
-    return append_spin_behavior(out,
-                                name_text,
-                                target_group->text,
-                                axis,
-                                speed,
-                                phase,
-                                read_bool(behavior.field("active"), true),
-                                error);
+    return add_spin_op(program,
+                       name_text,
+                       target_group->text,
+                       axis,
+                       read_behavior_scalar(behavior.field("speed")),
+                       read_behavior_scalar(behavior.field("phase")),
+                       read_bool(behavior.field("active"), true),
+                       error);
 }
 
 [[nodiscard]] bool cook_behavior_array(const Json& behaviors,
-                                       CookScene& out,
+                                       BehaviorProgram& program,
                                        std::string& error) {
     if (!is_array(&behaviors)) {
         error = "entity behaviors must be an array";
         return false;
     }
-    out.behavior_spin_ops.reserve(out.behavior_spin_ops.size() + behaviors.array.size());
+    program.spin_ops.reserve(program.spin_ops.size() + behaviors.array.size());
     for (const Json& behavior : behaviors.array) {
         if (behavior.kind != Json::Kind::Object) {
             error = "entity behavior entry must be an object";
@@ -634,7 +631,7 @@ struct BehaviorInput {
             return false;
         }
         if (type->text == "spin") {
-            if (!cook_spin_behavior(behavior, out, error))
+            if (!parse_legacy_spin_behavior(behavior, program, error))
                 return false;
         } else {
             error = "unsupported entity behavior type: " + type->text;
@@ -647,7 +644,7 @@ struct BehaviorInput {
 [[nodiscard]] bool cook_psygraph_node(const Json& node,
                                       std::string_view graph_name,
                                       std::string_view graph_target_group,
-                                      CookScene& out,
+                                      BehaviorProgram& program,
                                       std::string& error) {
     if (node.kind != Json::Kind::Object) {
         error = "PsyGraph node must be an object";
@@ -671,17 +668,19 @@ struct BehaviorInput {
     }
     math::Vec3 axis{0.0f, 1.0f, 0.0f};
     (void)read_vec3(node.field("axis"), axis);
-    return append_spin_behavior(out,
-                                name,
-                                target_group,
-                                axis,
-                                read_behavior_input(node.field("speed")),
-                                read_behavior_input(node.field("phase")),
-                                read_bool(node.field("active"), true),
-                                error);
+    return add_spin_op(program,
+                       name,
+                       target_group,
+                       axis,
+                       read_behavior_scalar(node.field("speed")),
+                       read_behavior_scalar(node.field("phase")),
+                       read_bool(node.field("active"), true),
+                       error);
 }
 
-[[nodiscard]] bool cook_psygraph_graph(const Json& graph, CookScene& out, std::string& error) {
+[[nodiscard]] bool cook_psygraph_graph(const Json& graph,
+                                       BehaviorProgram& program,
+                                       std::string& error) {
     if (graph.kind != Json::Kind::Object) {
         error = "PsyGraph graph must be an object";
         return false;
@@ -698,14 +697,14 @@ struct BehaviorInput {
         return false;
     }
     for (const Json& node : nodes->array) {
-        if (!cook_psygraph_node(node, graph_name, target_group, out, error))
+        if (!cook_psygraph_node(node, graph_name, target_group, program, error))
             return false;
     }
     return true;
 }
 
 [[nodiscard]] bool cook_psygraph_source(const std::filesystem::path& path,
-                                        CookScene& out,
+                                        BehaviorProgram& program,
                                         std::string& error) {
     std::string source;
     if (!read_text_file(path, source)) {
@@ -724,16 +723,16 @@ struct BehaviorInput {
             return false;
         }
         for (const Json& graph : graphs->array) {
-            if (!cook_psygraph_graph(graph, out, error))
+            if (!cook_psygraph_graph(graph, program, error))
                 return false;
         }
         return true;
     }
-    return cook_psygraph_graph(root, out, error);
+    return cook_psygraph_graph(root, program, error);
 }
 
 [[nodiscard]] bool cook_psyscript_source(const std::filesystem::path& path,
-                                         CookScene& out,
+                                         BehaviorProgram& program,
                                          std::string& error) {
     std::string source;
     if (!read_text_file(path, source)) {
@@ -751,22 +750,30 @@ struct BehaviorInput {
     const usize axis_marker = source.find("axis");
     if (axis_marker != std::string::npos)
         (void)parse_vec3_literal(std::string_view{source}.substr(axis_marker), axis);
-    BehaviorInput speed{};
-    if (!parse_pair_call(source, "linear_index", speed.base, speed.step))
-        (void)parse_pair_call(source, "linearIndex", speed.base, speed.step);
-    BehaviorInput phase{};
-    (void)parse_assignment_number(source, "phase", phase.base);
-    return append_spin_behavior(out, name, target_group, axis, speed, phase, true, error);
+    f32 speed_base = 0.0f;
+    f32 speed_step = 0.0f;
+    if (!parse_pair_call(source, "linear_index", speed_base, speed_step))
+        (void)parse_pair_call(source, "linearIndex", speed_base, speed_step);
+    f32 phase_value = 0.0f;
+    (void)parse_assignment_number(source, "phase", phase_value);
+    return add_spin_op(program,
+                       name,
+                       target_group,
+                       axis,
+                       BehaviorScalarExpr::linear_index(speed_base, speed_step),
+                       BehaviorScalarExpr::constant(phase_value),
+                       true,
+                       error);
 }
 
 [[nodiscard]] bool cook_behavior_source(const std::filesystem::path& path,
-                                        CookScene& out,
+                                        BehaviorProgram& program,
                                         std::string& error) {
     const std::string filename = path.filename().string();
     if (filename.ends_with(".psyscript"))
-        return cook_psyscript_source(path, out, error);
+        return cook_psyscript_source(path, program, error);
     if (filename.ends_with(".psygraph.json"))
-        return cook_psygraph_source(path, out, error);
+        return cook_psygraph_source(path, program, error);
 
     std::string source;
     if (!read_text_file(path, source)) {
@@ -784,7 +791,35 @@ struct BehaviorInput {
         error = "behavior source requires a behaviors array";
         return false;
     }
-    return cook_behavior_array(*behaviors, out, error);
+    return cook_behavior_array(*behaviors, program, error);
+}
+
+[[nodiscard]] bool lower_behavior_program(const BehaviorProgram& program,
+                                          CookScene& out,
+                                          std::string& error) {
+    out.behavior_spin_ops.reserve(out.behavior_spin_ops.size() + program.spin_ops.size());
+    for (const BehaviorSpinOp& op : program.spin_ops) {
+        if (op.target_group.empty()) {
+            error = "behavior program contains a spin op without a target group";
+            return false;
+        }
+
+        scene::SceneFileBehaviorSpinOp spin{};
+        if (!op.name.empty())
+            spin.name_offset = add_string(out, op.name);
+        spin.target_group_name_offset = add_string(out, op.target_group);
+        spin.axis = op.axis;
+        spin.speed_base = op.speed.base;
+        spin.speed_step =
+            op.speed.source == BehaviorScalarSource::LinearIndex ? op.speed.step : 0.0f;
+        spin.phase_base = op.phase.base;
+        spin.phase_step =
+            op.phase.source == BehaviorScalarSource::LinearIndex ? op.phase.step : 0.0f;
+        spin.flags = op.active ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
+                               : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
+        out.behavior_spin_ops.push_back(spin);
+    }
+    return true;
 }
 
 [[nodiscard]] bool cook_json(const Json& root,
@@ -897,8 +932,9 @@ struct BehaviorInput {
         }
     }
 
+    BehaviorProgram behavior_program{};
     if (const Json* inline_behaviors = root.field("entityBehaviors")) {
-        if (!cook_behavior_array(*inline_behaviors, out, error))
+        if (!cook_behavior_array(*inline_behaviors, behavior_program, error))
             return false;
     }
     if (const Json* behavior_sources = root.field("entityBehaviorSources")) {
@@ -911,10 +947,12 @@ struct BehaviorInput {
                 error = "entityBehaviorSources entries must be non-empty strings";
                 return false;
             }
-            if (!cook_behavior_source(source_dir / source.text, out, error))
+            if (!cook_behavior_source(source_dir / source.text, behavior_program, error))
                 return false;
         }
     }
+    if (!lower_behavior_program(behavior_program, out, error))
+        return false;
     return true;
 }
 
