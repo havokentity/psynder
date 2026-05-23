@@ -19,6 +19,18 @@ type DensityName = 'comfortable' | 'compact';
 type SkinName = 'modern' | 'tactical';
 type LayoutName = 'split' | 'stack' | 'quad' | 'single';
 type DockSlot = 'primary' | 'secondary' | 'tertiary' | 'quaternary';
+type DockAxis = 'row' | 'column';
+type DockDropZone = 'center' | 'left' | 'right' | 'top' | 'bottom';
+type DockPath = readonly number[];
+type DockLeaf = { kind: 'leaf'; panel: PanelName };
+type DockSplit = {
+    kind: 'split';
+    axis: DockAxis;
+    ratio: number;
+    first: DockNode;
+    second: DockNode;
+};
+type DockNode = DockLeaf | DockSplit;
 
 const PANEL_NAMES: readonly PanelName[] = [
     'inspector', 'console', 'profiler', 'assets', 'props', 'psygraph',
@@ -84,6 +96,127 @@ function safe_split(value: string | null): number {
     return Number.isFinite(parsed) ? Math.min(76, Math.max(24, parsed)) : 50;
 }
 
+function safe_ratio(value: number): number {
+    return Number.isFinite(value) ? Math.min(82, Math.max(18, value)) : 50;
+}
+
+function dock_leaf(panel: PanelName): DockLeaf {
+    return { kind: 'leaf', panel };
+}
+
+function is_dock_node(value: unknown): value is DockNode {
+    if (!value || typeof value !== 'object') return false;
+    const node = value as Record<string, unknown>;
+    if (node.kind === 'leaf') {
+        return typeof node.panel === 'string' &&
+            (PANEL_NAMES as readonly string[]).includes(node.panel);
+    }
+    if (node.kind === 'split') {
+        return (node.axis === 'row' || node.axis === 'column') &&
+            typeof node.ratio === 'number' &&
+            is_dock_node(node.first) &&
+            is_dock_node(node.second);
+    }
+    return false;
+}
+
+function normalize_dock_node(node: DockNode): DockNode {
+    if (node.kind === 'leaf') return dock_leaf(node.panel);
+    return {
+        kind: 'split',
+        axis: node.axis,
+        ratio: safe_ratio(node.ratio),
+        first: normalize_dock_node(node.first),
+        second: normalize_dock_node(node.second),
+    };
+}
+
+function load_dock_tree(fallback: DockNode): DockNode {
+    const stored = window.localStorage.getItem('psy_dock_tree_v1');
+    if (!stored) return fallback;
+    try {
+        const parsed = JSON.parse(stored) as unknown;
+        return is_dock_node(parsed) ? normalize_dock_node(parsed) : fallback;
+    } catch {
+        return fallback;
+    }
+}
+
+function preset_tree(
+    layout: LayoutName,
+    docks: Record<DockSlot, PanelName>,
+    split: number,
+): DockNode {
+    if (layout === 'single') return dock_leaf(docks.primary);
+    if (layout === 'stack') {
+        return {
+            kind: 'split',
+            axis: 'column',
+            ratio: safe_ratio(split),
+            first: dock_leaf(docks.primary),
+            second: dock_leaf(docks.secondary),
+        };
+    }
+    if (layout === 'quad') {
+        return {
+            kind: 'split',
+            axis: 'column',
+            ratio: 50,
+            first: {
+                kind: 'split',
+                axis: 'row',
+                ratio: 50,
+                first: dock_leaf(docks.primary),
+                second: dock_leaf(docks.secondary),
+            },
+            second: {
+                kind: 'split',
+                axis: 'row',
+                ratio: 50,
+                first: dock_leaf(docks.tertiary),
+                second: dock_leaf(docks.quaternary),
+            },
+        };
+    }
+    return {
+        kind: 'split',
+        axis: 'row',
+        ratio: safe_ratio(split),
+        first: dock_leaf(docks.primary),
+        second: dock_leaf(docks.secondary),
+    };
+}
+
+function update_dock_at(
+    node: DockNode,
+    path: DockPath,
+    fn: (target: DockNode) => DockNode,
+): DockNode {
+    if (path.length === 0) return fn(node);
+    if (node.kind !== 'split') return node;
+    const [head, ...rest] = path;
+    return {
+        ...node,
+        first: head === 0 ? update_dock_at(node.first, rest, fn) : node.first,
+        second: head === 1 ? update_dock_at(node.second, rest, fn) : node.second,
+    };
+}
+
+function split_dock_leaf(target: DockNode, panel: PanelName, zone: DockDropZone): DockNode {
+    if (zone === 'center' || target.kind !== 'leaf') return dock_leaf(panel);
+    const axis: DockAxis = zone === 'left' || zone === 'right' ? 'row' : 'column';
+    const incoming = dock_leaf(panel);
+    const existing = dock_leaf(target.panel);
+    const incoming_first = zone === 'left' || zone === 'top';
+    return {
+        kind: 'split',
+        axis,
+        ratio: 50,
+        first: incoming_first ? incoming : existing,
+        second: incoming_first ? existing : incoming,
+    };
+}
+
 export function App() {
     const [route, set_route] = React.useState<RouteName>(pick_route);
     const [settings_open, set_settings_open] = React.useState(false);
@@ -99,7 +232,7 @@ export function App() {
     const [layout, set_layout] = React.useState<LayoutName>(() => (
         safe_layout(window.localStorage.getItem('psy_dock_layout'))
     ));
-    const [docks, set_docks] = React.useState<Record<DockSlot, PanelName>>(() => ({
+    const [docks] = React.useState<Record<DockSlot, PanelName>>(() => ({
         primary: safe_panel(window.localStorage.getItem('psy_dock_primary'), DEFAULT_DOCKS.primary),
         secondary: safe_panel(window.localStorage.getItem('psy_dock_secondary'), DEFAULT_DOCKS.secondary),
         tertiary: safe_panel(window.localStorage.getItem('psy_dock_tertiary'), DEFAULT_DOCKS.tertiary),
@@ -107,6 +240,9 @@ export function App() {
     }));
     const [dock_split, set_dock_split] = React.useState(() => (
         safe_split(window.localStorage.getItem('psy_dock_split'))
+    ));
+    const [dock_tree, set_dock_tree] = React.useState<DockNode>(() => (
+        load_dock_tree(preset_tree(layout, docks, dock_split))
     ));
 
     // In dev mode there's only a single bundle; let the user flip between
@@ -147,6 +283,15 @@ export function App() {
     React.useEffect(() => {
         window.localStorage.setItem('psy_dock_split', String(dock_split));
     }, [dock_split]);
+
+    React.useEffect(() => {
+        window.localStorage.setItem('psy_dock_tree_v1', JSON.stringify(dock_tree));
+    }, [dock_tree]);
+
+    const apply_layout_preset = (next_layout: LayoutName) => {
+        set_layout(next_layout);
+        set_dock_tree(preset_tree(next_layout, docks, dock_split));
+    };
 
     const current = route === 'workbench' ? WORKBENCH_META : PANEL_META[route];
 
@@ -237,7 +382,7 @@ export function App() {
                             <Segmented<LayoutName>
                                 values={LAYOUT_NAMES}
                                 value={layout}
-                                on_change={set_layout}
+                                on_change={apply_layout_preset}
                             />
                         </SettingRow>
                     </div>
@@ -278,11 +423,11 @@ export function App() {
                     {route === 'workbench' ? (
                         <DockWorkspace
                             layout={layout}
-                            docks={docks}
+                            tree={dock_tree}
                             split={dock_split}
-                            on_layout={set_layout}
+                            on_layout={apply_layout_preset}
+                            on_tree={set_dock_tree}
                             on_split={set_dock_split}
-                            on_dock={(slot, panel) => set_docks((prev) => ({ ...prev, [slot]: panel }))}
                         />
                     ) : (
                         <PanelView name={route} />
@@ -295,24 +440,29 @@ export function App() {
 
 function DockWorkspace({
     layout,
-    docks,
+    tree,
     split,
     on_layout,
+    on_tree,
     on_split,
-    on_dock,
 }: {
     layout: LayoutName;
-    docks: Record<DockSlot, PanelName>;
+    tree: DockNode;
     split: number;
     on_layout(layout: LayoutName): void;
+    on_tree(tree: DockNode): void;
     on_split(split: number): void;
-    on_dock(slot: DockSlot, panel: PanelName): void;
 }) {
-    const slots: DockSlot[] = layout === 'quad'
-        ? ['primary', 'secondary', 'tertiary', 'quaternary']
-        : layout === 'single'
-            ? ['primary']
-            : ['primary', 'secondary'];
+    const replace_at = React.useCallback((path: DockPath, panel: PanelName, zone: DockDropZone) => {
+        on_tree(update_dock_at(tree, path, (target) => split_dock_leaf(target, panel, zone)));
+    }, [on_tree, tree]);
+
+    const resize_at = React.useCallback((path: DockPath, ratio: number) => {
+        on_tree(update_dock_at(tree, path, (target) => (
+            target.kind === 'split' ? { ...target, ratio: safe_ratio(ratio) } : target
+        )));
+        if (path.length === 0) on_split(ratio);
+    }, [on_split, on_tree, tree]);
 
     return (
         <section className="psy-dock-shell" data-layout={layout}>
@@ -328,35 +478,81 @@ function DockWorkspace({
                 />
             </div>
             <div
-                className="psy-dock-grid"
-                data-layout={layout}
+                className="psy-dock-tree"
                 style={{ '--psy-dock-split': `${split}%` } as React.CSSProperties}
             >
-                {slots.map((slot, index) => (
-                    <React.Fragment key={slot}>
-                        <DockSlotView
-                            slot={slot}
-                            panel={docks[slot]}
-                            on_panel={(panel) => on_dock(slot, panel)}
-                        />
-                        {index === 0 && (layout === 'split' || layout === 'stack') && (
-                            <DockDivider layout={layout} split={split} on_split={on_split} />
-                        )}
-                    </React.Fragment>
-                ))}
+                <DockNodeView
+                    node={tree}
+                    path={[]}
+                    label="root"
+                    on_drop_panel={replace_at}
+                    on_resize={resize_at}
+                />
             </div>
         </section>
     );
 }
 
-function DockDivider({
-    layout,
-    split,
-    on_split,
+function DockNodeView({
+    node,
+    path,
+    label,
+    on_drop_panel,
+    on_resize,
 }: {
-    layout: Extract<LayoutName, 'split' | 'stack'>;
-    split: number;
-    on_split(split: number): void;
+    node: DockNode;
+    path: DockPath;
+    label: string;
+    on_drop_panel(path: DockPath, panel: PanelName, zone: DockDropZone): void;
+    on_resize(path: DockPath, ratio: number): void;
+}) {
+    if (node.kind === 'leaf') {
+        return (
+            <DockSlotView
+                slot={label}
+                panel={node.panel}
+                on_drop_panel={(panel, zone) => on_drop_panel(path, panel, zone)}
+            />
+        );
+    }
+
+    return (
+        <div
+            className="psy-dock-node is-split"
+            data-axis={node.axis}
+            style={{ '--psy-dock-node-ratio': `${node.ratio}%` } as React.CSSProperties}
+        >
+            <DockNodeView
+                node={node.first}
+                path={[...path, 0]}
+                label={`${label}.a`}
+                on_drop_panel={on_drop_panel}
+                on_resize={on_resize}
+            />
+            <DockDivider
+                axis={node.axis}
+                ratio={node.ratio}
+                on_ratio={(ratio) => on_resize(path, ratio)}
+            />
+            <DockNodeView
+                node={node.second}
+                path={[...path, 1]}
+                label={`${label}.b`}
+                on_drop_panel={on_drop_panel}
+                on_resize={on_resize}
+            />
+        </div>
+    );
+}
+
+function DockDivider({
+    axis,
+    ratio,
+    on_ratio,
+}: {
+    axis: DockAxis;
+    ratio: number;
+    on_ratio(ratio: number): void;
 }) {
     const begin_resize = (e: React.PointerEvent<HTMLDivElement>) => {
         const grid = e.currentTarget.parentElement;
@@ -364,10 +560,10 @@ function DockDivider({
         e.preventDefault();
         const rect = grid.getBoundingClientRect();
         const move = (ev: PointerEvent) => {
-            const raw = layout === 'split'
+            const raw = axis === 'row'
                 ? ((ev.clientX - rect.left) / Math.max(rect.width, 1)) * 100
                 : ((ev.clientY - rect.top) / Math.max(rect.height, 1)) * 100;
-            on_split(Math.min(76, Math.max(24, raw)));
+            on_ratio(safe_ratio(raw));
         };
         const up = () => {
             window.removeEventListener('pointermove', move);
@@ -380,13 +576,13 @@ function DockDivider({
     return (
         <div
             className="psy-dock-divider"
-            data-layout={layout}
+            data-axis={axis}
             onPointerDown={begin_resize}
             role="separator"
-            aria-orientation={layout === 'split' ? 'vertical' : 'horizontal'}
-            aria-valuemin={24}
-            aria-valuemax={76}
-            aria-valuenow={Math.round(split)}
+            aria-orientation={axis === 'row' ? 'vertical' : 'horizontal'}
+            aria-valuemin={18}
+            aria-valuemax={82}
+            aria-valuenow={Math.round(ratio)}
         />
     );
 }
@@ -394,29 +590,52 @@ function DockDivider({
 function DockSlotView({
     slot,
     panel,
-    on_panel,
+    on_drop_panel,
 }: {
-    slot: DockSlot;
+    slot: string;
     panel: PanelName;
-    on_panel(panel: PanelName): void;
+    on_drop_panel(panel: PanelName, zone: DockDropZone): void;
 }) {
+    const [drop_zone, set_drop_zone] = React.useState<DockDropZone | null>(null);
+
+    const zone_from_event = (e: React.DragEvent<HTMLElement>): DockDropZone => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / Math.max(rect.width, 1);
+        const y = (e.clientY - rect.top) / Math.max(rect.height, 1);
+        const edge = 0.26;
+        if (x < edge) return 'left';
+        if (x > 1 - edge) return 'right';
+        if (y < edge) return 'top';
+        if (y > 1 - edge) return 'bottom';
+        return 'center';
+    };
+
     return (
         <section
             className="psy-dock-slot"
             data-slot={slot}
+            data-drop-zone={drop_zone ?? undefined}
             onDragOver={(e) => {
                 if (Array.from(e.dataTransfer.types).includes('application/x-psy-panel')) {
                     e.preventDefault();
-                    e.dataTransfer.dropEffect = 'copy';
+                    e.dataTransfer.dropEffect = 'move';
+                    set_drop_zone(zone_from_event(e));
+                }
+            }}
+            onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                    set_drop_zone(null);
                 }
             }}
             onDrop={(e) => {
                 const dropped = e.dataTransfer.getData('application/x-psy-panel');
                 if ((PANEL_NAMES as readonly string[]).includes(dropped)) {
                     e.preventDefault();
-                    on_panel(dropped as PanelName);
+                    on_drop_panel(dropped as PanelName, zone_from_event(e));
+                    set_drop_zone(null);
                 }
             }}
+            onDragEnd={() => set_drop_zone(null)}
         >
             <div className="psy-dock-tabbar">
                 <span className="psy-dock-slot-name">{slot}</span>
@@ -424,13 +643,18 @@ function DockSlotView({
                     className="psy-dock-select"
                     value={panel}
                     aria-label={`${slot} dock panel`}
-                    onChange={(e) => on_panel(e.target.value as PanelName)}
+                    onChange={(e) => on_drop_panel(e.target.value as PanelName, 'center')}
                 >
                     {PANEL_NAMES.map((name) => (
                         <option key={name} value={name}>{PANEL_META[name].label}</option>
                     ))}
                 </select>
             </div>
+            {drop_zone && (
+                <div className="psy-dock-drop-ghost" data-zone={drop_zone}>
+                    <span>{drop_zone === 'center' ? 'replace' : `split ${drop_zone}`}</span>
+                </div>
+            )}
             <div className="psy-dock-content">
                 <PanelView name={panel} />
             </div>
