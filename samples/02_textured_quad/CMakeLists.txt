@@ -14,7 +14,5 @@ target_link_libraries(sample_02_textured_quad PRIVATE
     psynder_ui_imm psynder_editor_core
 )
 
-psynder_target_psyscene_assets(sample_02_textured_quad assets/crate_room.psyscene.json)
-
 # Smoke add_test() lives in tests/CMakeLists.txt because the root project
 # only calls enable_testing() after add_subdirectory(samples).

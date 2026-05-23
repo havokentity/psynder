@@ -1,26 +1,29 @@
 # SPDX-License-Identifier: MIT
 # Psynder — cooked scene asset build helpers.
 
-function(psynder_target_psyscene_assets target)
+function(_psynder_target_psyscene_assets target)
     if(NOT TARGET ${target})
-        message(FATAL_ERROR "psynder_target_psyscene_assets: unknown target '${target}'")
+        message(FATAL_ERROR "_psynder_target_psyscene_assets: unknown target '${target}'")
     endif()
     if(NOT TARGET scene_cook)
         message(FATAL_ERROR
-            "psynder_target_psyscene_assets: scene_cook target is unavailable; "
+            "_psynder_target_psyscene_assets: scene_cook target is unavailable; "
             "build tools are required to cook .psyscene.json assets")
     endif()
 
     set(_sources ${ARGN})
     if(_sources STREQUAL "")
-        file(GLOB _sources
-            CONFIGURE_DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.psyscene.json"
-        )
+        return()
     endif()
 
-    if(_sources STREQUAL "")
-        return()
+    if(CMAKE_CONFIGURATION_TYPES)
+        set(_asset_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/assets")
+    else()
+        get_target_property(_runtime_dir ${target} RUNTIME_OUTPUT_DIRECTORY)
+        if(NOT _runtime_dir OR _runtime_dir STREQUAL "_runtime_dir-NOTFOUND")
+            set(_runtime_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+        endif()
+        set(_asset_dir "${_runtime_dir}/assets")
     endif()
 
     set(_outputs)
@@ -34,14 +37,14 @@ function(psynder_target_psyscene_assets target)
         get_filename_component(_name "${_src_abs}" NAME)
         if(NOT _name MATCHES "\\.psyscene\\.json$")
             message(FATAL_ERROR
-                "psynder_target_psyscene_assets: '${_name}' is not a .psyscene.json file")
+                "_psynder_target_psyscene_assets: '${_name}' is not a .psyscene.json file")
         endif()
         string(REGEX REPLACE "\\.json$" "" _cooked_name "${_name}")
-        set(_out "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets/${_cooked_name}")
+        set(_out "${_asset_dir}/${_cooked_name}")
 
         add_custom_command(
             OUTPUT "${_out}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_asset_dir}"
             COMMAND $<TARGET_FILE:scene_cook> "${_src_abs}" "${_out}"
             DEPENDS scene_cook "${_src_abs}"
             COMMENT "Cooking PsyScene ${_name}"
@@ -51,6 +54,99 @@ function(psynder_target_psyscene_assets target)
     endforeach()
 
     set(_asset_target "${target}_psyscene_assets")
+    if(TARGET ${_asset_target})
+        return()
+    endif()
     add_custom_target(${_asset_target} DEPENDS ${_outputs})
     add_dependencies(${target} ${_asset_target})
+endfunction()
+
+function(_psynder_collect_build_dirs out dir)
+    set(_dirs "${dir}")
+    get_property(_subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    foreach(_subdir IN LISTS _subdirs)
+        _psynder_collect_build_dirs(_child_dirs "${_subdir}")
+        list(APPEND _dirs ${_child_dirs})
+    endforeach()
+    set(${out} ${_dirs} PARENT_SCOPE)
+endfunction()
+
+function(_psynder_source_abs out target_dir source)
+    if(IS_ABSOLUTE "${source}")
+        set(${out} "${source}" PARENT_SCOPE)
+        return()
+    endif()
+    get_filename_component(_abs "${target_dir}/${source}" ABSOLUTE)
+    set(${out} "${_abs}" PARENT_SCOPE)
+endfunction()
+
+function(_psynder_scan_precook_psyscene_source out source_dir source)
+    set(_assets)
+    _psynder_source_abs(_source_abs "${source_dir}" "${source}")
+    if(NOT EXISTS "${_source_abs}")
+        set(${out} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    get_filename_component(_ext "${_source_abs}" EXT)
+    string(TOLOWER "${_ext}" _ext)
+    if(NOT _ext MATCHES "^\\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$")
+        set(${out} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    file(READ "${_source_abs}" _content)
+    string(REGEX MATCHALL
+        "PSYNDER_PRECOOK_PSYSCENE[ \t\r\n]*\\([ \t\r\n]*\"[^\"]+\""
+        _matches
+        "${_content}"
+    )
+    foreach(_match IN LISTS _matches)
+        string(REGEX REPLACE ".*\"([^\"]+)\".*" "\\1" _asset "${_match}")
+        get_filename_component(_asset_abs "${source_dir}/${_asset}" ABSOLUTE)
+        list(APPEND _assets "${_asset_abs}")
+    endforeach()
+
+    set(${out} ${_assets} PARENT_SCOPE)
+endfunction()
+
+function(psynder_autocook_declared_assets)
+    _psynder_collect_build_dirs(_dirs "${CMAKE_BINARY_DIR}")
+    foreach(_dir IN LISTS _dirs)
+        get_property(_targets DIRECTORY "${_dir}" PROPERTY BUILDSYSTEM_TARGETS)
+        if(_targets STREQUAL "")
+            continue()
+        endif()
+
+        get_property(_source_dir DIRECTORY "${_dir}" PROPERTY SOURCE_DIR)
+        foreach(_target IN LISTS _targets)
+            if(_target STREQUAL "scene_cook")
+                continue()
+            endif()
+
+            get_target_property(_type ${_target} TYPE)
+            if(NOT _type STREQUAL "EXECUTABLE")
+                continue()
+            endif()
+
+            get_target_property(_sources ${_target} SOURCES)
+            if(_sources STREQUAL "" OR _sources STREQUAL "_sources-NOTFOUND")
+                continue()
+            endif()
+
+            set(_assets)
+            foreach(_source IN LISTS _sources)
+                if("${_source}" MATCHES "^\\$<")
+                    continue()
+                endif()
+                _psynder_scan_precook_psyscene_source(_source_assets "${_source_dir}" "${_source}")
+                list(APPEND _assets ${_source_assets})
+            endforeach()
+
+            if(NOT _assets STREQUAL "")
+                list(REMOVE_DUPLICATES _assets)
+                _psynder_target_psyscene_assets(${_target} ${_assets})
+            endif()
+        endforeach()
+    endforeach()
 endfunction()

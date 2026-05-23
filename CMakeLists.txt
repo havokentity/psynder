@@ -145,6 +145,10 @@ if(PSYNDER_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+# Source-visible asset precook declarations keep sample/app CMake boilerplate
+# out of leaf projects.
+psynder_autocook_declared_assets()
+
 # ─── Summary ──────────────────────────────────────────────────────────────
 message(STATUS "")
 message(STATUS "── Psynder build summary ──────────────────────────────")

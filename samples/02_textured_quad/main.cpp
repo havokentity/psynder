@@ -4,6 +4,7 @@
 // Uses engine geometry and texture generators, then submits mesh instances
 // through the shared scene/rendering path.
 //
+#include "asset/Precook.h"
 #include "platform/App.h"
 #include "render/GeometryTools.h"
 #include "render/Texture.h"
@@ -13,6 +14,8 @@
 #include <vector>
 
 using namespace psynder;
+
+PSYNDER_PRECOOK_PSYSCENE("assets/crate_room.psyscene.json");
 
 namespace {
 
