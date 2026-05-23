@@ -646,26 +646,45 @@ button {
     color: var(--psy-accent);
 }
 
-.psy-dock-slot[data-closing="true"] .psy-dock-drag {
-    animation: psy-dock-drag-close 180ms ease-in forwards;
-    border-color: var(--psy-danger);
+.psy-dock-close-ghost {
+    position: fixed;
+    left: var(--psy-close-x);
+    top: var(--psy-close-y);
+    z-index: 80;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--psy-danger);
+    border-radius: var(--psy-radius-sm);
     background: color-mix(in srgb, var(--psy-danger) 22%, var(--psy-bg-input));
     color: var(--psy-danger);
+    font-family: var(--psy-mono);
+    font-size: 13px;
+    line-height: 1;
     pointer-events: none;
+    animation: psy-dock-drag-close 210ms ease-in forwards;
+    transform: translate(-50%, -50%);
 }
 
 @keyframes psy-dock-drag-close {
     0% {
         opacity: 1;
-        transform: scale(1);
+        transform: translate(-50%, -50%) scale(1);
     }
     65% {
         opacity: 0.9;
-        transform: scale(0.72);
+        transform: translate(-50%, -50%) scale(0.72);
     }
     100% {
         opacity: 0;
-        transform: scale(0);
+        transform: translate(-50%, -50%) scale(0);
+    }
+}
+
+@supports not (background: color-mix(in srgb, red 50%, black)) {
+    .psy-dock-close-ghost {
+        background: var(--psy-bg-input);
     }
 }
 

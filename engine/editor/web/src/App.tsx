@@ -24,6 +24,7 @@ type DockAxis = 'row' | 'column';
 type DockDropZone = 'center' | 'left' | 'right' | 'top' | 'bottom';
 type DockPath = readonly number[];
 type DockLeaf = { kind: 'leaf'; panel: PanelName };
+type DockCloseGhost = { id: number; x: number; y: number };
 type DockSplit = {
     kind: 'split';
     axis: DockAxis;
@@ -276,10 +277,6 @@ function remove_dock_at(node: DockNode, path: DockPath): DockNode {
 
 function same_path(a: DockPath, b: DockPath): boolean {
     return a.length === b.length && a.every((part, index) => part === b[index]);
-}
-
-function dock_path_key(path: DockPath): string {
-    return path.join('.');
 }
 
 function parse_dock_path(value: string): DockPath | null {
@@ -592,7 +589,8 @@ function DockWorkspace({
     const drag_source_ref = React.useRef<DockPath | null>(null);
     const drop_handled_ref = React.useRef(false);
     const close_timer_ref = React.useRef<ReturnType<typeof window.setTimeout> | null>(null);
-    const [closing_path_key, set_closing_path_key] = React.useState<string | null>(null);
+    const close_ghost_seq = React.useRef(0);
+    const [close_ghost, set_close_ghost] = React.useState<DockCloseGhost | null>(null);
 
     React.useEffect(() => () => {
         if (close_timer_ref.current !== null) {
@@ -638,12 +636,12 @@ function DockWorkspace({
             window.clearTimeout(close_timer_ref.current);
             close_timer_ref.current = null;
         }
-        set_closing_path_key(null);
+        set_close_ghost(null);
         drag_source_ref.current = path;
         drop_handled_ref.current = false;
     }, []);
 
-    const finish_drag = React.useCallback(() => {
+    const finish_drag = React.useCallback((point: { x: number; y: number }) => {
         const source_path = drag_source_ref.current;
         drag_source_ref.current = null;
         if (!source_path || drop_handled_ref.current) {
@@ -654,12 +652,17 @@ function DockWorkspace({
         if (source_path.length === 0) {
             return;
         }
-        set_closing_path_key(dock_path_key(source_path));
+        close_ghost_seq.current += 1;
+        set_close_ghost({
+            id: close_ghost_seq.current,
+            x: Number.isFinite(point.x) ? point.x : window.innerWidth / 2,
+            y: Number.isFinite(point.y) ? point.y : window.innerHeight / 2,
+        });
+        on_tree(remove_dock_at(tree, source_path));
         close_timer_ref.current = window.setTimeout(() => {
-            on_tree(remove_dock_at(tree, source_path));
-            set_closing_path_key(null);
+            set_close_ghost(null);
             close_timer_ref.current = null;
-        }, 190);
+        }, 220);
     }, [on_tree, tree]);
 
     return (
@@ -693,11 +696,23 @@ function DockWorkspace({
                     on_begin_drag={begin_drag}
                     on_drop_panel={move_or_drop_at}
                     on_finish_drag={finish_drag}
-                    closing_path_key={closing_path_key}
                     on_remove={remove_at}
                     on_resize={resize_at}
                 />
             </div>
+            {close_ghost && (
+                <div
+                    key={close_ghost.id}
+                    className="psy-dock-close-ghost"
+                    style={{
+                        '--psy-close-x': `${close_ghost.x}px`,
+                        '--psy-close-y': `${close_ghost.y}px`,
+                    } as React.CSSProperties}
+                    aria-hidden="true"
+                >
+                    ::
+                </div>
+            )}
         </section>
     );
 }
@@ -709,7 +724,6 @@ function DockNodeView({
     on_begin_drag,
     on_drop_panel,
     on_finish_drag,
-    closing_path_key,
     on_remove,
     on_resize,
 }: {
@@ -723,8 +737,7 @@ function DockNodeView({
         zone: DockDropZone,
         source_path: DockPath | null,
     ): void;
-    on_finish_drag(): void;
-    closing_path_key: string | null;
+    on_finish_drag(point: { x: number; y: number }): void;
     on_remove(path: DockPath): void;
     on_resize(path: DockPath, ratio: number): void;
 }) {
@@ -739,7 +752,6 @@ function DockNodeView({
                     on_drop_panel(path, panel, zone, source_path)
                 )}
                 on_finish_drag={on_finish_drag}
-                closing={closing_path_key === dock_path_key(path)}
                 on_remove={path.length > 0 ? () => on_remove(path) : undefined}
             />
         );
@@ -758,7 +770,6 @@ function DockNodeView({
                 on_begin_drag={on_begin_drag}
                 on_drop_panel={on_drop_panel}
                 on_finish_drag={on_finish_drag}
-                closing_path_key={closing_path_key}
                 on_remove={on_remove}
                 on_resize={on_resize}
             />
@@ -774,7 +785,6 @@ function DockNodeView({
                 on_begin_drag={on_begin_drag}
                 on_drop_panel={on_drop_panel}
                 on_finish_drag={on_finish_drag}
-                closing_path_key={closing_path_key}
                 on_remove={on_remove}
                 on_resize={on_resize}
             />
@@ -831,7 +841,6 @@ function DockSlotView({
     on_begin_drag,
     on_drop_panel,
     on_finish_drag,
-    closing,
     on_remove,
 }: {
     slot: string;
@@ -839,8 +848,7 @@ function DockSlotView({
     path: DockPath;
     on_begin_drag(): void;
     on_drop_panel(panel: PanelName, zone: DockDropZone, source_path: DockPath | null): void;
-    on_finish_drag(): void;
-    closing: boolean;
+    on_finish_drag(point: { x: number; y: number }): void;
     on_remove?: () => void;
 }) {
     const [drop_zone, set_drop_zone] = React.useState<DockDropZone | null>(null);
@@ -861,7 +869,6 @@ function DockSlotView({
         <section
             className="psy-dock-slot"
             data-slot={slot}
-            data-closing={closing ? 'true' : undefined}
             data-drop-zone={drop_zone ?? undefined}
             onDragOver={(e) => {
                 if (Array.from(e.dataTransfer.types).includes('application/x-psy-panel')) {
@@ -901,7 +908,7 @@ function DockSlotView({
                         e.dataTransfer.setData('application/x-psy-dock-path', JSON.stringify(path));
                         e.dataTransfer.effectAllowed = 'move';
                     }}
-                    onDragEnd={on_finish_drag}
+                    onDragEnd={(e) => on_finish_drag({ x: e.clientX, y: e.clientY })}
                 >
                     ::
                 </button>
