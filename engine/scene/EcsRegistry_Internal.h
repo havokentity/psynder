@@ -25,6 +25,8 @@
 
 namespace psynder::scene::detail {
 
+struct EcsEditorSelectionSnapshot;
+
 // ─── Entity slot table ────────────────────────────────────────────────
 // Each Entity::index() addresses a slot in this table. The slot knows
 // which archetype the entity belongs to, which chunk and row within that
@@ -94,6 +96,8 @@ class EcsRegistryImpl {
     // Query support — given sorted reads + writes, populate matching
     // archetype indices.
     void resolve_query(std::span<const ComponentId> required, std::vector<u32>& matched) const;
+    void snapshot_selected_entities(std::span<const Entity> selected,
+                                    EcsEditorSelectionSnapshot& out) const;
 
     // Public access for queries / tests.
     Archetype& archetype(u32 id) noexcept { return archetypes_[id]; }
