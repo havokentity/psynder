@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <utility>
 
 namespace psynder::scene {
 namespace scene_file_detail {
@@ -339,6 +340,123 @@ void SceneFileRequest::on_loaded(asset::Blob blob, void* user) noexcept {
         payload->state->error = std::move(error);
         payload->state->state = State::Failed;
         PSY_LOG_ERROR("{}", payload->state->error);
+    }
+}
+
+SceneLoadRequest& SceneLoadRequest::bind_mesh(std::string_view mesh_name,
+                                              ::psynder::render::MeshId mesh,
+                                              ::psynder::render::MaterialId material) {
+    owned_bindings_.push_back(OwnedMeshBinding{
+        .mesh_name = std::string{mesh_name},
+        .mesh = mesh,
+        .material = material,
+    });
+    binding_views_.clear();
+    return *this;
+}
+
+SceneLoadRequest& SceneLoadRequest::on_progress(ProgressCallback callback) {
+    progress_callback_ = std::move(callback);
+    return *this;
+}
+
+SceneLoadRequest& SceneLoadRequest::on_ready(ReadyCallback callback) {
+    ready_callback_ = std::move(callback);
+    return *this;
+}
+
+SceneLoadRequest& SceneLoadRequest::on_error(ErrorCallback callback) {
+    error_callback_ = std::move(callback);
+    return *this;
+}
+
+void SceneLoadRequest::load_async(std::string_view virtual_path) {
+    virtual_path_.assign(virtual_path.data(), virtual_path.size());
+    scene_file_ = {};
+    mesh_entities_.clear();
+    base_transforms_.clear();
+    result_ = {};
+    error_.clear();
+    binding_views_.clear();
+    stage_ = SceneLoadStage::Queued;
+    emit_progress(SceneLoadStage::Queued, 0.0f);
+    file_request_.load_async(virtual_path_);
+    stage_ = SceneLoadStage::Reading;
+    emit_progress(SceneLoadStage::Reading, 0.10f);
+}
+
+bool SceneLoadRequest::update(Scene& scene, SceneLoadRuntimeHooks hooks) {
+    if (stage_ == SceneLoadStage::Idle || stage_ == SceneLoadStage::Ready ||
+        stage_ == SceneLoadStage::Failed) {
+        return false;
+    }
+
+    if (file_request_.failed()) {
+        error_ = file_request_.error();
+        stage_ = SceneLoadStage::Failed;
+        emit_progress(SceneLoadStage::Failed, 1.0f);
+        if (error_callback_)
+            error_callback_(error_);
+        return false;
+    }
+
+    SceneFileLoaded loaded;
+    if (!file_request_.consume(loaded))
+        return false;
+
+    emit_progress(SceneLoadStage::Parsing, 0.70f);
+    scene_file_ = std::move(loaded);
+    const SceneFileView& view = scene_file_.view;
+
+    emit_progress(SceneLoadStage::Instantiating, 0.85f);
+    scene.prewarm_capacity(scene_file_prewarm_config(view));
+    if (hooks.reserve_render_capacity) {
+        hooks.reserve_render_capacity(
+            hooks.user, static_cast<u32>(view.mesh_instances.size()), 1u);
+    }
+
+    mesh_entities_.assign(view.mesh_instances.size(), {});
+    rebuild_binding_views();
+    const SceneFileInstantiateResult instantiate =
+        instantiate_scene_file(scene, view, binding_views_, mesh_entities_);
+    if (instantiate.missing_mesh_bindings != 0u) {
+        PSY_LOG_WARN("{}: {} cooked mesh binding(s) were missing",
+                     virtual_path_.empty() ? "psyscene" : virtual_path_,
+                     instantiate.missing_mesh_bindings);
+    }
+
+    base_transforms_.resize(view.mesh_instances.size());
+    for (usize i = 0; i < view.mesh_instances.size(); ++i) {
+        base_transforms_[i] = scene_file_transform(view, view.mesh_instances[i].transform_index);
+    }
+
+    result_ = {
+        .instantiate = instantiate,
+        .mesh_entities = std::span<const Entity>{mesh_entities_.data(), mesh_entities_.size()},
+        .base_transforms =
+            std::span<const LocalTransform>{base_transforms_.data(), base_transforms_.size()},
+    };
+    stage_ = SceneLoadStage::Ready;
+    emit_progress(SceneLoadStage::Ready, 1.0f);
+    if (ready_callback_)
+        ready_callback_(result_);
+    return true;
+}
+
+void SceneLoadRequest::emit_progress(SceneLoadStage stage, f32 fraction) {
+    if (progress_callback_)
+        progress_callback_(SceneLoadProgress{.stage = stage, .fraction = fraction});
+}
+
+void SceneLoadRequest::rebuild_binding_views() {
+    binding_views_.clear();
+    binding_views_.reserve(owned_bindings_.size());
+    for (const OwnedMeshBinding& binding : owned_bindings_) {
+        binding_views_.push_back(SceneMeshBinding{
+            .mesh_name = binding.mesh_name,
+            .mesh = binding.mesh,
+            .material = binding.material,
+        });
     }
 }
 

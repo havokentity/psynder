@@ -10,6 +10,7 @@
 #include "render/Material.h"
 #include "scene/SceneEcs.h"
 
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -156,6 +157,90 @@ class SceneFileRequest {
     static void on_loaded(asset::Blob blob, void* user) noexcept;
 
     std::shared_ptr<scene_file_detail::LoadState> state_;
+};
+
+enum class SceneLoadStage : u8 {
+    Idle,
+    Queued,
+    Reading,
+    Parsing,
+    Instantiating,
+    Ready,
+    Failed,
+};
+
+struct SceneLoadProgress {
+    SceneLoadStage stage = SceneLoadStage::Idle;
+    f32 fraction = 0.0f;
+};
+
+struct SceneLoadRuntimeHooks {
+    void* user = nullptr;
+    void (*reserve_render_capacity)(void* user, u32 renderables, u32 meshes) = nullptr;
+};
+
+struct SceneLoadResult {
+    SceneFileInstantiateResult instantiate{};
+    std::span<const Entity> mesh_entities;
+    std::span<const LocalTransform> base_transforms;
+};
+
+class SceneLoadRequest {
+   public:
+    using ProgressCallback = std::function<void(const SceneLoadProgress&)>;
+    using ReadyCallback = std::function<void(const SceneLoadResult&)>;
+    using ErrorCallback = std::function<void(std::string_view)>;
+
+    SceneLoadRequest() = default;
+    SceneLoadRequest(const SceneLoadRequest&) = delete;
+    SceneLoadRequest& operator=(const SceneLoadRequest&) = delete;
+    SceneLoadRequest(SceneLoadRequest&&) = delete;
+    SceneLoadRequest& operator=(SceneLoadRequest&&) = delete;
+
+    SceneLoadRequest& bind_mesh(std::string_view mesh_name,
+                                ::psynder::render::MeshId mesh,
+                                ::psynder::render::MaterialId material);
+    SceneLoadRequest& on_progress(ProgressCallback callback);
+    SceneLoadRequest& on_ready(ReadyCallback callback);
+    SceneLoadRequest& on_error(ErrorCallback callback);
+
+    void load_async(std::string_view virtual_path);
+    bool update(Scene& scene, SceneLoadRuntimeHooks hooks = {});
+
+    [[nodiscard]] SceneLoadStage stage() const noexcept { return stage_; }
+    [[nodiscard]] bool ready() const noexcept { return stage_ == SceneLoadStage::Ready; }
+    [[nodiscard]] bool failed() const noexcept { return stage_ == SceneLoadStage::Failed; }
+    [[nodiscard]] bool pending() const noexcept {
+        return stage_ == SceneLoadStage::Queued || stage_ == SceneLoadStage::Reading ||
+               stage_ == SceneLoadStage::Parsing || stage_ == SceneLoadStage::Instantiating;
+    }
+    [[nodiscard]] std::string_view error() const noexcept { return error_; }
+    [[nodiscard]] const SceneLoadResult& result() const noexcept { return result_; }
+    [[nodiscard]] const SceneFileLoaded& loaded_file() const noexcept { return scene_file_; }
+
+   private:
+    struct OwnedMeshBinding {
+        std::string mesh_name;
+        ::psynder::render::MeshId mesh{};
+        ::psynder::render::MaterialId material{};
+    };
+
+    void emit_progress(SceneLoadStage stage, f32 fraction);
+    void rebuild_binding_views();
+
+    std::string virtual_path_{};
+    SceneFileRequest file_request_{};
+    SceneFileLoaded scene_file_{};
+    std::vector<OwnedMeshBinding> owned_bindings_{};
+    std::vector<SceneMeshBinding> binding_views_{};
+    std::vector<Entity> mesh_entities_{};
+    std::vector<LocalTransform> base_transforms_{};
+    SceneLoadResult result_{};
+    ProgressCallback progress_callback_{};
+    ReadyCallback ready_callback_{};
+    ErrorCallback error_callback_{};
+    std::string error_{};
+    SceneLoadStage stage_ = SceneLoadStage::Idle;
 };
 
 static_assert(sizeof(SceneFileHeader) == 64u);

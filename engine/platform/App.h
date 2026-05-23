@@ -15,6 +15,7 @@
 #include "render/PngWriter.h"
 #include "render/RenderingSystem.h"
 #include "scene/SceneEcs.h"
+#include "scene/SceneFile.h"
 #include "ui/imm/Imm.h"
 
 #include <algorithm>
@@ -229,6 +230,14 @@ class WindowApp {
 
     void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
         rendering_system_.reserve_scene_capacity(renderables, meshes);
+    }
+
+    bool update_scene_load(scene::SceneLoadRequest& request, scene::Scene& scene) {
+        return request.update(scene,
+                              scene::SceneLoadRuntimeHooks{
+                                  .user = this,
+                                  .reserve_render_capacity = &WindowApp::reserve_scene_load_capacity,
+                              });
     }
 
     render::SceneRenderStats render_scene(scene::Scene& scene) {
@@ -509,6 +518,12 @@ class WindowApp {
             return 0u;
         return app->rendering_system_.spawn_mesh_batch(
             scene, mesh, material, local, out_entities, parent, flags, mobility);
+    }
+
+    static void reserve_scene_load_capacity(void* user, u32 renderables, u32 meshes) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (app)
+            app->reserve_scene_capacity(renderables, meshes);
     }
 
     [[nodiscard]] f32 render_target_aspect() const noexcept {
