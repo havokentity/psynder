@@ -292,6 +292,22 @@ function parse_dock_path(value: string): DockPath | null {
     }
 }
 
+function transparent_drag_image(): HTMLElement {
+    const existing = document.getElementById('psy-transparent-drag-image');
+    if (existing instanceof HTMLElement) return existing;
+    const el = document.createElement('div');
+    el.id = 'psy-transparent-drag-image';
+    el.style.position = 'fixed';
+    el.style.left = '-1000px';
+    el.style.top = '-1000px';
+    el.style.width = '1px';
+    el.style.height = '1px';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+    document.body.appendChild(el);
+    return el;
+}
+
 function split_dock_leaf(target: DockNode, panel: PanelName, zone: DockDropZone): DockNode {
     if (zone === 'center' || target.kind !== 'leaf') return dock_leaf(panel);
     const axis: DockAxis = zone === 'left' || zone === 'right' ? 'row' : 'column';
@@ -907,6 +923,7 @@ function DockSlotView({
                         e.dataTransfer.setData('application/x-psy-panel', panel);
                         e.dataTransfer.setData('application/x-psy-dock-path', JSON.stringify(path));
                         e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setDragImage(transparent_drag_image(), 0, 0);
                     }}
                     onDragEnd={(e) => on_finish_drag({ x: e.clientX, y: e.clientY })}
                 >
