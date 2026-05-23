@@ -15,6 +15,7 @@ project(psynder
 
 # ─── Project-level options ────────────────────────────────────────────────
 option(PSYNDER_EDITOR                "Build editor / sandbox mode + IPC server + React panels"  ON)
+option(PSYNDER_BUILD_PLAYER          "Build the generic cooked-game player executable"          ON)
 option(PSYNDER_BUILD_TOOLS           "Build offline tools (lm_pak, lm_cook, lm_qbsp, lm_bake)"   ON)
 option(PSYNDER_BUILD_SAMPLES         "Build sample programs under samples/"                     ON)
 option(PSYNDER_BUILD_TESTS           "Build unit / golden / bench tests under tests/"           ON)
@@ -128,6 +129,9 @@ add_subdirectory(engine/platform)
 if(PSYNDER_EDITOR)
     add_subdirectory(engine/editor)
 endif()
+if(PSYNDER_BUILD_PLAYER)
+    add_subdirectory(player)
+endif()
 
 # ─── Tools / samples / tests ──────────────────────────────────────────────
 if(PSYNDER_BUILD_TOOLS)
@@ -145,6 +149,7 @@ endif()
 message(STATUS "")
 message(STATUS "── Psynder build summary ──────────────────────────────")
 message(STATUS "  Editor mode:     ${PSYNDER_EDITOR}")
+message(STATUS "  Player:          ${PSYNDER_BUILD_PLAYER}")
 message(STATUS "  Tools:           ${PSYNDER_BUILD_TOOLS}")
 message(STATUS "  Samples:         ${PSYNDER_BUILD_SAMPLES}")
 message(STATUS "  Tests:           ${PSYNDER_BUILD_TESTS}")

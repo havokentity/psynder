@@ -672,12 +672,14 @@ platform::WindowDesc sample_window_desc(const SampleT& sample, const ArgsT& args
     }
 }
 
-template <class SampleT>
-void sample_started(SampleT& sample, WindowApp& app) {
+template <class SampleT, class ArgsT>
+void sample_started(SampleT& sample, WindowApp& app, const ArgsT& args) {
     if constexpr (std::derived_from<SampleT, BasicSceneApp>) {
         sample.basic_scene_started(app);
     }
-    if constexpr (requires { sample.started(app); }) {
+    if constexpr (requires { sample.started(app, args); }) {
+        sample.started(app, args);
+    } else if constexpr (requires { sample.started(app); }) {
         sample.started(app);
     }
 }
@@ -852,7 +854,7 @@ int run_window_sample(int argc, char** argv) {
     }
 
     detail::mount_standard_asset_roots(sample);
-    detail::sample_started(sample, app);
+    detail::sample_started(sample, app, args);
 
     if (args.smoke_frames > 0) {
         PSY_LOG_INFO("{} — smoke mode, {} frames", display_name, args.smoke_frames);

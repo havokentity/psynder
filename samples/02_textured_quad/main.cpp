@@ -84,7 +84,7 @@ struct TexturedQuadSample : app::BasicSceneApp {
 
         crates.assign(view.mesh_instances.size(), {});
         const scene::SceneMeshBinding bindings[] = {
-            {.mesh_name = "crateCube", .mesh = cube_mesh, .material = crate_material_id},
+            {.mesh_name = "builtin.unit_cube.crate", .mesh = cube_mesh, .material = crate_material_id},
         };
         const scene::SceneFileInstantiateResult result =
             scene::instantiate_scene_file(scene_ref, view, bindings, crates);
