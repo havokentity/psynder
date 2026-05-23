@@ -7,5 +7,9 @@ behavior CrateSpin {
             speed = linear_index(0.35, 0.12),
             phase = 0.0
         )
+        transform.translate(
+            axis = [0.0, 1.0, 0.0],
+            amount = linear_index(0.0, 0.16)
+        )
     }
 }

@@ -11,6 +11,7 @@ import type {
     AssetEntry,
     ComponentSchema,
     ConsoleLog,
+    ConsoleResult,
     Envelope,
     ProfilerFrame,
     PsyGraphDocument,
@@ -211,6 +212,144 @@ export interface MockDriver {
 }
 
 type Deliver = (env: Envelope) => void;
+
+export interface MockConsoleReply {
+    logs: ConsoleLog[];
+    result: ConsoleResult;
+}
+
+function summarize_command(source: string): string {
+    const one_line = source.replace(/\s+/g, ' ').trim();
+    return one_line.length > 80 ? `${one_line.slice(0, 77)}...` : one_line;
+}
+
+/** Deterministic offline reply for console commands sent while IPC is mocked. */
+export function mock_console_eval(id: number, source: string): MockConsoleReply {
+    const now = Date.now();
+    const command = source.trim();
+    const normalized = command.toLowerCase();
+    const logs: ConsoleLog[] = [
+        {
+            level: 'debug',
+            ts: now,
+            tag: 'mock-repl',
+            text: `accepted #${id}: ${summarize_command(command)}`,
+        },
+    ];
+
+    if (normalized === 'help' || normalized === '?') {
+        return {
+            logs,
+            result: {
+                id,
+                ok: true,
+                duration_ms: 1.2,
+                value_kind: 'text',
+                text: [
+                    'mock console commands:',
+                    '  help',
+                    '  getpos',
+                    '  selection',
+                    '  spawn <prop_id>',
+                    '  echo <text>',
+                ].join('\n'),
+            },
+        };
+    }
+
+    if (normalized === 'getpos') {
+        return {
+            logs,
+            result: {
+                id,
+                ok: true,
+                duration_ms: 0.8,
+                value_kind: 'table',
+                text: '{ x = 1.500, y = 0.000, z = -3.250 }',
+            },
+        };
+    }
+
+    if (normalized === 'selection') {
+        return {
+            logs,
+            result: {
+                id,
+                ok: true,
+                duration_ms: 0.9,
+                value_kind: 'table',
+                text: 'entity 0x427: crate_red.01 (Transform, Visible, RigidBody)',
+            },
+        };
+    }
+
+    if (normalized.startsWith('spawn ')) {
+        const prop_id = command.slice(6).trim() || '<missing>';
+        logs.push({
+            level: prop_id === '<missing>' ? 'warn' : 'info',
+            ts: now + 1,
+            tag: 'mock-scene',
+            text: prop_id === '<missing>'
+                ? 'spawn requested without a prop id'
+                : `queued spawn for prop '${prop_id}'`,
+        });
+        return {
+            logs,
+            result: {
+                id,
+                ok: prop_id !== '<missing>',
+                duration_ms: 2.4,
+                value_kind: prop_id === '<missing>' ? 'error' : 'text',
+                text: prop_id === '<missing>'
+                    ? 'usage: spawn <prop_id>'
+                    : `mock entity spawned from '${prop_id}'`,
+            },
+        };
+    }
+
+    if (normalized.startsWith('echo ')) {
+        return {
+            logs,
+            result: {
+                id,
+                ok: true,
+                duration_ms: 0.5,
+                value_kind: 'string',
+                text: command.slice(5),
+            },
+        };
+    }
+
+    if (normalized.includes('error') || normalized.includes('throw')) {
+        logs.push({
+            level: 'error',
+            ts: now + 1,
+            tag: 'mock-lua',
+            text: 'mock evaluator raised a scripted error',
+        });
+        return {
+            logs,
+            result: {
+                id,
+                ok: false,
+                duration_ms: 1.6,
+                value_kind: 'error',
+                text: `mock error while evaluating: ${summarize_command(command)}`,
+            },
+        };
+    }
+
+    return {
+        logs,
+        result: {
+            id,
+            ok: true,
+            duration_ms: 1.0,
+            value_kind: 'text',
+            text: `mock ok: ${summarize_command(command)}`,
+        },
+    };
+}
 
 /** Start emitting demo frames into a listener. Caller owns the lifetime. */
 export function start_mock(deliver: Deliver): MockDriver {

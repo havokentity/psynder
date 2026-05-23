@@ -16,6 +16,7 @@ struct SceneCookStats {
     usize cameras = 0u;
     usize mesh_instances = 0u;
     usize behavior_spin_ops = 0u;
+    usize behavior_translate_ops = 0u;
 };
 
 [[nodiscard]] bool cook_psyscene_json_file(const std::filesystem::path& input,

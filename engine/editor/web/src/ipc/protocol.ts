@@ -149,6 +149,8 @@ export interface ConsoleEval {
     /** Monotonic id so the panel can correlate the `result` reply. */
     id: number;
     source: string;
+    /** Optional UI hint for engines that route multiple console languages. */
+    mode?: 'lua' | 'cvar' | 'command';
 }
 
 export interface ConsoleLog {
@@ -165,6 +167,10 @@ export interface ConsoleResult {
     ok: boolean;
     /** Pretty-printed value (engine-side `tostring`) or an error message. */
     text: string;
+    /** Optional engine-side timing for the evaluated request. */
+    duration_ms?: number;
+    /** Optional coarse value label for richer GUI consoles. */
+    value_kind?: 'nil' | 'boolean' | 'number' | 'string' | 'table' | 'error' | 'text';
 }
 
 // ─── Profiler channel ────────────────────────────────────────────────────

@@ -379,9 +379,59 @@ button, input, select, textarea {
     background: var(--psy-bg);
 }
 
+.psy-console-counters {
+    display: inline-flex;
+    gap: 8px;
+    color: var(--psy-fg-faint);
+    font-family: var(--psy-mono);
+    font-size: 10px;
+}
+
+.psy-console-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    padding: 4px 8px;
+    background: var(--psy-bg-elev-1);
+    border-bottom: 1px solid var(--psy-border-soft);
+}
+
+.psy-console-filter {
+    display: inline-flex;
+    gap: 4px;
+}
+
+.psy-chip-btn {
+    background: transparent;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: 4px;
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 2px 8px;
+}
+.psy-chip-btn:hover {
+    border-color: var(--psy-border);
+    color: var(--psy-fg);
+}
+.psy-chip-btn.is-active {
+    background: var(--psy-bg-elev-2);
+    border-color: var(--psy-accent);
+    color: var(--psy-fg);
+}
+
+.psy-console-body {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 220px;
+    background: var(--psy-bg);
+}
+
 .psy-console-row {
     display: grid;
-    grid-template-columns: 64px auto auto auto 1fr;
+    grid-template-columns: 64px auto auto auto auto auto minmax(0, 1fr);
     gap: 6px;
     align-items: baseline;
     padding: 1px 0;
@@ -412,6 +462,11 @@ button, input, select, textarea {
     font-size: 11px;
 }
 
+.psy-console-req {
+    color: var(--psy-accent);
+    font-size: 10px;
+}
+
 .psy-console-level {
     color: var(--psy-fg-muted);
     text-transform: uppercase;
@@ -423,11 +478,88 @@ button, input, select, textarea {
     color: var(--psy-fg-muted);
 }
 
+.psy-console-meta {
+    color: var(--psy-fg-faint);
+    font-size: 10px;
+    white-space: nowrap;
+}
+
 .psy-console-text {
     margin: 0;
     white-space: pre-wrap;
     word-break: break-word;
     font: inherit;
+}
+
+.psy-console-requests {
+    min-width: 0;
+    overflow-y: auto;
+    padding: 6px;
+    border-left: 1px solid var(--psy-border);
+    background: var(--psy-bg-elev-1);
+}
+
+.psy-console-requests-title {
+    color: var(--psy-fg-faint);
+    font-size: 10px;
+    margin: 2px 4px 6px;
+    text-transform: uppercase;
+}
+
+.psy-console-request-empty {
+    color: var(--psy-fg-faint);
+    font-family: var(--psy-mono);
+    font-size: 11px;
+    padding: 4px;
+}
+
+.psy-console-request {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 8px auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    padding: 4px 6px;
+    background: var(--psy-bg);
+    border: 1px solid var(--psy-border-soft);
+    border-radius: 4px;
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+    font-family: var(--psy-mono);
+    font-size: 11px;
+    text-align: left;
+}
+.psy-console-request:hover {
+    border-color: var(--psy-border);
+    color: var(--psy-fg);
+}
+
+.psy-console-request-status {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--psy-warn);
+}
+.psy-console-request.is-ok .psy-console-request-status { background: var(--psy-good); }
+.psy-console-request.is-error .psy-console-request-status { background: var(--psy-bad); }
+
+.psy-console-request-id {
+    color: var(--psy-accent);
+    font-size: 10px;
+}
+
+.psy-console-request-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.psy-console-request-ms {
+    color: var(--psy-fg-faint);
+    font-size: 10px;
+    white-space: nowrap;
 }
 
 .psy-console-input-row {
@@ -462,6 +594,24 @@ button, input, select, textarea {
     outline: 1px solid var(--psy-accent);
     outline-offset: -1px;
     border-color: var(--psy-accent);
+}
+
+@media (max-width: 760px) {
+    .psy-console-body {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .psy-console-requests {
+        display: none;
+    }
+
+    .psy-console-row {
+        grid-template-columns: 54px auto auto auto auto auto minmax(0, 1fr);
+    }
+
+    .psy-console-meta {
+        display: none;
+    }
 }
 
 /* ─── Profiler ──────────────────────────────────────────────────────── */

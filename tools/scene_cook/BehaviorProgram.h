@@ -40,11 +40,26 @@ struct BehaviorSpinOp {
     bool active = true;
 };
 
+struct BehaviorTranslateOp {
+    std::string name;
+    std::string target_group;
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    BehaviorScalarExpr amount{};
+    bool active = true;
+};
+
 struct BehaviorProgram {
     std::vector<BehaviorSpinOp> spin_ops;
+    std::vector<BehaviorTranslateOp> translate_ops;
 
-    [[nodiscard]] bool empty() const noexcept { return spin_ops.empty(); }
-    void clear() noexcept { spin_ops.clear(); }
+    [[nodiscard]] bool empty() const noexcept {
+        return spin_ops.empty() && translate_ops.empty();
+    }
+
+    void clear() noexcept {
+        spin_ops.clear();
+        translate_ops.clear();
+    }
 };
 
 }  // namespace psynder::tools

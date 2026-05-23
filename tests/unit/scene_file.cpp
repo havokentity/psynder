@@ -73,9 +73,15 @@ std::vector<u8> make_scene_blob() {
     spin.axis = {0.0f, 1.0f, 0.0f};
     spin.speed_base = 0.35f;
     spin.speed_step = 0.12f;
+    scene::SceneFileBehaviorTranslateOp translate{};
+    translate.name_offset = 62u;
+    translate.target_group_name_offset = 55u;
+    translate.axis = {0.0f, 1.0f, 0.0f};
+    translate.amount_base = 0.5f;
+    translate.amount_step = 0.25f;
 
     std::vector<u8> bytes(sizeof(scene::SceneFileHeader) +
-                          9u * sizeof(scene::SceneFileChunk));
+                          10u * sizeof(scene::SceneFileChunk));
     std::vector<scene::SceneFileChunk> chunks;
     append_chunk(bytes,
                  chunks,
@@ -122,6 +128,11 @@ std::vector<u8> make_scene_blob() {
                  scene::SceneFileChunkType::BehaviorSpinOps,
                  std::span<const scene::SceneFileBehaviorSpinOp>{&spin, 1u},
                  sizeof(spin));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::BehaviorTranslateOps,
+                 std::span<const scene::SceneFileBehaviorTranslateOp>{&translate, 1u},
+                 sizeof(translate));
 
     scene::SceneFileHeader header{};
     header.file_bytes = static_cast<u32>(bytes.size());
@@ -164,6 +175,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(view.mesh_instances.size() == 1u);
     REQUIRE(view.materials.size() == 1u);
     REQUIRE(view.behavior_spin_ops.size() == 1u);
+    REQUIRE(view.behavior_translate_ops.size() == 1u);
     REQUIRE(std::string_view{scene::scene_file_string(view, 1u)} == "crateCube");
     REQUIRE(std::string_view{scene::scene_file_string(view, 11u)} == "crate.wood");
     REQUIRE(std::string_view{scene::scene_file_string(view, 22u)} ==
@@ -194,6 +206,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(result.missing_material_bindings == 0u);
     REQUIRE(mesh_entity.valid());
     REQUIRE(scene_ref.spin_behavior_count() == 1u);
+    REQUIRE(scene_ref.translate_behavior_count() == 1u);
     const auto* renderable = scene_ref.registry().get<scene::RenderableComponent>(mesh_entity);
     REQUIRE(renderable != nullptr);
     REQUIRE(renderable->material.raw == material.raw);
@@ -211,6 +224,8 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(transform->local.translation.x < 0.71f);
     scene_ref.update_entity_behaviors(1.0f);
     REQUIRE(std::abs(transform->local.rotation.y) > 0.01f);
+    REQUIRE(transform->local.translation.y > 0.49f);
+    REQUIRE(transform->local.translation.y < 0.51f);
     REQUIRE(scene_ref.active_camera_entity().valid());
 }
 
@@ -226,6 +241,7 @@ TEST_CASE("scene cooker lowers PsyScript and PsyGraph sources to behavior ops",
         script << "behavior SpinCrates {\n"
                << "  target_group \"crates\"\n"
                << "  update { transform.spin(axis = [0, 1, 0], speed = linear_index(0.35, 0.12), phase = 0.0) }\n"
+               << "  update { transform.translate(axis = [0, 1, 0], amount = linear_index(0.1, 0.25)) }\n"
                << "}\n";
     }
     {
@@ -234,7 +250,9 @@ TEST_CASE("scene cooker lowers PsyScript and PsyGraph sources to behavior ops",
               << "\"name\":\"SpinCratesGraph\","
               << "\"targetGroup\":\"crates\","
               << "\"nodes\":[{\"op\":\"spin\",\"axis\":[0,1,0],"
-              << "\"speed\":{\"type\":\"linearIndex\",\"base\":0.5,\"step\":0.25}}],"
+              << "\"speed\":{\"type\":\"linearIndex\",\"base\":0.5,\"step\":0.25}},"
+              << "{\"op\":\"translate\",\"axis\":[0,1,0],"
+              << "\"amount\":{\"type\":\"linearIndex\",\"base\":0.1,\"step\":0.25}}],"
               << "\"links\":[]"
               << "}";
     }
@@ -252,6 +270,7 @@ TEST_CASE("scene cooker lowers PsyScript and PsyGraph sources to behavior ops",
         std::string error;
         REQUIRE(tools::cook_psyscene_json_file(scene_json, output, &stats, &error));
         REQUIRE(stats.behavior_spin_ops == 1u);
+        REQUIRE(stats.behavior_translate_ops == 1u);
     };
 
     cook_with_source("behaviors/spin.psyscript", "script.psyscene.json");

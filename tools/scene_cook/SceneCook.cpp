@@ -30,6 +30,7 @@ using tools::BehaviorProgram;
 using tools::BehaviorScalarExpr;
 using tools::BehaviorScalarSource;
 using tools::BehaviorSpinOp;
+using tools::BehaviorTranslateOp;
 
 struct Json {
     enum class Kind : u8 {
@@ -289,6 +290,7 @@ struct CookScene {
     std::vector<scene::SceneFileMeshInstance> mesh_instances;
     std::vector<scene::SceneFileMaterial> materials;
     std::vector<scene::SceneFileBehaviorSpinOp> behavior_spin_ops;
+    std::vector<scene::SceneFileBehaviorTranslateOp> behavior_translate_ops;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
 };
@@ -546,6 +548,17 @@ struct CookScene {
     return std::string{source.substr(open + 1u, close - open - 1u)};
 }
 
+[[nodiscard]] std::string_view behavior_op_slice(std::string_view source,
+                                                 std::string_view marker) noexcept {
+    const usize start = source.find(marker);
+    if (start == std::string_view::npos)
+        return {};
+    const usize next = source.find("transform.", start + marker.size());
+    if (next == std::string_view::npos)
+        return source.substr(start);
+    return source.substr(start, next - start);
+}
+
 [[nodiscard]] BehaviorScalarExpr read_behavior_scalar(
     const Json* v,
     BehaviorScalarExpr fallback = {}) noexcept {
@@ -588,6 +601,28 @@ struct CookScene {
     return true;
 }
 
+[[nodiscard]] bool add_translate_op(BehaviorProgram& program,
+                                    std::string_view name,
+                                    std::string_view target_group,
+                                    const math::Vec3& axis,
+                                    BehaviorScalarExpr amount,
+                                    bool active,
+                                    std::string& error) {
+    if (target_group.empty()) {
+        error = "translate behavior requires a non-empty target group";
+        return false;
+    }
+
+    BehaviorTranslateOp translate{};
+    translate.name.assign(name.data(), name.size());
+    translate.target_group.assign(target_group.data(), target_group.size());
+    translate.axis = axis;
+    translate.amount = amount;
+    translate.active = active;
+    program.translate_ops.push_back(std::move(translate));
+    return true;
+}
+
 [[nodiscard]] bool parse_legacy_spin_behavior(const Json& behavior,
                                               BehaviorProgram& program,
                                               std::string& error) {
@@ -612,6 +647,29 @@ struct CookScene {
                        error);
 }
 
+[[nodiscard]] bool parse_legacy_translate_behavior(const Json& behavior,
+                                                   BehaviorProgram& program,
+                                                   std::string& error) {
+    const Json* target_group = behavior.field("targetGroup");
+    if (!target_group || target_group->kind != Json::Kind::String || target_group->text.empty()) {
+        error = "translate behavior requires a non-empty targetGroup string";
+        return false;
+    }
+
+    std::string_view name_text;
+    if (const Json* name = behavior.field("name"); name && name->kind == Json::Kind::String)
+        name_text = name->text;
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    (void)read_vec3(behavior.field("axis"), axis);
+    return add_translate_op(program,
+                            name_text,
+                            target_group->text,
+                            axis,
+                            read_behavior_scalar(behavior.field("amount")),
+                            read_bool(behavior.field("active"), true),
+                            error);
+}
+
 [[nodiscard]] bool cook_behavior_array(const Json& behaviors,
                                        BehaviorProgram& program,
                                        std::string& error) {
@@ -633,6 +691,9 @@ struct CookScene {
         if (type->text == "spin") {
             if (!parse_legacy_spin_behavior(behavior, program, error))
                 return false;
+        } else if (type->text == "translate") {
+            if (!parse_legacy_translate_behavior(behavior, program, error))
+                return false;
         } else {
             error = "unsupported entity behavior type: " + type->text;
             return false;
@@ -653,7 +714,7 @@ struct CookScene {
     const Json* op = node.field("op");
     if (!op)
         op = node.field("type");
-    if (!op || op->kind != Json::Kind::String || op->text != "spin")
+    if (!op || op->kind != Json::Kind::String)
         return true;
 
     std::string_view name = graph_name;
@@ -668,14 +729,26 @@ struct CookScene {
     }
     math::Vec3 axis{0.0f, 1.0f, 0.0f};
     (void)read_vec3(node.field("axis"), axis);
-    return add_spin_op(program,
-                       name,
-                       target_group,
-                       axis,
-                       read_behavior_scalar(node.field("speed")),
-                       read_behavior_scalar(node.field("phase")),
-                       read_bool(node.field("active"), true),
-                       error);
+    if (op->text == "spin" || op->text == "transform.spin") {
+        return add_spin_op(program,
+                           name,
+                           target_group,
+                           axis,
+                           read_behavior_scalar(node.field("speed")),
+                           read_behavior_scalar(node.field("phase")),
+                           read_bool(node.field("active"), true),
+                           error);
+    }
+    if (op->text == "translate" || op->text == "transform.translate") {
+        return add_translate_op(program,
+                                name,
+                                target_group,
+                                axis,
+                                read_behavior_scalar(node.field("amount")),
+                                read_bool(node.field("active"), true),
+                                error);
+    }
+    return true;
 }
 
 [[nodiscard]] bool cook_psygraph_graph(const Json& graph,
@@ -739,31 +812,63 @@ struct CookScene {
         error = "failed to read PsyScript source " + path.string();
         return false;
     }
-    if (source.find("transform.spin") == std::string::npos &&
-        source.find("spin") == std::string::npos) {
-        error = "PsyScript behavior currently requires a spin operation";
-        return false;
-    }
     const std::string name = read_identifier_after(source, "behavior");
     const std::string target_group = read_quoted_after(source, "target_group");
-    math::Vec3 axis{0.0f, 1.0f, 0.0f};
-    const usize axis_marker = source.find("axis");
-    if (axis_marker != std::string::npos)
-        (void)parse_vec3_literal(std::string_view{source}.substr(axis_marker), axis);
-    f32 speed_base = 0.0f;
-    f32 speed_step = 0.0f;
-    if (!parse_pair_call(source, "linear_index", speed_base, speed_step))
-        (void)parse_pair_call(source, "linearIndex", speed_base, speed_step);
-    f32 phase_value = 0.0f;
-    (void)parse_assignment_number(source, "phase", phase_value);
-    return add_spin_op(program,
-                       name,
-                       target_group,
-                       axis,
-                       BehaviorScalarExpr::linear_index(speed_base, speed_step),
-                       BehaviorScalarExpr::constant(phase_value),
-                       true,
-                       error);
+    bool emitted = false;
+    const std::string_view source_view{source};
+    const std::string_view spin_source = behavior_op_slice(source_view, "transform.spin");
+    if (!spin_source.empty()) {
+        math::Vec3 axis{0.0f, 1.0f, 0.0f};
+        const usize axis_marker = spin_source.find("axis");
+        if (axis_marker != std::string_view::npos)
+            (void)parse_vec3_literal(spin_source.substr(axis_marker), axis);
+        f32 speed_base = 0.0f;
+        f32 speed_step = 0.0f;
+        if (!parse_pair_call(spin_source, "linear_index", speed_base, speed_step))
+            (void)parse_pair_call(spin_source, "linearIndex", speed_base, speed_step);
+        f32 phase_value = 0.0f;
+        (void)parse_assignment_number(spin_source, "phase", phase_value);
+        if (!add_spin_op(program,
+                         name,
+                         target_group,
+                         axis,
+                         BehaviorScalarExpr::linear_index(speed_base, speed_step),
+                         BehaviorScalarExpr::constant(phase_value),
+                         true,
+                         error)) {
+            return false;
+        }
+        emitted = true;
+    }
+
+    const std::string_view translate_source =
+        behavior_op_slice(source_view, "transform.translate");
+    if (!translate_source.empty()) {
+        math::Vec3 axis{0.0f, 1.0f, 0.0f};
+        const usize axis_marker = translate_source.find("axis");
+        if (axis_marker != std::string_view::npos)
+            (void)parse_vec3_literal(translate_source.substr(axis_marker), axis);
+        f32 amount_base = 0.0f;
+        f32 amount_step = 0.0f;
+        if (!parse_pair_call(translate_source, "linear_index", amount_base, amount_step))
+            (void)parse_pair_call(translate_source, "linearIndex", amount_base, amount_step);
+        if (!add_translate_op(program,
+                              name,
+                              target_group,
+                              axis,
+                              BehaviorScalarExpr::linear_index(amount_base, amount_step),
+                              true,
+                              error)) {
+            return false;
+        }
+        emitted = true;
+    }
+
+    if (!emitted) {
+        error = "PsyScript behavior requires at least one transform operation";
+        return false;
+    }
+    return true;
 }
 
 [[nodiscard]] bool cook_behavior_source(const std::filesystem::path& path,
@@ -818,6 +923,28 @@ struct CookScene {
         spin.flags = op.active ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
                                : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
         out.behavior_spin_ops.push_back(spin);
+    }
+
+    out.behavior_translate_ops.reserve(out.behavior_translate_ops.size() +
+                                       program.translate_ops.size());
+    for (const BehaviorTranslateOp& op : program.translate_ops) {
+        if (op.target_group.empty()) {
+            error = "behavior program contains a translate op without a target group";
+            return false;
+        }
+
+        scene::SceneFileBehaviorTranslateOp translate{};
+        if (!op.name.empty())
+            translate.name_offset = add_string(out, op.name);
+        translate.target_group_name_offset = add_string(out, op.target_group);
+        translate.axis = op.axis;
+        translate.amount_base = op.amount.base;
+        translate.amount_step =
+            op.amount.source == BehaviorScalarSource::LinearIndex ? op.amount.step : 0.0f;
+        translate.flags =
+            op.active ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
+                      : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
+        out.behavior_translate_ops.push_back(translate);
     }
     return true;
 }
@@ -989,7 +1116,7 @@ void append_chunk(std::vector<u8>& bytes,
     std::vector<u8> bytes;
     std::vector<scene::SceneFileChunk> chunks;
     bytes.resize(sizeof(scene::SceneFileHeader));
-    bytes.resize(bytes.size() + 9u * sizeof(scene::SceneFileChunk));
+    bytes.resize(bytes.size() + 10u * sizeof(scene::SceneFileChunk));
 
     append_chunk(bytes,
                  chunks,
@@ -1039,6 +1166,12 @@ void append_chunk(std::vector<u8>& bytes,
                  std::span<const scene::SceneFileBehaviorSpinOp>{
                      scene.behavior_spin_ops.data(), scene.behavior_spin_ops.size()},
                  sizeof(scene::SceneFileBehaviorSpinOp));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::BehaviorTranslateOps,
+                 std::span<const scene::SceneFileBehaviorTranslateOp>{
+                     scene.behavior_translate_ops.data(), scene.behavior_translate_ops.size()},
+                 sizeof(scene::SceneFileBehaviorTranslateOp));
 
     scene::SceneFileHeader header{};
     header.file_bytes = static_cast<u32>(bytes.size());
@@ -1110,6 +1243,7 @@ bool psynder::tools::cook_psyscene_json_file(const std::filesystem::path& input,
         stats->cameras = scene.cameras.size();
         stats->mesh_instances = scene.mesh_instances.size();
         stats->behavior_spin_ops = scene.behavior_spin_ops.size();
+        stats->behavior_translate_ops = scene.behavior_translate_ops.size();
     }
     return true;
 }

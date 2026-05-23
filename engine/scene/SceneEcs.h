@@ -210,6 +210,14 @@ struct SpinEntityBehaviorDesc {
     EntityBehaviorFlags flags = EntityBehaviorFlags::Active;
 };
 
+struct TranslateEntityBehaviorDesc {
+    SceneGroupId target_group{};
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    f32 amount_base = 0.0f;
+    f32 amount_step = 0.0f;
+    EntityBehaviorFlags flags = EntityBehaviorFlags::Active;
+};
+
 struct SceneCameraView {
     Entity entity{};
     SceneNode node{};
@@ -992,6 +1000,16 @@ class Scene {
         spin_behaviors_.flags.reserve(count);
     }
 
+    void reserve_translate_behaviors(u32 count) {
+        translate_behaviors_.group.reserve(count);
+        translate_behaviors_.axis_x.reserve(count);
+        translate_behaviors_.axis_y.reserve(count);
+        translate_behaviors_.axis_z.reserve(count);
+        translate_behaviors_.amount_base.reserve(count);
+        translate_behaviors_.amount_step.reserve(count);
+        translate_behaviors_.flags.reserve(count);
+    }
+
     void add_spin_behavior(const SpinEntityBehaviorDesc& desc) {
         if (!desc.target_group.valid())
             return;
@@ -1006,13 +1024,29 @@ class Scene {
         spin_behaviors_.flags.push_back(desc.flags);
     }
 
+    void add_translate_behavior(const TranslateEntityBehaviorDesc& desc) {
+        if (!desc.target_group.valid())
+            return;
+        translate_behaviors_.group.push_back(desc.target_group);
+        translate_behaviors_.axis_x.push_back(desc.axis.x);
+        translate_behaviors_.axis_y.push_back(desc.axis.y);
+        translate_behaviors_.axis_z.push_back(desc.axis.z);
+        translate_behaviors_.amount_base.push_back(desc.amount_base);
+        translate_behaviors_.amount_step.push_back(desc.amount_step);
+        translate_behaviors_.flags.push_back(desc.flags);
+    }
+
     [[nodiscard]] usize spin_behavior_count() const noexcept {
         return spin_behaviors_.group.size();
     }
 
+    [[nodiscard]] usize translate_behavior_count() const noexcept {
+        return translate_behaviors_.group.size();
+    }
+
     void update_entity_behaviors(f32 seconds) {
-        const usize behavior_count = spin_behaviors_.group.size();
-        for (usize b = 0; b < behavior_count; ++b) {
+        const usize spin_count = spin_behaviors_.group.size();
+        for (usize b = 0; b < spin_count; ++b) {
             if ((spin_behaviors_.flags[b] & EntityBehaviorFlags::Active) == 0u)
                 continue;
             const SceneGroupId group_id = spin_behaviors_.group[b];
@@ -1033,6 +1067,33 @@ class Scene {
                 LocalTransform local = authored;
                 local.rotation = math::quat_mul(math::quat_from_axis_angle(axis, angle),
                                                 authored.rotation);
+                (void)set_scene_entity_transform(*registry_, graph_, entity, local);
+            }
+        }
+
+        const usize translate_count = translate_behaviors_.group.size();
+        for (usize b = 0; b < translate_count; ++b) {
+            if ((translate_behaviors_.flags[b] & EntityBehaviorFlags::Active) == 0u)
+                continue;
+            const SceneGroupId group_id = translate_behaviors_.group[b];
+            if (!group_id.valid() || group_id.index >= groups_.size())
+                continue;
+            SceneGroupStorage& group = groups_[group_id.index];
+            const usize count = std::min(group.entities.size(), group.authored_locals.size());
+            for (usize i = 0; i < count; ++i) {
+                const Entity entity = group.entities[i];
+                const LocalTransform& authored = group.authored_locals[i];
+                const f32 amount =
+                    translate_behaviors_.amount_base[b] +
+                    translate_behaviors_.amount_step[b] * static_cast<f32>(i);
+                LocalTransform local = authored;
+                if (const auto* current = registry_->get<TransformComponent>(entity))
+                    local = current->local;
+                local.translation = {
+                    authored.translation.x + translate_behaviors_.axis_x[b] * amount,
+                    authored.translation.y + translate_behaviors_.axis_y[b] * amount,
+                    authored.translation.z + translate_behaviors_.axis_z[b] * amount,
+                };
                 (void)set_scene_entity_transform(*registry_, graph_, entity, local);
             }
         }
@@ -1132,6 +1193,7 @@ class Scene {
         last_node_capacity_ = other.last_node_capacity_;
         groups_ = std::move(other.groups_);
         spin_behaviors_ = std::move(other.spin_behaviors_);
+        translate_behaviors_ = std::move(other.translate_behaviors_);
 
         other.registry_ = &EcsRegistry::Get();
         other.environment_.bind_runtime(other.runtime_.environment);
@@ -1146,6 +1208,7 @@ class Scene {
         other.last_node_capacity_ = 0u;
         other.groups_.clear();
         other.spin_behaviors_ = {};
+        other.translate_behaviors_ = {};
     }
 
     void record_pool_watermark() noexcept {
@@ -1196,6 +1259,16 @@ class Scene {
         std::vector<EntityBehaviorFlags> flags;
     };
 
+    struct TranslateBehaviorSoA {
+        std::vector<SceneGroupId> group;
+        std::vector<f32> axis_x;
+        std::vector<f32> axis_y;
+        std::vector<f32> axis_z;
+        std::vector<f32> amount_base;
+        std::vector<f32> amount_step;
+        std::vector<EntityBehaviorFlags> flags;
+    };
+
     [[nodiscard]] SceneGroupId group_slot(std::string_view group_name) {
         for (u32 i = 0; i < static_cast<u32>(groups_.size()); ++i) {
             if (groups_[i].name == group_name)
@@ -1223,6 +1296,7 @@ class Scene {
     u32 last_node_capacity_ = 0u;
     std::vector<SceneGroupStorage> groups_{};
     SpinBehaviorSoA spin_behaviors_{};
+    TranslateBehaviorSoA translate_behaviors_{};
 };
 
 using CachedSceneGroup = Scene::CachedSceneGroup;

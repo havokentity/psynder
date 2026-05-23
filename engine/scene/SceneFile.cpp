@@ -216,7 +216,11 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
         !load_span(SceneFileChunkType::BehaviorSpinOps,
                    sizeof(SceneFileBehaviorSpinOp),
                    out.behavior_spin_ops,
-                   "behavior_spin_ops")) {
+                   "behavior_spin_ops") ||
+        !load_span(SceneFileChunkType::BehaviorTranslateOps,
+                   sizeof(SceneFileBehaviorTranslateOp),
+                   out.behavior_translate_ops,
+                   "behavior_translate_ops")) {
         return false;
     }
 
@@ -354,6 +358,21 @@ SceneFileInstantiateResult instantiate_scene_file(
             .speed_step = behavior_file.speed_step,
             .phase_base = behavior_file.phase_base,
             .phase_step = behavior_file.phase_step,
+            .flags = static_cast<EntityBehaviorFlags>(behavior_file.flags),
+        });
+    }
+
+    scene.reserve_translate_behaviors(static_cast<u32>(scene_file.behavior_translate_ops.size()));
+    for (const SceneFileBehaviorTranslateOp& behavior_file : scene_file.behavior_translate_ops) {
+        const std::string_view group_name{
+            scene_file_string(scene_file, behavior_file.target_group_name_offset)};
+        if (group_name.empty())
+            continue;
+        scene.add_translate_behavior(TranslateEntityBehaviorDesc{
+            .target_group = scene.group_id(group_name),
+            .axis = behavior_file.axis,
+            .amount_base = behavior_file.amount_base,
+            .amount_step = behavior_file.amount_step,
             .flags = static_cast<EntityBehaviorFlags>(behavior_file.flags),
         });
     }

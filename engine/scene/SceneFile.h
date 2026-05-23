@@ -34,6 +34,7 @@ enum class SceneFileChunkType : u32 {
     MeshInstances = 0x53454D53u,    // SMES
     Materials = 0x54414D53u,        // SMAT
     BehaviorSpinOps = 0x50534253u,  // SBSP
+    BehaviorTranslateOps = 0x4C544253u,  // SBTL
 };
 
 struct SceneFileHeader {
@@ -118,6 +119,16 @@ struct SceneFileBehaviorSpinOp {
     u8 _pad[24] = {};
 };
 
+struct SceneFileBehaviorTranslateOp {
+    u32 name_offset = 0u;
+    u32 target_group_name_offset = 0u;
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    f32 amount_base = 0.0f;
+    f32 amount_step = 0.0f;
+    u32 flags = 1u;
+    u8 _pad[32] = {};
+};
+
 struct SceneFileView {
     const SceneFileHeader* header = nullptr;
     std::span<const char> strings;
@@ -129,6 +140,7 @@ struct SceneFileView {
     std::span<const SceneFileMeshInstance> mesh_instances;
     std::span<const SceneFileMaterial> materials;
     std::span<const SceneFileBehaviorSpinOp> behavior_spin_ops;
+    std::span<const SceneFileBehaviorTranslateOp> behavior_translate_ops;
 };
 
 struct SceneFileLoaded {
@@ -313,5 +325,6 @@ static_assert(sizeof(SceneFileCamera) == 64u);
 static_assert(sizeof(SceneFileMeshInstance) == 24u);
 static_assert(sizeof(SceneFileMaterial) == 64u);
 static_assert(sizeof(SceneFileBehaviorSpinOp) == 64u);
+static_assert(sizeof(SceneFileBehaviorTranslateOp) == 64u);
 
 }  // namespace psynder::scene
