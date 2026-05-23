@@ -275,6 +275,35 @@ function remove_dock_at(node: DockNode, path: DockPath): DockNode {
     };
 }
 
+function append_dock_panel(node: DockNode, panel: PanelName): DockNode {
+    if (node.kind === 'leaf') {
+        return {
+            kind: 'split',
+            axis: 'row',
+            ratio: 50,
+            first: normalize_dock_node(node),
+            second: dock_leaf(panel),
+        };
+    }
+    return {
+        kind: 'split',
+        axis: 'row',
+        ratio: 68,
+        first: normalize_dock_node(node),
+        second: dock_leaf(panel),
+    };
+}
+
+function count_dock_panels(node: DockNode, counts = new Map<PanelName, number>()): Map<PanelName, number> {
+    if (node.kind === 'leaf') {
+        counts.set(node.panel, (counts.get(node.panel) ?? 0) + 1);
+        return counts;
+    }
+    count_dock_panels(node.first, counts);
+    count_dock_panels(node.second, counts);
+    return counts;
+}
+
 function same_path(a: DockPath, b: DockPath): boolean {
     return a.length === b.length && a.every((part, index) => part === b[index]);
 }
@@ -607,6 +636,10 @@ function DockWorkspace({
     const undo_timer_ref = React.useRef<ReturnType<typeof window.setTimeout> | null>(null);
     const undo_seq = React.useRef(0);
     const [undo, set_undo] = React.useState<DockUndo | null>(null);
+    const panel_counts = React.useMemo(() => count_dock_panels(tree), [tree]);
+    const hidden_panels = React.useMemo(() => (
+        PANEL_NAMES.filter((name) => !panel_counts.has(name))
+    ), [panel_counts]);
 
     React.useEffect(() => () => {
         if (undo_timer_ref.current !== null) {
@@ -667,6 +700,11 @@ function DockWorkspace({
         on_tree(remove_dock_at(tree, path));
     }, [on_tree, push_undo, tree]);
 
+    const add_panel = React.useCallback((panel: PanelName) => {
+        push_undo('panel added', tree);
+        on_tree(append_dock_panel(tree, panel));
+    }, [on_tree, push_undo, tree]);
+
     const begin_drag = React.useCallback((path: DockPath) => {
         drag_source_ref.current = path;
         drop_handled_ref.current = false;
@@ -702,6 +740,26 @@ function DockWorkspace({
                     value={layout}
                     on_change={on_layout}
                 />
+                <div className="psy-dock-tray" aria-label="Hidden dock panels">
+                    <span className="psy-dock-tray-label">panels</span>
+                    <div className="psy-dock-tray-items">
+                        {hidden_panels.length === 0 ? (
+                            <span className="psy-dock-tray-empty">all visible</span>
+                        ) : hidden_panels.map((name) => (
+                            <button
+                                key={name}
+                                type="button"
+                                className="psy-dock-tray-btn"
+                                onClick={() => add_panel(name)}
+                                aria-label={`Add ${PANEL_META[name].label} to dock`}
+                                title={`Add ${PANEL_META[name].label}`}
+                            >
+                                <span>{PANEL_META[name].icon}</span>
+                                <small>{PANEL_META[name].label}</small>
+                            </button>
+                        ))}
+                    </div>
+                </div>
                 <button
                     type="button"
                     className="psy-reset-btn"

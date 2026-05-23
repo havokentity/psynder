@@ -452,7 +452,8 @@ button {
     min-height: 50px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
+    flex-wrap: wrap;
     gap: 12px;
     padding: 8px 10px;
     border-bottom: 1px solid var(--psy-border);
@@ -467,6 +468,73 @@ button {
     color: var(--psy-fg);
     font-weight: 750;
     text-transform: uppercase;
+}
+
+.psy-dock-tray {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.psy-dock-tray-label {
+    color: var(--psy-fg-faint);
+    font-family: var(--psy-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+}
+
+.psy-dock-tray-items {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.psy-dock-tray-btn {
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    max-width: 116px;
+    padding: 0 9px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-input);
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+}
+
+.psy-dock-tray-btn span {
+    flex: 0 0 auto;
+    color: var(--psy-accent);
+    font-family: var(--psy-mono);
+    font-size: 12px;
+}
+
+.psy-dock-tray-btn small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+}
+
+.psy-dock-tray-btn:hover {
+    border-color: var(--psy-accent);
+    color: var(--psy-fg);
+}
+
+.psy-dock-tray-empty {
+    min-height: 30px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 9px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    color: var(--psy-fg-faint);
+    font-size: 11px;
 }
 
 .psy-dock-glyph {
@@ -2084,6 +2152,16 @@ button {
     .psy-dock-toolbar {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .psy-dock-tray {
+        align-items: stretch;
+        flex-direction: column;
+        margin-left: 0;
+    }
+
+    .psy-dock-tray-items {
+        flex-wrap: wrap;
     }
 
     .psy-panel-header {
