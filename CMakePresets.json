@@ -3,17 +3,14 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
   "configurePresets": [
     {
-      "name": "psyarcade-base",
+      "name": "player-project-base",
       "hidden": true,
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE":            "RelWithDebInfo",
         "PSYNDER_EDITOR":              "ON",
         "PSYNDER_BUILD_PLAYER":        "ON",
         "PSYNDER_BUILD_TOOLS":         "ON",
         "PSYNDER_BUILD_SAMPLES":       "OFF",
-        "PSYNDER_BUILD_TESTS":         "OFF",
-        "PSYNDER_ENABLE_TRACY":        "ON",
-        "PSYNDER_ENABLE_SANITIZERS":   "OFF"
+        "PSYNDER_BUILD_TESTS":         "OFF"
       }
     },
     {
@@ -58,9 +55,14 @@
       }
     },
     {
-      "name": "mac-psyarcade",
-      "displayName": "Mac · PsyArcade Player",
-      "inherits": [ "mac-base", "psyarcade-base" ]
+      "name": "mac-debug-player",
+      "displayName": "Mac · Debug · Player (PsyArcade)",
+      "inherits": [ "mac-debug", "player-project-base" ]
+    },
+    {
+      "name": "mac-release-player",
+      "displayName": "Mac · Release · Player (PsyArcade)",
+      "inherits": [ "mac-release", "player-project-base" ]
     },
 
     {
@@ -119,14 +121,24 @@
       }
     },
     {
-      "name": "win-psyarcade",
-      "displayName": "Windows · PsyArcade Player",
-      "inherits": [ "win-base", "psyarcade-base" ]
+      "name": "win-debug-player",
+      "displayName": "Windows · Debug · Player (PsyArcade, MSVC)",
+      "inherits": [ "win-debug", "player-project-base" ]
     },
     {
-      "name": "win-clang-psyarcade",
-      "displayName": "Windows · PsyArcade Player (clang-cl)",
-      "inherits": [ "win-base", "psyarcade-base" ],
+      "name": "win-release-player",
+      "displayName": "Windows · Release · Player (PsyArcade, MSVC)",
+      "inherits": [ "win-release", "player-project-base" ]
+    },
+    {
+      "name": "win-clang-debug-player",
+      "displayName": "Windows · Debug · Player (PsyArcade, clang-cl)",
+      "inherits": [ "win-clang-debug", "player-project-base" ]
+    },
+    {
+      "name": "win-clang-release-player",
+      "displayName": "Windows · Release · Player (PsyArcade, clang-cl)",
+      "inherits": [ "win-clang-release", "player-project-base" ],
       "cacheVariables": {
         "CMAKE_C_COMPILER":            "clang-cl",
         "CMAKE_CXX_COMPILER":          "clang-cl"
@@ -171,26 +183,35 @@
       }
     },
     {
-      "name": "linux-psyarcade",
-      "displayName": "Linux · PsyArcade Player",
-      "inherits": [ "linux-base", "psyarcade-base" ]
+      "name": "linux-debug-player",
+      "displayName": "Linux · Debug · Player (PsyArcade)",
+      "inherits": [ "linux-debug", "player-project-base" ]
+    },
+    {
+      "name": "linux-release-player",
+      "displayName": "Linux · Release · Player (PsyArcade)",
+      "inherits": [ "linux-release", "player-project-base" ]
     }
   ],
   "buildPresets": [
     { "name": "mac-debug",          "configurePreset": "mac-debug",          "jobs": 0 },
     { "name": "mac-release",        "configurePreset": "mac-release",        "jobs": 0 },
     { "name": "mac-relwithdebinfo", "configurePreset": "mac-relwithdebinfo", "jobs": 0 },
-    { "name": "mac-psyarcade",      "configurePreset": "mac-psyarcade",      "jobs": 0, "targets": [ "psynder_player", "scene_cook", "lm_cook", "lm_pak" ] },
+    { "name": "mac-debug-player",    "configurePreset": "mac-debug-player",    "jobs": 0 },
+    { "name": "mac-release-player",  "configurePreset": "mac-release-player",  "jobs": 0 },
     { "name": "win-debug",          "configurePreset": "win-debug",          "jobs": 0 },
     { "name": "win-release",        "configurePreset": "win-release",        "jobs": 0 },
     { "name": "win-clang-debug",    "configurePreset": "win-clang-debug",    "jobs": 0 },
     { "name": "win-clang-release",  "configurePreset": "win-clang-release",  "jobs": 0 },
-    { "name": "win-psyarcade",      "configurePreset": "win-psyarcade",      "jobs": 0, "targets": [ "psynder_player", "scene_cook", "lm_cook", "lm_pak" ] },
-    { "name": "win-clang-psyarcade", "configurePreset": "win-clang-psyarcade", "jobs": 0, "targets": [ "psynder_player", "scene_cook", "lm_cook", "lm_pak" ] },
+    { "name": "win-debug-player",    "configurePreset": "win-debug-player",    "jobs": 0 },
+    { "name": "win-release-player",  "configurePreset": "win-release-player",  "jobs": 0 },
+    { "name": "win-clang-debug-player", "configurePreset": "win-clang-debug-player", "jobs": 0 },
+    { "name": "win-clang-release-player", "configurePreset": "win-clang-release-player", "jobs": 0 },
     { "name": "linux-debug",        "configurePreset": "linux-debug",        "jobs": 0 },
     { "name": "linux-release",      "configurePreset": "linux-release",      "jobs": 0 },
     { "name": "linux-asan-debug",   "configurePreset": "linux-asan-debug",   "jobs": 0 },
-    { "name": "linux-psyarcade",    "configurePreset": "linux-psyarcade",    "jobs": 0, "targets": [ "psynder_player", "scene_cook", "lm_cook", "lm_pak" ] }
+    { "name": "linux-debug-player",  "configurePreset": "linux-debug-player",  "jobs": 0 },
+    { "name": "linux-release-player", "configurePreset": "linux-release-player", "jobs": 0 }
   ],
   "testPresets": [
     { "name": "mac-debug",       "configurePreset": "mac-debug",      "output": { "outputOnFailure": true }, "execution": { "repeat": { "mode": "until-pass", "count": 2 } } },
