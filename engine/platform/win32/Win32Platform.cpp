@@ -16,6 +16,7 @@
 #include "core/Log.h"
 
 #include <shlobj.h>
+#include <shellapi.h>
 
 #include <string>
 
@@ -84,6 +85,15 @@ bool file_exists(std::string_view path) {
     const std::wstring w = win32::to_wide(path);
     const DWORD attrs = ::GetFileAttributesW(w.c_str());
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+bool open_external_url(std::string_view url) {
+    if (url.empty())
+        return false;
+    const std::wstring w = win32::to_wide(url);
+    const HINSTANCE result =
+        ::ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return reinterpret_cast<std::uintptr_t>(result) > 32u;
 }
 
 }  // namespace psynder::platform

@@ -31,6 +31,7 @@
 
 #include "Editor.h"
 #include "HotKey.h"
+#include "WebPanels.h"
 
 #include "core/Types.h"
 #include "math/Math.h"
@@ -117,9 +118,13 @@ inline ui::imm::DebugHudMode next_debug_hud_mode(ui::imm::DebugHudMode mode) noe
     }
     return DebugHudMode::Off;
 }
+
 }  // namespace detail
 
 inline Mode sample_update(const platform::Input& input, f32 dt) noexcept {
+    ensure_web_panel_commands_registered();
+    pump_web_panels();
+
     auto& st = detail::overlay_state();
     if (!st.enabled) {
         st.capturing = false;

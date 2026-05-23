@@ -14,6 +14,8 @@ psynder_add_lane(editor_core
         psynder_scene
         psynder_physics
         psynder_script
+        psynder_editor_ipc
+        psynder_platform
         psynder_ui_imm
         psynder_ui_console
 )

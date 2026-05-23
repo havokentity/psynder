@@ -105,6 +105,26 @@ token prints to stderr on engine start. Other panels:
 `/panels/console`, `/panels/profiler`, `/panels/assets`,
 `/panels/props`.
 
+During local React-panel development, run the Vite server:
+
+```bash
+cd engine/editor/web
+npm run dev
+```
+
+Then press `~` in any sample that uses the engine overlay suite and run:
+
+```text
+editor_console
+```
+
+That command starts the local IPC server, prints the session token/URL, and
+opens `/panels/console` through `editor_web_url` (default
+`http://127.0.0.1:5173`). Use `editor_ipc_start` when you only want the
+server/token, or `editor_panel psygraph` / `editor_panel inspector` to open a
+specific panel. `editor_panel console noopen` prints the URL without launching
+the browser.
+
 To skip the editor stack entirely for a shipping build, set
 `PSYNDER_EDITOR=OFF` — the WebSocket server, IDL, and React panels
 are fenced out, the binary shrinks, and no Chrome / Node dependency

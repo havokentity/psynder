@@ -32,12 +32,16 @@
 #include <filesystem>
 #include <limits.h>
 #include <mutex>
+#include <spawn.h>
 #include <span>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+
+extern char** environ;
 
 namespace psynder::platform {
 
@@ -268,6 +272,18 @@ bool file_exists(std::string_view path) {
     std::string p{path};
     struct ::stat st {};
     return ::stat(p.c_str(), &st) == 0;
+}
+
+bool open_external_url(std::string_view url) {
+    if (url.empty())
+        return false;
+    std::string owned{url};
+    char* argv[] = {const_cast<char*>("xdg-open"), owned.data(), nullptr};
+    pid_t pid = 0;
+    if (::posix_spawnp(&pid, "xdg-open", nullptr, nullptr, argv, environ) != 0)
+        return false;
+    int status = 0;
+    return ::waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 }  // namespace psynder::platform

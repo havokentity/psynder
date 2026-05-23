@@ -195,5 +195,6 @@ std::string executable_path();
 std::string user_config_dir();
 std::string current_working_directory();
 bool file_exists(std::string_view path);
+bool open_external_url(std::string_view url);
 
 }  // namespace psynder::platform
