@@ -2,6 +2,8 @@
 // Psynder Arcade — generic cooked scene runtime shell.
 
 #include "asset/Vault.h"
+#include "audio/Audio.h"
+#include "audio/Chiptune.h"
 #include "core/AppArgs.h"
 #include "core/console/Console.h"
 #include "core/Log.h"
@@ -61,6 +63,7 @@ void print_arcade_help(console::Output& out) {
     out.PrintLine("Commands:");
     out.PrintLine("  arcade_load_scene <path>  Load a cooked .psyscene");
     out.PrintLine("  arcade_open_editor        Open the web editor workbench");
+    out.PrintLine("  arcade_boot_tune          Replay the 8-bit boot chime");
     out.PrintLine("  editor_panel psygraph     Open visual scripting");
     out.PrintLine("  editor_panel assets       Open the asset browser");
     out.PrintLine("  editor_panel props        Open prop spawning");
@@ -110,6 +113,13 @@ void register_arcade_console_commands() {
             out.PrintLine("arcade_new_scene: created blank scene with active camera");
         });
     console_ref.RegisterCommand(
+        "arcade_boot_tune",
+        "Replay the Psynder Arcade 8-bit boot chime.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            audio::play_chiptune(audio::boot_chime_song());
+            out.PrintLine("arcade_boot_tune: playing boot chime");
+        });
+    console_ref.RegisterCommand(
         "arcade_open_editor",
         "Open the Psynder web editor workbench.",
         [](std::span<const std::string_view>, console::Output& out) {
@@ -126,6 +136,7 @@ void log_arcade_startup_help(std::string_view status) {
     PSY_LOG_INFO("psynder_arcade: press `~` for the console");
     PSY_LOG_INFO("psynder_arcade: arcade_load_scene <path> loads a cooked .psyscene");
     PSY_LOG_INFO("psynder_arcade: arcade_open_editor opens the web editor workbench");
+    PSY_LOG_INFO("psynder_arcade: arcade_boot_tune replays the 8-bit boot chime");
     PSY_LOG_INFO("psynder_arcade: editor_panel psygraph opens visual scripting");
 }
 
@@ -342,6 +353,7 @@ struct PlayerApp {
     scene::Scene* load_target_scene = nullptr;
     std::string idle_status = "No scene loaded.";
     bool show_idle_panel = true;
+    bool audio_started = false;
 
     static PlayerArgs parse_args(int argc, char** argv) { return parse_player_args(argc, argv); }
 
@@ -375,11 +387,23 @@ struct PlayerApp {
         PSY_LOG_INFO("psynder_arcade: created blank scene");
     }
 
+    void start_boot_audio(const PlayerArgs& args) {
+        if (args.smoke_frames > 0u)
+            return;
+        if (!audio::Engine::Get().start(audio::DeviceDesc{})) {
+            PSY_LOG_WARN("psynder_arcade: audio backend unavailable; boot chime disabled");
+            return;
+        }
+        audio_started = true;
+        audio::play_chiptune(audio::boot_chime_song());
+    }
+
     void started(app::WindowApp& app_ref, const PlayerArgs& args) {
         app = &app_ref;
         g_active_arcade = this;
         editor::ensure_web_panel_commands_registered();
         register_arcade_console_commands();
+        start_boot_audio(args);
 
         scene_load
             .on_ready([this](const scene::SceneLoadResult& result) {
@@ -421,6 +445,11 @@ struct PlayerApp {
     }
 
     void stopped(app::WindowApp&) {
+        if (audio_started) {
+            audio::stop_chiptune();
+            audio::Engine::Get().stop();
+            audio_started = false;
+        }
         if (g_active_arcade == this)
             g_active_arcade = nullptr;
     }

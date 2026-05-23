@@ -13,6 +13,7 @@
 #include "Audio.h"
 
 #include "internal/Backend.h"
+#include "internal/ChiptuneSynth.h"
 #include "internal/Doppler.h"
 #include "internal/HrirDatabase.h"
 #include "internal/MixerCore.h"
@@ -23,7 +24,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -142,6 +142,8 @@ void mixer_pull(f32* out_stereo, u32 frames, void* /*user*/) noexcept {
         }
     }
 
+    detail::chiptune_render_into(s.scratch_stereo.data(), frames);
+
     // Master soft-clip + emit. The reverb send is wired through the FDN
     // when an outdoor scene flag is set (lit by sample apps in Wave B);
     // for Wave A we keep the master path dry so the deliverable's mixer
@@ -185,6 +187,8 @@ bool Engine::start(const DeviceDesc& desc) {
                                0.0f);
 
     s.voices.clear();
+    detail::chiptune_set_sample_rate(s.desc.sample_rate);
+    detail::chiptune_stop();
     // Wave-A naive paths kept for backwards-compatible tests.
     s.fdn.reset(s.desc.sample_rate, /*decay s*/ 2.5f);
     s.indoor.reset(s.desc.sample_rate, /*ir s*/ 0.12f, /*decay s*/ 1.2f);
@@ -234,6 +238,7 @@ void Engine::stop() {
         std::lock_guard<std::mutex> lk(s.voices_mu);
         s.voices.clear();
     }
+    detail::chiptune_stop();
     PSY_LOG_INFO("[audio] Engine stopped.");
 }
 
