@@ -9,9 +9,11 @@
 #include "platform/App.h"
 #include "scene/SceneFile.h"
 #include "ui/imm/Imm.h"
+#include "ui/imm/detail/Font.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <string>
 #include <string_view>
 
@@ -115,16 +117,166 @@ void log_arcade_startup_help(std::string_view status) {
     PSY_LOG_INFO("psynder_arcade: editor_panel psygraph opens visual scripting");
 }
 
-void draw_idle_panel(render::Framebuffer& fb, std::string_view status) {
+u8 clamp_u8(f32 value) noexcept {
+    return static_cast<u8>(std::clamp(value, 0.0f, 255.0f));
+}
+
+u32 with_alpha(u32 rgba, f32 alpha) noexcept {
+    return (rgba & 0x00FFFFFFu) |
+           (static_cast<u32>(clamp_u8(alpha * 255.0f)) << 24u);
+}
+
+u32 mix_rgb(u32 a, u32 b, f32 t, f32 alpha = 1.0f) noexcept {
+    t = std::clamp(t, 0.0f, 1.0f);
+    const f32 ar = static_cast<f32>(a & 0xFFu);
+    const f32 ag = static_cast<f32>((a >> 8u) & 0xFFu);
+    const f32 ab = static_cast<f32>((a >> 16u) & 0xFFu);
+    const f32 br = static_cast<f32>(b & 0xFFu);
+    const f32 bg = static_cast<f32>((b >> 8u) & 0xFFu);
+    const f32 bb = static_cast<f32>((b >> 16u) & 0xFFu);
+    return ui::imm::rgba(clamp_u8(ar + (br - ar) * t),
+                         clamp_u8(ag + (bg - ag) * t),
+                         clamp_u8(ab + (bb - ab) * t),
+                         clamp_u8(alpha * 255.0f));
+}
+
+void blend_pixel(render::Framebuffer& fb, i32 x, i32 y, u32 src) {
+    if (x < 0 || y < 0 || x >= static_cast<i32>(fb.width) || y >= static_cast<i32>(fb.height) ||
+        fb.pixels == nullptr) {
+        return;
+    }
+    auto* pixels = reinterpret_cast<u32*>(fb.pixels);
+    u32& dst = pixels[static_cast<usize>(y) * fb.width + static_cast<usize>(x)];
+    const f32 a = static_cast<f32>((src >> 24u) & 0xFFu) / 255.0f;
+    if (a >= 0.996f) {
+        dst = src;
+        return;
+    }
+    const f32 ia = 1.0f - a;
+    dst = ui::imm::rgba(clamp_u8(static_cast<f32>(src & 0xFFu) * a +
+                                 static_cast<f32>(dst & 0xFFu) * ia),
+                        clamp_u8(static_cast<f32>((src >> 8u) & 0xFFu) * a +
+                                 static_cast<f32>((dst >> 8u) & 0xFFu) * ia),
+                        clamp_u8(static_cast<f32>((src >> 16u) & 0xFFu) * a +
+                                 static_cast<f32>((dst >> 16u) & 0xFFu) * ia));
+}
+
+void draw_glow(render::Framebuffer& fb, math::Vec2 centre, f32 radius, u32 color, f32 alpha) {
+    const i32 min_x = static_cast<i32>(std::floor(centre.x - radius));
+    const i32 max_x = static_cast<i32>(std::ceil(centre.x + radius));
+    const i32 min_y = static_cast<i32>(std::floor(centre.y - radius));
+    const i32 max_y = static_cast<i32>(std::ceil(centre.y + radius));
+    const f32 inv_r = radius > 0.0f ? 1.0f / radius : 1.0f;
+    for (i32 y = min_y; y <= max_y; ++y) {
+        for (i32 x = min_x; x <= max_x; ++x) {
+            const f32 dx = (static_cast<f32>(x) + 0.5f - centre.x) * inv_r;
+            const f32 dy = (static_cast<f32>(y) + 0.5f - centre.y) * inv_r;
+            const f32 d2 = dx * dx + dy * dy;
+            if (d2 > 1.0f)
+                continue;
+            const f32 falloff = (1.0f - d2) * (1.0f - d2);
+            blend_pixel(fb, x, y, with_alpha(color, alpha * falloff));
+        }
+    }
+}
+
+void draw_scaled_text(math::Vec2 origin, std::string_view text, f32 scale, u32 color) {
+    constexpr f32 kGlyphW = static_cast<f32>(ui::imm::detail::kGlyphWidth);
+    constexpr f32 kGlyphH = static_cast<f32>(ui::imm::detail::kGlyphHeight);
+    constexpr f32 kCellW = static_cast<f32>(ui::imm::detail::kCellWidth);
+    f32 pen_x = origin.x;
+    for (char ch : text) {
+        const ui::imm::detail::Glyph& glyph = ui::imm::detail::glyph_for(ch);
+        for (u32 row = 0; row < ui::imm::detail::kGlyphHeight; ++row) {
+            const u8 bits = glyph.rows[row];
+            for (u32 col = 0; col < ui::imm::detail::kGlyphWidth; ++col) {
+                const u8 mask = static_cast<u8>(1u << (ui::imm::detail::kGlyphWidth - 1u - col));
+                if ((bits & mask) == 0u)
+                    continue;
+                ui::imm::filled_rect(math::Vec2{pen_x + static_cast<f32>(col) * scale,
+                                                origin.y + static_cast<f32>(row) * scale},
+                                     math::Vec2{scale, scale},
+                                     color);
+            }
+        }
+        pen_x += kCellW * scale;
+    }
+    (void)kGlyphW;
+    (void)kGlyphH;
+}
+
+void draw_attract_mode(render::Framebuffer& fb, f64 seconds, std::string_view status) {
     if (fb.width == 0u || fb.height == 0u || fb.pixels == nullptr)
         return;
 
-    constexpr f32 kCellW = 6.0f;
+    constexpr u32 kNearBlack = ui::imm::rgba(0x04, 0x06, 0x12);
+    constexpr u32 kDeepBlue = ui::imm::rgba(0x09, 0x19, 0x2B);
+    constexpr u32 kMagenta = ui::imm::rgba(0xF0, 0x4A, 0xC8);
+    constexpr u32 kCyan = ui::imm::rgba(0x4D, 0xE9, 0xFF);
+    constexpr u32 kAmber = ui::imm::rgba(0xFF, 0xC7, 0x57);
+    constexpr u32 kGreen = ui::imm::rgba(0x72, 0xFF, 0xB8);
+
+    auto* pixels = reinterpret_cast<u32*>(fb.pixels);
+    for (u32 y = 0; y < fb.height; ++y) {
+        const f32 v = static_cast<f32>(y) / static_cast<f32>(std::max(1u, fb.height - 1u));
+        const u32 row = mix_rgb(kNearBlack, kDeepBlue, v * 0.75f);
+        for (u32 x = 0; x < fb.width; ++x)
+            pixels[static_cast<usize>(y) * fb.width + x] = row;
+    }
+
+    const f32 t = static_cast<f32>(seconds);
+    ui::imm::begin_frame(fb);
+    for (u32 i = 0; i < 42u; ++i) {
+        const f32 fi = static_cast<f32>(i);
+        const f32 x0 = std::fmod(fi * 73.0f + t * (12.0f + std::fmod(fi, 5.0f) * 5.0f),
+                                 static_cast<f32>(fb.width) + 120.0f) -
+                       60.0f;
+        const f32 y = 24.0f + std::fmod(fi * 37.0f + std::sin(t * 0.7f + fi) * 18.0f,
+                                        static_cast<f32>(std::max(1u, fb.height - 48u)));
+        const f32 len = 20.0f + std::fmod(fi * 11.0f, 46.0f);
+        const u32 color = (i % 3u == 0u) ? with_alpha(kCyan, 0.28f)
+                          : (i % 3u == 1u) ? with_alpha(kMagenta, 0.22f)
+                                           : with_alpha(kGreen, 0.18f);
+        ui::imm::line(math::Vec2{x0, y}, math::Vec2{x0 + len, y + std::sin(t + fi) * 7.0f}, color);
+    }
+
+    for (u32 i = 0; i < 4u; ++i) {
+        const f32 phase = t * (0.9f + 0.12f * static_cast<f32>(i)) + static_cast<f32>(i) * 1.7f;
+        const f32 cx = static_cast<f32>(fb.width) * (0.5f + 0.38f * std::sin(phase));
+        const f32 cy = static_cast<f32>(fb.height) * (0.5f + 0.30f * std::cos(phase * 1.31f));
+        const u32 color = i == 0u   ? kCyan
+                          : i == 1u ? kMagenta
+                          : i == 2u ? kAmber
+                                    : kGreen;
+        draw_glow(fb, math::Vec2{cx, cy}, 36.0f + 10.0f * std::sin(phase * 1.9f), color, 0.22f);
+    }
+
+    constexpr std::string_view kLogo = "PsyArcade";
+    constexpr f32 kLogoScale = 5.0f;
+    constexpr f32 kSmallCellW = 6.0f;
+    const f32 logo_w =
+        static_cast<f32>(kLogo.size()) * static_cast<f32>(ui::imm::detail::kCellWidth) * kLogoScale;
+    const f32 logo_h = static_cast<f32>(ui::imm::detail::kGlyphHeight) * kLogoScale;
+    const f32 bounds_w = std::max(1.0f, static_cast<f32>(fb.width) - logo_w - 28.0f);
+    const f32 bounds_h = std::max(1.0f, static_cast<f32>(fb.height) - logo_h - 92.0f);
+    const f32 bx = 14.0f + std::fabs(std::fmod(t * 86.0f, bounds_w * 2.0f) - bounds_w);
+    const f32 by = 28.0f + std::fabs(std::fmod(t * 57.0f, bounds_h * 2.0f) - bounds_h);
+    const f32 pulse = 0.5f + 0.5f * std::sin(t * 5.0f);
+
+    draw_glow(fb,
+              math::Vec2{bx + logo_w * 0.5f, by + logo_h * 0.5f},
+              54.0f + 12.0f * pulse,
+              mix_rgb(kCyan, kMagenta, pulse),
+              0.34f);
+    draw_scaled_text(math::Vec2{bx + 5.0f, by + 5.0f}, kLogo, kLogoScale, kMagenta);
+    draw_scaled_text(math::Vec2{bx - 4.0f, by - 2.0f}, kLogo, kLogoScale, kCyan);
+    draw_scaled_text(math::Vec2{bx, by}, kLogo, kLogoScale, kAmber);
+
+    constexpr f32 kCellW = kSmallCellW;
     constexpr f32 kLineH = 10.0f;
     constexpr f32 kPadX = 14.0f;
     constexpr f32 kPadY = 12.0f;
-    const std::array<std::string_view, 8> lines{
-        "Psynder Arcade",
+    const std::array<std::string_view, 7> lines{
         status,
         "Press `~` for the console.",
         "arcade_load_scene <path>  Load a cooked .psyscene",
@@ -144,18 +296,16 @@ void draw_idle_panel(render::Framebuffer& fb, std::string_view status) {
     const f32 x = (static_cast<f32>(fb.width) - panel_w) * 0.5f;
     const f32 y = (static_cast<f32>(fb.height) - panel_h) * 0.5f;
 
-    ui::imm::begin_frame(fb);
     ui::imm::filled_rect(math::Vec2{x, y},
                          math::Vec2{panel_w, panel_h},
-                         ui::imm::rgba(0x08, 0x0D, 0x13));
+                         with_alpha(ui::imm::rgba(0x06, 0x0B, 0x14), 0.88f));
     ui::imm::rect_outline(math::Vec2{x, y},
                           math::Vec2{panel_w, panel_h},
-                          ui::imm::rgba(0x5F, 0x85, 0xB8));
+                          mix_rgb(kCyan, kMagenta, pulse));
     f32 line_y = y + kPadY;
     for (usize i = 0u; i < lines.size(); ++i) {
-        const u32 color = i == 0u   ? ui::imm::rgba(0xFF, 0xD2, 0x66)
-                          : i == 1u ? ui::imm::rgba(0xD8, 0xE6, 0xF7)
-                                    : ui::imm::rgba(0x9F, 0xB5, 0xCC);
+        const u32 color = i == 0u ? ui::imm::rgba(0xD8, 0xE6, 0xF7)
+                                  : ui::imm::rgba(0x9F, 0xB5, 0xCC);
         ui::imm::label(math::Vec2{x + kPadX, line_y}, lines[i], color);
         line_y += kLineH;
     }
@@ -225,13 +375,13 @@ struct PlayerApp {
         if (scene_load.pending() && load_target_scene)
             ctx.app.update_scene_load(scene_load, *load_target_scene);
         (void)ctx.app.engine_frame_update(ctx.dt);
+        if (show_idle_panel)
+            draw_attract_mode(ctx.framebuffer, ctx.seconds, idle_status);
         (void)cr;
     }
 
     void frame_post(app::WindowFrameContextT<PlayerArgs>& ctx, app::WindowFrameCacheReady&) {
         ctx.app.engine_frame_post();
-        if (show_idle_panel)
-            draw_idle_panel(ctx.framebuffer, idle_status);
     }
 
     void stopped(app::WindowApp&) {
