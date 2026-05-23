@@ -140,6 +140,14 @@ u32 mix_rgb(u32 a, u32 b, f32 t, f32 alpha = 1.0f) noexcept {
                          clamp_u8(alpha * 255.0f));
 }
 
+f32 ping_pong(f32 value, f32 limit) noexcept {
+    if (limit <= 0.0f)
+        return 0.0f;
+    const f32 period = limit * 2.0f;
+    const f32 wrapped = std::fmod(value, period);
+    return wrapped <= limit ? wrapped : period - wrapped;
+}
+
 void blend_pixel(render::Framebuffer& fb, i32 x, i32 y, u32 src) {
     if (x < 0 || y < 0 || x >= static_cast<i32>(fb.width) || y >= static_cast<i32>(fb.height) ||
         fb.pixels == nullptr) {
@@ -257,10 +265,10 @@ void draw_attract_mode(render::Framebuffer& fb, f64 seconds, std::string_view st
     const f32 logo_w =
         static_cast<f32>(kLogo.size()) * static_cast<f32>(ui::imm::detail::kCellWidth) * kLogoScale;
     const f32 logo_h = static_cast<f32>(ui::imm::detail::kGlyphHeight) * kLogoScale;
-    const f32 bounds_w = std::max(1.0f, static_cast<f32>(fb.width) - logo_w - 28.0f);
-    const f32 bounds_h = std::max(1.0f, static_cast<f32>(fb.height) - logo_h - 92.0f);
-    const f32 bx = 14.0f + std::fabs(std::fmod(t * 86.0f, bounds_w * 2.0f) - bounds_w);
-    const f32 by = 28.0f + std::fabs(std::fmod(t * 57.0f, bounds_h * 2.0f) - bounds_h);
+    const f32 bounds_w = std::max(0.0f, static_cast<f32>(fb.width) - logo_w);
+    const f32 bounds_h = std::max(0.0f, static_cast<f32>(fb.height) - logo_h);
+    const f32 bx = ping_pong(t * 86.0f, bounds_w);
+    const f32 by = ping_pong(t * 57.0f, bounds_h);
     const f32 pulse = 0.5f + 0.5f * std::sin(t * 5.0f);
 
     draw_glow(fb,
