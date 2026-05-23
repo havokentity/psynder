@@ -536,6 +536,11 @@ button {
     border-color: var(--psy-accent);
 }
 
+.psy-dock-shell[data-close-hint="true"] .psy-dock-tree {
+    outline: 2px dashed color-mix(in srgb, var(--psy-danger) 68%, transparent);
+    outline-offset: -8px;
+}
+
 .psy-dock-divider {
     min-width: 0;
     min-height: 0;
@@ -667,6 +672,62 @@ button {
     transform: translate(-50%, -50%);
 }
 
+.psy-dock-close-hint {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    z-index: 70;
+    transform: translateX(-50%);
+    padding: 8px 12px;
+    border: 1px solid var(--psy-danger);
+    border-radius: var(--psy-radius-sm);
+    background: color-mix(in srgb, var(--psy-danger) 18%, var(--psy-bg-elev-2));
+    color: var(--psy-danger);
+    font-family: var(--psy-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    pointer-events: none;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.34);
+}
+
+.psy-dock-undo {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    z-index: 75;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--psy-border);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-elev-2);
+    color: var(--psy-fg);
+    box-shadow: var(--psy-panel-shadow);
+}
+
+.psy-dock-undo span {
+    color: var(--psy-fg-muted);
+    font-size: 12px;
+}
+
+.psy-dock-undo button {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-input);
+    color: var(--psy-accent);
+    cursor: pointer;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.psy-dock-undo button:hover {
+    border-color: var(--psy-accent);
+}
+
 @keyframes psy-dock-drag-close {
     0% {
         opacity: 1;
@@ -685,6 +746,9 @@ button {
 @supports not (background: color-mix(in srgb, red 50%, black)) {
     .psy-dock-close-ghost {
         background: var(--psy-bg-input);
+    }
+    .psy-dock-close-hint {
+        background: var(--psy-bg-elev-2);
     }
 }
 

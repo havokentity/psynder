@@ -25,6 +25,7 @@ type DockDropZone = 'center' | 'left' | 'right' | 'top' | 'bottom';
 type DockPath = readonly number[];
 type DockLeaf = { kind: 'leaf'; panel: PanelName };
 type DockCloseGhost = { id: number; x: number; y: number };
+type DockUndo = { id: number; tree: DockNode; message: string };
 type DockSplit = {
     kind: 'split';
     axis: DockAxis;
@@ -605,13 +606,37 @@ function DockWorkspace({
     const drag_source_ref = React.useRef<DockPath | null>(null);
     const drop_handled_ref = React.useRef(false);
     const close_timer_ref = React.useRef<ReturnType<typeof window.setTimeout> | null>(null);
+    const undo_timer_ref = React.useRef<ReturnType<typeof window.setTimeout> | null>(null);
     const close_ghost_seq = React.useRef(0);
+    const undo_seq = React.useRef(0);
+    const shell_ref = React.useRef<HTMLElement | null>(null);
     const [close_ghost, set_close_ghost] = React.useState<DockCloseGhost | null>(null);
+    const [drag_close_hint, set_drag_close_hint] = React.useState(false);
+    const [undo, set_undo] = React.useState<DockUndo | null>(null);
 
     React.useEffect(() => () => {
         if (close_timer_ref.current !== null) {
             window.clearTimeout(close_timer_ref.current);
         }
+        if (undo_timer_ref.current !== null) {
+            window.clearTimeout(undo_timer_ref.current);
+        }
+    }, []);
+
+    const push_undo = React.useCallback((message: string, previous_tree: DockNode) => {
+        undo_seq.current += 1;
+        if (undo_timer_ref.current !== null) {
+            window.clearTimeout(undo_timer_ref.current);
+        }
+        set_undo({
+            id: undo_seq.current,
+            tree: previous_tree,
+            message,
+        });
+        undo_timer_ref.current = window.setTimeout(() => {
+            set_undo(null);
+            undo_timer_ref.current = null;
+        }, 4200);
     }, []);
 
     const replace_at = React.useCallback((path: DockPath, panel: PanelName, zone: DockDropZone) => {
@@ -629,6 +654,7 @@ function DockWorkspace({
             return;
         }
         drop_handled_ref.current = true;
+        set_drag_close_hint(false);
         if (same_path(path, source_path)) {
             return;
         }
@@ -644,8 +670,9 @@ function DockWorkspace({
     }, [on_split, on_tree, tree]);
 
     const remove_at = React.useCallback((path: DockPath) => {
+        push_undo('panel removed', tree);
         on_tree(remove_dock_at(tree, path));
-    }, [on_tree, tree]);
+    }, [on_tree, push_undo, tree]);
 
     const begin_drag = React.useCallback((path: DockPath) => {
         if (close_timer_ref.current !== null) {
@@ -653,13 +680,33 @@ function DockWorkspace({
             close_timer_ref.current = null;
         }
         set_close_ghost(null);
+        set_drag_close_hint(false);
         drag_source_ref.current = path;
         drop_handled_ref.current = false;
+    }, []);
+
+    const update_drag_hint = React.useCallback((point: { x: number; y: number }) => {
+        if (!drag_source_ref.current || drop_handled_ref.current) {
+            set_drag_close_hint(false);
+            return;
+        }
+        const rect = shell_ref.current?.getBoundingClientRect();
+        if (!rect) {
+            set_drag_close_hint(false);
+            return;
+        }
+        const outside =
+            point.x < rect.left ||
+            point.x > rect.right ||
+            point.y < rect.top ||
+            point.y > rect.bottom;
+        set_drag_close_hint(outside);
     }, []);
 
     const finish_drag = React.useCallback((point: { x: number; y: number }) => {
         const source_path = drag_source_ref.current;
         drag_source_ref.current = null;
+        set_drag_close_hint(false);
         if (!source_path || drop_handled_ref.current) {
             drop_handled_ref.current = false;
             return;
@@ -674,15 +721,31 @@ function DockWorkspace({
             x: Number.isFinite(point.x) ? point.x : window.innerWidth / 2,
             y: Number.isFinite(point.y) ? point.y : window.innerHeight / 2,
         });
+        push_undo('panel closed', tree);
         on_tree(remove_dock_at(tree, source_path));
         close_timer_ref.current = window.setTimeout(() => {
             set_close_ghost(null);
             close_timer_ref.current = null;
         }, 220);
-    }, [on_tree, tree]);
+    }, [on_tree, push_undo, tree]);
+
+    const undo_close = React.useCallback(() => {
+        if (!undo) return;
+        if (undo_timer_ref.current !== null) {
+            window.clearTimeout(undo_timer_ref.current);
+            undo_timer_ref.current = null;
+        }
+        on_tree(undo.tree);
+        set_undo(null);
+    }, [on_tree, undo]);
 
     return (
-        <section className="psy-dock-shell" data-layout={layout}>
+        <section
+            ref={shell_ref}
+            className="psy-dock-shell"
+            data-layout={layout}
+            data-close-hint={drag_close_hint ? 'true' : undefined}
+        >
             <div className="psy-dock-toolbar">
                 <div className="psy-dock-title">
                     <span className="psy-dock-glyph">=</span>
@@ -710,6 +773,7 @@ function DockWorkspace({
                     path={[]}
                     label="root"
                     on_begin_drag={begin_drag}
+                    on_drag_move={update_drag_hint}
                     on_drop_panel={move_or_drop_at}
                     on_finish_drag={finish_drag}
                     on_remove={remove_at}
@@ -729,6 +793,17 @@ function DockWorkspace({
                     ::
                 </div>
             )}
+            {drag_close_hint && (
+                <div className="psy-dock-close-hint" aria-hidden="true">
+                    release to close
+                </div>
+            )}
+            {undo && (
+                <div className="psy-dock-undo" role="status">
+                    <span>{undo.message}</span>
+                    <button type="button" onClick={undo_close}>undo</button>
+                </div>
+            )}
         </section>
     );
 }
@@ -738,6 +813,7 @@ function DockNodeView({
     path,
     label,
     on_begin_drag,
+    on_drag_move,
     on_drop_panel,
     on_finish_drag,
     on_remove,
@@ -747,6 +823,7 @@ function DockNodeView({
     path: DockPath;
     label: string;
     on_begin_drag(path: DockPath): void;
+    on_drag_move(point: { x: number; y: number }): void;
     on_drop_panel(
         path: DockPath,
         panel: PanelName,
@@ -764,6 +841,7 @@ function DockNodeView({
                 panel={node.panel}
                 path={path}
                 on_begin_drag={() => on_begin_drag(path)}
+                on_drag_move={on_drag_move}
                 on_drop_panel={(panel, zone, source_path) => (
                     on_drop_panel(path, panel, zone, source_path)
                 )}
@@ -784,6 +862,7 @@ function DockNodeView({
                 path={[...path, 0]}
                 label={`${label}.a`}
                 on_begin_drag={on_begin_drag}
+                on_drag_move={on_drag_move}
                 on_drop_panel={on_drop_panel}
                 on_finish_drag={on_finish_drag}
                 on_remove={on_remove}
@@ -799,6 +878,7 @@ function DockNodeView({
                 path={[...path, 1]}
                 label={`${label}.b`}
                 on_begin_drag={on_begin_drag}
+                on_drag_move={on_drag_move}
                 on_drop_panel={on_drop_panel}
                 on_finish_drag={on_finish_drag}
                 on_remove={on_remove}
@@ -855,6 +935,7 @@ function DockSlotView({
     panel,
     path,
     on_begin_drag,
+    on_drag_move,
     on_drop_panel,
     on_finish_drag,
     on_remove,
@@ -863,6 +944,7 @@ function DockSlotView({
     panel: PanelName;
     path: DockPath;
     on_begin_drag(): void;
+    on_drag_move(point: { x: number; y: number }): void;
     on_drop_panel(panel: PanelName, zone: DockDropZone, source_path: DockPath | null): void;
     on_finish_drag(point: { x: number; y: number }): void;
     on_remove?: () => void;
@@ -902,6 +984,7 @@ function DockSlotView({
                 const dropped = e.dataTransfer.getData('application/x-psy-panel');
                 if ((PANEL_NAMES as readonly string[]).includes(dropped)) {
                     e.preventDefault();
+                    on_drag_move({ x: e.clientX, y: e.clientY });
                     const source_path = parse_dock_path(
                         e.dataTransfer.getData('application/x-psy-dock-path'),
                     );
@@ -924,6 +1007,11 @@ function DockSlotView({
                         e.dataTransfer.setData('application/x-psy-dock-path', JSON.stringify(path));
                         e.dataTransfer.effectAllowed = 'move';
                         e.dataTransfer.setDragImage(transparent_drag_image(), 0, 0);
+                    }}
+                    onDrag={(e) => {
+                        if (e.clientX !== 0 || e.clientY !== 0) {
+                            on_drag_move({ x: e.clientX, y: e.clientY });
+                        }
                     }}
                     onDragEnd={(e) => on_finish_drag({ x: e.clientX, y: e.clientY })}
                 >
