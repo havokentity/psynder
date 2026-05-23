@@ -600,6 +600,15 @@ button {
     border-color: var(--psy-border);
 }
 
+.psy-dock-slot:focus {
+    outline: none;
+}
+
+.psy-dock-slot[data-active="true"] {
+    border-color: var(--psy-accent-2);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--psy-accent-2) 48%, transparent);
+}
+
 .psy-dock-slot[data-drop-zone] {
     border-color: var(--psy-accent);
 }
@@ -688,6 +697,22 @@ button {
     font-family: var(--psy-mono);
     font-size: 10px;
     text-transform: uppercase;
+}
+
+.psy-dock-dup-badge {
+    min-width: 24px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 6px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: 999px;
+    background: var(--psy-bg-input);
+    color: var(--psy-accent-2);
+    font-family: var(--psy-mono);
+    font-size: 10px;
+    line-height: 1;
 }
 
 .psy-dock-drag {
