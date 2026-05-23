@@ -82,6 +82,10 @@ void EcsRegistryImpl::shutdown() noexcept {
     pending_.clear();
     deferred_arena_.clear();
     live_entities_ = 0;
+    deferred_ = false;
+    archetypes_.emplace_back();
+    archetype_keys_.emplace_back();
+    archetypes_[0].init(0, std::span<const ComponentId>{});
 }
 
 u32 EcsRegistryImpl::allocate_slot() {

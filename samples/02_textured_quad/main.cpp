@@ -8,65 +8,97 @@
 #include "render/GeometryTools.h"
 #include "render/Texture.h"
 #include "render/TextureGenerators.h"
+#include "scene/SceneFile.h"
 
-#include <array>
+#include <vector>
 
 using namespace psynder;
 
 namespace {
 
-// Crate placements inside the room. Four cubes form a small clump in front
-// of the camera; the camera looks down -Z so all four are visible.
-const std::array<math::Vec3, 4> kCratePositions{{
-    {-1.3f, 0.0f, -3.0f},
-    {1.3f, 0.0f, -3.0f},
-    {-0.6f, 0.0f, -5.0f},
-    {0.7f, 1.2f, -5.5f},
-}};
-
 struct TexturedQuadSample : app::BasicSceneApp {
     static constexpr const char* log_name = "sample_02";
     static constexpr const char* display_name = "Psynder sample 02 (crate room)";
+    static constexpr const char* asset_root = "samples/02_textured_quad";
 
     render::Texture2D crate_texture{};
-    std::array<Entity, kCratePositions.size()> crates{};
+    render::MeshId cube_mesh{};
+    render::MaterialId crate_material_id{};
+    scene::SceneFileRequest scene_request{};
+    scene::SceneFileLoaded scene_file{};
+    std::vector<Entity> crates{};
+    std::vector<scene::LocalTransform> base_transforms{};
+    bool instantiated = false;
+    bool load_error_reported = false;
 
     void started(app::WindowApp& app) {
         crate_texture = render::texture_generators::wooden_crate();
 
         auto& scene_ref = scene();
-        scene_ref.prewarm_capacity(
-            {.scene_entities = 8u, .renderables = 4u, .cameras = 1u, .render_items = 4u});
-        app.reserve_scene_capacity(4u, 1u);
-        scene_ref.environment().set_clear_color(0xFF182030u);
-        (void)scene_ref.spawn_camera({.position = math::Vec3{0.0f, 1.5f, 1.5f},
-                                      .look_at = math::Vec3{0.0f, 0.0f, -3.0f}});
+        scene_ref.set_structural_deferred(false);
 
         render::MeshDesc cube_mesh_desc = render::geometry_tools::unit_cube();
         cube_mesh_desc.base_color = crate_texture.view();
-        const render::MeshId cube_mesh = app.rendering_system().cached_mesh(cube_mesh_desc);
+        cube_mesh = app.rendering_system().cached_mesh(cube_mesh_desc);
 
         render::MaterialDesc crate_material{};
         crate_material.flags = render::MaterialFlags::RasterVisible;
-        const render::MaterialId crate_material_id = scene_ref.materials().create(crate_material);
+        crate_material_id = scene_ref.materials().create(crate_material);
 
-        std::array<scene::LocalTransform, kCratePositions.size()> crate_transforms{};
-        for (usize i = 0; i < kCratePositions.size(); ++i)
-            crate_transforms[i].translation = kCratePositions[i];
-        scene_ref.spawn_mesh_batch(cube_mesh, crate_material_id, crate_transforms, crates);
+        scene_request.load_async("assets/crate_room.psyscene");
     }
 
     void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {
+        instantiate_if_ready(ctx.app, cr.scene());
+
         const auto edit_mode = ctx.app.engine_frame_update(ctx.dt);
         const f32 t = edit_mode == editor::Mode::Edit ? 0.0f : static_cast<f32>(ctx.seconds);
 
-        for (usize i = 0; i < kCratePositions.size(); ++i) {
-            scene::LocalTransform transform{};
-            transform.translation = kCratePositions[i];
-            transform.rotation = math::quat_from_axis_angle(
-                math::Vec3{0, 1, 0}, t * (0.35f + 0.12f * static_cast<f32>(i)));
+        for (usize i = 0; i < crates.size(); ++i) {
+            scene::LocalTransform transform = base_transforms[i];
+            const math::Quat spin = math::quat_from_axis_angle(
+                math::Vec3{0.0f, 1.0f, 0.0f}, t * (0.35f + 0.12f * static_cast<f32>(i)));
+            transform.rotation = math::quat_mul(spin, transform.rotation);
             cr.scene().set_transform(crates[i], transform);
         }
+    }
+
+    void instantiate_if_ready(app::WindowApp& app, scene::Scene& scene_ref) {
+        if (instantiated)
+            return;
+        if (scene_request.failed()) {
+            if (!load_error_reported) {
+                PSY_LOG_ERROR("sample_02: {}", scene_request.error());
+                load_error_reported = true;
+            }
+            return;
+        }
+        scene::SceneFileLoaded loaded;
+        if (!scene_request.consume(loaded))
+            return;
+
+        scene_file = std::move(loaded);
+        const scene::SceneFileView& view = scene_file.view;
+        scene_ref.prewarm_capacity(scene::scene_file_prewarm_config(view));
+        app.reserve_scene_capacity(static_cast<u32>(view.mesh_instances.size()), 1u);
+
+        crates.assign(view.mesh_instances.size(), {});
+        const scene::SceneMeshBinding bindings[] = {
+            {.mesh_name = "crateCube", .mesh = cube_mesh, .material = crate_material_id},
+        };
+        const scene::SceneFileInstantiateResult result =
+            scene::instantiate_scene_file(scene_ref, view, bindings, crates);
+        if (result.missing_mesh_bindings != 0u) {
+            PSY_LOG_WARN("sample_02: {} cooked mesh binding(s) were missing",
+                         result.missing_mesh_bindings);
+        }
+
+        base_transforms.resize(crates.size());
+        for (usize i = 0; i < view.mesh_instances.size(); ++i) {
+            base_transforms[i] =
+                scene::scene_file_transform(view, view.mesh_instances[i].transform_index);
+        }
+        instantiated = true;
     }
 };
 

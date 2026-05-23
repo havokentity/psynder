@@ -6,6 +6,7 @@
 
 #include "render/Material.h"
 #include "scene/SceneEcs.h"
+#include "scene/EcsRegistry_Internal.h"
 
 #include <vector>
 
@@ -18,6 +19,11 @@ scene::LocalTransform translate(math::Vec3 t) {
     out.translation = t;
     return out;
 }
+
+struct RegistryReset {
+    RegistryReset() { scene::detail::EcsRegistryImpl::Get().shutdown(); }
+    ~RegistryReset() { scene::detail::EcsRegistryImpl::Get().shutdown(); }
+};
 
 }  // namespace
 
@@ -60,6 +66,7 @@ TEST_CASE("render material library stores editable raster and RT state in SoA co
 
 TEST_CASE("scene creates transform-backed renderable entities for shared renderers",
           "[scene][render_submission]") {
+    RegistryReset reset;
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
 
@@ -103,6 +110,7 @@ TEST_CASE("scene creates transform-backed renderable entities for shared rendere
 }
 
 TEST_CASE("scene owns environment clear settings", "[scene][render_submission][environment]") {
+    RegistryReset reset;
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
 
@@ -143,6 +151,7 @@ TEST_CASE("scene owns environment clear settings", "[scene][render_submission][e
 
 TEST_CASE("scene camera is a transform-backed hierarchy entity",
           "[scene][render_submission][camera]") {
+    RegistryReset reset;
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
 
@@ -178,6 +187,7 @@ TEST_CASE("scene camera is a transform-backed hierarchy entity",
 
 TEST_CASE("scene prewarm preserves capacity through dynamic renderable updates",
           "[scene][render_submission][prewarm]") {
+    RegistryReset reset;
     auto& registry = scene::EcsRegistry::Get();
     registry.set_structural_deferred(false);
 

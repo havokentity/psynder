@@ -5,6 +5,7 @@ add_subdirectory(lm_cook)
 add_subdirectory(lm_qbsp)
 add_subdirectory(lm_bake)
 add_subdirectory(lm_mapimport)
+add_subdirectory(scene_cook)
 # dmonte_pt is an optional reference path tracer; opt in explicitly.
 option(PSYNDER_BUILD_DMONTE_PT "Build the optional dmonte_pt reference path tracer (Embree dep)" OFF)
 if(PSYNDER_BUILD_DMONTE_PT)
