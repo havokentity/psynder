@@ -10,7 +10,7 @@
 // re-applied on the new socket without dropping events seen prior to the
 // disconnect.
 
-import { decode, encode } from '@msgpack/msgpack';
+import { decode, decodeMulti, encode } from '@msgpack/msgpack';
 
 import type {
     Channel,
@@ -40,6 +40,15 @@ type StateListener = (state: ConnectionState) => void;
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS  = 8000;
 
+const OPCODES = {
+    WelcomeFrame:      2,
+    SubscribeFrame:    3,
+    UnsubscribeFrame:  4,
+    LogFrame:          16,
+    ConsoleFrame:      19,
+    ConsoleReplyFrame: 21,
+} as const;
+
 export class IpcClient {
     private url: string;
     private token: string;
@@ -53,6 +62,7 @@ export class IpcClient {
     private destroyed = false;
     private highest_seen_version = PROTOCOL_VERSION;
     private version_warned = false;
+    private pending_console_ids: number[] = [];
 
     constructor(opts: ClientOptions = {}) {
         this.url = opts.url ?? this.default_url();
@@ -105,9 +115,9 @@ export class IpcClient {
     /** Send an envelope. Silently dropped if not connected. */
     send<T>(ch: Channel, type: string, payload: T): void {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        const env: Envelope<T> = { v: PROTOCOL_VERSION, ch, type, payload };
         try {
-            this.ws.send(encode(env));
+            const frame = this.encode_frame(ch, type, payload);
+            if (frame) this.ws.send(frame);
         } catch (err) {
             // Surface as a console message but never throw to the React tree.
             // eslint-disable-next-line no-console
@@ -196,6 +206,14 @@ export class IpcClient {
         // Strings are not part of the protocol; ignore.
         if (!buf) return;
 
+        try {
+            const parts = Array.from(decodeMulti(buf));
+            if (this.handle_opcode_frame(parts)) return;
+        } catch {
+            // Fall through to the legacy envelope decoder below; useful while
+            // browser mocks and generated engine frames coexist.
+        }
+
         let env: Envelope;
         try {
             env = decode(buf) as Envelope;
@@ -233,6 +251,75 @@ export class IpcClient {
         }
     }
 
+    private encode_frame<T>(ch: Channel, type: string, payload: T): Uint8Array | null {
+        if (type === 'subscribe') {
+            return concat_msgpack(OPCODES.SubscribeFrame, [ch]);
+        }
+        if (type === 'unsubscribe') {
+            return concat_msgpack(OPCODES.UnsubscribeFrame, [ch]);
+        }
+        if (ch === 'console' && type === 'eval') {
+            const p = payload as { id?: number; source?: string; text?: string };
+            const text = p.source ?? p.text ?? '';
+            if (typeof p.id === 'number') {
+                this.pending_console_ids.push(p.id);
+            }
+            return concat_msgpack(OPCODES.ConsoleFrame, [text]);
+        }
+
+        // Future panels can still use the previous envelope shape until their
+        // generated opcode frames land. The current C++ server ignores these.
+        const env: Envelope<T> = { v: PROTOCOL_VERSION, ch, type, payload };
+        return encode(env);
+    }
+
+    private handle_opcode_frame(parts: unknown[]): boolean {
+        if (parts.length < 2 || typeof parts[0] !== 'number') return false;
+        const op = parts[0];
+        const body = parts[1];
+        if (op === OPCODES.WelcomeFrame) {
+            const welcome = Array.isArray(body) ? body : [];
+            const version = Number(welcome[1] ?? PROTOCOL_VERSION);
+            if (version > this.highest_seen_version) {
+                this.highest_seen_version = version;
+            }
+            return true;
+        }
+        if (op === OPCODES.ConsoleReplyFrame) {
+            const reply = Array.isArray(body) ? body : [];
+            const id = this.pending_console_ids.shift() ?? 0;
+            const ok = Boolean(reply[0]);
+            const text = typeof reply[1] === 'string' ? reply[1] : '';
+            this.handle_envelope({
+                v: PROTOCOL_VERSION,
+                ch: 'console',
+                type: 'result',
+                payload: {
+                    id,
+                    ok,
+                    text,
+                    value_kind: ok ? 'text' : 'error',
+                },
+            });
+            return true;
+        }
+        if (op === OPCODES.LogFrame) {
+            const log = Array.isArray(body) ? body : [];
+            this.handle_envelope({
+                v: PROTOCOL_VERSION,
+                ch: 'console',
+                type: 'log',
+                payload: {
+                    level: level_name(Number(log[0] ?? 2)),
+                    ts: Date.now(),
+                    text: typeof log[1] === 'string' ? log[1] : '',
+                },
+            });
+            return true;
+        }
+        return true;
+    }
+
     private fall_back_or_retry(): void {
         if (this.destroyed) return;
         if (this.allow_mock && this.state !== 'open' && this.state !== 'mock') {
@@ -267,6 +354,25 @@ export class IpcClient {
         for (const fn of this.state_listeners) {
             try { fn(s); } catch { /* ignore */ }
         }
+    }
+}
+
+function concat_msgpack(op: number, body: unknown): Uint8Array {
+    const a = encode(op);
+    const b = encode(body);
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
+}
+
+function level_name(level: number): 'trace' | 'debug' | 'info' | 'warn' | 'error' {
+    switch (level) {
+        case 0: return 'trace';
+        case 1: return 'debug';
+        case 3: return 'warn';
+        case 4: return 'error';
+        default: return 'info';
     }
 }
 
