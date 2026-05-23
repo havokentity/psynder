@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Psynder Player — generic cooked scene runtime shell.
+// Psynder Arcade — generic cooked scene runtime shell.
 
 #include "core/AppArgs.h"
 #include "core/Log.h"
@@ -37,8 +37,8 @@ PlayerArgs parse_player_args(int argc, char** argv) {
 }
 
 struct PlayerApp : app::BasicSceneApp {
-    static constexpr const char* log_name = "psynder_player";
-    static constexpr const char* display_name = "Psynder Player";
+    static constexpr const char* log_name = "psynder_arcade";
+    static constexpr const char* display_name = "Psynder Arcade";
     static constexpr const char* asset_root = ".";
 
     scene::SceneLoadRequest scene_load{};
@@ -47,7 +47,7 @@ struct PlayerApp : app::BasicSceneApp {
 
     void started(app::WindowApp&, const PlayerArgs& args) {
         scene_load
-            .on_error([](std::string_view error) { PSY_LOG_ERROR("psynder_player: {}", error); });
+            .on_error([](std::string_view error) { PSY_LOG_ERROR("psynder_arcade: {}", error); });
         scene_load.load_async(args.scene_path);
     }
 
