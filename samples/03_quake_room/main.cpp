@@ -25,6 +25,7 @@
 #include "common/Lighting.h"
 #include "common/MeshWinding.h"
 #include "core/AppArgs.h"
+#include "core/BuildMeta.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
@@ -46,6 +47,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+PSYNDER_RUNTIME_BUNDLE("03_quake_room");
 
 using namespace psynder;
 
