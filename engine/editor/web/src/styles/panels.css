@@ -917,6 +917,17 @@ button {
 }
 .psy-btn-primary:hover { filter: brightness(1.1); }
 
+.psy-btn-danger {
+    background: color-mix(in srgb, var(--psy-bad) 18%, var(--psy-bg-elev-2));
+    border-color: color-mix(in srgb, var(--psy-bad) 62%, var(--psy-border));
+    color: #ffdce1;
+}
+.psy-btn-danger:hover {
+    background: var(--psy-bad);
+    border-color: var(--psy-bad);
+    color: #1d080c;
+}
+
 .psy-btn-ghost {
     background: transparent;
     color: var(--psy-fg-muted);
