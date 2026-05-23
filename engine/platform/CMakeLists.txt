@@ -2,7 +2,7 @@
 # Platform aggregator — adds Platform.cpp + the host's platform lane.
 
 # Shared shim — the dispatcher + Clock impl
-add_library(psynder_platform_shim STATIC Platform.cpp Platform.h)
+add_library(psynder_platform_shim STATIC Platform.cpp Platform.h RuntimeConfig.cpp RuntimeConfig.h)
 target_link_libraries(psynder_platform_shim PUBLIC psynder_core psynder_math)
 target_include_directories(psynder_platform_shim PUBLIC ${CMAKE_SOURCE_DIR}/engine)
 

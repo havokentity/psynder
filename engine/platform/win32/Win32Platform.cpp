@@ -70,7 +70,7 @@ std::string user_config_dir() {
     }
     std::string out = win32::from_wide(std::wstring_view{p});
     ::CoTaskMemFree(p);
-    return out;
+    return out + "\\Psynder";
 }
 
 std::string current_working_directory() {

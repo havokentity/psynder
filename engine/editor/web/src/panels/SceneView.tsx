@@ -155,6 +155,34 @@ export function SceneView() {
                         >
                             psygraph
                         </button>
+                        <button
+                            type="button"
+                            className="psy-btn psy-btn-ghost"
+                            onClick={() => send_command('arcade_boot_tune', 'playing boot tune')}
+                        >
+                            boot tune
+                        </button>
+                        <button
+                            type="button"
+                            className="psy-btn psy-btn-ghost"
+                            onClick={() => send_command('arcade_startup_tune 0; config_save', 'startup tune disabled')}
+                        >
+                            mute boot
+                        </button>
+                        <button
+                            type="button"
+                            className="psy-btn psy-btn-ghost"
+                            onClick={() => send_command('arcade_startup_tune 1; config_save', 'startup tune enabled')}
+                        >
+                            unmute boot
+                        </button>
+                        <button
+                            type="button"
+                            className="psy-btn psy-btn-ghost"
+                            onClick={() => send_command('config_open_dir', 'opening settings folder')}
+                        >
+                            settings
+                        </button>
                     </div>
 
                     <div className="psy-scene-examples" aria-label="Example scene paths">

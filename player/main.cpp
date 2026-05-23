@@ -9,6 +9,7 @@
 #include "core/Log.h"
 #include "editor/core/WebPanels.h"
 #include "platform/App.h"
+#include "platform/RuntimeConfig.h"
 #include "scene/SceneFile.h"
 #include "ui/imm/Imm.h"
 #include "ui/imm/detail/Font.h"
@@ -64,6 +65,8 @@ void print_arcade_help(console::Output& out) {
     out.PrintLine("  arcade_load_scene <path>  Load a cooked .psyscene");
     out.PrintLine("  arcade_open_editor        Open the web editor workbench");
     out.PrintLine("  arcade_boot_tune          Replay the 8-bit boot chime");
+    out.PrintLine("  arcade_startup_tune 0|1   Disable/enable boot music");
+    out.PrintLine("  config_open_dir           Open saved settings folder");
     out.PrintLine("  editor_panel psygraph     Open visual scripting");
     out.PrintLine("  editor_panel assets       Open the asset browser");
     out.PrintLine("  editor_panel props        Open prop spawning");
@@ -80,6 +83,13 @@ void register_arcade_console_commands() {
     registered = true;
 
     auto& console_ref = console::Console::Get();
+    if (auto* startup_tune =
+            console_ref.RegisterCVar("arcade_startup_tune",
+                                     "1",
+                                     "Play Psynder Arcade boot music on startup: 0 | 1.",
+                                     console::CVarFlags::Archive)) {
+        startup_tune->allowed_values = {"0", "1"};
+    }
     console_ref.RegisterCommand("arcade_help",
                                 "Print Psynder Arcade startup and scene-loading commands.",
                                 [](std::span<const std::string_view>, console::Output& out) {
@@ -137,6 +147,8 @@ void log_arcade_startup_help(std::string_view status) {
     PSY_LOG_INFO("psynder_arcade: arcade_load_scene <path> loads a cooked .psyscene");
     PSY_LOG_INFO("psynder_arcade: arcade_open_editor opens the web editor workbench");
     PSY_LOG_INFO("psynder_arcade: arcade_boot_tune replays the 8-bit boot chime");
+    PSY_LOG_INFO("psynder_arcade: arcade_startup_tune 0 disables startup music");
+    PSY_LOG_INFO("psynder_arcade: config_open_dir opens saved settings");
     PSY_LOG_INFO("psynder_arcade: editor_panel psygraph opens visual scripting");
 }
 
@@ -390,6 +402,11 @@ struct PlayerApp {
     void start_boot_audio(const PlayerArgs& args) {
         if (args.smoke_frames > 0u)
             return;
+        if (auto* tune = console::Console::Get().FindCVar("arcade_startup_tune");
+            tune && !tune->GetBool()) {
+            PSY_LOG_INFO("psynder_arcade: startup music disabled by arcade_startup_tune");
+            return;
+        }
         if (!audio::Engine::Get().start(audio::DeviceDesc{})) {
             PSY_LOG_WARN("psynder_arcade: audio backend unavailable; boot chime disabled");
             return;
@@ -403,6 +420,9 @@ struct PlayerApp {
         g_active_arcade = this;
         editor::ensure_web_panel_commands_registered();
         register_arcade_console_commands();
+        platform::runtime_config::register_console_commands();
+        platform::runtime_config::register_console_archive_autosave();
+        (void)platform::runtime_config::load_console_archive();
         start_boot_audio(args);
 
         scene_load
