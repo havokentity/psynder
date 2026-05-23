@@ -592,13 +592,13 @@ struct WindowFrameContextT {
 using WindowFrameContext = WindowFrameContextT<AppArgs>;
 static_assert(sizeof(WindowFrameContext) <= kCacheLine);
 
-class BasicSceneSample {
+class BasicSceneApp {
    public:
     void basic_scene_started(WindowApp& app) noexcept { scene_ = &app.create_active_scene(); }
 
    protected:
-    [[nodiscard]] scene::Scene& basic_scene() noexcept { return *scene_; }
-    [[nodiscard]] const scene::Scene& basic_scene() const noexcept { return *scene_; }
+    [[nodiscard]] scene::Scene& scene() noexcept { return *scene_; }
+    [[nodiscard]] const scene::Scene& scene() const noexcept { return *scene_; }
 
    private:
     scene::Scene* scene_ = nullptr;
@@ -606,75 +606,75 @@ class BasicSceneSample {
 
 namespace detail {
 
-template <class Sample>
+template <class SampleT>
 auto parse_sample_args(int argc, char** argv) {
-    if constexpr (requires { Sample::parse_args(argc, argv); }) {
-        return Sample::parse_args(argc, argv);
+    if constexpr (requires { SampleT::parse_args(argc, argv); }) {
+        return SampleT::parse_args(argc, argv);
     } else {
         return parse_common_args(argc, argv).args;
     }
 }
 
-template <class Sample>
-std::string_view sample_log_name(const Sample& sample) noexcept {
+template <class SampleT>
+std::string_view sample_log_name(const SampleT& sample) noexcept {
     if constexpr (requires { sample.log_name(); }) {
         return sample.log_name();
-    } else if constexpr (requires { Sample::log_name(); }) {
-        return Sample::log_name();
-    } else if constexpr (requires { std::string_view{Sample::log_name}; }) {
-        return std::string_view{Sample::log_name};
+    } else if constexpr (requires { SampleT::log_name(); }) {
+        return SampleT::log_name();
+    } else if constexpr (requires { std::string_view{SampleT::log_name}; }) {
+        return std::string_view{SampleT::log_name};
     } else {
         return "app";
     }
 }
 
-template <class Sample>
-std::string_view sample_display_name(const Sample& sample) noexcept {
+template <class SampleT>
+std::string_view sample_display_name(const SampleT& sample) noexcept {
     if constexpr (requires { sample.display_name(); }) {
         return sample.display_name();
-    } else if constexpr (requires { Sample::display_name(); }) {
-        return Sample::display_name();
-    } else if constexpr (requires { std::string_view{Sample::display_name}; }) {
-        return std::string_view{Sample::display_name};
+    } else if constexpr (requires { SampleT::display_name(); }) {
+        return SampleT::display_name();
+    } else if constexpr (requires { std::string_view{SampleT::display_name}; }) {
+        return std::string_view{SampleT::display_name};
     } else {
         return sample_log_name(sample);
     }
 }
 
-template <class Sample, class ArgsT>
+template <class SampleT, class ArgsT>
 constexpr bool sample_has_custom_run() noexcept {
-    return requires(Sample& sample, WindowApp& app, const ArgsT& args) {
+    return requires(SampleT& sample, WindowApp& app, const ArgsT& args) {
         sample.run(app, args);
     };
 }
 
-template <class Sample, class ArgsT>
-WindowAppOptions sample_window_options(const Sample& sample, const ArgsT& args) noexcept {
+template <class SampleT, class ArgsT>
+WindowAppOptions sample_window_options(const SampleT& sample, const ArgsT& args) noexcept {
     WindowAppOptions options{};
     if constexpr (requires { sample.window_options(args); }) {
         options = sample.window_options(args);
-    } else if constexpr (requires { Sample::window_options(args); }) {
-        options = Sample::window_options(args);
+    } else if constexpr (requires { SampleT::window_options(args); }) {
+        options = SampleT::window_options(args);
     }
-    if constexpr (sample_has_custom_run<Sample, ArgsT>())
+    if constexpr (sample_has_custom_run<SampleT, ArgsT>())
         options.scene_notices = false;
     return options;
 }
 
-template <class Sample, class ArgsT>
-platform::WindowDesc sample_window_desc(const Sample& sample, const ArgsT& args) {
+template <class SampleT, class ArgsT>
+platform::WindowDesc sample_window_desc(const SampleT& sample, const ArgsT& args) {
     if constexpr (requires { sample.window_desc(args); }) {
         return sample.window_desc(args);
-    } else if constexpr (requires { Sample::window_desc(args); }) {
-        return Sample::window_desc(args);
+    } else if constexpr (requires { SampleT::window_desc(args); }) {
+        return SampleT::window_desc(args);
     } else {
         return default_window_desc(sample_display_name(sample));
     }
 }
 
-template <class Sample>
-void sample_started(Sample& sample, WindowApp& app) {
-    if constexpr (std::derived_from<Sample, BasicSceneSample>) {
+template <class SampleT>
+void sample_started(SampleT& sample, WindowApp& app) {
+    if constexpr (std::derived_from<SampleT, BasicSceneApp>) {
         sample.basic_scene_started(app);
     }
     if constexpr (requires { sample.started(app); }) {
@@ -682,15 +682,15 @@ void sample_started(Sample& sample, WindowApp& app) {
     }
 }
 
-template <class Sample>
-void sample_stopped(Sample& sample, WindowApp& app) {
+template <class SampleT>
+void sample_stopped(SampleT& sample, WindowApp& app) {
     if constexpr (requires { sample.stopped(app); }) {
         sample.stopped(app);
     }
 }
 
-template <class Sample, class ArgsT>
-void run_sample_frame_begin(Sample& sample,
+template <class SampleT, class ArgsT>
+void run_sample_frame_begin(SampleT& sample,
                             WindowFrameContextT<ArgsT>& ctx,
                             WindowFrameCacheReady& cr) {
     if constexpr (requires { sample.frame_begin(ctx, cr); }) {
@@ -700,8 +700,8 @@ void run_sample_frame_begin(Sample& sample,
     }
 }
 
-template <class Sample, class ArgsT>
-FrameAction run_sample_frame(Sample& sample,
+template <class SampleT, class ArgsT>
+FrameAction run_sample_frame(SampleT& sample,
                              WindowFrameContextT<ArgsT>& ctx,
                              WindowFrameCacheReady& cr) {
     if constexpr (requires { sample.frame(ctx, cr); }) {
@@ -727,26 +727,26 @@ FrameAction run_sample_frame(Sample& sample,
     }
 }
 
-template <class Sample, class ArgsT>
-FrameClear sample_frame_clear(Sample& sample,
+template <class SampleT, class ArgsT>
+FrameClear sample_frame_clear(SampleT& sample,
                               const WindowFrameContextT<ArgsT>& ctx,
                               WindowFrameCacheReady& cr) noexcept {
     if constexpr (requires { sample.frame_clear(ctx, cr); }) {
         return sample.frame_clear(ctx, cr);
-    } else if constexpr (requires { Sample::frame_clear(ctx, cr); }) {
-        return Sample::frame_clear(ctx, cr);
+    } else if constexpr (requires { SampleT::frame_clear(ctx, cr); }) {
+        return SampleT::frame_clear(ctx, cr);
     } else if constexpr (requires { sample.frame_clear(ctx); }) {
         return sample.frame_clear(ctx);
-    } else if constexpr (requires { Sample::frame_clear(ctx); }) {
-        return Sample::frame_clear(ctx);
+    } else if constexpr (requires { SampleT::frame_clear(ctx); }) {
+        return SampleT::frame_clear(ctx);
     } else if constexpr (requires { sample.frame_clear(); }) {
         return sample.frame_clear();
-    } else if constexpr (requires { Sample::frame_clear(); }) {
-        return Sample::frame_clear();
+    } else if constexpr (requires { SampleT::frame_clear(); }) {
+        return SampleT::frame_clear();
     } else if constexpr (requires {
-                             { Sample::frame_clear } -> std::convertible_to<FrameClear>;
+                             { SampleT::frame_clear } -> std::convertible_to<FrameClear>;
                          }) {
-        return Sample::frame_clear;
+        return SampleT::frame_clear;
     } else {
         (void)sample;
         (void)ctx;
@@ -754,30 +754,30 @@ FrameClear sample_frame_clear(Sample& sample,
     }
 }
 
-template <class Sample>
+template <class SampleT>
 constexpr bool engine_frame_post_enabled() noexcept {
     if constexpr (requires {
-                      { Sample::engine_frame_post_enabled() } -> std::convertible_to<bool>;
+                      { SampleT::engine_frame_post_enabled() } -> std::convertible_to<bool>;
                   }) {
-        return Sample::engine_frame_post_enabled();
+        return SampleT::engine_frame_post_enabled();
     } else if constexpr (requires {
-                             { Sample::engine_frame_post_enabled } -> std::convertible_to<bool>;
+                             { SampleT::engine_frame_post_enabled } -> std::convertible_to<bool>;
                          }) {
-        return Sample::engine_frame_post_enabled;
+        return SampleT::engine_frame_post_enabled;
     } else {
         return true;
     }
 }
 
-template <class Sample, class ArgsT>
-void run_engine_frame_post(Sample& sample,
+template <class SampleT, class ArgsT>
+void run_engine_frame_post(SampleT& sample,
                            WindowFrameContextT<ArgsT>& ctx,
                            WindowFrameCacheReady& cr) {
     if constexpr (requires { sample.frame_post(ctx, cr); }) {
         sample.frame_post(ctx, cr);
     } else if constexpr (requires { sample.frame_post(ctx); }) {
         sample.frame_post(ctx);
-    } else if constexpr (engine_frame_post_enabled<Sample>()) {
+    } else if constexpr (engine_frame_post_enabled<SampleT>()) {
         ctx.app.engine_frame_post();
     }
 }
@@ -794,23 +794,23 @@ inline void mount_archive_if_present(const std::filesystem::path& path) {
         asset::Vault::Get().mount_vault(path.string());
 }
 
-template <class Sample>
-std::string_view sample_asset_root(const Sample&) {
+template <class SampleT>
+std::string_view sample_asset_root(const SampleT&) {
     if constexpr (requires {
-                      { Sample::asset_root() } -> std::convertible_to<std::string_view>;
+                      { SampleT::asset_root() } -> std::convertible_to<std::string_view>;
                   }) {
-        return Sample::asset_root();
+        return SampleT::asset_root();
     } else if constexpr (requires {
-                             { Sample::asset_root } -> std::convertible_to<std::string_view>;
+                             { SampleT::asset_root } -> std::convertible_to<std::string_view>;
                          }) {
-        return Sample::asset_root;
+        return SampleT::asset_root;
     } else {
         return {};
     }
 }
 
-template <class Sample>
-void mount_standard_asset_roots(const Sample& sample) {
+template <class SampleT>
+void mount_standard_asset_roots(const SampleT& sample) {
     namespace fs = std::filesystem;
 
     const auto mount_archives = [](const fs::path& root) {
@@ -838,10 +838,10 @@ void mount_standard_asset_roots(const Sample& sample) {
 
 }  // namespace detail
 
-template <class Sample>
+template <class SampleT>
 int run_window_sample(int argc, char** argv) {
-    const auto args = detail::parse_sample_args<Sample>(argc, argv);
-    Sample sample{};
+    const auto args = detail::parse_sample_args<SampleT>(argc, argv);
+    SampleT sample{};
     const std::string_view log_name = detail::sample_log_name(sample);
     const std::string_view display_name = detail::sample_display_name(sample);
 

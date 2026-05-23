@@ -16,12 +16,12 @@ u32 animated_clear_color(double seconds) noexcept {
                          render::sine_channel8(seconds, 0.9, 2.0));
 }
 
-struct ClearSample {
+struct ClearSample : app::BasicSceneApp {
     static constexpr const char* log_name = "sample_00";
     static constexpr const char* display_name = "Psynder sample 00 (clear)";
 
-    static app::FrameClear frame_clear(const app::WindowFrameContext& ctx) noexcept {
-        return app::FrameClear::color_only(animated_clear_color(ctx.seconds));
+    void frame_begin(const app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) noexcept {
+        cr.environment().set_clear_color(animated_clear_color(ctx.seconds));
     }
 };
 

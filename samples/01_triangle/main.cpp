@@ -10,7 +10,7 @@ using namespace psynder;
 
 namespace {
 
-struct TriangleSample : app::BasicSceneSample {
+struct TriangleSample : app::BasicSceneApp {
     static constexpr const char* log_name = "sample_01";
     static constexpr const char* display_name = "Psynder sample 01 (textured triangle)";
     static constexpr const char* asset_root = "samples/01_triangle";
@@ -20,14 +20,14 @@ struct TriangleSample : app::BasicSceneSample {
     Entity triangle_entity{};
 
     void started(app::WindowApp& app) {
-        auto& scene = basic_scene();
-        scene.environment().set_clear_color(0xFF202028u);
-        (void)scene.spawn_camera();
+        auto& scene_ref = scene();
+        scene_ref.environment().set_clear_color(0xFF202028u);
+        (void)scene_ref.spawn_camera();
         crate.load_ppm("assets/crate.ppm");
 
         const render::MeshId triangle_mesh =
             app.rendering_system().builtin_mesh(render::BuiltInMesh::TexturedTriangle, &crate);
-        triangle_entity = scene.spawn_mesh_instance(triangle_mesh);
+        triangle_entity = scene_ref.spawn_mesh_instance(triangle_mesh);
     }
 
     void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {
