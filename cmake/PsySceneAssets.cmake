@@ -29,6 +29,32 @@ function(_psynder_apply_runtime_output_folder target output_folder)
     set(${ARGV2} "${_runtime_dir}" PARENT_SCOPE)
 endfunction()
 
+function(_psynder_psyscene_dependency_files out src_abs)
+    set(_deps "${src_abs}")
+    if(EXISTS "${src_abs}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${src_abs}")
+        file(READ "${src_abs}" _content)
+        string(REGEX MATCHALL "\"[^\"]+\\.psybehavior\\.json\"" _behavior_refs "${_content}")
+        if(_behavior_refs)
+            get_filename_component(_src_dir "${src_abs}" DIRECTORY)
+            foreach(_ref IN LISTS _behavior_refs)
+                string(REGEX REPLACE "^\"|\"$" "" _behavior "${_ref}")
+                if(IS_ABSOLUTE "${_behavior}")
+                    set(_behavior_abs "${_behavior}")
+                else()
+                    get_filename_component(_behavior_abs "${_src_dir}/${_behavior}" ABSOLUTE)
+                endif()
+                list(APPEND _deps "${_behavior_abs}")
+                if(EXISTS "${_behavior_abs}")
+                    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_behavior_abs}")
+                endif()
+            endforeach()
+        endif()
+    endif()
+    list(REMOVE_DUPLICATES _deps)
+    set(${out} ${_deps} PARENT_SCOPE)
+endfunction()
+
 function(_psynder_target_psyscene_assets target output_folder)
     if(NOT TARGET ${target})
         message(FATAL_ERROR "_psynder_target_psyscene_assets: unknown target '${target}'")
@@ -62,12 +88,13 @@ function(_psynder_target_psyscene_assets target output_folder)
         endif()
         string(REGEX REPLACE "\\.json$" "" _cooked_name "${_name}")
         set(_out "${_asset_dir}/${_cooked_name}")
+        _psynder_psyscene_dependency_files(_deps "${_src_abs}")
 
         add_custom_command(
             OUTPUT "${_out}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_asset_dir}"
             COMMAND $<TARGET_FILE:scene_cook> "${_src_abs}" "${_out}"
-            DEPENDS scene_cook "${_src_abs}"
+            DEPENDS scene_cook ${_deps}
             COMMENT "Cooking PsyScene ${_name}"
             VERBATIM
         )

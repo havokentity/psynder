@@ -282,9 +282,12 @@ struct CookScene {
     std::vector<scene::SceneFileCamera> cameras;
     std::vector<scene::SceneFileMeshInstance> mesh_instances;
     std::vector<scene::SceneFileMaterial> materials;
+    std::vector<scene::SceneFileEntityBehaviorSpin> spin_behaviors;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
 };
+
+[[nodiscard]] bool read_text_file(const std::filesystem::path& path, std::string& out);
 
 [[nodiscard]] bool is_number(const Json* v) noexcept {
     return v && v->kind == Json::Kind::Number;
@@ -441,7 +444,109 @@ struct CookScene {
     return index;
 }
 
-[[nodiscard]] bool cook_json(const Json& root, CookScene& out, std::string& error) {
+struct BehaviorInput {
+    f32 base = 0.0f;
+    f32 step = 0.0f;
+};
+
+[[nodiscard]] BehaviorInput read_behavior_input(const Json* v,
+                                                BehaviorInput fallback = {}) noexcept {
+    if (!v)
+        return fallback;
+    if (v->kind == Json::Kind::Number)
+        return BehaviorInput{static_cast<f32>(v->number), 0.0f};
+    if (v->kind != Json::Kind::Object)
+        return fallback;
+    const Json* type = v->field("type");
+    if (type && type->kind == Json::Kind::String && type->text == "linearIndex") {
+        return BehaviorInput{
+            read_f32(v->field("base"), fallback.base),
+            read_f32(v->field("step"), fallback.step),
+        };
+    }
+    return BehaviorInput{read_f32(v->field("value"), fallback.base), 0.0f};
+}
+
+[[nodiscard]] bool cook_spin_behavior(const Json& behavior, CookScene& out, std::string& error) {
+    const Json* target_group = behavior.field("targetGroup");
+    if (!target_group || target_group->kind != Json::Kind::String || target_group->text.empty()) {
+        error = "spin behavior requires a non-empty targetGroup string";
+        return false;
+    }
+
+    scene::SceneFileEntityBehaviorSpin spin{};
+    if (const Json* name = behavior.field("name"); name && name->kind == Json::Kind::String)
+        spin.name_offset = add_string(out, name->text);
+    spin.target_group_name_offset = add_string(out, target_group->text);
+    (void)read_vec3(behavior.field("axis"), spin.axis);
+    const BehaviorInput speed = read_behavior_input(behavior.field("speed"));
+    const BehaviorInput phase = read_behavior_input(behavior.field("phase"));
+    spin.speed_base = speed.base;
+    spin.speed_step = speed.step;
+    spin.phase_base = phase.base;
+    spin.phase_step = phase.step;
+    spin.flags = read_bool(behavior.field("active"), true)
+                     ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
+                     : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
+    out.spin_behaviors.push_back(spin);
+    return true;
+}
+
+[[nodiscard]] bool cook_behavior_array(const Json& behaviors,
+                                       CookScene& out,
+                                       std::string& error) {
+    if (!is_array(&behaviors)) {
+        error = "entity behaviors must be an array";
+        return false;
+    }
+    out.spin_behaviors.reserve(out.spin_behaviors.size() + behaviors.array.size());
+    for (const Json& behavior : behaviors.array) {
+        if (behavior.kind != Json::Kind::Object) {
+            error = "entity behavior entry must be an object";
+            return false;
+        }
+        const Json* type = behavior.field("type");
+        if (!type || type->kind != Json::Kind::String || type->text.empty()) {
+            error = "entity behavior requires a non-empty type string";
+            return false;
+        }
+        if (type->text == "spin") {
+            if (!cook_spin_behavior(behavior, out, error))
+                return false;
+        } else {
+            error = "unsupported entity behavior type: " + type->text;
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool cook_behavior_source(const std::filesystem::path& path,
+                                        CookScene& out,
+                                        std::string& error) {
+    std::string source;
+    if (!read_text_file(path, source)) {
+        error = "failed to read behavior source " + path.string();
+        return false;
+    }
+    Json root;
+    JsonParser parser{source};
+    if (!parser.parse(root)) {
+        error = parser.error();
+        return false;
+    }
+    const Json* behaviors = root.kind == Json::Kind::Object ? root.field("behaviors") : &root;
+    if (!behaviors) {
+        error = "behavior source requires a behaviors array";
+        return false;
+    }
+    return cook_behavior_array(*behaviors, out, error);
+}
+
+[[nodiscard]] bool cook_json(const Json& root,
+                             const std::filesystem::path& source_dir,
+                             CookScene& out,
+                             std::string& error) {
     if (root.kind != Json::Kind::Object) {
         error = "scene root must be an object";
         return false;
@@ -547,6 +652,25 @@ struct CookScene {
             out.mesh_instances.push_back(instance);
         }
     }
+
+    if (const Json* inline_behaviors = root.field("entityBehaviors")) {
+        if (!cook_behavior_array(*inline_behaviors, out, error))
+            return false;
+    }
+    if (const Json* behavior_sources = root.field("entityBehaviorSources")) {
+        if (!is_array(behavior_sources)) {
+            error = "entityBehaviorSources must be an array";
+            return false;
+        }
+        for (const Json& source : behavior_sources->array) {
+            if (source.kind != Json::Kind::String || source.text.empty()) {
+                error = "entityBehaviorSources entries must be non-empty strings";
+                return false;
+            }
+            if (!cook_behavior_source(source_dir / source.text, out, error))
+                return false;
+        }
+    }
     return true;
 }
 
@@ -583,7 +707,7 @@ void append_chunk(std::vector<u8>& bytes,
     std::vector<u8> bytes;
     std::vector<scene::SceneFileChunk> chunks;
     bytes.resize(sizeof(scene::SceneFileHeader));
-    bytes.resize(bytes.size() + 8u * sizeof(scene::SceneFileChunk));
+    bytes.resize(bytes.size() + 9u * sizeof(scene::SceneFileChunk));
 
     append_chunk(bytes,
                  chunks,
@@ -627,6 +751,12 @@ void append_chunk(std::vector<u8>& bytes,
                  std::span<const scene::SceneFileMaterial>{scene.materials.data(),
                                                            scene.materials.size()},
                  sizeof(scene::SceneFileMaterial));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::EntityBehaviorSpin,
+                 std::span<const scene::SceneFileEntityBehaviorSpin>{
+                     scene.spin_behaviors.data(), scene.spin_behaviors.size()},
+                 sizeof(scene::SceneFileEntityBehaviorSpin));
 
     scene::SceneFileHeader header{};
     header.file_bytes = static_cast<u32>(bytes.size());
@@ -679,7 +809,7 @@ bool psynder::tools::cook_psyscene_json_file(const std::filesystem::path& input,
 
     CookScene scene;
     std::string cook_error;
-    if (!cook_json(root, scene, cook_error)) {
+    if (!cook_json(root, input.parent_path(), scene, cook_error)) {
         if (error)
             *error = cook_error;
         return false;

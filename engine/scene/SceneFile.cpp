@@ -212,7 +212,11 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
         !load_span(SceneFileChunkType::Materials,
                    sizeof(SceneFileMaterial),
                    out.materials,
-                   "materials")) {
+                   "materials") ||
+        !load_span(SceneFileChunkType::EntityBehaviorSpin,
+                   sizeof(SceneFileEntityBehaviorSpin),
+                   out.spin_behaviors,
+                   "spin_behaviors")) {
         return false;
     }
 
@@ -335,6 +339,23 @@ SceneFileInstantiateResult instantiate_scene_file(
                 out_mesh_entities[i] = entity;
             ++result.mesh_instances;
         }
+    }
+
+    scene.reserve_spin_behaviors(static_cast<u32>(scene_file.spin_behaviors.size()));
+    for (const SceneFileEntityBehaviorSpin& behavior_file : scene_file.spin_behaviors) {
+        const std::string_view group_name{
+            scene_file_string(scene_file, behavior_file.target_group_name_offset)};
+        if (group_name.empty())
+            continue;
+        scene.add_spin_behavior(SpinEntityBehaviorDesc{
+            .target_group = scene.group_id(group_name),
+            .axis = behavior_file.axis,
+            .speed_base = behavior_file.speed_base,
+            .speed_step = behavior_file.speed_step,
+            .phase_base = behavior_file.phase_base,
+            .phase_step = behavior_file.phase_step,
+            .flags = static_cast<EntityBehaviorFlags>(behavior_file.flags),
+        });
     }
     return result;
 }

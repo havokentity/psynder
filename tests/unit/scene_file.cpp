@@ -6,6 +6,7 @@
 #include "scene/SceneFile.h"
 #include "scene/EcsRegistry_Internal.h"
 
+#include <cmath>
 #include <cstring>
 #include <span>
 #include <string>
@@ -46,7 +47,7 @@ void append_chunk(std::vector<u8>& bytes,
 
 std::vector<u8> make_scene_blob() {
     constexpr char strings[] =
-        "\0crateCube\0crate.wood\0textures.procedural.wooden_crate\0crates\0";
+        "\0crateCube\0crate.wood\0textures.procedural.wooden_crate\0crates\0crate_spin\0";
     const scene::SceneFileEnvironment environment{0xFF182030u, 1u, 1u, {}};
     const math::Vec3 translations[] = {{0.0f, 1.5f, 1.5f}, {-1.3f, 0.0f, -3.0f}};
     const math::Quat rotations[] = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
@@ -63,9 +64,15 @@ std::vector<u8> make_scene_blob() {
     material_file.name_offset = 11u;
     material_file.base_color_texture_name_offset = 22u;
     material_file.flags = render::MaterialFlags::RasterVisible;
+    scene::SceneFileEntityBehaviorSpin spin{};
+    spin.name_offset = 62u;
+    spin.target_group_name_offset = 55u;
+    spin.axis = {0.0f, 1.0f, 0.0f};
+    spin.speed_base = 0.35f;
+    spin.speed_step = 0.12f;
 
     std::vector<u8> bytes(sizeof(scene::SceneFileHeader) +
-                          8u * sizeof(scene::SceneFileChunk));
+                          9u * sizeof(scene::SceneFileChunk));
     std::vector<scene::SceneFileChunk> chunks;
     append_chunk(bytes,
                  chunks,
@@ -107,6 +114,11 @@ std::vector<u8> make_scene_blob() {
                  scene::SceneFileChunkType::Materials,
                  std::span<const scene::SceneFileMaterial>{&material_file, 1u},
                  sizeof(material_file));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::EntityBehaviorSpin,
+                 std::span<const scene::SceneFileEntityBehaviorSpin>{&spin, 1u},
+                 sizeof(spin));
 
     scene::SceneFileHeader header{};
     header.file_bytes = static_cast<u32>(bytes.size());
@@ -148,6 +160,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(view.cameras.size() == 1u);
     REQUIRE(view.mesh_instances.size() == 1u);
     REQUIRE(view.materials.size() == 1u);
+    REQUIRE(view.spin_behaviors.size() == 1u);
     REQUIRE(std::string_view{scene::scene_file_string(view, 1u)} == "crateCube");
     REQUIRE(std::string_view{scene::scene_file_string(view, 11u)} == "crate.wood");
     REQUIRE(std::string_view{scene::scene_file_string(view, 22u)} ==
@@ -177,6 +190,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(result.missing_mesh_bindings == 0u);
     REQUIRE(result.missing_material_bindings == 0u);
     REQUIRE(mesh_entity.valid());
+    REQUIRE(scene_ref.spin_behavior_count() == 1u);
     const auto* renderable = scene_ref.registry().get<scene::RenderableComponent>(mesh_entity);
     REQUIRE(renderable != nullptr);
     REQUIRE(renderable->material.raw == material.raw);
@@ -192,5 +206,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(transform != nullptr);
     REQUIRE(transform->local.translation.x > 0.69f);
     REQUIRE(transform->local.translation.x < 0.71f);
+    scene_ref.update_entity_behaviors(1.0f);
+    REQUIRE(std::abs(transform->local.rotation.y) > 0.01f);
     REQUIRE(scene_ref.active_camera_entity().valid());
 }

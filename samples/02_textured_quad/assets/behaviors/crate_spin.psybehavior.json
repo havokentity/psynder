@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "behaviors": [
+    {
+      "name": "crate_spin",
+      "type": "spin",
+      "targetGroup": "crates",
+      "axis": [0.0, 1.0, 0.0],
+      "speed": {
+        "type": "linearIndex",
+        "base": 0.35,
+        "step": 0.12
+      },
+      "phase": {
+        "value": 0.0
+      }
+    }
+  ]
+}

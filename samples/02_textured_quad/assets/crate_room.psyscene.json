@@ -21,6 +21,9 @@
       "flags": ["rasterVisible"]
     }
   ],
+  "entityBehaviorSources": [
+    "behaviors/crate_spin.psybehavior.json"
+  ],
   "meshInstances": [
     {
       "name": "front_left",

@@ -290,6 +290,9 @@ class WindowApp {
 
     editor::Mode engine_frame_update(f32 dt) noexcept {
         engine_frame_update_ran_ = true;
+        behavior_seconds_ += dt > 0.0f ? dt : (1.0f / 60.0f);
+        if (active_scene_)
+            active_scene_->update_entity_behaviors(behavior_seconds_);
         engine_frame_ms_ = dt > 0.0f ? dt * 1000.0f : 1000.0f / 60.0f;
         record_engine_frame_ms(engine_frame_ms_);
         if (auto* input = platform::input()) {
@@ -380,6 +383,7 @@ class WindowApp {
         height_ = other.height_;
         scene_notices_ = other.scene_notices_;
         engine_frame_update_ran_ = other.engine_frame_update_ran_;
+        behavior_seconds_ = other.behavior_seconds_;
         engine_frame_ms_ = other.engine_frame_ms_;
         engine_frame_ms_ring_ = other.engine_frame_ms_ring_;
         engine_frame_ms_head_ = other.engine_frame_ms_head_;
@@ -416,6 +420,7 @@ class WindowApp {
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
         other.window_ = nullptr;
         other.engine_frame_update_ran_ = false;
+        other.behavior_seconds_ = 0.0f;
         other.engine_frame_ms_ = 1000.0f / 60.0f;
         other.engine_frame_ms_ring_ = {};
         other.engine_frame_ms_head_ = 0;
@@ -440,6 +445,7 @@ class WindowApp {
     u32 height_ = 0;
     bool scene_notices_ = true;
     bool engine_frame_update_ran_ = false;
+    f32 behavior_seconds_ = 0.0f;
     f32 engine_frame_ms_ = 1000.0f / 60.0f;
     std::array<f32, 120> engine_frame_ms_ring_{};
     u32 engine_frame_ms_head_ = 0;

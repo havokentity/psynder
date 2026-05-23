@@ -180,6 +180,36 @@ struct SceneGroupId {
     [[nodiscard]] constexpr bool valid() const noexcept { return index != 0xFFFFFFFFu; }
 };
 
+enum class EntityBehaviorFlags : u32 {
+    None = 0u,
+    Active = 1u << 0,
+};
+
+[[nodiscard]] constexpr u32 entity_behavior_flags_bits(EntityBehaviorFlags flags) noexcept {
+    return static_cast<u32>(flags);
+}
+
+[[nodiscard]] constexpr EntityBehaviorFlags operator|(EntityBehaviorFlags a,
+                                                      EntityBehaviorFlags b) noexcept {
+    return static_cast<EntityBehaviorFlags>(entity_behavior_flags_bits(a) |
+                                            entity_behavior_flags_bits(b));
+}
+
+[[nodiscard]] constexpr u32 operator&(EntityBehaviorFlags a,
+                                      EntityBehaviorFlags b) noexcept {
+    return entity_behavior_flags_bits(a) & entity_behavior_flags_bits(b);
+}
+
+struct SpinEntityBehaviorDesc {
+    SceneGroupId target_group{};
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    f32 speed_base = 0.0f;
+    f32 speed_step = 0.0f;
+    f32 phase_base = 0.0f;
+    f32 phase_step = 0.0f;
+    EntityBehaviorFlags flags = EntityBehaviorFlags::Active;
+};
+
 struct SceneCameraView {
     Entity entity{};
     SceneNode node{};
@@ -950,6 +980,64 @@ class Scene {
         return query_group(group);
     }
 
+    void reserve_spin_behaviors(u32 count) {
+        spin_behaviors_.group.reserve(count);
+        spin_behaviors_.axis_x.reserve(count);
+        spin_behaviors_.axis_y.reserve(count);
+        spin_behaviors_.axis_z.reserve(count);
+        spin_behaviors_.speed_base.reserve(count);
+        spin_behaviors_.speed_step.reserve(count);
+        spin_behaviors_.phase_base.reserve(count);
+        spin_behaviors_.phase_step.reserve(count);
+        spin_behaviors_.flags.reserve(count);
+    }
+
+    void add_spin_behavior(const SpinEntityBehaviorDesc& desc) {
+        if (!desc.target_group.valid())
+            return;
+        spin_behaviors_.group.push_back(desc.target_group);
+        spin_behaviors_.axis_x.push_back(desc.axis.x);
+        spin_behaviors_.axis_y.push_back(desc.axis.y);
+        spin_behaviors_.axis_z.push_back(desc.axis.z);
+        spin_behaviors_.speed_base.push_back(desc.speed_base);
+        spin_behaviors_.speed_step.push_back(desc.speed_step);
+        spin_behaviors_.phase_base.push_back(desc.phase_base);
+        spin_behaviors_.phase_step.push_back(desc.phase_step);
+        spin_behaviors_.flags.push_back(desc.flags);
+    }
+
+    [[nodiscard]] usize spin_behavior_count() const noexcept {
+        return spin_behaviors_.group.size();
+    }
+
+    void update_entity_behaviors(f32 seconds) {
+        const usize behavior_count = spin_behaviors_.group.size();
+        for (usize b = 0; b < behavior_count; ++b) {
+            if ((spin_behaviors_.flags[b] & EntityBehaviorFlags::Active) == 0u)
+                continue;
+            const SceneGroupId group_id = spin_behaviors_.group[b];
+            if (!group_id.valid() || group_id.index >= groups_.size())
+                continue;
+            SceneGroupStorage& group = groups_[group_id.index];
+            const usize count = std::min(group.entities.size(), group.authored_locals.size());
+            const math::Vec3 axis{
+                spin_behaviors_.axis_x[b], spin_behaviors_.axis_y[b], spin_behaviors_.axis_z[b]};
+            for (usize i = 0; i < count; ++i) {
+                const Entity entity = group.entities[i];
+                const LocalTransform& authored = group.authored_locals[i];
+                const f32 index = static_cast<f32>(i);
+                const f32 angle = seconds * (spin_behaviors_.speed_base[b] +
+                                             spin_behaviors_.speed_step[b] * index) +
+                                  spin_behaviors_.phase_base[b] +
+                                  spin_behaviors_.phase_step[b] * index;
+                LocalTransform local = authored;
+                local.rotation = math::quat_mul(math::quat_from_axis_angle(axis, angle),
+                                                authored.rotation);
+                (void)set_scene_entity_transform(*registry_, graph_, entity, local);
+            }
+        }
+    }
+
     bool attach_camera(Entity entity, const CameraComponent& camera = {}) {
         if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
             return false;
@@ -1043,6 +1131,7 @@ class Scene {
         last_chunk_live_count_ = other.last_chunk_live_count_;
         last_node_capacity_ = other.last_node_capacity_;
         groups_ = std::move(other.groups_);
+        spin_behaviors_ = std::move(other.spin_behaviors_);
 
         other.registry_ = &EcsRegistry::Get();
         other.environment_.bind_runtime(other.runtime_.environment);
@@ -1056,6 +1145,7 @@ class Scene {
         other.last_chunk_live_count_ = 0u;
         other.last_node_capacity_ = 0u;
         other.groups_.clear();
+        other.spin_behaviors_ = {};
     }
 
     void record_pool_watermark() noexcept {
@@ -1094,6 +1184,18 @@ class Scene {
         std::vector<LocalTransform> authored_locals;
     };
 
+    struct SpinBehaviorSoA {
+        std::vector<SceneGroupId> group;
+        std::vector<f32> axis_x;
+        std::vector<f32> axis_y;
+        std::vector<f32> axis_z;
+        std::vector<f32> speed_base;
+        std::vector<f32> speed_step;
+        std::vector<f32> phase_base;
+        std::vector<f32> phase_step;
+        std::vector<EntityBehaviorFlags> flags;
+    };
+
     [[nodiscard]] SceneGroupId group_slot(std::string_view group_name) {
         for (u32 i = 0; i < static_cast<u32>(groups_.size()); ++i) {
             if (groups_[i].name == group_name)
@@ -1120,6 +1222,7 @@ class Scene {
     u32 last_chunk_live_count_ = 0u;
     u32 last_node_capacity_ = 0u;
     std::vector<SceneGroupStorage> groups_{};
+    SpinBehaviorSoA spin_behaviors_{};
 };
 
 using CachedSceneGroup = Scene::CachedSceneGroup;
