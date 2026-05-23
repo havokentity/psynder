@@ -194,7 +194,27 @@ void unsubscribe_channel(Connection& conn, std::string_view channel) {
 struct LegacyEnvelope {
     std::string channel;
     std::string type;
+    std::string prop_id;
 };
+
+bool decode_legacy_payload(msgpack::Reader& r, LegacyEnvelope& out) {
+    ::psynder::u32 count = 0;
+    if (!r.map_header(count))
+        return r.skip();
+
+    for (::psynder::u32 i = 0; i < count; ++i) {
+        std::string key;
+        if (!r.str(key))
+            return false;
+        if (key == "prop_id") {
+            if (!r.str(out.prop_id))
+                return false;
+        } else if (!r.skip()) {
+            return false;
+        }
+    }
+    return true;
+}
 
 bool decode_legacy_envelope(std::span<const ::psynder::u8> payload, LegacyEnvelope& out) {
     msgpack::Reader r(payload.data(), payload.size());
@@ -212,6 +232,9 @@ bool decode_legacy_envelope(std::span<const ::psynder::u8> payload, LegacyEnvelo
         } else if (key == "type") {
             if (!r.str(out.type))
                 return false;
+        } else if (key == "payload") {
+            if (!decode_legacy_payload(r, out))
+                return false;
         } else if (!r.skip()) {
             return false;
         }
@@ -219,11 +242,7 @@ bool decode_legacy_envelope(std::span<const ::psynder::u8> payload, LegacyEnvelo
     return !out.channel.empty() && !out.type.empty();
 }
 
-bool handle_legacy_envelope(Connection& conn, std::span<const ::psynder::u8> payload) {
-    LegacyEnvelope env;
-    if (!decode_legacy_envelope(payload, env))
-        return false;
-
+bool handle_legacy_subscription(Connection& conn, const LegacyEnvelope& env) {
     if (env.type == "subscribe") {
         subscribe_channel(conn, env.channel);
         return true;
@@ -232,11 +251,30 @@ bool handle_legacy_envelope(Connection& conn, std::span<const ::psynder::u8> pay
         unsubscribe_channel(conn, env.channel);
         return true;
     }
+    return false;
+}
 
-    // Legacy panel commands such as selection.set, selection.spawn_prop,
-    // props.subscribe, and psygraph.subscribe need subsystem owners to handle
-    // semantics. Keep them accepted as known legacy envelopes but no-op here.
-    return true;
+std::vector<::psynder::u8> encode_legacy_command_ack(std::string_view channel,
+                                                     std::string_view command,
+                                                     bool ok,
+                                                     std::string_view text) {
+    msgpack::Writer w;
+    w.map_header(4);
+    w.str("v");
+    w.u32_(proto::kProtocolVersion);
+    w.str("ch");
+    w.str(channel);
+    w.str("type");
+    w.str("command_ack");
+    w.str("payload");
+    w.map_header(3);
+    w.str("command");
+    w.str(command);
+    w.str("ok");
+    w.boolean(ok);
+    w.str("text");
+    w.str(text);
+    return w.buffer();
 }
 
 bool send_all(socket_t s, const ::psynder::u8* buf, ::psynder::usize n) {
@@ -768,9 +806,31 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
             msgpack::Reader r(fr.payload);
             ::psynder::u16 op = 0;
             if (!r.u16_(op)) {
-                handle_legacy_envelope(*conn,
-                                       std::span<const ::psynder::u8>(fr.payload.data(),
-                                                                      fr.payload.size()));
+                LegacyEnvelope env;
+                const std::span<const ::psynder::u8> legacy_payload(fr.payload.data(),
+                                                                    fr.payload.size());
+                if (!decode_legacy_envelope(legacy_payload, env))
+                    continue;
+                if (handle_legacy_subscription(*conn, env))
+                    continue;
+                if (env.channel == proto::channels::kselection &&
+                    env.type == "spawn_prop" &&
+                    !env.prop_id.empty()) {
+                    std::string text = "editor_spawn_prop ";
+                    text += env.prop_id;
+
+                    InboundCmd ic;
+                    ic.channel = "console";
+                    ic.payload.assign(reinterpret_cast<const ::psynder::u8*>(text.data()),
+                                      reinterpret_cast<const ::psynder::u8*>(text.data()) +
+                                          text.size());
+                    ic.conn = conn;
+                    ic.reply_channel = proto::channels::kselection;
+                    ic.reply_type = "command_ack";
+                    ic.reply_command = "spawn_prop";
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
+                }
                 continue;
             }
             switch (op) {
@@ -1009,6 +1069,18 @@ void Server::pump() {
         auto conn = cmd.conn.lock();
         if (!conn || !conn->alive.load())
             continue;
+
+        if (!cmd.reply_channel.empty()) {
+            const std::string_view reply_text =
+                !result.error.empty() ? std::string_view{result.error} : std::string_view{result.output};
+            auto ack = encode_legacy_command_ack(cmd.reply_channel,
+                                                 cmd.reply_command,
+                                                 result.ok,
+                                                 reply_text);
+            auto frame = wsframe::encode_server_binary(ack.data(), ack.size());
+            enqueue(*conn, std::move(frame));
+            continue;
+        }
 
         msgpack::Writer w;
         w.u16_(proto::opcodes::kConsoleReplyFrame);

@@ -91,6 +91,9 @@ class Server {
         std::string channel;
         std::vector<::psynder::u8> payload;
         std::weak_ptr<Connection> conn;
+        std::string reply_channel;
+        std::string reply_type;
+        std::string reply_command;
     };
     struct InboundCompletion {
         ::psynder::u32 id = 0;

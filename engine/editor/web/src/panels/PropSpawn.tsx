@@ -11,6 +11,7 @@ import React from 'react';
 
 import { get_client } from '../ipc/client';
 import type {
+    EditorCommandAck,
     Envelope,
     PropCatalog,
     PropEntry,
@@ -54,17 +55,26 @@ export function PropSpawn() {
     const [catalog, set_catalog] = React.useState<PropEntry[]>([]);
     const [search, set_search] = React.useState('');
     const [last_spawned, set_last_spawned] = React.useState<string | null>(null);
+    const [last_result, set_last_result] = React.useState<EditorCommandAck | null>(null);
     const [category, set_category] = React.useState<string>('all');
 
     // ── Subscription ────────────────────────────────────────────────────
     React.useEffect(() => {
-        const unsub = client.subscribe('props', (env: Envelope) => {
+        const unsub_props = client.subscribe('props', (env: Envelope) => {
             if (env.type === 'catalog') {
                 const c = env.payload as PropCatalog;
                 set_catalog(c.props);
             }
         });
-        return unsub;
+        const unsub_selection = client.subscribe('selection', (env: Envelope) => {
+            if (env.type !== 'command_ack') return;
+            const ack = env.payload as EditorCommandAck;
+            if (ack.command === 'spawn_prop') set_last_result(ack);
+        });
+        return () => {
+            unsub_props();
+            unsub_selection();
+        };
     }, [client]);
 
     React.useEffect(() => {
@@ -95,6 +105,7 @@ export function PropSpawn() {
             prop_id: p.id,
         });
         set_last_spawned(p.id);
+        set_last_result(null);
     }, [client]);
 
     return (
@@ -175,8 +186,19 @@ export function PropSpawn() {
             </div>
 
             {last_spawned && (
-                <footer className="psy-props-footer">
-                    spawned <code>{last_spawned}</code> — engine will place at cursor.
+                <footer className={`psy-props-footer ${last_result?.ok === false ? 'is-error' : ''}`}>
+                    {last_result
+                        ? (
+                            <>
+                                {last_result.ok ? 'spawned' : 'spawn failed'} <code>{last_spawned}</code>
+                                {last_result.text ? ` - ${last_result.text}` : ''}
+                            </>
+                        )
+                        : (
+                            <>
+                                spawning <code>{last_spawned}</code>...
+                            </>
+                        )}
                 </footer>
             )}
         </div>

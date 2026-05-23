@@ -1898,6 +1898,14 @@ button {
     color: var(--psy-good);
 }
 
+.psy-props-footer.is-error {
+    color: var(--psy-bad);
+}
+
+.psy-props-footer.is-error code {
+    color: var(--psy-bad);
+}
+
 /* ─── PsyGraph ──────────────────────────────────────────────────────── */
 
 .psy-graph-body {

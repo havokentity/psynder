@@ -298,6 +298,12 @@ export interface SpawnPropCommand {
     position?: [number, number, number];
 }
 
+export interface EditorCommandAck {
+    command: string;
+    ok: boolean;
+    text: string;
+}
+
 // ─── PsyGraph channel ───────────────────────────────────────────────────
 //
 // Visual behavior authoring. The editor manipulates this graph document; the

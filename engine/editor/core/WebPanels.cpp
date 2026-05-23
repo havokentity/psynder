@@ -244,6 +244,15 @@ void ensure_web_panel_commands_registered() {
             const bool open_browser = args.size() < 2u || args[1] != "noopen";
             open_editor_panel(panel, open_browser, out);
         });
+    console_ref.RegisterCommand("editor_spawn_prop",
+                                "Queue a prop spawn request from the web editor.",
+                                [](std::span<const std::string_view> args, console::Output& out) {
+                                    if (args.empty()) {
+                                        out.PrintLine("editor_spawn_prop: expected prop id");
+                                        return;
+                                    }
+                                    out.FormatLine("editor_spawn_prop: queued {}", args[0]);
+                                });
 }
 
 void publish_web_profiler_frame(const WebProfilerFrame& frame) {
