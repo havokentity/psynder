@@ -25,9 +25,8 @@
 //
 //   3. ConsoleCmd carries an explicit mode. `console` routes to the engine
 //      command/cvar registry and `lua` routes to `script::dispatch_repl`.
-//      We install a stub backend via `script::set_repl_backend(...)` so the
-//      test does not depend on a live Lua VM; the contract under test is the
-//      routing, not Lua.
+//      Completion frames route to core/console/Completion, which is the
+//      single source of truth used by both native and web consoles.
 
 #include "core/console/Console.h"
 #include "editor/ipc/Ipc.h"
@@ -40,10 +39,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -334,6 +335,14 @@ struct StubBackendState {
     std::string last_line;
 };
 StubBackendState g_stub{};
+struct ExternalMirrorState {
+    std::atomic<int> calls{0};
+    std::mutex mu;
+    std::string line;
+    std::string output;
+    std::string error;
+};
+ExternalMirrorState g_external_mirror{};
 
 bool stub_repl_backend(std::string_view line, std::string& out) noexcept {
     g_stub.calls.fetch_add(1, std::memory_order_relaxed);
@@ -351,6 +360,15 @@ bool stub_repl_backend(std::string_view line, std::string& out) noexcept {
     out.append(line);
     out += ")";
     return true;
+}
+
+void external_mirror_sink(std::string_view line,
+                          const ::psynder::console::ExecuteResult& result) {
+    g_external_mirror.calls.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(g_external_mirror.mu);
+    g_external_mirror.line.assign(line);
+    g_external_mirror.output = result.output;
+    g_external_mirror.error = result.error;
 }
 
 }  // namespace
@@ -433,13 +451,13 @@ TEST_CASE("ipc: schema bump stays back-compat", "[ipc][schema]") {
     sock_t s = open_panel(port, tok, welcome, tail);
     REQUIRE(sock_valid(s));
     REQUIRE(welcome.accepted);
-    REQUIRE(welcome.server_ver == 3u);
-    REQUIRE(proto::kProtocolVersion == 3u);
+    REQUIRE(welcome.server_ver == 4u);
+    REQUIRE(proto::kProtocolVersion == 4u);
 
     // Forward-compat: ship the server a frame with an unknown opcode and
     // verify the connection stays alive (we can still drive normal traffic
     // afterwards). The "any unknown opcode treated as no-op rather than
-    // disconnect" contract is what lets a v1 client speak to a v3 server
+    // disconnect" contract is what lets an older client speak to a v4 server
     // five waves from now without an upgrade flag-day.
     {
         msgpack::Writer w;
@@ -491,6 +509,18 @@ TEST_CASE("ipc: console frame separates engine console and lua", "[ipc][repl]") 
         std::lock_guard<std::mutex> lk(g_stub.mu);
         g_stub.last_line.clear();
     }
+    g_external_mirror.calls.store(0);
+    {
+        std::lock_guard<std::mutex> lk(g_external_mirror.mu);
+        g_external_mirror.line.clear();
+        g_external_mirror.output.clear();
+        g_external_mirror.error.clear();
+    }
+    console.ClearExternalExecutionSinks();
+    console.AddExternalExecutionSink(&external_mirror_sink);
+    struct SinkRestore {
+        ~SinkRestore() { ::psynder::console::Console::Get().ClearExternalExecutionSinks(); }
+    } sink_restore;
     ::psynder::script::set_repl_backend(&stub_repl_backend);
     struct BackendRestore {
         ~BackendRestore() { ::psynder::script::set_repl_backend(nullptr); }
@@ -537,6 +567,13 @@ TEST_CASE("ipc: console frame separates engine console and lua", "[ipc][repl]") 
     REQUIRE(rep.ok);
     REQUIRE(rep.text == "engine hello web");
     REQUIRE(g_stub.calls.load() == 0);
+    REQUIRE(g_external_mirror.calls.load() == 1);
+    {
+        std::lock_guard<std::mutex> lk(g_external_mirror.mu);
+        REQUIRE(g_external_mirror.line == "test_ipc_echo hello web");
+        REQUIRE(g_external_mirror.output == "engine hello web");
+        REQUIRE(g_external_mirror.error.empty());
+    }
 
     // Unknown engine-console input stays a console error and does not fall
     // through to Lua.
@@ -594,6 +631,34 @@ TEST_CASE("ipc: console frame separates engine console and lua", "[ipc][repl]") 
         std::lock_guard<std::mutex> lk(g_stub.mu);
         REQUIRE(g_stub.last_line == "1+1");
     }
+
+    // Completion requests are served by core/console/Completion, not by a
+    // separate web-only table.
+    {
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleCompletionQueryFrame);
+        proto::ConsoleCompletionQuery query;
+        query.id = 77;
+        query.input = "test_ip";
+        query.cursor = static_cast<::psynder::u32>(query.input.size());
+        proto::ConsoleCompletionQuery_encode(w, query);
+        send_ws_client_binary(s, w.data(), w.size());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    srv.pump();
+
+    pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r4(pl.data(), pl.size());
+    op = 0;
+    REQUIRE(r4.u16_(op));
+    REQUIRE(op == proto::opcodes::kConsoleCompletionReplyFrame);
+    proto::ConsoleCompletionReply comp;
+    REQUIRE(proto::ConsoleCompletionReply_decode(r4, comp));
+    REQUIRE(comp.id == 77u);
+    REQUIRE(comp.start == 0u);
+    REQUIRE(comp.end == 7u);
+    REQUIRE(std::find(comp.names.begin(), comp.names.end(), "test_ipc_echo") != comp.names.end());
 
     sock_close(s);
 }

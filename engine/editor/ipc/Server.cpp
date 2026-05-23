@@ -29,6 +29,7 @@
 #include "editor/ipc/proto/Protocol.gen.h"
 
 #include "core/Log.h"
+#include "core/console/Completion.h"
 #include "core/console/Console.h"
 #include "script/internal/ReplHook.h"
 
@@ -88,27 +89,65 @@ namespace {
 constexpr const char* kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 constexpr std::string_view kPanelIndexName = "index.html";
 
-bool dispatch_editor_console(std::string_view text,
-                             std::string_view mode,
-                             bool repl_live,
-                             std::string& out) {
+::psynder::console::ExecuteResult dispatch_editor_console(std::string_view text,
+                                                          std::string_view mode,
+                                                          bool repl_live) {
+    ::psynder::console::ExecuteResult result;
     if (mode == "lua") {
         if (!repl_live) {
-            out = "lua: REPL backend is not installed";
-            return false;
+            result.ok = false;
+            result.error = "lua: REPL backend is not installed";
+            return result;
         }
-        return ::psynder::script::dispatch_repl(text, out);
+        result.ok = ::psynder::script::dispatch_repl(text, result.output);
+        if (!result.ok) {
+            result.error = std::move(result.output);
+            result.output.clear();
+        }
+        return result;
     }
 
-    auto& console = ::psynder::console::Console::Get();
-    auto res = console.ExecuteScript(text);
-    if (res.ok) {
-        out = std::move(res.output);
-        return true;
-    }
+    return ::psynder::console::Console::Get().ExecuteScript(text);
+}
 
-    out = !res.error.empty() ? std::move(res.error) : std::move(res.output);
-    return false;
+::psynder::u8 completion_kind(::psynder::console::CompletionKind kind) noexcept {
+    using Kind = ::psynder::console::CompletionKind;
+    switch (kind) {
+        case Kind::Cvar:
+            return 0;
+        case Kind::Command:
+            return 1;
+        case Kind::Value:
+            return 2;
+    }
+    return 0;
+}
+
+proto::ConsoleCompletionReply build_console_completion_reply(
+    const proto::ConsoleCompletionQuery& query) {
+    const std::size_t cursor =
+        std::min<std::size_t>(query.cursor, query.input.size());
+    const auto token = ::psynder::console::CurrentToken(query.input, cursor);
+    const auto matches =
+        ::psynder::console::BuildCompletions(token, /*max_results*/ 24, /*description_clip*/ 96);
+
+    proto::ConsoleCompletionReply reply;
+    reply.id = query.id;
+    reply.start = static_cast<::psynder::u32>(
+        std::min<std::size_t>(token.start, query.input.size()));
+    reply.end = static_cast<::psynder::u32>(
+        std::min<std::size_t>(token.end, query.input.size()));
+    reply.names.reserve(matches.size());
+    reply.kinds.reserve(matches.size());
+    reply.values.reserve(matches.size());
+    reply.descriptions.reserve(matches.size());
+    for (const auto& match : matches) {
+        reply.names.push_back(match.name);
+        reply.kinds.push_back(completion_kind(match.kind));
+        reply.values.push_back(match.value);
+        reply.descriptions.push_back(match.description);
+    }
+    return reply;
 }
 
 bool send_all(socket_t s, const ::psynder::u8* buf, ::psynder::usize n) {
@@ -668,6 +707,19 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                     }
                     break;
                 }
+                case proto::opcodes::kConsoleCompletionQueryFrame: {
+                    proto::ConsoleCompletionQuery query;
+                    if (proto::ConsoleCompletionQuery_decode(r, query)) {
+                        InboundCompletion ic;
+                        ic.id = query.id;
+                        ic.cursor = query.cursor;
+                        ic.input = std::move(query.input);
+                        ic.conn = conn;
+                        std::lock_guard<std::mutex> lk(inbound_mu_);
+                        inbound_completions_.emplace_back(std::move(ic));
+                    }
+                    break;
+                }
                 default:
                     // Unknown frame: ignore (forward-compat).
                     break;
@@ -791,16 +843,48 @@ void Server::push_scene_delta(std::string_view slice_name,
 
 void Server::pump() {
     std::deque<InboundCmd> local;
+    std::deque<InboundCompletion> completions;
     {
         std::lock_guard<std::mutex> lk(inbound_mu_);
         local.swap(inbound_);
+        completions.swap(inbound_completions_);
     }
+
+    for (auto& completion : completions) {
+        auto conn = completion.conn.lock();
+        if (!conn || !conn->alive.load())
+            continue;
+
+        proto::ConsoleCompletionQuery query;
+        query.id = completion.id;
+        query.input = std::move(completion.input);
+        query.cursor = completion.cursor;
+        proto::ConsoleCompletionReply reply = build_console_completion_reply(query);
+
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleCompletionReplyFrame);
+        proto::ConsoleCompletionReply_encode(w, reply);
+        auto frame = wsframe::encode_server_binary(w.data(), w.size());
+        enqueue(*conn, std::move(frame));
+    }
+
     const bool repl_live = repl_installed_.load(std::memory_order_acquire);
     for (auto& cmd : local) {
         std::string text(reinterpret_cast<const char*>(cmd.payload.data()), cmd.payload.size());
         PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);
-        std::string out;
-        const bool ok = dispatch_editor_console(text, cmd.channel, repl_live, out);
+        auto result = dispatch_editor_console(text, cmd.channel, repl_live);
+        auto& console = ::psynder::console::Console::Get();
+        if (cmd.channel == "console")
+            console.PushHistory(text);
+
+        std::string mirror_line;
+        if (cmd.channel == "lua") {
+            mirror_line = "[lua] ";
+            mirror_line += text;
+        } else {
+            mirror_line = text;
+        }
+        console.NotifyExternalExecution(mirror_line, result);
 
         auto conn = cmd.conn.lock();
         if (!conn || !conn->alive.load())
@@ -809,8 +893,8 @@ void Server::pump() {
         msgpack::Writer w;
         w.u16_(proto::opcodes::kConsoleReplyFrame);
         proto::ConsoleReply rep;
-        rep.ok = ok;
-        rep.text = std::move(out);
+        rep.ok = result.ok;
+        rep.text = !result.error.empty() ? std::move(result.error) : std::move(result.output);
         proto::ConsoleReply_encode(w, rep);
         auto frame = wsframe::encode_server_binary(w.data(), w.size());
         enqueue(*conn, std::move(frame));

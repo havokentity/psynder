@@ -230,6 +230,17 @@ void push_blob(State& s, std::string_view blob, u32 colour) noexcept {
     }
 }
 
+void mirror_external_execution(std::string_view line,
+                               const psynder::console::ExecuteResult& result) noexcept {
+    State& s = state();
+    push_line(s, "] " + std::string{line}, kColEcho);
+    if (!result.output.empty())
+        push_blob(s, result.output, result.ok ? kColText : kColError);
+    if (!result.error.empty())
+        push_blob(s, result.error, kColError);
+    s.scroll = 0;
+}
+
 const std::string& console_cfg_path() {
     static const std::string path = [] {
         const std::string base = platform::user_config_dir();
@@ -456,6 +467,11 @@ void ensure_init(State& s) noexcept {
     s.initialised = true;
 
     auto& con = psynder::console::Console::Get();
+    static bool external_mirror_registered = false;
+    if (!external_mirror_registered) {
+        external_mirror_registered = true;
+        con.AddExternalExecutionSink(&mirror_external_execution);
+    }
 
     static bool cfg_loaded = false;
     if (!cfg_loaded) {

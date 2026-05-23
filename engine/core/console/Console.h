@@ -148,6 +148,7 @@ struct ExecuteResult {
 };
 
 using Responder = std::function<void(const ExecuteResult&)>;
+using ExternalExecutionSink = void (*)(std::string_view line, const ExecuteResult& result);
 
 class Console {
    public:
@@ -187,6 +188,13 @@ class Console {
 
     void QueueExecute(std::string line, Responder responder);
     void Drain();
+
+    // External command mirrors let non-native frontends (web editor, remote
+    // tools) show submitted commands in the in-game overlay without coupling
+    // those frontends to UI code.
+    void AddExternalExecutionSink(ExternalExecutionSink sink);
+    void ClearExternalExecutionSinks();
+    void NotifyExternalExecution(std::string_view line, const ExecuteResult& result);
 
     void EnumerateCVars(std::string_view prefix, const std::function<void(CVar&)>& visitor);
     void EnumerateCommands(std::string_view prefix, const std::function<void(Command&)>& visitor);
@@ -264,6 +272,7 @@ class Console {
     };
     std::mutex queue_mutex_;
     std::deque<Pending> queue_;
+    std::vector<ExternalExecutionSink> external_execution_sinks_;
 
     // Single transaction snapshot: name -> pre-transaction value.
     using CvarSnapshot = std::map<std::string, std::string>;

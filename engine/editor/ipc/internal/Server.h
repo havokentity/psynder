@@ -91,6 +91,12 @@ class Server {
         std::vector<::psynder::u8> payload;
         std::weak_ptr<Connection> conn;
     };
+    struct InboundCompletion {
+        ::psynder::u32 id = 0;
+        ::psynder::u32 cursor = 0;
+        std::string input;
+        std::weak_ptr<Connection> conn;
+    };
 
    private:
     void accept_loop();
@@ -128,6 +134,7 @@ class Server {
 
     std::mutex inbound_mu_;
     std::deque<InboundCmd> inbound_;
+    std::deque<InboundCompletion> inbound_completions_;
 
     // Wave-B: set by `install_repl_backend()`. When false, `pump()` falls
     // back to the legacy Wave-A path (log-only). When true, `pump()` calls

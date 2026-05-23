@@ -1161,6 +1161,7 @@ button {
 }
 
 .psy-console-input-row {
+    position: relative;
     display: flex;
     gap: 6px;
     align-items: stretch;
@@ -1194,6 +1195,83 @@ button {
     border-color: var(--psy-accent);
 }
 
+.psy-console-completions {
+    position: absolute;
+    left: 32px;
+    right: 78px;
+    bottom: calc(100% - 2px);
+    z-index: 8;
+    max-height: min(330px, 48vh);
+    overflow-y: auto;
+    padding: 5px;
+    border: 1px solid var(--psy-accent);
+    border-radius: var(--psy-radius-sm);
+    background: rgba(10, 14, 19, 0.98);
+    box-shadow: var(--psy-panel-shadow);
+}
+
+.psy-console-completion {
+    width: 100%;
+    min-height: 34px;
+    display: grid;
+    grid-template-columns: 70px minmax(90px, 0.9fr) auto minmax(0, 1.4fr);
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border: 1px solid transparent;
+    border-radius: var(--psy-radius-sm);
+    background: transparent;
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+    font-family: var(--psy-mono);
+    text-align: left;
+}
+
+.psy-console-completion:hover,
+.psy-console-completion.is-selected {
+    border-color: var(--psy-border);
+    background: var(--psy-bg-elev-2);
+    color: var(--psy-fg);
+}
+
+.psy-console-completion-kind {
+    display: inline-flex;
+    justify-content: center;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--psy-bg-input);
+    color: var(--psy-fg-faint);
+    font-size: 9px;
+    text-transform: uppercase;
+}
+
+.psy-console-completion-kind.is-command { color: var(--psy-accent); }
+.psy-console-completion-kind.is-cvar { color: var(--psy-accent-2); }
+.psy-console-completion-kind.is-value { color: var(--psy-accent-warm); }
+
+.psy-console-completion-name {
+    color: var(--psy-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.psy-console-completion-value {
+    color: var(--psy-accent-warm);
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.psy-console-completion-desc {
+    min-width: 0;
+    color: var(--psy-fg-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 @media (max-width: 760px) {
     .psy-console-body {
         grid-template-columns: minmax(0, 1fr);
@@ -1208,6 +1286,19 @@ button {
     }
 
     .psy-console-meta {
+        display: none;
+    }
+
+    .psy-console-completions {
+        right: 10px;
+    }
+
+    .psy-console-completion {
+        grid-template-columns: 64px minmax(0, 1fr);
+    }
+
+    .psy-console-completion-value,
+    .psy-console-completion-desc {
         display: none;
     }
 }

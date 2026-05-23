@@ -1035,6 +1035,27 @@ void Console::Drain() {
     }
 }
 
+void Console::AddExternalExecutionSink(ExternalExecutionSink sink) {
+    if (!sink)
+        return;
+    if (std::find(external_execution_sinks_.begin(), external_execution_sinks_.end(), sink) !=
+        external_execution_sinks_.end()) {
+        return;
+    }
+    external_execution_sinks_.push_back(sink);
+}
+
+void Console::ClearExternalExecutionSinks() {
+    external_execution_sinks_.clear();
+}
+
+void Console::NotifyExternalExecution(std::string_view line, const ExecuteResult& result) {
+    for (ExternalExecutionSink sink : external_execution_sinks_) {
+        if (sink)
+            sink(line, result);
+    }
+}
+
 // ─── Enumeration / persistence ──────────────────────────────────────────
 void Console::EnumerateCVars(std::string_view prefix, const std::function<void(CVar&)>& visitor) {
     for (auto& [_, v] : cvars_) {

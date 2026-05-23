@@ -8,6 +8,9 @@ import { get_client } from '../ipc/client';
 import type { ConnectionState } from '../ipc/client';
 import { mock_console_eval } from '../ipc/mock';
 import type {
+    ConsoleCompletionItem,
+    ConsoleCompletionReply,
+    ConsoleCompletionRequest,
     ConsoleEval,
     ConsoleLog,
     ConsoleResult,
@@ -40,6 +43,15 @@ interface ConsoleRequest {
     duration_ms?: number;
 }
 
+interface CompletionState {
+    id: number;
+    input: string;
+    cursor: number;
+    start: number;
+    end: number;
+    items: ConsoleCompletionItem[];
+}
+
 const MAX_HISTORY = 5000;
 const MAX_INPUT_RING = 200;
 const MAX_REQUESTS = 64;
@@ -63,12 +75,22 @@ export function Console() {
     const [ring_idx, set_ring_idx] = React.useState(-1);
     const [filter, set_filter] = React.useState<ConsoleFilter>('all');
     const [mode, set_mode] = React.useState<ConsoleMode>('console');
+    const [completion, set_completion] = React.useState<CompletionState | null>(null);
+    const [completion_index, set_completion_index] = React.useState(0);
     const [connection_state, set_connection_state] = React.useState<ConnectionState>(
         client.current_state(),
     );
     const eval_seq = React.useRef(0);
+    const completion_seq = React.useRef(0);
+    const cursor_ref = React.useRef(0);
+    const draft_ref = React.useRef('');
     const request_started = React.useRef(new Map<number, number>());
     const scroll_ref = React.useRef<HTMLDivElement | null>(null);
+    const input_ref = React.useRef<HTMLTextAreaElement | null>(null);
+
+    React.useEffect(() => {
+        draft_ref.current = draft;
+    }, [draft]);
 
     // ── Stick scroll to the bottom unless the user has scrolled up ──────
     const [pinned, set_pinned] = React.useState(true);
@@ -129,6 +151,20 @@ export function Console() {
                     duration_ms,
                     value_kind: r.value_kind,
                 });
+            } else if (env.type === 'completions') {
+                const r = env.payload as ConsoleCompletionReply;
+                if (r.id !== completion_seq.current) return;
+                const input = draft_ref.current;
+                const cursor = cursor_ref.current;
+                set_completion(r.items.length > 0 ? {
+                    id: r.id,
+                    input,
+                    cursor,
+                    start: r.start,
+                    end: r.end,
+                    items: r.items,
+                } : null);
+                set_completion_index(0);
             }
         });
         return unsub;
@@ -156,6 +192,28 @@ export function Console() {
         });
         return unsub;
     }, [client, push]);
+
+    React.useEffect(() => {
+        if (mode !== 'console') {
+            set_completion(null);
+            return;
+        }
+        const cursor = Math.max(0, Math.min(cursor_ref.current, draft.length));
+        const id = completion_seq.current + 1;
+        completion_seq.current = id;
+
+        const send_request = () => {
+            const request: ConsoleCompletionRequest = { id, input: draft, cursor };
+            if (connection_state === 'open') {
+                client.send<ConsoleCompletionRequest>('console', 'complete', request);
+            } else {
+                set_completion(null);
+            }
+        };
+
+        const handle = window.setTimeout(send_request, 70);
+        return () => window.clearTimeout(handle);
+    }, [client, connection_state, draft, mode]);
 
     const settle_mock_request = React.useCallback((request_id: number, source: string) => {
         const reply = mock_console_eval(request_id, source);
@@ -187,6 +245,30 @@ export function Console() {
             value_kind: reply.result.value_kind,
         });
     }, [push, update_request]);
+
+    const update_draft_from_input = (value: string, cursor: number) => {
+        cursor_ref.current = cursor;
+        set_draft(value);
+        set_ring_idx(-1);
+    };
+
+    const commit_completion = React.useCallback((item?: ConsoleCompletionItem) => {
+        const chosen = item ?? completion?.items[completion_index];
+        if (!chosen || !completion) return;
+        const before = draft.slice(0, completion.start);
+        const after = draft.slice(completion.end);
+        const suffix = chosen.kind === 'value' ? '' : ' ';
+        const next = `${before}${chosen.name}${suffix}${after}`;
+        const cursor = before.length + chosen.name.length + suffix.length;
+        cursor_ref.current = cursor;
+        set_draft(next);
+        set_completion(null);
+        set_completion_index(0);
+        window.requestAnimationFrame(() => {
+            input_ref.current?.focus();
+            input_ref.current?.setSelectionRange(cursor, cursor);
+        });
+    }, [completion, completion_index, draft]);
 
     const submit = () => {
         const source = draft.trim();
@@ -242,9 +324,38 @@ export function Console() {
         });
         set_ring_idx(-1);
         set_draft('');
+        set_completion(null);
     };
 
     const on_key_down: React.KeyboardEventHandler<HTMLTextAreaElement> = (e) => {
+        if (completion && completion.items.length > 0) {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                commit_completion();
+                return;
+            }
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                set_completion_index((idx) => (idx + 1) % completion.items.length);
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                set_completion_index((idx) => (
+                    idx + completion.items.length - 1
+                ) % completion.items.length);
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                set_completion(null);
+                return;
+            }
+        } else if (mode === 'console' && e.key === 'Tab') {
+            e.preventDefault();
+            return;
+        }
+
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             submit();
@@ -256,6 +367,7 @@ export function Console() {
                 : Math.max(0, ring_idx - 1);
             set_ring_idx(next_idx);
             set_draft(input_ring[next_idx] ?? '');
+            cursor_ref.current = input_ring[next_idx]?.length ?? 0;
         } else if (e.key === 'ArrowDown' && (e.altKey || ring_idx >= 0)) {
             e.preventDefault();
             if (ring_idx < 0) return;
@@ -263,9 +375,11 @@ export function Console() {
             if (next_idx >= input_ring.length) {
                 set_ring_idx(-1);
                 set_draft('');
+                cursor_ref.current = 0;
             } else {
                 set_ring_idx(next_idx);
                 set_draft(input_ring[next_idx] ?? '');
+                cursor_ref.current = input_ring[next_idx]?.length ?? 0;
             }
         }
     };
@@ -383,6 +497,7 @@ export function Console() {
                             className={`psy-console-request is-${req.status}`}
                             onClick={() => {
                                 set_mode(req.mode);
+                                cursor_ref.current = req.source.length;
                                 set_draft(req.source);
                             }}
                             title="Load command"
@@ -407,15 +522,33 @@ export function Console() {
             >
                 <span className="psy-console-prompt">›</span>
                 <textarea
+                    ref={input_ref}
                     className="psy-console-input"
                     placeholder={mode === 'lua' ? 'lua expression or statement' : 'engine command or cvar'}
                     spellCheck={false}
                     autoFocus
                     rows={2}
                     value={draft}
-                    onChange={(e) => set_draft(e.target.value)}
+                    onChange={(e) => update_draft_from_input(
+                        e.target.value,
+                        e.target.selectionStart ?? e.target.value.length,
+                    )}
+                    onClick={(e) => {
+                        cursor_ref.current = e.currentTarget.selectionStart ?? draft.length;
+                    }}
+                    onKeyUp={(e) => {
+                        cursor_ref.current = e.currentTarget.selectionStart ?? draft.length;
+                    }}
                     onKeyDown={on_key_down}
                 />
+                {completion && completion.items.length > 0 && mode === 'console' && (
+                    <CompletionPopup
+                        completion={completion}
+                        selected={completion_index}
+                        on_select={set_completion_index}
+                        on_commit={commit_completion}
+                    />
+                )}
                 <button type="submit" className="psy-btn psy-btn-primary">
                     run
                 </button>
@@ -428,6 +561,45 @@ function format_duration(ms: number | undefined): string {
     if (ms === undefined) return '--';
     if (ms < 10) return `${ms.toFixed(1)} ms`;
     return `${Math.round(ms)} ms`;
+}
+
+function CompletionPopup({
+    completion,
+    selected,
+    on_select,
+    on_commit,
+}: {
+    completion: CompletionState;
+    selected: number;
+    on_select(index: number): void;
+    on_commit(item?: ConsoleCompletionItem): void;
+}) {
+    return (
+        <div className="psy-console-completions" role="listbox" aria-label="Console completions">
+            {completion.items.slice(0, 10).map((item, index) => (
+                <button
+                    key={`${item.kind}.${item.name}.${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={selected === index}
+                    className={`psy-console-completion${selected === index ? ' is-selected' : ''}`}
+                    onMouseEnter={() => on_select(index)}
+                    onClick={() => on_commit(item)}
+                >
+                    <span className={`psy-console-completion-kind is-${item.kind}`}>
+                        {item.kind}
+                    </span>
+                    <span className="psy-console-completion-name">{item.name}</span>
+                    {item.value && (
+                        <span className="psy-console-completion-value">{item.value}</span>
+                    )}
+                    {item.description && (
+                        <span className="psy-console-completion-desc">{item.description}</span>
+                    )}
+                </button>
+            ))}
+        </div>
+    );
 }
 
 function ConsoleRow({ entry }: { entry: ConsoleEntry }) {

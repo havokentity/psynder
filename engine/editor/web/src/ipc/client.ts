@@ -17,6 +17,7 @@ import type {
     Envelope,
 } from './protocol';
 import { PROTOCOL_VERSION } from './protocol';
+import { opcodes as OPCODES } from './protocol.gen';
 
 export interface ClientOptions {
     /** Override the engine endpoint; default derives from window.location. */
@@ -39,16 +40,6 @@ type StateListener = (state: ConnectionState) => void;
 
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS  = 8000;
-
-const OPCODES = {
-    WelcomeFrame:      2,
-    SubscribeFrame:    3,
-    UnsubscribeFrame:  4,
-    LogFrame:          16,
-    StatsFrame:        18,
-    ConsoleFrame:      19,
-    ConsoleReplyFrame: 21,
-} as const;
 
 export class IpcClient {
     private url: string;
@@ -268,6 +259,14 @@ export class IpcClient {
             }
             return concat_msgpack(OPCODES.ConsoleFrame, [text, mode]);
         }
+        if (ch === 'console' && type === 'complete') {
+            const p = payload as { id?: number; input?: string; cursor?: number };
+            return concat_msgpack(OPCODES.ConsoleCompletionQueryFrame, [
+                Number(p.id ?? 0),
+                p.input ?? '',
+                Number(p.cursor ?? 0),
+            ]);
+        }
 
         // Future panels can still use the previous envelope shape until their
         // generated opcode frames land. The current C++ server ignores these.
@@ -301,6 +300,32 @@ export class IpcClient {
                     ok,
                     text,
                     value_kind: ok ? 'text' : 'error',
+                },
+            });
+            return true;
+        }
+        if (op === OPCODES.ConsoleCompletionReplyFrame) {
+            const reply = Array.isArray(body) ? body : [];
+            const names = Array.isArray(reply[3]) ? reply[3] : [];
+            const kinds = Array.isArray(reply[4]) ? reply[4] : [];
+            const values = Array.isArray(reply[5]) ? reply[5] : [];
+            const descriptions = Array.isArray(reply[6]) ? reply[6] : [];
+            this.handle_envelope({
+                v: PROTOCOL_VERSION,
+                ch: 'console',
+                type: 'completions',
+                payload: {
+                    id: Number(reply[0] ?? 0),
+                    start: Number(reply[1] ?? 0),
+                    end: Number(reply[2] ?? 0),
+                    items: names.map((name, index) => ({
+                        name: String(name ?? ''),
+                        kind: completion_kind(Number(kinds[index] ?? 0)),
+                        value: typeof values[index] === 'string' ? values[index] : '',
+                        description: typeof descriptions[index] === 'string'
+                            ? descriptions[index]
+                            : '',
+                    })),
                 },
             });
             return true;
@@ -388,6 +413,12 @@ function concat_msgpack(op: number, body: unknown): Uint8Array {
     out.set(a, 0);
     out.set(b, a.length);
     return out;
+}
+
+function completion_kind(kind: number): 'cvar' | 'command' | 'value' {
+    if (kind === 1) return 'command';
+    if (kind === 2) return 'value';
+    return 'cvar';
 }
 
 function level_name(level: number): 'trace' | 'debug' | 'info' | 'warn' | 'error' {

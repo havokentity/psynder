@@ -26,7 +26,10 @@
 // version than the bundle was built against; the React app degrades to
 // best-effort rendering of channels it understands.
 
-export const PROTOCOL_VERSION = 3;
+import { kProtocolVersion } from './protocol.gen';
+import type { ConsoleCompletionQuery } from './protocol.gen';
+
+export const PROTOCOL_VERSION = kProtocolVersion;
 
 export type Channel =
     | 'stats'
@@ -140,10 +143,12 @@ export interface SelectionSet {
 
 // ─── Console channel ─────────────────────────────────────────────────────
 //
-// `eval`   : panel → engine. Pushes either an engine-console command/cvar
-//            or an explicit Lua REPL snippet.
-// `log`    : engine → panel. Stream of log lines tagged with a severity.
-// `result` : engine → panel. The terminal value (or error) of the prior eval.
+// `eval`        : panel → engine. Pushes either an engine-console command/cvar
+//                 or an explicit Lua REPL snippet.
+// `complete`    : panel → engine. Requests native console completions.
+// `completions` : engine → panel. Ranked native console completion matches.
+// `log`         : engine → panel. Stream of log lines tagged with a severity.
+// `result`      : engine → panel. The terminal value (or error) of the prior eval.
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
@@ -173,6 +178,24 @@ export interface ConsoleResult {
     duration_ms?: number;
     /** Optional coarse value label for richer GUI consoles. */
     value_kind?: 'nil' | 'boolean' | 'number' | 'string' | 'table' | 'error' | 'text';
+}
+
+export type ConsoleCompletionRequest = ConsoleCompletionQuery;
+
+export type ConsoleCompletionKind = 'cvar' | 'command' | 'value';
+
+export interface ConsoleCompletionItem {
+    name: string;
+    kind: ConsoleCompletionKind;
+    value?: string;
+    description?: string;
+}
+
+export interface ConsoleCompletionReply {
+    id: number;
+    start: number;
+    end: number;
+    items: ConsoleCompletionItem[];
 }
 
 // ─── Profiler channel ────────────────────────────────────────────────────
