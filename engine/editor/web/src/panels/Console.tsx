@@ -198,6 +198,12 @@ export function Console() {
             set_completion(null);
             return;
         }
+        if (draft.trim().length === 0) {
+            completion_seq.current += 1;
+            set_completion(null);
+            set_completion_index(0);
+            return;
+        }
         const cursor = Math.max(0, Math.min(cursor_ref.current, draft.length));
         const id = completion_seq.current + 1;
         completion_seq.current = id;
