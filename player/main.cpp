@@ -33,6 +33,7 @@ struct PlayerApp;
 PlayerApp* g_active_arcade = nullptr;
 
 void load_active_arcade_scene(std::string_view path);
+void create_active_arcade_scene();
 
 PlayerArgs parse_player_args(int argc, char** argv) {
     PlayerArgs args{};
@@ -96,6 +97,17 @@ void register_arcade_console_commands() {
             }
             load_active_arcade_scene(args[0]);
             out.FormatLine("arcade_load_scene: loading {}", args[0]);
+        });
+    console_ref.RegisterCommand(
+        "arcade_new_scene",
+        "Create a blank live scene in Psynder Arcade.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (!g_active_arcade) {
+                out.PrintLine("arcade_new_scene: Psynder Arcade is not running");
+                return;
+            }
+            create_active_arcade_scene();
+            out.PrintLine("arcade_new_scene: created blank scene with active camera");
         });
     console_ref.RegisterCommand(
         "arcade_open_editor",
@@ -347,6 +359,22 @@ struct PlayerApp {
         scene_load.load_async(path);
     }
 
+    void create_blank_scene() {
+        if (!app)
+            return;
+        scene::Scene& scene = app->create_active_scene();
+        scene.environment().set_clear_color(ui::imm::rgba(0x06, 0x08, 0x10));
+        (void)scene.spawn_camera(scene::CameraDesc{
+            .position = math::Vec3{0.0f, 1.4f, 4.5f},
+            .look_at = math::Vec3{0.0f, 0.7f, 0.0f},
+            .up = math::Vec3{0.0f, 1.0f, 0.0f},
+        });
+        load_target_scene = nullptr;
+        idle_status = "Blank scene active.";
+        show_idle_panel = false;
+        PSY_LOG_INFO("psynder_arcade: created blank scene");
+    }
+
     void started(app::WindowApp& app_ref, const PlayerArgs& args) {
         app = &app_ref;
         g_active_arcade = this;
@@ -401,6 +429,11 @@ struct PlayerApp {
 void load_active_arcade_scene(std::string_view path) {
     if (g_active_arcade)
         g_active_arcade->load_scene(path);
+}
+
+void create_active_arcade_scene() {
+    if (g_active_arcade)
+        g_active_arcade->create_blank_scene();
 }
 
 }  // namespace

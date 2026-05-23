@@ -187,13 +187,14 @@ bool start_editor_ipc(console::Output& out) {
 }
 
 bool valid_editor_panel(std::string_view panel) noexcept {
-    return panel == "workbench" || panel == "console" || panel == "inspector" || panel == "profiler" ||
-           panel == "assets" || panel == "props" || panel == "psygraph";
+    return panel == "workbench" || panel == "scene" || panel == "console" || panel == "inspector" ||
+           panel == "profiler" || panel == "assets" || panel == "props" || panel == "psygraph";
 }
 
 void open_editor_panel(std::string_view panel, bool open_browser, console::Output& out) {
     if (!valid_editor_panel(panel)) {
-        out.PrintLine("editor-panel: expected workbench, console, inspector, profiler, assets, props, or psygraph");
+        out.PrintLine(
+            "editor-panel: expected workbench, scene, console, inspector, profiler, assets, props, or psygraph");
         return;
     }
     if (!start_editor_ipc(out))
@@ -238,7 +239,7 @@ void ensure_web_panel_commands_registered() {
                                 });
     console_ref.RegisterCommand(
         "editor_panel",
-        "Start editor IPC and open an editor panel: workbench, console, inspector, profiler, assets, props, psygraph.",
+        "Start editor IPC and open an editor panel: workbench, scene, console, inspector, profiler, assets, props, psygraph.",
         [](std::span<const std::string_view> args, console::Output& out) {
             const std::string_view panel = args.empty() ? std::string_view{"console"} : args[0];
             const bool open_browser = args.size() < 2u || args[1] != "noopen";

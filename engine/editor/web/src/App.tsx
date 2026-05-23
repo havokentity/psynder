@@ -11,8 +11,9 @@ import { Inspector } from './panels/Inspector';
 import { Profiler } from './panels/Profiler';
 import { PropSpawn } from './panels/PropSpawn';
 import { PsyGraph } from './panels/PsyGraph';
+import { SceneView } from './panels/SceneView';
 
-type PanelName = 'inspector' | 'console' | 'profiler' | 'assets' | 'props' | 'psygraph';
+type PanelName = 'scene' | 'inspector' | 'console' | 'profiler' | 'assets' | 'props' | 'psygraph';
 type RouteName = PanelName | 'workbench';
 type ThemeName = 'forge' | 'field' | 'mono';
 type DensityName = 'comfortable' | 'compact';
@@ -42,13 +43,14 @@ type DockLayoutSnapshot = {
 type DockUndo = { id: number; snapshot: DockLayoutSnapshot; message: string };
 
 const PANEL_NAMES: readonly PanelName[] = [
-    'inspector', 'console', 'profiler', 'assets', 'props', 'psygraph',
+    'scene', 'inspector', 'console', 'profiler', 'assets', 'props', 'psygraph',
 ];
 const LAYOUT_PRESETS: readonly LayoutPreset[] = ['split', 'stack', 'quad', 'single'];
 const LAYOUT_NAMES: readonly LayoutName[] = [...LAYOUT_PRESETS, 'custom'];
 const DOCK_SLOTS: readonly DockSlot[] = ['primary', 'secondary', 'tertiary', 'quaternary'];
 
 const PANEL_META: Record<PanelName, { icon: string; label: string; hot: string }> = {
+    scene:     { icon: '@', label: 'Scene', hot: 'world' },
     inspector: { icon: 'I', label: 'Inspector', hot: 'sel' },
     console:   { icon: '>', label: 'Console', hot: 'repl' },
     profiler:  { icon: '~', label: 'Profiler', hot: 'fps' },
@@ -58,10 +60,10 @@ const PANEL_META: Record<PanelName, { icon: string; label: string; hot: string }
 };
 const WORKBENCH_META = { icon: '=', label: 'Workbench', hot: 'dock' };
 const DEFAULT_DOCKS: Record<DockSlot, PanelName> = {
-    primary: 'console',
-    secondary: 'profiler',
+    primary: 'scene',
+    secondary: 'console',
     tertiary: 'inspector',
-    quaternary: 'assets',
+    quaternary: 'props',
 };
 
 // Engine route paths map onto panel names; "assets" / "props" land on the
@@ -69,6 +71,7 @@ const DEFAULT_DOCKS: Record<DockSlot, PanelName> = {
 // against — see DESIGN.md §10.6 / §10.8.
 const PATH_TO_ROUTE: Record<string, RouteName> = {
     workbench: 'workbench',
+    scene:     'scene',
     inspector: 'inspector',
     console:   'console',
     profiler:  'profiler',
@@ -1203,6 +1206,7 @@ function DockSlotView({
 }
 
 function PanelView({ name }: { name: PanelName }) {
+    if (name === 'scene') return <SceneView />;
     if (name === 'inspector') return <Inspector />;
     if (name === 'console') return <Console />;
     if (name === 'profiler') return <Profiler />;
