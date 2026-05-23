@@ -44,18 +44,18 @@ bool start_editor_ipc(console::Output& out) {
     }
     out.PrintLine("editor-ipc: listening on 127.0.0.1:7654");
     out.FormatLine("editor-ipc: token {}", ipc::Server::Get().session_token());
-    out.FormatLine("editor console: {}", editor_panel_url("console"));
+    out.FormatLine("editor workbench: {}", editor_panel_url("workbench"));
     return true;
 }
 
 bool valid_editor_panel(std::string_view panel) noexcept {
-    return panel == "console" || panel == "inspector" || panel == "profiler" ||
+    return panel == "workbench" || panel == "console" || panel == "inspector" || panel == "profiler" ||
            panel == "assets" || panel == "props" || panel == "psygraph";
 }
 
 void open_editor_panel(std::string_view panel, bool open_browser, console::Output& out) {
     if (!valid_editor_panel(panel)) {
-        out.PrintLine("editor-panel: expected console, inspector, profiler, assets, props, or psygraph");
+        out.PrintLine("editor-panel: expected workbench, console, inspector, profiler, assets, props, or psygraph");
         return;
     }
     if (!start_editor_ipc(out))
@@ -94,18 +94,32 @@ void ensure_web_panel_commands_registered() {
                                     (void)start_editor_ipc(out);
                                 });
     console_ref.RegisterCommand("editor_console",
-                                "Start editor IPC and open the GUI console panel.",
+                                "Start editor IPC and open the docked GUI console workspace.",
                                 [](std::span<const std::string_view>, console::Output& out) {
-                                    open_editor_panel("console", true, out);
+                                    open_editor_panel("workbench", true, out);
                                 });
     console_ref.RegisterCommand(
         "editor_panel",
-        "Start editor IPC and open an editor panel: console, inspector, profiler, assets, props, psygraph.",
+        "Start editor IPC and open an editor panel: workbench, console, inspector, profiler, assets, props, psygraph.",
         [](std::span<const std::string_view> args, console::Output& out) {
             const std::string_view panel = args.empty() ? std::string_view{"console"} : args[0];
             const bool open_browser = args.size() < 2u || args[1] != "noopen";
             open_editor_panel(panel, open_browser, out);
         });
+}
+
+void publish_web_profiler_frame(const WebProfilerFrame& frame) {
+    auto& server = ipc::Server::Get();
+    if (!server.has_subscribers("stats"))
+        return;
+
+    ipc::StatsTick tick{};
+    tick.frame_index = frame.frame_index;
+    tick.cpu_ms = frame.cpu_ms;
+    tick.gpu_ms = 0.0f;
+    tick.draw_calls = frame.draw_calls;
+    tick.entities = frame.entities;
+    server.broadcast_stats_tick(tick);
 }
 
 void pump_web_panels() {

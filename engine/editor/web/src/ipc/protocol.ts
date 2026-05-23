@@ -26,9 +26,10 @@
 // version than the bundle was built against; the React app degrades to
 // best-effort rendering of channels it understands.
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export type Channel =
+    | 'stats'
     | 'schemas'
     | 'selection'
     | 'console'
@@ -188,8 +189,18 @@ export interface ProfilerFrame {
     frame: number;
     cpu_ms: number;
     gpu_ms: number;
+    draw_calls?: number;
+    entities?: number;
     /** Per-system / per-pass breakdown — `sum(sections.ms) ≈ cpu_ms`. */
     sections: ProfilerSection[];
+}
+
+export interface StatsTick {
+    frame_index: number;
+    cpu_ms: number;
+    gpu_ms: number;
+    draw_calls: number;
+    entities: number;
 }
 
 // ─── Assets channel ──────────────────────────────────────────────────────

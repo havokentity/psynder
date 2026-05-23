@@ -51,6 +51,7 @@ struct OverlayState {
     bool enabled = true;          // master switch for the whole overlay suite
     bool capturing = false;       // input was consumed by overlays this frame
     u64 last_tick = 0;            // for the internal frame-time measurement
+    u64 web_frame_index = 0;      // profiler stream frame id
     std::array<f32, 120> ring{};  // ~2 s rolling window for avg frame ms
     u32 head = 0;
     u32 count = 0;
@@ -243,6 +244,13 @@ inline Mode frame_overlays(const platform::Input& input,
     for (u32 i = 0; i < st.count; ++i)
         avg += st.ring[i];
     avg = (st.count > 0u) ? avg / static_cast<f32>(st.count) : frame_ms;
+
+    publish_web_profiler_frame(WebProfilerFrame{
+        st.web_frame_index++,
+        frame_ms,
+        static_cast<u32>(stats.draw_calls > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.draw_calls),
+        static_cast<u32>(stats.triangles > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.triangles),
+    });
 
     const Mode mode = sample_step(input, fb, frame_ms / 1000.0f);
     draw_frame_overlays(fb, make_debug_hud_stats(frame_ms, avg, stats));

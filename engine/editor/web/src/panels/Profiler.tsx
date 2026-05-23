@@ -76,7 +76,7 @@ export function Profiler() {
 
     React.useEffect(() => {
         const unsub = client.on_state((s) => {
-            if (s === 'open') client.send('profiler', 'subscribe', {});
+            if (s === 'open') client.send('stats', 'subscribe', {});
         });
         return unsub;
     }, [client]);
@@ -171,6 +171,8 @@ function FrameStats({ frame }: { frame: ProfilerFrame | null }) {
             <li><span>cpu</span><code>{frame.cpu_ms.toFixed(2)} ms</code></li>
             <li><span>gpu</span><code>{frame.gpu_ms.toFixed(2)} ms</code></li>
             <li><span>fps</span><code>{(1000 / Math.max(frame.cpu_ms, 0.0001)).toFixed(1)}</code></li>
+            <li><span>draws</span><code>{frame.draw_calls ?? 0}</code></li>
+            <li><span>work</span><code>{frame.entities ?? 0}</code></li>
         </ul>
     );
 }

@@ -732,6 +732,23 @@ void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> 
     }
 }
 
+bool Server::has_subscribers(std::string_view channel) {
+    std::vector<std::shared_ptr<Connection>> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(conns_mu_);
+        snapshot = conns_;
+    }
+    const std::string channel_str(channel);
+    for (auto& c : snapshot) {
+        if (!c || !c->authed.load() || !c->alive.load())
+            continue;
+        std::lock_guard<std::mutex> sub_lk(c->sub_mu);
+        if (c->subscribed.count(channel_str) > 0)
+            return true;
+    }
+    return false;
+}
+
 void Server::push_scene_delta(std::string_view slice_name,
                               std::span<const ::psynder::u8> msgpack_payload) {
     // Build the SceneDeltaFrame: u16 opcode then SceneDeltaSlice{slice,
@@ -829,6 +846,24 @@ void Server::stop() {
 
 void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> msgpack_payload) {
     internal::Server::Get().broadcast(channel, msgpack_payload);
+}
+
+void Server::broadcast_stats_tick(const StatsTick& tick) {
+    msgpack::Writer w;
+    w.u16_(proto::opcodes::kStatsFrame);
+    proto::StatsTick out;
+    out.frame_index = tick.frame_index;
+    out.cpu_ms = tick.cpu_ms;
+    out.gpu_ms = tick.gpu_ms;
+    out.draw_calls = tick.draw_calls;
+    out.entities = tick.entities;
+    proto::StatsTick_encode(w, out);
+    internal::Server::Get().broadcast(proto::channels::kstats,
+                                      std::span<const ::psynder::u8>(w.data(), w.size()));
+}
+
+bool Server::has_subscribers(std::string_view channel) const {
+    return internal::Server::Get().has_subscribers(channel);
 }
 
 void Server::pump() {

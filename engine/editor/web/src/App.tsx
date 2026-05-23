@@ -13,13 +13,18 @@ import { PropSpawn } from './panels/PropSpawn';
 import { PsyGraph } from './panels/PsyGraph';
 
 type PanelName = 'inspector' | 'console' | 'profiler' | 'assets' | 'props' | 'psygraph';
+type RouteName = PanelName | 'workbench';
 type ThemeName = 'forge' | 'field' | 'mono';
 type DensityName = 'comfortable' | 'compact';
 type SkinName = 'modern' | 'tactical';
+type LayoutName = 'split' | 'stack' | 'quad' | 'single';
+type DockSlot = 'primary' | 'secondary' | 'tertiary' | 'quaternary';
 
 const PANEL_NAMES: readonly PanelName[] = [
     'inspector', 'console', 'profiler', 'assets', 'props', 'psygraph',
 ];
+const LAYOUT_NAMES: readonly LayoutName[] = ['split', 'stack', 'quad', 'single'];
+const DOCK_SLOTS: readonly DockSlot[] = ['primary', 'secondary', 'tertiary', 'quaternary'];
 
 const PANEL_META: Record<PanelName, { icon: string; label: string; hot: string }> = {
     inspector: { icon: 'I', label: 'Inspector', hot: 'sel' },
@@ -29,11 +34,19 @@ const PANEL_META: Record<PanelName, { icon: string; label: string; hot: string }
     props:     { icon: '+', label: 'Props', hot: 'spawn' },
     psygraph:  { icon: '*', label: 'PsyGraph', hot: 'logic' },
 };
+const WORKBENCH_META = { icon: '=', label: 'Workbench', hot: 'dock' };
+const DEFAULT_DOCKS: Record<DockSlot, PanelName> = {
+    primary: 'console',
+    secondary: 'profiler',
+    tertiary: 'inspector',
+    quaternary: 'assets',
+};
 
 // Engine route paths map onto panel names; "assets" / "props" land on the
 // `/panels/assets` and `/panels/props` URLs that the engine launches Chrome
 // against — see DESIGN.md §10.6 / §10.8.
-const PATH_TO_PANEL: Record<string, PanelName> = {
+const PATH_TO_ROUTE: Record<string, RouteName> = {
+    workbench: 'workbench',
     inspector: 'inspector',
     console:   'console',
     profiler:  'profiler',
@@ -42,20 +55,32 @@ const PATH_TO_PANEL: Record<string, PanelName> = {
     psygraph:  'psygraph',
 };
 
-function pick_panel(): PanelName {
+function pick_route(): RouteName {
     if (typeof window === 'undefined') return 'inspector';
     // Path-based first (engine routes via /panels/<name>), then query string.
     const m = window.location.pathname.match(/\/panels\/([a-z]+)/);
-    if (m && m[1] in PATH_TO_PANEL) return PATH_TO_PANEL[m[1]];
+    if (m && m[1] in PATH_TO_ROUTE) return PATH_TO_ROUTE[m[1]];
     const qp = new URLSearchParams(window.location.search).get('panel');
-    if (qp && (PANEL_NAMES as readonly string[]).includes(qp)) {
-        return qp as PanelName;
+    if (qp === 'workbench' || (qp && (PANEL_NAMES as readonly string[]).includes(qp))) {
+        return qp as RouteName;
     }
     return 'inspector';
 }
 
+function safe_layout(value: string | null): LayoutName {
+    return value && (LAYOUT_NAMES as readonly string[]).includes(value)
+        ? value as LayoutName
+        : 'split';
+}
+
+function safe_panel(value: string | null, fallback: PanelName): PanelName {
+    return value && (PANEL_NAMES as readonly string[]).includes(value)
+        ? value as PanelName
+        : fallback;
+}
+
 export function App() {
-    const [panel, set_panel] = React.useState<PanelName>(pick_panel);
+    const [route, set_route] = React.useState<RouteName>(pick_route);
     const [settings_open, set_settings_open] = React.useState(false);
     const [theme, set_theme] = React.useState<ThemeName>(() => (
         (window.localStorage.getItem('psy_theme') as ThemeName | null) ?? 'forge'
@@ -66,24 +91,33 @@ export function App() {
     const [skin, set_skin] = React.useState<SkinName>(() => (
         (window.localStorage.getItem('psy_skin') as SkinName | null) ?? 'modern'
     ));
+    const [layout, set_layout] = React.useState<LayoutName>(() => (
+        safe_layout(window.localStorage.getItem('psy_dock_layout'))
+    ));
+    const [docks, set_docks] = React.useState<Record<DockSlot, PanelName>>(() => ({
+        primary: safe_panel(window.localStorage.getItem('psy_dock_primary'), DEFAULT_DOCKS.primary),
+        secondary: safe_panel(window.localStorage.getItem('psy_dock_secondary'), DEFAULT_DOCKS.secondary),
+        tertiary: safe_panel(window.localStorage.getItem('psy_dock_tertiary'), DEFAULT_DOCKS.tertiary),
+        quaternary: safe_panel(window.localStorage.getItem('psy_dock_quaternary'), DEFAULT_DOCKS.quaternary),
+    }));
 
     // In dev mode there's only a single bundle; let the user flip between
     // panels via the header without reloading. The engine doesn't drive
     // this — each Chrome window only ever shows one panel.
     React.useEffect(() => {
-        const on_pop = () => set_panel(pick_panel());
+        const on_pop = () => set_route(pick_route());
         window.addEventListener('popstate', on_pop);
         return () => window.removeEventListener('popstate', on_pop);
     }, []);
 
-    const switch_panel = (name: PanelName) => {
-        if (panel === name) return;
+    const switch_route = (name: RouteName) => {
+        if (route === name) return;
         const url = new URL(window.location.href);
         url.searchParams.set('panel', name);
         // Keep history sane in dev — engine-launched windows already pin
         // a panel and won't see this code path.
         window.history.pushState({}, '', url.toString());
-        set_panel(name);
+        set_route(name);
     };
 
     React.useEffect(() => {
@@ -92,12 +126,22 @@ export function App() {
         window.localStorage.setItem('psy_skin', skin);
     }, [theme, density, skin]);
 
-    const current = PANEL_META[panel];
+    React.useEffect(() => {
+        window.localStorage.setItem('psy_dock_layout', layout);
+    }, [layout]);
+
+    React.useEffect(() => {
+        for (const slot of DOCK_SLOTS) {
+            window.localStorage.setItem(`psy_dock_${slot}`, docks[slot]);
+        }
+    }, [docks]);
+
+    const current = route === 'workbench' ? WORKBENCH_META : PANEL_META[route];
 
     return (
         <div
             className="psy-app"
-            data-panel={panel}
+            data-panel={route}
             data-theme={theme}
             data-density={density}
             data-skin={skin}
@@ -126,6 +170,15 @@ export function App() {
                 </div>
 
                 <div className="psy-topbar-actions">
+                    <button
+                        type="button"
+                        className="psy-toolbar-btn"
+                        onClick={() => switch_route('workbench')}
+                        aria-label="Open docked workbench"
+                        title="Docked workbench"
+                    >
+                        =
+                    </button>
                     <button
                         type="button"
                         className="psy-toolbar-btn"
@@ -168,18 +221,34 @@ export function App() {
                                 on_change={set_density}
                             />
                         </SettingRow>
+                        <SettingRow label="layout">
+                            <Segmented<LayoutName>
+                                values={LAYOUT_NAMES}
+                                value={layout}
+                                on_change={set_layout}
+                            />
+                        </SettingRow>
                     </div>
                 )}
             </header>
 
             <div className="psy-workbench">
                 <nav className="psy-app-nav" aria-label="panel switcher">
+                    <button
+                        type="button"
+                        className={`psy-nav-btn ${route === 'workbench' ? 'is-active' : ''}`}
+                        onClick={() => switch_route('workbench')}
+                    >
+                        <span className="psy-nav-icon">{WORKBENCH_META.icon}</span>
+                        <span className="psy-nav-label">{WORKBENCH_META.label}</span>
+                        <span className="psy-nav-hot">{WORKBENCH_META.hot}</span>
+                    </button>
                     {PANEL_NAMES.map((name) => (
                         <button
                             key={name}
                             type="button"
-                            className={`psy-nav-btn ${panel === name ? 'is-active' : ''}`}
-                            onClick={() => switch_panel(name)}
+                            className={`psy-nav-btn ${route === name ? 'is-active' : ''}`}
+                            onClick={() => switch_route(name)}
                         >
                             <span className="psy-nav-icon">{PANEL_META[name].icon}</span>
                             <span className="psy-nav-label">{PANEL_META[name].label}</span>
@@ -189,16 +258,104 @@ export function App() {
                 </nav>
 
                 <main className="psy-app-main">
-                    {panel === 'inspector' && <Inspector />}
-                    {panel === 'console'   && <Console />}
-                    {panel === 'profiler'  && <Profiler />}
-                    {panel === 'assets'    && <AssetBrowser />}
-                    {panel === 'props'     && <PropSpawn />}
-                    {panel === 'psygraph'  && <PsyGraph />}
+                    {route === 'workbench' ? (
+                        <DockWorkspace
+                            layout={layout}
+                            docks={docks}
+                            on_layout={set_layout}
+                            on_dock={(slot, panel) => set_docks((prev) => ({ ...prev, [slot]: panel }))}
+                        />
+                    ) : (
+                        <PanelView name={route} />
+                    )}
                 </main>
             </div>
         </div>
     );
+}
+
+function DockWorkspace({
+    layout,
+    docks,
+    on_layout,
+    on_dock,
+}: {
+    layout: LayoutName;
+    docks: Record<DockSlot, PanelName>;
+    on_layout(layout: LayoutName): void;
+    on_dock(slot: DockSlot, panel: PanelName): void;
+}) {
+    const slots: DockSlot[] = layout === 'quad'
+        ? ['primary', 'secondary', 'tertiary', 'quaternary']
+        : layout === 'single'
+            ? ['primary']
+            : ['primary', 'secondary'];
+
+    return (
+        <section className="psy-dock-shell" data-layout={layout}>
+            <div className="psy-dock-toolbar">
+                <div className="psy-dock-title">
+                    <span className="psy-dock-glyph">=</span>
+                    <span>Dock Workspace</span>
+                </div>
+                <Segmented<LayoutName>
+                    values={LAYOUT_NAMES}
+                    value={layout}
+                    on_change={on_layout}
+                />
+            </div>
+            <div className="psy-dock-grid" data-layout={layout}>
+                {slots.map((slot) => (
+                    <DockSlotView
+                        key={slot}
+                        slot={slot}
+                        panel={docks[slot]}
+                        on_panel={(panel) => on_dock(slot, panel)}
+                    />
+                ))}
+            </div>
+        </section>
+    );
+}
+
+function DockSlotView({
+    slot,
+    panel,
+    on_panel,
+}: {
+    slot: DockSlot;
+    panel: PanelName;
+    on_panel(panel: PanelName): void;
+}) {
+    return (
+        <section className="psy-dock-slot" data-slot={slot}>
+            <div className="psy-dock-tabbar">
+                <span className="psy-dock-slot-name">{slot}</span>
+                <select
+                    className="psy-dock-select"
+                    value={panel}
+                    aria-label={`${slot} dock panel`}
+                    onChange={(e) => on_panel(e.target.value as PanelName)}
+                >
+                    {PANEL_NAMES.map((name) => (
+                        <option key={name} value={name}>{PANEL_META[name].label}</option>
+                    ))}
+                </select>
+            </div>
+            <div className="psy-dock-content">
+                <PanelView name={panel} />
+            </div>
+        </section>
+    );
+}
+
+function PanelView({ name }: { name: PanelName }) {
+    if (name === 'inspector') return <Inspector />;
+    if (name === 'console') return <Console />;
+    if (name === 'profiler') return <Profiler />;
+    if (name === 'assets') return <AssetBrowser />;
+    if (name === 'props') return <PropSpawn />;
+    return <PsyGraph />;
 }
 
 function SettingRow({

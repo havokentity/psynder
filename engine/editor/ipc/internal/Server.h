@@ -54,6 +54,7 @@ class Server {
 
     // Push a state delta to all connected, authenticated, subscribed clients.
     void broadcast(std::string_view channel, std::span<const ::psynder::u8> payload);
+    bool has_subscribers(std::string_view channel);
 
     // Wave-B: slice-scoped scene-delta push. Wraps `msgpack_payload` in a
     // SceneDeltaFrame (opcode 20) tagged with `slice_name` and broadcasts to

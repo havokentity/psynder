@@ -45,6 +45,7 @@ const OPCODES = {
     SubscribeFrame:    3,
     UnsubscribeFrame:  4,
     LogFrame:          16,
+    StatsFrame:        18,
     ConsoleFrame:      19,
     ConsoleReplyFrame: 21,
 } as const;
@@ -313,6 +314,28 @@ export class IpcClient {
                     level: level_name(Number(log[0] ?? 2)),
                     ts: Date.now(),
                     text: typeof log[1] === 'string' ? log[1] : '',
+                },
+            });
+            return true;
+        }
+        if (op === OPCODES.StatsFrame) {
+            const stats = Array.isArray(body) ? body : [];
+            const frame = Number(stats[0] ?? 0);
+            const cpu_ms = Number(stats[1] ?? 0);
+            const gpu_ms = Number(stats[2] ?? 0);
+            const draw_calls = Number(stats[3] ?? 0);
+            const entities = Number(stats[4] ?? 0);
+            this.handle_envelope({
+                v: PROTOCOL_VERSION,
+                ch: 'profiler',
+                type: 'frame',
+                payload: {
+                    frame,
+                    cpu_ms,
+                    gpu_ms,
+                    draw_calls,
+                    entities,
+                    sections: [{ name: 'frame', ms: cpu_ms }],
                 },
             });
             return true;

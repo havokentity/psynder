@@ -419,6 +419,134 @@ button {
     box-shadow: var(--psy-panel-shadow);
 }
 
+/* ─── Docked workbench ─────────────────────────────────────────────── */
+
+.psy-dock-shell {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+.psy-dock-toolbar {
+    min-height: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--psy-border);
+    background: rgba(12, 17, 23, 0.78);
+}
+
+.psy-dock-title {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    color: var(--psy-fg);
+    font-weight: 750;
+    text-transform: uppercase;
+}
+
+.psy-dock-glyph {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--psy-border);
+    border-radius: var(--psy-radius-sm);
+    color: var(--psy-accent);
+    background: var(--psy-bg-input);
+    font-family: var(--psy-mono);
+}
+
+.psy-dock-grid {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: grid;
+    gap: var(--psy-gap);
+    padding: var(--psy-gap);
+    overflow: hidden;
+}
+
+.psy-dock-grid[data-layout="split"] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.psy-dock-grid[data-layout="stack"] {
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.psy-dock-grid[data-layout="quad"] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.psy-dock-grid[data-layout="single"] {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.psy-dock-slot {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--psy-border);
+    border-radius: var(--psy-radius);
+    background: rgba(10, 14, 19, 0.66);
+}
+
+.psy-dock-tabbar {
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--psy-border-soft);
+    background: var(--psy-bg-elev-1);
+}
+
+.psy-dock-slot-name {
+    color: var(--psy-fg-faint);
+    font-family: var(--psy-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+}
+
+.psy-dock-select {
+    min-width: 132px;
+    height: 28px;
+    margin-left: auto;
+    padding: 0 8px;
+    border: 1px solid var(--psy-border);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-input);
+    color: var(--psy-fg);
+    outline: none;
+}
+
+.psy-dock-content {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    overflow: hidden;
+}
+
+.psy-dock-content .psy-panel-header {
+    min-height: 46px;
+}
+
+.psy-dock-content .psy-panel-header h2 {
+    font-size: 13px;
+}
+
 /* ─── Panel header ──────────────────────────────────────────────────── */
 
 .psy-panel {
@@ -1623,6 +1751,24 @@ button {
 
     .psy-app-main {
         flex: 1;
+    }
+
+    .psy-dock-grid,
+    .psy-dock-grid[data-layout="split"],
+    .psy-dock-grid[data-layout="stack"],
+    .psy-dock-grid[data-layout="quad"] {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: none;
+        overflow-y: auto;
+    }
+
+    .psy-dock-slot {
+        min-height: 420px;
+    }
+
+    .psy-dock-toolbar {
+        align-items: stretch;
+        flex-direction: column;
     }
 
     .psy-panel-header {
