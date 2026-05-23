@@ -2,10 +2,13 @@
 // Psynder — Sample 00 / M0 demo. Open a window, animate the clear color,
 // and let the engine host own overlays, presentation, smoke, and capture.
 
+#include "core/BuildMeta.h"
 #include "platform/App.h"
 #include "render/Color.h"
 
 using namespace psynder;
+
+PSYNDER_RUNTIME_BUNDLE("00_clear");
 
 namespace {
 
