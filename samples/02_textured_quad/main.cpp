@@ -15,7 +15,7 @@
 
 using namespace psynder;
 
-PSYNDER_PRECOOK_PSYSCENE("assets/crate_room.psyscene.json");
+PSYNDER_PRECOOK_PSYSCENE_TO("02_textured_quad", "assets/crate_room.psyscene.json");
 
 namespace {
 

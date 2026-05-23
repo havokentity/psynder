@@ -1,7 +1,20 @@
 # SPDX-License-Identifier: MIT
 # Psynder — cooked scene asset build helpers.
 
-function(_psynder_target_psyscene_assets target)
+set(_PSYNDER_PRECOOK_DEFAULT_FOLDER "__PSYNDER_DEFAULT__")
+
+function(_psynder_validate_precook_output_folder target folder)
+    if("${folder}" STREQUAL "")
+        message(FATAL_ERROR
+            "_psynder_target_psyscene_assets: '${target}' has an empty output folder")
+    endif()
+    if(IS_ABSOLUTE "${folder}" OR "${folder}" MATCHES "(^|/)\\.\\.(/|$)")
+        message(FATAL_ERROR
+            "_psynder_target_psyscene_assets: '${target}' has invalid output folder '${folder}'")
+    endif()
+endfunction()
+
+function(_psynder_target_psyscene_assets target output_folder)
     if(NOT TARGET ${target})
         message(FATAL_ERROR "_psynder_target_psyscene_assets: unknown target '${target}'")
     endif()
@@ -16,15 +29,14 @@ function(_psynder_target_psyscene_assets target)
         return()
     endif()
 
+    _psynder_validate_precook_output_folder(${target} "${output_folder}")
     if(CMAKE_CONFIGURATION_TYPES)
-        set(_asset_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/assets")
+        set(_runtime_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/${output_folder}")
     else()
-        get_target_property(_runtime_dir ${target} RUNTIME_OUTPUT_DIRECTORY)
-        if(NOT _runtime_dir OR _runtime_dir STREQUAL "_runtime_dir-NOTFOUND")
-            set(_runtime_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-        endif()
-        set(_asset_dir "${_runtime_dir}/assets")
+        set(_runtime_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${output_folder}")
     endif()
+    set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${_runtime_dir}")
+    set(_asset_dir "${_runtime_dir}/assets")
 
     set(_outputs)
     foreach(_src IN LISTS _sources)
@@ -81,7 +93,7 @@ function(_psynder_source_abs out target_dir source)
 endfunction()
 
 function(_psynder_scan_precook_psyscene_source out source_dir source)
-    set(_assets)
+    set(_records)
     _psynder_source_abs(_source_abs "${source_dir}" "${source}")
     if(NOT EXISTS "${_source_abs}")
         set(${out} "" PARENT_SCOPE)
@@ -97,6 +109,18 @@ function(_psynder_scan_precook_psyscene_source out source_dir source)
 
     file(READ "${_source_abs}" _content)
     string(REGEX MATCHALL
+        "PSYNDER_PRECOOK_PSYSCENE_TO[ \t\r\n]*\\([ \t\r\n]*\"[^\"]+\"[ \t\r\n]*,[ \t\r\n]*\"[^\"]+\""
+        _to_matches
+        "${_content}"
+    )
+    foreach(_match IN LISTS _to_matches)
+        string(REGEX REPLACE "^[^\"]*\"([^\"]+)\"[^\"]*\"([^\"]+)\".*" "\\1" _folder "${_match}")
+        string(REGEX REPLACE "^[^\"]*\"([^\"]+)\"[^\"]*\"([^\"]+)\".*" "\\2" _asset "${_match}")
+        get_filename_component(_asset_abs "${source_dir}/${_asset}" ABSOLUTE)
+        list(APPEND _records "${_folder}|||${_asset_abs}")
+    endforeach()
+
+    string(REGEX MATCHALL
         "PSYNDER_PRECOOK_PSYSCENE[ \t\r\n]*\\([ \t\r\n]*\"[^\"]+\""
         _matches
         "${_content}"
@@ -104,10 +128,10 @@ function(_psynder_scan_precook_psyscene_source out source_dir source)
     foreach(_match IN LISTS _matches)
         string(REGEX REPLACE ".*\"([^\"]+)\".*" "\\1" _asset "${_match}")
         get_filename_component(_asset_abs "${source_dir}/${_asset}" ABSOLUTE)
-        list(APPEND _assets "${_asset_abs}")
+        list(APPEND _records "${_PSYNDER_PRECOOK_DEFAULT_FOLDER}|||${_asset_abs}")
     endforeach()
 
-    set(${out} ${_assets} PARENT_SCOPE)
+    set(${out} ${_records} PARENT_SCOPE)
 endfunction()
 
 function(psynder_autocook_declared_assets)
@@ -134,18 +158,45 @@ function(psynder_autocook_declared_assets)
                 continue()
             endif()
 
-            set(_assets)
+            set(_records)
             foreach(_source IN LISTS _sources)
                 if("${_source}" MATCHES "^\\$<")
                     continue()
                 endif()
-                _psynder_scan_precook_psyscene_source(_source_assets "${_source_dir}" "${_source}")
-                list(APPEND _assets ${_source_assets})
+                unset(_source_records)
+                _psynder_scan_precook_psyscene_source(_source_records "${_source_dir}" "${_source}")
+                if(NOT _source_records STREQUAL "")
+                    list(APPEND _records ${_source_records})
+                endif()
             endforeach()
 
-            if(NOT _assets STREQUAL "")
-                list(REMOVE_DUPLICATES _assets)
-                _psynder_target_psyscene_assets(${_target} ${_assets})
+            if(_records)
+                list(REMOVE_DUPLICATES _records)
+                set(_output_folder "")
+                set(_assets)
+                foreach(_record IN LISTS _records)
+                    string(REPLACE "|||" ";" _parts "${_record}")
+                    list(GET _parts 0 _folder)
+                    list(GET _parts 1 _asset)
+                    if(_asset STREQUAL "")
+                        message(FATAL_ERROR
+                            "psynder_autocook_declared_assets: '${_target}' has an empty PsyScene asset")
+                    endif()
+                    if(_folder STREQUAL "${_PSYNDER_PRECOOK_DEFAULT_FOLDER}")
+                        set(_folder "${_target}")
+                    elseif(_folder STREQUAL "")
+                        set(_folder "${_target}")
+                    endif()
+                    if(_output_folder STREQUAL "")
+                        set(_output_folder "${_folder}")
+                    elseif(NOT "${_output_folder}" STREQUAL "${_folder}")
+                        message(FATAL_ERROR
+                            "psynder_autocook_declared_assets: '${_target}' declares multiple "
+                            "PsyScene output folders ('${_output_folder}' and '${_folder}')")
+                    endif()
+                    list(APPEND _assets "${_asset}")
+                endforeach()
+                _psynder_target_psyscene_assets(${_target} "${_output_folder}" ${_assets})
             endif()
         endforeach()
     endforeach()
