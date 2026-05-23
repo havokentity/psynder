@@ -88,6 +88,8 @@ namespace {
 // GUID per RFC 6455 §1.3 — concatenated with Sec-WebSocket-Key for handshake.
 constexpr const char* kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 constexpr std::string_view kPanelIndexName = "index.html";
+constexpr std::string_view kLegacyChannelProfiler = "profiler";
+constexpr std::string_view kLegacyChannelSchema = "schema";
 
 ::psynder::console::ExecuteResult dispatch_editor_console(std::string_view text,
                                                           std::string_view mode,
@@ -148,6 +150,93 @@ proto::ConsoleCompletionReply build_console_completion_reply(
         reply.descriptions.push_back(match.description);
     }
     return reply;
+}
+
+std::vector<std::string> subscription_aliases(std::string_view channel) {
+    std::vector<std::string> out;
+    out.emplace_back(channel);
+
+    if (channel == kLegacyChannelProfiler) {
+        // The React profiler panel predates the generated StatsFrame and
+        // subscribes to "profiler"; generated C++ stats use "stats", while
+        // Wave-B perf deltas use "perf".
+        out.emplace_back(proto::channels::kstats);
+        out.emplace_back(proto::channels::kperf);
+    } else if (channel == proto::channels::kstats || channel == proto::channels::kperf) {
+        out.emplace_back(kLegacyChannelProfiler);
+        if (channel == proto::channels::kstats)
+            out.emplace_back(proto::channels::kperf);
+        else
+            out.emplace_back(proto::channels::kstats);
+    } else if (channel == kLegacyChannelSchema) {
+        out.emplace_back(proto::channels::kschemas);
+    } else if (channel == proto::channels::kschemas) {
+        out.emplace_back(kLegacyChannelSchema);
+    }
+
+    return out;
+}
+
+void subscribe_channel(Connection& conn, std::string_view channel) {
+    std::lock_guard<std::mutex> lk(conn.sub_mu);
+    for (auto& alias : subscription_aliases(channel)) {
+        conn.subscribed.insert(std::move(alias));
+    }
+}
+
+void unsubscribe_channel(Connection& conn, std::string_view channel) {
+    std::lock_guard<std::mutex> lk(conn.sub_mu);
+    for (const auto& alias : subscription_aliases(channel)) {
+        conn.subscribed.erase(alias);
+    }
+}
+
+struct LegacyEnvelope {
+    std::string channel;
+    std::string type;
+};
+
+bool decode_legacy_envelope(std::span<const ::psynder::u8> payload, LegacyEnvelope& out) {
+    msgpack::Reader r(payload.data(), payload.size());
+    ::psynder::u32 count = 0;
+    if (!r.map_header(count))
+        return false;
+
+    for (::psynder::u32 i = 0; i < count; ++i) {
+        std::string key;
+        if (!r.str(key))
+            return false;
+        if (key == "ch") {
+            if (!r.str(out.channel))
+                return false;
+        } else if (key == "type") {
+            if (!r.str(out.type))
+                return false;
+        } else if (!r.skip()) {
+            return false;
+        }
+    }
+    return !out.channel.empty() && !out.type.empty();
+}
+
+bool handle_legacy_envelope(Connection& conn, std::span<const ::psynder::u8> payload) {
+    LegacyEnvelope env;
+    if (!decode_legacy_envelope(payload, env))
+        return false;
+
+    if (env.type == "subscribe") {
+        subscribe_channel(conn, env.channel);
+        return true;
+    }
+    if (env.type == "unsubscribe") {
+        unsubscribe_channel(conn, env.channel);
+        return true;
+    }
+
+    // Legacy panel commands such as selection.set, selection.spawn_prop,
+    // props.subscribe, and psygraph.subscribe need subsystem owners to handle
+    // semantics. Keep them accepted as known legacy envelopes but no-op here.
+    return true;
 }
 
 bool send_all(socket_t s, const ::psynder::u8* buf, ::psynder::usize n) {
@@ -678,22 +767,24 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
             // Binary frame: opcode (u16) + msgpack body.
             msgpack::Reader r(fr.payload);
             ::psynder::u16 op = 0;
-            if (!r.u16_(op))
+            if (!r.u16_(op)) {
+                handle_legacy_envelope(*conn,
+                                       std::span<const ::psynder::u8>(fr.payload.data(),
+                                                                      fr.payload.size()));
                 continue;
+            }
             switch (op) {
                 case proto::opcodes::kSubscribeFrame: {
                     proto::Subscribe sub;
                     if (proto::Subscribe_decode(r, sub)) {
-                        std::lock_guard<std::mutex> lk(conn->sub_mu);
-                        conn->subscribed.insert(sub.channel);
+                        subscribe_channel(*conn, sub.channel);
                     }
                     break;
                 }
                 case proto::opcodes::kUnsubscribeFrame: {
                     proto::Unsubscribe usub;
                     if (proto::Unsubscribe_decode(r, usub)) {
-                        std::lock_guard<std::mutex> lk(conn->sub_mu);
-                        conn->subscribed.erase(usub.channel);
+                        unsubscribe_channel(*conn, usub.channel);
                     }
                     break;
                 }
@@ -754,6 +845,7 @@ void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> 
         std::lock_guard<std::mutex> lk(conns_mu_);
         snapshot = conns_;
     }
+    auto aliases = subscription_aliases(channel);
     for (auto& c : snapshot) {
         if (!c || !c->authed.load() || !c->alive.load())
             continue;
@@ -761,6 +853,14 @@ void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> 
         {
             std::lock_guard<std::mutex> lk(c->sub_mu);
             subscribed = c->subscribed.count(std::string(channel)) > 0;
+            if (!subscribed) {
+                for (const auto& alias : aliases) {
+                    if (c->subscribed.count(alias) > 0) {
+                        subscribed = true;
+                        break;
+                    }
+                }
+            }
         }
         if (!subscribed)
             continue;
@@ -786,12 +886,17 @@ bool Server::has_subscribers(std::string_view channel) {
         snapshot = conns_;
     }
     const std::string channel_str(channel);
+    auto aliases = subscription_aliases(channel);
     for (auto& c : snapshot) {
         if (!c || !c->authed.load() || !c->alive.load())
             continue;
         std::lock_guard<std::mutex> sub_lk(c->sub_mu);
         if (c->subscribed.count(channel_str) > 0)
             return true;
+        for (const auto& alias : aliases) {
+            if (c->subscribed.count(alias) > 0)
+                return true;
+        }
     }
     return false;
 }
@@ -814,17 +919,28 @@ void Server::push_scene_delta(std::string_view slice_name,
         snapshot = conns_;
     }
     // Deliver to every authenticated connection whose subscription set
-    // contains `slice_name`. The slice and the WS subscription channel are
-    // the same string by convention so lane 20 panels can keep using the
-    // existing SubscribeFrame mechanism.
+    // contains `slice_name`, a known alias, or the physical "scene" channel.
+    // The slice and the WS subscription channel are the same string by
+    // convention, while "scene" remains a catch-all for clients that want to
+    // demux SceneDeltaSlice themselves.
     const std::string slice_str(slice_name);
+    auto aliases = subscription_aliases(slice_name);
     for (auto& c : snapshot) {
         if (!c || !c->authed.load() || !c->alive.load())
             continue;
         bool subscribed = false;
         {
             std::lock_guard<std::mutex> lk(c->sub_mu);
-            subscribed = c->subscribed.count(slice_str) > 0;
+            subscribed = c->subscribed.count(slice_str) > 0 ||
+                         c->subscribed.count(proto::channels::kscene) > 0;
+            if (!subscribed) {
+                for (const auto& alias : aliases) {
+                    if (c->subscribed.count(alias) > 0) {
+                        subscribed = true;
+                        break;
+                    }
+                }
+            }
         }
         if (!subscribed)
             continue;

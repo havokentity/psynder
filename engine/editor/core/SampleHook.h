@@ -41,6 +41,7 @@
 #include "ui/imm/DebugHud.h"
 #include "ui/imm/Imm.h"
 
+#include <algorithm>
 #include <array>
 
 namespace psynder::editor {
@@ -118,6 +119,12 @@ inline ui::imm::DebugHudMode next_debug_hud_mode(ui::imm::DebugHudMode mode) noe
             return DebugHudMode::Off;
     }
     return DebugHudMode::Off;
+}
+
+inline f32 elapsed_ms(u64 begin_ticks, u64 end_ticks) noexcept {
+    if (end_ticks <= begin_ticks)
+        return 0.0f;
+    return static_cast<f32>(platform::Clock::seconds(end_ticks - begin_ticks) * 1000.0);
 }
 
 }  // namespace detail
@@ -245,15 +252,30 @@ inline Mode frame_overlays(const platform::Input& input,
         avg += st.ring[i];
     avg = (st.count > 0u) ? avg / static_cast<f32>(st.count) : frame_ms;
 
+    const u64 update_begin = platform::Clock::ticks_now();
+    const Mode mode = sample_update(input, frame_ms / 1000.0f);
+    const u64 update_end = platform::Clock::ticks_now();
+
+    const u64 draw_begin = update_end;
+    draw_frame_overlays(fb, make_debug_hud_stats(frame_ms, avg, stats));
+    const u64 draw_end = platform::Clock::ticks_now();
+
+    const f32 update_ms = detail::elapsed_ms(update_begin, update_end);
+    const f32 draw_ms = detail::elapsed_ms(draw_begin, draw_end);
+    const f32 host_ms = std::max(0.0f, frame_ms - update_ms - draw_ms);
+    const std::array<WebProfilerSection, 3> sections{{
+        {"host/frame", host_ms},
+        {"editor/update", update_ms},
+        {"editor/draw", draw_ms},
+    }};
+
     publish_web_profiler_frame(WebProfilerFrame{
         st.web_frame_index++,
         frame_ms,
         static_cast<u32>(stats.draw_calls > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.draw_calls),
         static_cast<u32>(stats.triangles > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.triangles),
+        sections,
     });
-
-    const Mode mode = sample_step(input, fb, frame_ms / 1000.0f);
-    draw_frame_overlays(fb, make_debug_hud_stats(frame_ms, avg, stats));
     return mode;
 }
 

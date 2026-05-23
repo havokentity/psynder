@@ -33,6 +33,7 @@ export const PROTOCOL_VERSION = kProtocolVersion;
 
 export type Channel =
     | 'stats'
+    | 'perf'
     | 'schemas'
     | 'selection'
     | 'console'

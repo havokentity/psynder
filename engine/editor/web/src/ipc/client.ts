@@ -15,6 +15,7 @@ import { decode, decodeMulti, encode } from '@msgpack/msgpack';
 import type {
     Channel,
     Envelope,
+    ProfilerFrame,
 } from './protocol';
 import { PROTOCOL_VERSION } from './protocol';
 import { opcodes as OPCODES } from './protocol.gen';
@@ -37,6 +38,7 @@ export type ConnectionState =
 
 type Listener = (env: Envelope) => void;
 type StateListener = (state: ConnectionState) => void;
+type SceneSlice = Channel | 'perf' | 'scene';
 
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS  = 8000;
@@ -232,13 +234,15 @@ export class IpcClient {
             }
         }
 
-        const set = this.channel_listeners.get(env.ch);
-        if (!set) return;
-        for (const fn of set) {
-            try { fn(env); }
-            catch (err) {
-                // eslint-disable-next-line no-console
-                console.error('[psynder ipc] listener threw', err);
+        for (const delivery of fanout_envelopes(env)) {
+            const set = this.channel_listeners.get(delivery.ch);
+            if (!set) continue;
+            for (const fn of set) {
+                try { fn(delivery); }
+                catch (err) {
+                    // eslint-disable-next-line no-console
+                    console.error('[psynder ipc] listener threw', err);
+                }
             }
         }
     }
@@ -345,28 +349,33 @@ export class IpcClient {
             return true;
         }
         if (op === OPCODES.StatsFrame) {
-            const stats = Array.isArray(body) ? body : [];
-            const frame = Number(stats[0] ?? 0);
-            const cpu_ms = Number(stats[1] ?? 0);
-            const gpu_ms = Number(stats[2] ?? 0);
-            const draw_calls = Number(stats[3] ?? 0);
-            const entities = Number(stats[4] ?? 0);
-            this.handle_envelope({
-                v: PROTOCOL_VERSION,
-                ch: 'profiler',
-                type: 'frame',
-                payload: {
-                    frame,
-                    cpu_ms,
-                    gpu_ms,
-                    draw_calls,
-                    entities,
-                    sections: [{ name: 'frame', ms: cpu_ms }],
-                },
-            });
+            const frame = profiler_frame_from_stats(body);
+            this.handle_envelope(profiler_envelope(frame));
+            return true;
+        }
+        if (op === OPCODES.SceneDeltaFrame) {
+            const env = this.decode_scene_delta_slice(body);
+            if (env) this.handle_envelope(env);
             return true;
         }
         return true;
+    }
+
+    private decode_scene_delta_slice(body: unknown): Envelope | null {
+        const slice = scene_slice_name(body);
+        const payload_bytes = scene_slice_payload(body);
+        if (!slice || !payload_bytes) return null;
+
+        let decoded: unknown;
+        try {
+            decoded = decode(payload_bytes);
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(`[psynder ipc] scene slice '${slice}' payload decode failed`, err);
+            return null;
+        }
+
+        return envelope_from_scene_slice(slice, decoded);
     }
 
     private fall_back_or_retry(): void {
@@ -413,6 +422,219 @@ function concat_msgpack(op: number, body: unknown): Uint8Array {
     out.set(a, 0);
     out.set(b, a.length);
     return out;
+}
+
+function scene_slice_name(body: unknown): SceneSlice | null {
+    const raw = Array.isArray(body)
+        ? body[0]
+        : as_record(body)?.slice;
+    return is_scene_slice(raw) ? raw : null;
+}
+
+function scene_slice_payload(body: unknown): Uint8Array | null {
+    const raw = Array.isArray(body)
+        ? body[1]
+        : as_record(body)?.payload;
+    return bytes_from_wire(raw);
+}
+
+function envelope_from_scene_slice(slice: SceneSlice, decoded: unknown): Envelope | null {
+    const direct = direct_envelope(decoded);
+    if (direct) return direct;
+
+    const ch = legacy_channel_for_scene_slice(slice);
+    if (!ch) return null;
+
+    const typed = typed_payload(decoded);
+    if (typed) {
+        const payload = ch === 'profiler' && typed.type === 'frame'
+            ? profiler_frame_from_stats(typed.payload)
+            : typed.payload;
+        return { v: PROTOCOL_VERSION, ch, type: typed.type, payload };
+    }
+
+    const inferred_type = infer_scene_delta_type(ch, decoded);
+    if (!inferred_type) return null;
+    const payload = ch === 'profiler' && inferred_type === 'frame'
+        ? profiler_frame_from_stats(decoded)
+        : decoded;
+    return { v: PROTOCOL_VERSION, ch, type: inferred_type, payload };
+}
+
+function fanout_envelopes(env: Envelope): Envelope[] {
+    if (env.ch === 'stats' || env.ch === 'perf') {
+        return [env, profiler_envelope(profiler_frame_from_stats(env.payload))];
+    }
+    return [env];
+}
+
+function direct_envelope(value: unknown): Envelope | null {
+    const rec = as_record(value);
+    if (!rec) return null;
+    if (!is_channel(rec.ch) || typeof rec.type !== 'string') return null;
+    return {
+        v: typeof rec.v === 'number' ? rec.v : PROTOCOL_VERSION,
+        ch: rec.ch,
+        type: rec.type,
+        payload: rec.payload,
+    };
+}
+
+function typed_payload(value: unknown): { type: string; payload: unknown } | null {
+    const rec = as_record(value);
+    if (!rec || typeof rec.type !== 'string') return null;
+    if ('payload' in rec) return { type: rec.type, payload: rec.payload };
+
+    const payload: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(rec)) {
+        if (key !== 'type') payload[key] = item;
+    }
+    return { type: rec.type, payload };
+}
+
+function legacy_channel_for_scene_slice(slice: SceneSlice): Channel | null {
+    if (slice === 'perf') return 'profiler';
+    if (slice === 'scene') return null;
+    if (slice === 'stats') return 'profiler';
+    if (slice === 'schemas'
+        || slice === 'selection'
+        || slice === 'assets'
+        || slice === 'props'
+        || slice === 'psygraph'
+        || slice === 'profiler'
+        || slice === 'console') {
+        return slice;
+    }
+    return null;
+}
+
+function infer_scene_delta_type(ch: Channel, payload: unknown): string | null {
+    if (ch === 'selection' && payload == null) return 'cleared';
+
+    const rec = as_record(payload);
+    if (!rec) return null;
+
+    if (ch === 'schemas') {
+        if (Array.isArray(rec.components)) return 'catalog';
+        if ('added' in rec || 'removed' in rec) return 'delta';
+    }
+    if (ch === 'selection') {
+        if (typeof rec.entity_id === 'number' && is_record(rec.components)) return 'state';
+        if (typeof rec.component === 'string'
+            && typeof rec.field === 'string'
+            && 'value' in rec) return 'patch';
+    }
+    if (ch === 'assets') {
+        if (Array.isArray(rec.entries)) return 'catalog';
+        if ('added' in rec || 'removed' in rec) return 'delta';
+    }
+    if (ch === 'props') {
+        if (Array.isArray(rec.props)) return 'catalog';
+    }
+    if (ch === 'psygraph') {
+        if (Array.isArray(rec.nodes) && Array.isArray(rec.links)) return 'document';
+    }
+    if (ch === 'profiler') {
+        if (Array.isArray(payload)
+            || 'frame' in rec
+            || 'frame_index' in rec
+            || 'cpu_ms' in rec
+            || 'gpu_ms' in rec) return 'frame';
+    }
+
+    return null;
+}
+
+function profiler_envelope(frame: ProfilerFrame): Envelope<ProfilerFrame> {
+    return {
+        v: PROTOCOL_VERSION,
+        ch: 'profiler',
+        type: 'frame',
+        payload: frame,
+    };
+}
+
+function profiler_frame_from_stats(value: unknown): ProfilerFrame {
+    if (Array.isArray(value)) {
+        const cpu_ms = number_from_wire(value[1]);
+        return {
+            frame: number_from_wire(value[0]),
+            cpu_ms,
+            gpu_ms: number_from_wire(value[2]),
+            draw_calls: number_from_wire(value[3]),
+            entities: number_from_wire(value[4]),
+            sections: [{ name: 'frame', ms: cpu_ms }],
+        };
+    }
+
+    const rec = as_record(value);
+    if (rec) {
+        const cpu_ms = number_from_wire(rec.cpu_ms);
+        const raw_sections = Array.isArray(rec.sections) ? rec.sections : [];
+        const sections = raw_sections
+            .map((s) => {
+                const sec = as_record(s);
+                if (!sec || typeof sec.name !== 'string') return null;
+                return { name: sec.name, ms: number_from_wire(sec.ms) };
+            })
+            .filter((s): s is { name: string; ms: number } => s !== null);
+        return {
+            frame: number_from_wire(rec.frame ?? rec.frame_index),
+            cpu_ms,
+            gpu_ms: number_from_wire(rec.gpu_ms),
+            draw_calls: number_from_wire(rec.draw_calls),
+            entities: number_from_wire(rec.entities),
+            sections: sections.length > 0 ? sections : [{ name: 'frame', ms: cpu_ms }],
+        };
+    }
+
+    return {
+        frame: 0,
+        cpu_ms: 0,
+        gpu_ms: 0,
+        draw_calls: 0,
+        entities: 0,
+        sections: [{ name: 'frame', ms: 0 }],
+    };
+}
+
+function bytes_from_wire(value: unknown): Uint8Array | null {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+        return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    return null;
+}
+
+function number_from_wire(value: unknown): number {
+    if (typeof value === 'bigint') return Number(value);
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    return 0;
+}
+
+function is_scene_slice(value: unknown): value is SceneSlice {
+    return value === 'perf' || value === 'scene' || is_channel(value);
+}
+
+function is_channel(value: unknown): value is Channel {
+    return value === 'stats'
+        || value === 'perf'
+        || value === 'schemas'
+        || value === 'selection'
+        || value === 'console'
+        || value === 'profiler'
+        || value === 'assets'
+        || value === 'props'
+        || value === 'psygraph';
+}
+
+function as_record(value: unknown): Record<string, unknown> | null {
+    return is_record(value) ? value : null;
+}
+
+function is_record(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function completion_kind(kind: number): 'cvar' | 'command' | 'value' {

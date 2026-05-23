@@ -59,7 +59,7 @@ export function Profiler() {
     React.useEffect(() => {
         const unsub = client.subscribe('profiler', (env: Envelope) => {
             if (env.type !== 'frame' || paused) return;
-            const frame = env.payload as ProfilerFrame;
+            const frame = normalize_profiler_frame(env.payload);
             latest_ref.current = frame;
             const ring = ring_ref.current;
             ring.push({
@@ -76,7 +76,11 @@ export function Profiler() {
 
     React.useEffect(() => {
         const unsub = client.on_state((s) => {
-            if (s === 'open') client.send('stats', 'subscribe', {});
+            if (s === 'open') {
+                client.send('profiler', 'subscribe', {});
+                client.send('stats', 'subscribe', {});
+                client.send('perf', 'subscribe', {});
+            }
         });
         return unsub;
     }, [client]);
@@ -159,6 +163,39 @@ export function Profiler() {
             </div>
         </div>
     );
+}
+
+function normalize_profiler_frame(payload: unknown): ProfilerFrame {
+    const rec = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+        ? payload as Record<string, unknown>
+        : {};
+    const cpu_ms = number_value(rec.cpu_ms);
+    const raw_sections = Array.isArray(rec.sections) ? rec.sections : [];
+    const sections = raw_sections
+        .map((section) => {
+            if (typeof section !== 'object' || section === null || Array.isArray(section)) {
+                return null;
+            }
+            const s = section as Record<string, unknown>;
+            if (typeof s.name !== 'string') return null;
+            return { name: s.name, ms: number_value(s.ms) };
+        })
+        .filter((s): s is ProfilerSection => s !== null);
+
+    return {
+        frame: number_value(rec.frame ?? rec.frame_index),
+        cpu_ms,
+        gpu_ms: number_value(rec.gpu_ms),
+        draw_calls: number_value(rec.draw_calls),
+        entities: number_value(rec.entities),
+        sections: sections.length > 0 ? sections : [{ name: 'frame', ms: cpu_ms }],
+    };
+}
+
+function number_value(value: unknown): number {
+    if (typeof value === 'bigint') return Number(value);
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    return 0;
 }
 
 function FrameStats({ frame }: { frame: ProfilerFrame | null }) {
