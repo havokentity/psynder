@@ -537,6 +537,10 @@ struct CookScene {
                 material && material->kind == Json::Kind::String) {
                 instance.material_name_offset = add_string(out, material->text);
             }
+            if (const Json* group = m.field("group");
+                group && group->kind == Json::Kind::String) {
+                instance.group_name_offset = add_string(out, group->text);
+            }
             instance.mobility = read_mobility(m.field("mobility"));
             instance.flags = read_bool(m.field("visible"), true) ? scene::RenderableFlags::Visible
                                                                  : scene::RenderableFlags::None;

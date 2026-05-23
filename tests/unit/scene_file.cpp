@@ -45,7 +45,8 @@ void append_chunk(std::vector<u8>& bytes,
 }
 
 std::vector<u8> make_scene_blob() {
-    constexpr char strings[] = "\0crateCube\0crate.wood\0textures.procedural.wooden_crate\0";
+    constexpr char strings[] =
+        "\0crateCube\0crate.wood\0textures.procedural.wooden_crate\0crates\0";
     const scene::SceneFileEnvironment environment{0xFF182030u, 1u, 1u, {}};
     const math::Vec3 translations[] = {{0.0f, 1.5f, 1.5f}, {-1.3f, 0.0f, -3.0f}};
     const math::Quat rotations[] = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
@@ -57,6 +58,7 @@ std::vector<u8> make_scene_blob() {
     mesh.transform_index = 1u;
     mesh.mesh_name_offset = 1u;
     mesh.material_name_offset = 11u;
+    mesh.group_name_offset = 55u;
     scene::SceneFileMaterial material_file{};
     material_file.name_offset = 11u;
     material_file.base_color_texture_name_offset = 22u;
@@ -150,6 +152,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(std::string_view{scene::scene_file_string(view, 11u)} == "crate.wood");
     REQUIRE(std::string_view{scene::scene_file_string(view, 22u)} ==
             "textures.procedural.wooden_crate");
+    REQUIRE(std::string_view{scene::scene_file_string(view, 55u)} == "crates");
 
     RegistryReset reset;
     auto& registry = scene::EcsRegistry::Get();
@@ -177,5 +180,16 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     const auto* renderable = scene_ref.registry().get<scene::RenderableComponent>(mesh_entity);
     REQUIRE(renderable != nullptr);
     REQUIRE(renderable->material.raw == material.raw);
+    const auto group = scene_ref.query_group("crates");
+    REQUIRE(group.size() == 1u);
+    REQUIRE(group.entities()[0].raw == mesh_entity.raw);
+    for (auto [entity, transform, authored] : group.transforms()) {
+        REQUIRE(entity.raw == mesh_entity.raw);
+        transform.translation.x = authored.local.translation.x + 2.0f;
+    }
+    const auto* transform = scene_ref.registry().get<scene::TransformComponent>(mesh_entity);
+    REQUIRE(transform != nullptr);
+    REQUIRE(transform->local.translation.x > 0.69f);
+    REQUIRE(transform->local.translation.x < 0.71f);
     REQUIRE(scene_ref.active_camera_entity().valid());
 }

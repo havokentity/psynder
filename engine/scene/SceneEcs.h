@@ -19,6 +19,8 @@
 #include <cmath>
 #include <mutex>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace psynder::scene {
@@ -530,6 +532,148 @@ class Scene {
                                      RenderableFlags flags,
                                      ObjectMobility mobility);
 
+    struct GroupAuthored {
+        LocalTransform local{};
+    };
+
+    struct GroupTransformEdit {
+        Scene* scene = nullptr;
+        Entity entity{};
+        math::Vec3 translation{};
+        math::Quat rotation{};
+        math::Vec3 scale{1.0f, 1.0f, 1.0f};
+
+        GroupTransformEdit() = default;
+        GroupTransformEdit(Scene& scene_ref, Entity entity_ref, const LocalTransform& local) noexcept
+            : scene(&scene_ref)
+            , entity(entity_ref)
+            , translation(local.translation)
+            , rotation(local.rotation)
+            , scale(local.scale) {}
+        GroupTransformEdit(const GroupTransformEdit&) = delete;
+        GroupTransformEdit& operator=(const GroupTransformEdit&) = delete;
+        GroupTransformEdit(GroupTransformEdit&& other) noexcept
+            : scene(other.scene)
+            , entity(other.entity)
+            , translation(other.translation)
+            , rotation(other.rotation)
+            , scale(other.scale) {
+            other.scene = nullptr;
+        }
+        GroupTransformEdit& operator=(GroupTransformEdit&& other) noexcept {
+            if (this != &other) {
+                flush();
+                scene = other.scene;
+                entity = other.entity;
+                translation = other.translation;
+                rotation = other.rotation;
+                scale = other.scale;
+                other.scene = nullptr;
+            }
+            return *this;
+        }
+        ~GroupTransformEdit() { flush(); }
+
+        [[nodiscard]] LocalTransform local() const noexcept {
+            return {.translation = translation, .rotation = rotation, .scale = scale};
+        }
+        void flush() noexcept {
+            if (scene && entity.valid()) {
+                scene->set_transform(entity, local());
+                scene = nullptr;
+            }
+        }
+    };
+
+    struct GroupTransformRecord {
+        Entity entity{};
+        GroupTransformEdit transform{};
+        GroupAuthored authored{};
+    };
+
+    class GroupTransformIterator {
+       public:
+        GroupTransformIterator() = default;
+        GroupTransformIterator(Scene& scene_ref,
+                               std::span<const Entity> entities,
+                               std::span<const LocalTransform> authored,
+                               usize index) noexcept
+            : scene_(&scene_ref)
+            , entities_(entities)
+            , authored_(authored)
+            , index_(index) {}
+
+        [[nodiscard]] bool operator!=(const GroupTransformIterator& other) const noexcept {
+            return index_ != other.index_;
+        }
+        GroupTransformIterator& operator++() noexcept {
+            ++index_;
+            return *this;
+        }
+        [[nodiscard]] GroupTransformRecord operator*() const {
+            const Entity entity = entities_[index_];
+            return GroupTransformRecord{
+                .entity = entity,
+                .transform = GroupTransformEdit{*scene_, entity, scene_->transform(entity)},
+                .authored = GroupAuthored{authored_[index_]},
+            };
+        }
+
+       private:
+        Scene* scene_ = nullptr;
+        std::span<const Entity> entities_{};
+        std::span<const LocalTransform> authored_{};
+        usize index_ = 0u;
+    };
+
+    class GroupTransforms {
+       public:
+        GroupTransforms() = default;
+        GroupTransforms(Scene& scene_ref,
+                        std::span<const Entity> entities,
+                        std::span<const LocalTransform> authored) noexcept
+            : scene_(&scene_ref)
+            , entities_(entities)
+            , authored_(authored) {}
+
+        [[nodiscard]] GroupTransformIterator begin() const noexcept {
+            return scene_ ? GroupTransformIterator{*scene_, entities_, authored_, 0u}
+                          : GroupTransformIterator{};
+        }
+        [[nodiscard]] GroupTransformIterator end() const noexcept {
+            return scene_ ? GroupTransformIterator{*scene_, entities_, authored_, entities_.size()}
+                          : GroupTransformIterator{};
+        }
+
+       private:
+        Scene* scene_ = nullptr;
+        std::span<const Entity> entities_{};
+        std::span<const LocalTransform> authored_{};
+    };
+
+    class SceneGroupQuery {
+       public:
+        SceneGroupQuery() = default;
+        SceneGroupQuery(Scene& scene_ref,
+                        std::span<const Entity> entities,
+                        std::span<const LocalTransform> authored) noexcept
+            : scene_(&scene_ref)
+            , entities_(entities)
+            , authored_(authored) {}
+
+        [[nodiscard]] bool empty() const noexcept { return entities_.empty(); }
+        [[nodiscard]] usize size() const noexcept { return entities_.size(); }
+        [[nodiscard]] std::span<const Entity> entities() const noexcept { return entities_; }
+        [[nodiscard]] GroupTransforms transforms() const noexcept {
+            return scene_ ? GroupTransforms{*scene_, entities_, authored_} : GroupTransforms{};
+        }
+
+       private:
+        Scene* scene_ = nullptr;
+        std::span<const Entity> entities_{};
+        std::span<const LocalTransform> authored_{};
+    };
+
     explicit Scene(EcsRegistry& registry = EcsRegistry::Get()) noexcept
         : registry_(&registry)
         , environment_(runtime_.environment) {
@@ -739,6 +883,34 @@ class Scene {
         return set_scene_entity_transform(*registry_, graph_, entity, local);
     }
 
+    [[nodiscard]] LocalTransform transform(Entity entity) {
+        if (const auto* transform = registry_->get<TransformComponent>(entity))
+            return transform->local;
+        return {};
+    }
+
+    void add_to_group(std::string_view group_name, Entity entity, const LocalTransform& authored) {
+        if (group_name.empty() || !entity.valid())
+            return;
+        const u32 slot = group_slot(group_name);
+        groups_[slot].entities.push_back(entity);
+        groups_[slot].authored_locals.push_back(authored);
+    }
+
+    [[nodiscard]] SceneGroupQuery query_group(std::string_view group_name) {
+        for (SceneGroupStorage& group : groups_) {
+            if (group.name == group_name) {
+                return SceneGroupQuery{
+                    *this,
+                    std::span<const Entity>{group.entities.data(), group.entities.size()},
+                    std::span<const LocalTransform>{group.authored_locals.data(),
+                                                    group.authored_locals.size()},
+                };
+            }
+        }
+        return {};
+    }
+
     bool attach_camera(Entity entity, const CameraComponent& camera = {}) {
         if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
             return false;
@@ -831,6 +1003,7 @@ class Scene {
         last_entity_capacity_ = other.last_entity_capacity_;
         last_chunk_live_count_ = other.last_chunk_live_count_;
         last_node_capacity_ = other.last_node_capacity_;
+        groups_ = std::move(other.groups_);
 
         other.registry_ = &EcsRegistry::Get();
         other.environment_.bind_runtime(other.runtime_.environment);
@@ -843,6 +1016,7 @@ class Scene {
         other.last_entity_capacity_ = 0u;
         other.last_chunk_live_count_ = 0u;
         other.last_node_capacity_ = 0u;
+        other.groups_.clear();
     }
 
     void record_pool_watermark() noexcept {
@@ -875,6 +1049,23 @@ class Scene {
         }
     }
 
+    struct SceneGroupStorage {
+        std::string name;
+        std::vector<Entity> entities;
+        std::vector<LocalTransform> authored_locals;
+    };
+
+    [[nodiscard]] u32 group_slot(std::string_view group_name) {
+        for (u32 i = 0; i < static_cast<u32>(groups_.size()); ++i) {
+            if (groups_[i].name == group_name)
+                return i;
+        }
+        SceneGroupStorage group{};
+        group.name.assign(group_name.data(), group_name.size());
+        groups_.push_back(std::move(group));
+        return static_cast<u32>(groups_.size() - 1u);
+    }
+
     EcsRegistry* registry_ = nullptr;
     SceneGraph graph_{};
     ::psynder::render::MaterialLibrary materials_{};
@@ -889,6 +1080,7 @@ class Scene {
     u32 last_entity_capacity_ = 0u;
     u32 last_chunk_live_count_ = 0u;
     u32 last_node_capacity_ = 0u;
+    std::vector<SceneGroupStorage> groups_{};
 };
 
 }  // namespace psynder::scene

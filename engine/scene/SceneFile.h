@@ -79,6 +79,7 @@ struct SceneFileMeshInstance {
     u32 transform_index = 0u;
     u32 mesh_name_offset = 0u;
     u32 material_name_offset = 0u;
+    u32 group_name_offset = 0u;
     RenderableFlags flags = RenderableFlags::Visible;
     ObjectMobility mobility = ObjectMobility::Dynamic;
     u8 _pad[3] = {};
@@ -295,7 +296,7 @@ static_assert(sizeof(SceneFileHeader) == 64u);
 static_assert(sizeof(SceneFileChunk) == 16u);
 static_assert(sizeof(SceneFileEnvironment) == 8u);
 static_assert(sizeof(SceneFileCamera) == 64u);
-static_assert(sizeof(SceneFileMeshInstance) == 20u);
+static_assert(sizeof(SceneFileMeshInstance) == 24u);
 static_assert(sizeof(SceneFileMaterial) == 64u);
 
 }  // namespace psynder::scene

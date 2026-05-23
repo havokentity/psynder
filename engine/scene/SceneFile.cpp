@@ -320,14 +320,17 @@ SceneFileInstantiateResult instantiate_scene_file(
             resolve_scene_material(material_name, *it, material_bindings, missing_material);
         if (missing_material)
             ++result.missing_material_bindings;
+        const LocalTransform local = scene_file_transform(scene_file, mesh_file.transform_index);
         const Entity entity = scene.spawn_mesh_instance(it->mesh,
                                                         material,
-                                                        scene_file_transform(scene_file,
-                                                                             mesh_file.transform_index),
+                                                        local,
                                                         kInvalidSceneNode,
                                                         mesh_file.flags,
                                                         mesh_file.mobility);
         if (entity.valid()) {
+            const std::string_view group_name{
+                scene_file_string(scene_file, mesh_file.group_name_offset)};
+            scene.add_to_group(group_name, entity, local);
             if (i < writable)
                 out_mesh_entities[i] = entity;
             ++result.mesh_instances;
