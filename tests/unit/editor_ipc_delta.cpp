@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Psynder editor IPC — Wave-B coverage for the slice-scoped delta push,
-// schema v2 welcome, and the script-lane REPL hook routing. Lane 19.
+// schema v2 welcome, and console command routing. Lane 19.
 //
 // Each test stands up a live server on an ephemeral port, hand-rolls the
 // HTTP+WS upgrade, then exchanges binary frames over the raw socket. We do
@@ -23,11 +23,12 @@
 //      is also asserted (the server's `default:` arm in client_loop must
 //      drop unknown frames silently, not disconnect).
 //
-//   3. REPL hook routes a "1+1" ConsoleCmd through `script::dispatch_repl`
-//      and ships back a ConsoleReplyFrame. We install a stub backend via
-//      `script::set_repl_backend(...)` so the test does not depend on a
-//      live Lua VM; the contract under test is the *routing*, not Lua.
+//   3. ConsoleCmd routes through the core console first, then falls back to
+//      `script::dispatch_repl` for raw script input. We install a stub backend
+//      via `script::set_repl_backend(...)` so the test does not depend on a
+//      live Lua VM; the contract under test is the routing, not Lua.
 
+#include "core/console/Console.h"
 #include "editor/ipc/Ipc.h"
 #include "editor/ipc/internal/Crypto.h"
 #include "editor/ipc/internal/Msgpack.h"
@@ -468,9 +469,21 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     sock_close(s);
 }
 
-TEST_CASE("ipc: REPL hook routes console eval through script lane", "[ipc][repl]") {
-    // Install our stub backend BEFORE starting the server so install_repl
-    // sees it. The previous test's backend (if any) is overwritten —
+TEST_CASE("ipc: console frame hits engine console before REPL fallback", "[ipc][repl]") {
+    auto& console = ::psynder::console::Console::Get();
+    console.RegisterCommand("test_ipc_echo",
+                            "unit-test echo command",
+                            [](std::span<const std::string_view> args,
+                               ::psynder::console::Output& out) {
+                                out.Print("engine");
+                                for (std::string_view arg : args) {
+                                    out.Print(" ");
+                                    out.Print(arg);
+                                }
+                            });
+
+    // Install our stub backend BEFORE starting the server so the script
+    // fallback is live. The previous test's backend (if any) is overwritten —
     // set_repl_backend takes the most recent install.
     g_stub.calls.store(0);
     {
@@ -497,12 +510,12 @@ TEST_CASE("ipc: REPL hook routes console eval through script lane", "[ipc][repl]
     sock_t s = open_panel(port, tok, welcome, tail);
     REQUIRE(sock_valid(s));
 
-    // Send a ConsoleCmd("1+1"). The server queues it on the pump path.
+    // Send a real engine-console command. The REPL stub should not run.
     {
         msgpack::Writer w;
         w.u16_(proto::opcodes::kConsoleFrame);
         proto::ConsoleCmd cmd;
-        cmd.text = "1+1";
+        cmd.text = "test_ipc_echo hello web";
         proto::ConsoleCmd_encode(w, cmd);
         send_ws_client_binary(s, w.data(), w.size());
     }
@@ -520,7 +533,31 @@ TEST_CASE("ipc: REPL hook routes console eval through script lane", "[ipc][repl]
     proto::ConsoleReply rep;
     REQUIRE(proto::ConsoleReply_decode(r, rep));
     REQUIRE(rep.ok);
-    REQUIRE(rep.text == "2");
+    REQUIRE(rep.text == "engine hello web");
+    REQUIRE(g_stub.calls.load() == 0);
+
+    // Unknown engine-console input falls back to the script REPL.
+    {
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleFrame);
+        proto::ConsoleCmd cmd;
+        cmd.text = "1+1";
+        proto::ConsoleCmd_encode(w, cmd);
+        send_ws_client_binary(s, w.data(), w.size());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    srv.pump();
+
+    pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r2(pl.data(), pl.size());
+    op = 0;
+    REQUIRE(r2.u16_(op));
+    REQUIRE(op == proto::opcodes::kConsoleReplyFrame);
+    proto::ConsoleReply rep2;
+    REQUIRE(proto::ConsoleReply_decode(r2, rep2));
+    REQUIRE(rep2.ok);
+    REQUIRE(rep2.text == "2");
 
     // Sanity: the stub was actually invoked once with the right line.
     REQUIRE(g_stub.calls.load() == 1);

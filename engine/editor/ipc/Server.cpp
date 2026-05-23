@@ -29,6 +29,7 @@
 #include "editor/ipc/proto/Protocol.gen.h"
 
 #include "core/Log.h"
+#include "core/console/Console.h"
 #include "script/internal/ReplHook.h"
 
 #include <algorithm>
@@ -86,6 +87,38 @@ namespace {
 // GUID per RFC 6455 §1.3 — concatenated with Sec-WebSocket-Key for handshake.
 constexpr const char* kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 constexpr std::string_view kPanelIndexName = "index.html";
+
+bool is_unknown_console_input(const ::psynder::console::ExecuteResult& res) {
+    constexpr std::string_view kUnknown = "unknown command or cvar:";
+    return !res.ok && res.error.rfind(kUnknown, 0) == 0;
+}
+
+bool dispatch_editor_console(std::string_view text, bool repl_live, std::string& out) {
+    auto& console = ::psynder::console::Console::Get();
+    auto res = console.ExecuteScript(text);
+    if (res.ok) {
+        out = std::move(res.output);
+        return true;
+    }
+
+    if (repl_live && is_unknown_console_input(res)) {
+        std::string repl_out;
+        const bool repl_ok = ::psynder::script::dispatch_repl(text, repl_out);
+        if (repl_ok) {
+            out = std::move(repl_out);
+            return true;
+        }
+        out = res.error;
+        if (!repl_out.empty()) {
+            out.append("\n[lua] ");
+            out.append(repl_out);
+        }
+        return false;
+    }
+
+    out = !res.error.empty() ? std::move(res.error) : std::move(res.output);
+    return false;
+}
 
 bool send_all(socket_t s, const ::psynder::u8* buf, ::psynder::usize n) {
     while (n) {
@@ -279,9 +312,8 @@ bool Server::start(const char* bind_host, ::psynder::u16 port, bool require_sess
     running_.store(true);
     accept_thread_ = std::thread([this]() { this->accept_loop(); });
 
-    // Wave-B: route ConsoleFrame messages through the script lane's REPL hook
-    // by default. The script lane installs its own evaluator; we only verify
-    // that a backend is registered so `dispatch_repl` is callable from pump().
+    // ConsoleFrame messages route through the core console first. The script
+    // REPL stays installed as a fallback for raw Lua/script expressions.
     install_repl_backend();
 
     PSY_LOG_INFO("editor-ipc: listening on {}:{}", bind_host_, port_);
@@ -291,9 +323,8 @@ bool Server::start(const char* bind_host, ::psynder::u16 port, bool require_sess
 void Server::install_repl_backend() {
     // The script lane's `dispatch_repl(...)` already falls back to the
     // default Vm evaluator when no custom backend is installed (see
-    // engine/script/internal/ReplHook.cpp). Calling this method here is the
-    // explicit hand-off point: the IPC server now considers the REPL wiring
-    // live, and `pump()` will forward ConsoleCmd text through Lua.
+    // engine/script/internal/ReplHook.cpp). Calling this method here keeps the
+    // Lua/script fallback available after core console dispatch misses.
     //
     // We deliberately do NOT install our own backend that supplants the
     // script lane's default — tests opt in to a fake backend via
@@ -760,15 +791,8 @@ void Server::pump() {
     for (auto& cmd : local) {
         std::string text(reinterpret_cast<const char*>(cmd.payload.data()), cmd.payload.size());
         PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);
-        if (!repl_live)
-            continue;
-
-        // Route through the script lane's REPL hook. `dispatch_repl` looks up
-        // whatever backend is currently installed (default = Vm::execute_repl,
-        // tests may override). The result string goes back to the originating
-        // panel as a ConsoleReply frame (opcode 21).
         std::string out;
-        const bool ok = ::psynder::script::dispatch_repl(text, out);
+        const bool ok = dispatch_editor_console(text, repl_live, out);
 
         auto conn = cmd.conn.lock();
         if (!conn || !conn->alive.load())
