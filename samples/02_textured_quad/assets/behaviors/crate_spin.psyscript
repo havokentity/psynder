@@ -1,0 +1,11 @@
+behavior CrateSpin {
+    target_group "crates"
+
+    update {
+        transform.spin(
+            axis = [0.0, 1.0, 0.0],
+            speed = linear_index(0.35, 0.12),
+            phase = 0.0
+        )
+    }
+}

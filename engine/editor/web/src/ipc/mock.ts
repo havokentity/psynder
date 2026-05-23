@@ -13,6 +13,7 @@ import type {
     ConsoleLog,
     Envelope,
     ProfilerFrame,
+    PsyGraphDocument,
     PropCatalog,
     PropEntry,
     SchemaCatalog,
@@ -135,6 +136,76 @@ const DEMO_PROPS: PropEntry[] = [
     { id: 'computer',     name: 'Computer',       category: 'furniture', thumbnail_url: tile_thumb('pc', '#9a9a9a'),    tags: ['interior', 'electronics'] },
 ];
 
+const DEMO_PSYGRAPH: PsyGraphDocument = {
+    id: 'crate-spin',
+    name: 'CrateSpin',
+    source_path: 'samples/02_textured_quad/assets/behaviors/crate_spin.psygraph.json',
+    target_group: 'crates',
+    nodes: [
+        {
+            id: 'on_update',
+            op: 'on_update',
+            title: 'On Update',
+            x: 56,
+            y: 96,
+            inputs: [],
+            outputs: [{ id: 'flow', label: 'flow', kind: 'flow' }],
+            values: {},
+        },
+        {
+            id: 'spin_crates',
+            op: 'spin',
+            title: 'Transform Spin',
+            x: 324,
+            y: 76,
+            inputs: [
+                { id: 'flow', label: 'flow', kind: 'flow' },
+                { id: 'axis', label: 'axis', kind: 'vec3' },
+                { id: 'speed', label: 'speed', kind: 'float' },
+            ],
+            outputs: [{ id: 'flow', label: 'flow', kind: 'flow' }],
+            values: {
+                axis: [0, 1, 0],
+                speed: { type: 'linearIndex', base: 0.35, step: 0.12 },
+                phase: { type: 'constant', value: 0 },
+                targetGroup: 'crates',
+            },
+        },
+        {
+            id: 'compiled_op',
+            op: 'compiled_behavior_op',
+            title: 'Cooked SoA Op',
+            x: 640,
+            y: 104,
+            inputs: [{ id: 'flow', label: 'flow', kind: 'flow' }],
+            outputs: [],
+            values: {
+                chunk: 'BehaviorSpinOps',
+                runtime: 'Scene::SpinBehaviorSoA',
+            },
+        },
+    ],
+    links: [
+        {
+            id: 'update_to_spin',
+            from_node: 'on_update',
+            from_pin: 'flow',
+            to_node: 'spin_crates',
+            to_pin: 'flow',
+        },
+        {
+            id: 'spin_to_compiled',
+            from_node: 'spin_crates',
+            from_pin: 'flow',
+            to_node: 'compiled_op',
+            to_pin: 'flow',
+        },
+    ],
+    diagnostics: [
+        { level: 'info', text: 'PsyGraph mock: compiles to one packed spin op.' },
+    ],
+};
+
 export interface MockDriver {
     stop(): void;
 }
@@ -164,6 +235,7 @@ export function start_mock(deliver: Deliver): MockDriver {
     send({ v: PROTOCOL_VERSION, ch: 'assets', type: 'catalog', payload: asset_catalog });
     const prop_catalog: PropCatalog = { props: DEMO_PROPS };
     send({ v: PROTOCOL_VERSION, ch: 'props', type: 'catalog', payload: prop_catalog });
+    send({ v: PROTOCOL_VERSION, ch: 'psygraph', type: 'document', payload: DEMO_PSYGRAPH });
 
     // ── Profiler — emulate a 60 Hz frame stream ─────────────────────────
     let frame_idx = 0;
@@ -233,4 +305,9 @@ export function mock_assets(): AssetCatalog {
 /** Synchronously generate the mock prop catalog. */
 export function mock_props(): PropCatalog {
     return { props: DEMO_PROPS };
+}
+
+/** Synchronously generate the mock PsyGraph behavior document. */
+export function mock_psygraph(): PsyGraphDocument {
+    return DEMO_PSYGRAPH;
 }

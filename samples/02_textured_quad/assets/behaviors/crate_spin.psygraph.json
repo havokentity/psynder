@@ -1,10 +1,11 @@
 {
   "version": 1,
-  "behaviors": [
+  "name": "CrateSpin",
+  "targetGroup": "crates",
+  "nodes": [
     {
-      "name": "crate_spin",
-      "type": "spin",
-      "targetGroup": "crates",
+      "id": "spin_crates",
+      "op": "spin",
       "axis": [0.0, 1.0, 0.0],
       "speed": {
         "type": "linearIndex",
@@ -15,5 +16,6 @@
         "value": 0.0
       }
     }
-  ]
+  ],
+  "links": []
 }

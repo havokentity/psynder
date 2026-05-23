@@ -22,7 +22,7 @@
     }
   ],
   "entityBehaviorSources": [
-    "behaviors/crate_spin.psybehavior.json"
+    "behaviors/crate_spin.psyscript"
   ],
   "meshInstances": [
     {

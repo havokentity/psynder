@@ -862,3 +862,157 @@ button, input, select, textarea {
     font-family: var(--psy-mono);
     color: var(--psy-good);
 }
+
+/* ─── PsyGraph ──────────────────────────────────────────────────────── */
+
+.psy-graph-body {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+}
+
+.psy-graph-canvas {
+    position: relative;
+    overflow: hidden;
+    background:
+        linear-gradient(var(--psy-border-soft) 1px, transparent 1px),
+        linear-gradient(90deg, var(--psy-border-soft) 1px, transparent 1px),
+        var(--psy-bg);
+    background-size: 24px 24px;
+}
+
+.psy-graph-links {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.psy-graph-link {
+    fill: none;
+    stroke: var(--psy-accent);
+    stroke-width: 2;
+    opacity: 0.75;
+}
+
+.psy-graph-node {
+    position: absolute;
+    width: 180px;
+    min-height: 76px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: stretch;
+    text-align: left;
+    background: var(--psy-bg-elev-1);
+    border: 1px solid var(--psy-border);
+    border-radius: 5px;
+    padding: 8px;
+    color: var(--psy-fg);
+    cursor: pointer;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+}
+
+.psy-graph-node:hover,
+.psy-graph-node.is-selected {
+    border-color: var(--psy-accent);
+    background: var(--psy-bg-elev-2);
+}
+
+.psy-graph-node-title {
+    font-weight: 600;
+}
+
+.psy-graph-node-op {
+    font-family: var(--psy-mono);
+    font-size: 11px;
+    color: var(--psy-fg-muted);
+}
+
+.psy-graph-pins {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.psy-graph-pin {
+    border: 1px solid var(--psy-border);
+    border-radius: 999px;
+    padding: 1px 6px;
+    font-size: 10px;
+    color: var(--psy-fg-muted);
+}
+
+.psy-graph-pin.is-flow { color: var(--psy-accent); }
+.psy-graph-pin.is-vec3 { color: var(--psy-good); }
+.psy-graph-pin.is-float { color: var(--psy-accent-warm); }
+
+.psy-graph-inspector {
+    border-left: 1px solid var(--psy-border);
+    background: var(--psy-bg-elev-1);
+    padding: 12px;
+    overflow-y: auto;
+}
+
+.psy-graph-doc {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--psy-border);
+    color: var(--psy-fg-muted);
+}
+
+.psy-graph-doc span {
+    color: var(--psy-fg);
+    font-weight: 600;
+}
+
+.psy-graph-doc code,
+.psy-graph-op,
+.psy-graph-values dd {
+    font-family: var(--psy-mono);
+    font-size: 11px;
+}
+
+.psy-graph-inspector h3 {
+    margin: 14px 0 4px;
+    font-size: 13px;
+}
+
+.psy-graph-values {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 6px;
+    margin: 12px 0;
+}
+
+.psy-graph-values dt {
+    color: var(--psy-fg-muted);
+}
+
+.psy-graph-values dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--psy-good);
+}
+
+.psy-graph-diagnostics {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 14px;
+}
+
+.psy-diag {
+    border: 1px solid var(--psy-border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--psy-fg-muted);
+}
+
+.psy-diag.is-info { border-color: var(--psy-accent); }
+.psy-diag.is-warn { border-color: var(--psy-warn); color: var(--psy-warn); }
+.psy-diag.is-error { border-color: var(--psy-bad); color: var(--psy-bad); }

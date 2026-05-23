@@ -213,10 +213,10 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
                    sizeof(SceneFileMaterial),
                    out.materials,
                    "materials") ||
-        !load_span(SceneFileChunkType::EntityBehaviorSpin,
-                   sizeof(SceneFileEntityBehaviorSpin),
-                   out.spin_behaviors,
-                   "spin_behaviors")) {
+        !load_span(SceneFileChunkType::BehaviorSpinOps,
+                   sizeof(SceneFileBehaviorSpinOp),
+                   out.behavior_spin_ops,
+                   "behavior_spin_ops")) {
         return false;
     }
 
@@ -341,8 +341,8 @@ SceneFileInstantiateResult instantiate_scene_file(
         }
     }
 
-    scene.reserve_spin_behaviors(static_cast<u32>(scene_file.spin_behaviors.size()));
-    for (const SceneFileEntityBehaviorSpin& behavior_file : scene_file.spin_behaviors) {
+    scene.reserve_spin_behaviors(static_cast<u32>(scene_file.behavior_spin_ops.size()));
+    for (const SceneFileBehaviorSpinOp& behavior_file : scene_file.behavior_spin_ops) {
         const std::string_view group_name{
             scene_file_string(scene_file, behavior_file.target_group_name_offset)};
         if (group_name.empty())

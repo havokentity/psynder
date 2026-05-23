@@ -18,6 +18,8 @@
 //   - "props"     : engine pushes the searchable prop library used by the
 //                   spawn menu (thumbnails are URLs served by the IPC HTTP
 //                   side; in mock mode they're inline svg data URIs).
+//   - "psygraph"  : graph-authoring documents for PsyScript/PsyGraph
+//                   behavior assets. Wave C starts with mock/offline data.
 //
 // The version `v` is the protocol revision. Wave-A pegs it to 1. A drift
 // detector in `client.ts` logs a warning if the engine reports a higher
@@ -32,7 +34,8 @@ export type Channel =
     | 'console'
     | 'profiler'
     | 'assets'
-    | 'props';
+    | 'props'
+    | 'psygraph';
 
 export interface Envelope<T = unknown> {
     v: number;
@@ -251,4 +254,52 @@ export interface SpawnPropCommand {
     prop_id: string;
     /** Optional placement hint; engine picks a cursor location when absent. */
     position?: [number, number, number];
+}
+
+// ─── PsyGraph channel ───────────────────────────────────────────────────
+//
+// Visual behavior authoring. The editor manipulates this graph document; the
+// cooker lowers it to packed behavior ops in `.psyscene`.
+
+export type PsyGraphValue =
+    | number
+    | string
+    | boolean
+    | [number, number, number]
+    | { type: 'constant'; value: number }
+    | { type: 'linearIndex'; base: number; step: number };
+
+export interface PsyGraphPin {
+    id: string;
+    label: string;
+    kind: 'flow' | 'float' | 'vec3' | 'group' | 'bool';
+}
+
+export interface PsyGraphNode {
+    id: string;
+    op: string;
+    title: string;
+    x: number;
+    y: number;
+    inputs: PsyGraphPin[];
+    outputs: PsyGraphPin[];
+    values: Record<string, PsyGraphValue>;
+}
+
+export interface PsyGraphLink {
+    id: string;
+    from_node: string;
+    from_pin: string;
+    to_node: string;
+    to_pin: string;
+}
+
+export interface PsyGraphDocument {
+    id: string;
+    name: string;
+    source_path: string;
+    target_group: string;
+    nodes: PsyGraphNode[];
+    links: PsyGraphLink[];
+    diagnostics: Array<{ level: LogLevel; text: string; node_id?: string }>;
 }

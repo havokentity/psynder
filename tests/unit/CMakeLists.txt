@@ -47,7 +47,7 @@ if(TARGET Catch2::Catch2WithMain)
         target_link_libraries(psynder_unit PRIVATE psynder_platform_shim)
     endif()
     # Tool libs (lane 24) when PSYNDER_BUILD_TOOLS=ON.
-    foreach(_tlib IN ITEMS lm_pak_lib lm_cook_lib lm_qbsp_lib lm_bake_lib lm_mapimport_lib)
+    foreach(_tlib IN ITEMS lm_pak_lib lm_cook_lib lm_qbsp_lib lm_bake_lib lm_mapimport_lib scene_cook_lib)
         if(TARGET ${_tlib})
             target_link_libraries(psynder_unit PRIVATE ${_tlib})
         endif()

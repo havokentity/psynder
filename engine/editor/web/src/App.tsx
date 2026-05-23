@@ -10,11 +10,12 @@ import { Console } from './panels/Console';
 import { Inspector } from './panels/Inspector';
 import { Profiler } from './panels/Profiler';
 import { PropSpawn } from './panels/PropSpawn';
+import { PsyGraph } from './panels/PsyGraph';
 
-type PanelName = 'inspector' | 'console' | 'profiler' | 'assets' | 'props';
+type PanelName = 'inspector' | 'console' | 'profiler' | 'assets' | 'props' | 'psygraph';
 
 const PANEL_NAMES: readonly PanelName[] = [
-    'inspector', 'console', 'profiler', 'assets', 'props',
+    'inspector', 'console', 'profiler', 'assets', 'props', 'psygraph',
 ];
 
 // Engine route paths map onto panel names; "assets" / "props" land on the
@@ -26,6 +27,7 @@ const PATH_TO_PANEL: Record<string, PanelName> = {
     profiler:  'profiler',
     assets:    'assets',
     props:     'props',
+    psygraph:  'psygraph',
 };
 
 function pick_panel(): PanelName {
@@ -83,6 +85,7 @@ export function App() {
                 {panel === 'profiler'  && <Profiler />}
                 {panel === 'assets'    && <AssetBrowser />}
                 {panel === 'props'     && <PropSpawn />}
+                {panel === 'psygraph'  && <PsyGraph />}
             </main>
         </div>
     );

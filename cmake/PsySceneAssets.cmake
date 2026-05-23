@@ -34,7 +34,11 @@ function(_psynder_psyscene_dependency_files out src_abs)
     if(EXISTS "${src_abs}")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${src_abs}")
         file(READ "${src_abs}" _content)
-        string(REGEX MATCHALL "\"[^\"]+\\.psybehavior\\.json\"" _behavior_refs "${_content}")
+        string(REGEX MATCHALL
+            "\"[^\"]+(\\.psyscript|\\.psygraph\\.json|\\.psybehavior\\.json)\""
+            _behavior_refs
+            "${_content}"
+        )
         if(_behavior_refs)
             get_filename_component(_src_dir "${src_abs}" DIRECTORY)
             foreach(_ref IN LISTS _behavior_refs)

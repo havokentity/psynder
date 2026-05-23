@@ -5,9 +5,12 @@
 
 #include "scene/SceneFile.h"
 #include "scene/EcsRegistry_Internal.h"
+#include "../../tools/scene_cook/SceneCook.h"
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <span>
 #include <string>
 #include <vector>
@@ -64,7 +67,7 @@ std::vector<u8> make_scene_blob() {
     material_file.name_offset = 11u;
     material_file.base_color_texture_name_offset = 22u;
     material_file.flags = render::MaterialFlags::RasterVisible;
-    scene::SceneFileEntityBehaviorSpin spin{};
+    scene::SceneFileBehaviorSpinOp spin{};
     spin.name_offset = 62u;
     spin.target_group_name_offset = 55u;
     spin.axis = {0.0f, 1.0f, 0.0f};
@@ -116,8 +119,8 @@ std::vector<u8> make_scene_blob() {
                  sizeof(material_file));
     append_chunk(bytes,
                  chunks,
-                 scene::SceneFileChunkType::EntityBehaviorSpin,
-                 std::span<const scene::SceneFileEntityBehaviorSpin>{&spin, 1u},
+                 scene::SceneFileChunkType::BehaviorSpinOps,
+                 std::span<const scene::SceneFileBehaviorSpinOp>{&spin, 1u},
                  sizeof(spin));
 
     scene::SceneFileHeader header{};
@@ -160,7 +163,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(view.cameras.size() == 1u);
     REQUIRE(view.mesh_instances.size() == 1u);
     REQUIRE(view.materials.size() == 1u);
-    REQUIRE(view.spin_behaviors.size() == 1u);
+    REQUIRE(view.behavior_spin_ops.size() == 1u);
     REQUIRE(std::string_view{scene::scene_file_string(view, 1u)} == "crateCube");
     REQUIRE(std::string_view{scene::scene_file_string(view, 11u)} == "crate.wood");
     REQUIRE(std::string_view{scene::scene_file_string(view, 22u)} ==
@@ -209,4 +212,50 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     scene_ref.update_entity_behaviors(1.0f);
     REQUIRE(std::abs(transform->local.rotation.y) > 0.01f);
     REQUIRE(scene_ref.active_camera_entity().valid());
+}
+
+TEST_CASE("scene cooker lowers PsyScript and PsyGraph sources to behavior ops",
+          "[scene][scene_file][scene_cook]") {
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "psynder_scene_cook_behavior_test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "behaviors");
+
+    {
+        std::ofstream script{root / "behaviors/spin.psyscript"};
+        script << "behavior SpinCrates {\n"
+               << "  target_group \"crates\"\n"
+               << "  update { transform.spin(axis = [0, 1, 0], speed = linear_index(0.35, 0.12), phase = 0.0) }\n"
+               << "}\n";
+    }
+    {
+        std::ofstream graph{root / "behaviors/spin.psygraph.json"};
+        graph << "{"
+              << "\"name\":\"SpinCratesGraph\","
+              << "\"targetGroup\":\"crates\","
+              << "\"nodes\":[{\"op\":\"spin\",\"axis\":[0,1,0],"
+              << "\"speed\":{\"type\":\"linearIndex\",\"base\":0.5,\"step\":0.25}}],"
+              << "\"links\":[]"
+              << "}";
+    }
+    const auto cook_with_source = [&](const char* source, const char* out_name) {
+        const std::filesystem::path scene_json = root / out_name;
+        const std::filesystem::path output = root / (std::string{out_name} + ".bin");
+        {
+            std::ofstream scene{scene_json};
+            scene << "{"
+                  << "\"version\":1,"
+                  << "\"entityBehaviorSources\":[\"" << source << "\"]"
+                  << "}";
+        }
+        tools::SceneCookStats stats{};
+        std::string error;
+        REQUIRE(tools::cook_psyscene_json_file(scene_json, output, &stats, &error));
+        REQUIRE(stats.behavior_spin_ops == 1u);
+    };
+
+    cook_with_source("behaviors/spin.psyscript", "script.psyscene.json");
+    cook_with_source("behaviors/spin.psygraph.json", "graph.psyscene.json");
+
+    std::filesystem::remove_all(root);
 }

@@ -282,7 +282,7 @@ struct CookScene {
     std::vector<scene::SceneFileCamera> cameras;
     std::vector<scene::SceneFileMeshInstance> mesh_instances;
     std::vector<scene::SceneFileMaterial> materials;
-    std::vector<scene::SceneFileEntityBehaviorSpin> spin_behaviors;
+    std::vector<scene::SceneFileBehaviorSpinOp> behavior_spin_ops;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
 };
@@ -449,6 +449,102 @@ struct BehaviorInput {
     f32 step = 0.0f;
 };
 
+[[nodiscard]] std::string_view trim_view(std::string_view s) noexcept {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())) != 0)
+        s.remove_prefix(1u);
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())) != 0)
+        s.remove_suffix(1u);
+    return s;
+}
+
+[[nodiscard]] bool parse_f32_token(std::string_view s, f32& out) noexcept {
+    s = trim_view(s);
+    if (s.empty())
+        return false;
+    const std::string tmp{s};
+    char* end = nullptr;
+    const f32 value = std::strtof(tmp.c_str(), &end);
+    if (end == tmp.c_str())
+        return false;
+    out = value;
+    return true;
+}
+
+[[nodiscard]] bool parse_vec3_literal(std::string_view s, math::Vec3& out) noexcept {
+    const usize open = s.find('[');
+    const usize close = s.find(']', open == std::string_view::npos ? 0u : open + 1u);
+    if (open == std::string_view::npos || close == std::string_view::npos || close <= open)
+        return false;
+    const std::string_view body = s.substr(open + 1u, close - open - 1u);
+    const usize comma0 = body.find(',');
+    const usize comma1 = body.find(',', comma0 == std::string_view::npos ? 0u : comma0 + 1u);
+    if (comma0 == std::string_view::npos || comma1 == std::string_view::npos)
+        return false;
+    return parse_f32_token(body.substr(0u, comma0), out.x) &&
+           parse_f32_token(body.substr(comma0 + 1u, comma1 - comma0 - 1u), out.y) &&
+           parse_f32_token(body.substr(comma1 + 1u), out.z);
+}
+
+[[nodiscard]] bool parse_pair_call(std::string_view source,
+                                   std::string_view call,
+                                   f32& a,
+                                   f32& b) noexcept {
+    const usize marker = source.find(call);
+    if (marker == std::string_view::npos)
+        return false;
+    const usize open = source.find('(', marker + call.size());
+    const usize close = source.find(')', open == std::string_view::npos ? 0u : open + 1u);
+    if (open == std::string_view::npos || close == std::string_view::npos || close <= open)
+        return false;
+    const std::string_view body = source.substr(open + 1u, close - open - 1u);
+    const usize comma = body.find(',');
+    if (comma == std::string_view::npos)
+        return false;
+    return parse_f32_token(body.substr(0u, comma), a) &&
+           parse_f32_token(body.substr(comma + 1u), b);
+}
+
+[[nodiscard]] bool parse_assignment_number(std::string_view source,
+                                           std::string_view name,
+                                           f32& out) noexcept {
+    const usize marker = source.find(name);
+    if (marker == std::string_view::npos)
+        return false;
+    const usize equals = source.find('=', marker + name.size());
+    if (equals == std::string_view::npos)
+        return false;
+    return parse_f32_token(source.substr(equals + 1u), out);
+}
+
+[[nodiscard]] std::string read_identifier_after(std::string_view source,
+                                                std::string_view marker) {
+    const usize start = source.find(marker);
+    if (start == std::string_view::npos)
+        return {};
+    std::string_view tail = source.substr(start + marker.size());
+    tail = trim_view(tail);
+    usize end = 0u;
+    while (end < tail.size()) {
+        const char c = tail[end];
+        if (!(std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'))
+            break;
+        ++end;
+    }
+    return std::string{tail.substr(0u, end)};
+}
+
+[[nodiscard]] std::string read_quoted_after(std::string_view source,
+                                            std::string_view marker) {
+    const usize start = source.find(marker);
+    if (start == std::string_view::npos)
+        return {};
+    const usize open = source.find('"', start + marker.size());
+    const usize close = source.find('"', open == std::string_view::npos ? 0u : open + 1u);
+    if (open == std::string_view::npos || close == std::string_view::npos || close <= open)
+        return {};
+    return std::string{source.substr(open + 1u, close - open - 1u)};
+}
+
 [[nodiscard]] BehaviorInput read_behavior_input(const Json* v,
                                                 BehaviorInput fallback = {}) noexcept {
     if (!v)
@@ -467,6 +563,34 @@ struct BehaviorInput {
     return BehaviorInput{read_f32(v->field("value"), fallback.base), 0.0f};
 }
 
+[[nodiscard]] bool append_spin_behavior(CookScene& out,
+                                        std::string_view name,
+                                        std::string_view target_group,
+                                        const math::Vec3& axis,
+                                        BehaviorInput speed,
+                                        BehaviorInput phase,
+                                        bool active,
+                                        std::string& error) {
+    if (target_group.empty()) {
+        error = "spin behavior requires a non-empty target group";
+        return false;
+    }
+
+    scene::SceneFileBehaviorSpinOp spin{};
+    if (!name.empty())
+        spin.name_offset = add_string(out, name);
+    spin.target_group_name_offset = add_string(out, target_group);
+    spin.axis = axis;
+    spin.speed_base = speed.base;
+    spin.speed_step = speed.step;
+    spin.phase_base = phase.base;
+    spin.phase_step = phase.step;
+    spin.flags = active ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
+                        : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
+    out.behavior_spin_ops.push_back(spin);
+    return true;
+}
+
 [[nodiscard]] bool cook_spin_behavior(const Json& behavior, CookScene& out, std::string& error) {
     const Json* target_group = behavior.field("targetGroup");
     if (!target_group || target_group->kind != Json::Kind::String || target_group->text.empty()) {
@@ -474,22 +598,21 @@ struct BehaviorInput {
         return false;
     }
 
-    scene::SceneFileEntityBehaviorSpin spin{};
+    std::string_view name_text;
     if (const Json* name = behavior.field("name"); name && name->kind == Json::Kind::String)
-        spin.name_offset = add_string(out, name->text);
-    spin.target_group_name_offset = add_string(out, target_group->text);
-    (void)read_vec3(behavior.field("axis"), spin.axis);
+        name_text = name->text;
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    (void)read_vec3(behavior.field("axis"), axis);
     const BehaviorInput speed = read_behavior_input(behavior.field("speed"));
     const BehaviorInput phase = read_behavior_input(behavior.field("phase"));
-    spin.speed_base = speed.base;
-    spin.speed_step = speed.step;
-    spin.phase_base = phase.base;
-    spin.phase_step = phase.step;
-    spin.flags = read_bool(behavior.field("active"), true)
-                     ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
-                     : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
-    out.spin_behaviors.push_back(spin);
-    return true;
+    return append_spin_behavior(out,
+                                name_text,
+                                target_group->text,
+                                axis,
+                                speed,
+                                phase,
+                                read_bool(behavior.field("active"), true),
+                                error);
 }
 
 [[nodiscard]] bool cook_behavior_array(const Json& behaviors,
@@ -499,7 +622,7 @@ struct BehaviorInput {
         error = "entity behaviors must be an array";
         return false;
     }
-    out.spin_behaviors.reserve(out.spin_behaviors.size() + behaviors.array.size());
+    out.behavior_spin_ops.reserve(out.behavior_spin_ops.size() + behaviors.array.size());
     for (const Json& behavior : behaviors.array) {
         if (behavior.kind != Json::Kind::Object) {
             error = "entity behavior entry must be an object";
@@ -521,9 +644,130 @@ struct BehaviorInput {
     return true;
 }
 
+[[nodiscard]] bool cook_psygraph_node(const Json& node,
+                                      std::string_view graph_name,
+                                      std::string_view graph_target_group,
+                                      CookScene& out,
+                                      std::string& error) {
+    if (node.kind != Json::Kind::Object) {
+        error = "PsyGraph node must be an object";
+        return false;
+    }
+    const Json* op = node.field("op");
+    if (!op)
+        op = node.field("type");
+    if (!op || op->kind != Json::Kind::String || op->text != "spin")
+        return true;
+
+    std::string_view name = graph_name;
+    if (const Json* node_name = node.field("name");
+        node_name && node_name->kind == Json::Kind::String && !node_name->text.empty()) {
+        name = node_name->text;
+    }
+    std::string_view target_group = graph_target_group;
+    if (const Json* node_target = node.field("targetGroup");
+        node_target && node_target->kind == Json::Kind::String && !node_target->text.empty()) {
+        target_group = node_target->text;
+    }
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    (void)read_vec3(node.field("axis"), axis);
+    return append_spin_behavior(out,
+                                name,
+                                target_group,
+                                axis,
+                                read_behavior_input(node.field("speed")),
+                                read_behavior_input(node.field("phase")),
+                                read_bool(node.field("active"), true),
+                                error);
+}
+
+[[nodiscard]] bool cook_psygraph_graph(const Json& graph, CookScene& out, std::string& error) {
+    if (graph.kind != Json::Kind::Object) {
+        error = "PsyGraph graph must be an object";
+        return false;
+    }
+    std::string_view graph_name;
+    if (const Json* name = graph.field("name"); name && name->kind == Json::Kind::String)
+        graph_name = name->text;
+    std::string_view target_group;
+    if (const Json* group = graph.field("targetGroup"); group && group->kind == Json::Kind::String)
+        target_group = group->text;
+    const Json* nodes = graph.field("nodes");
+    if (!nodes || !is_array(nodes)) {
+        error = "PsyGraph graph requires a nodes array";
+        return false;
+    }
+    for (const Json& node : nodes->array) {
+        if (!cook_psygraph_node(node, graph_name, target_group, out, error))
+            return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool cook_psygraph_source(const std::filesystem::path& path,
+                                        CookScene& out,
+                                        std::string& error) {
+    std::string source;
+    if (!read_text_file(path, source)) {
+        error = "failed to read PsyGraph source " + path.string();
+        return false;
+    }
+    Json root;
+    JsonParser parser{source};
+    if (!parser.parse(root)) {
+        error = parser.error();
+        return false;
+    }
+    if (const Json* graphs = root.field("graphs")) {
+        if (!is_array(graphs)) {
+            error = "PsyGraph graphs must be an array";
+            return false;
+        }
+        for (const Json& graph : graphs->array) {
+            if (!cook_psygraph_graph(graph, out, error))
+                return false;
+        }
+        return true;
+    }
+    return cook_psygraph_graph(root, out, error);
+}
+
+[[nodiscard]] bool cook_psyscript_source(const std::filesystem::path& path,
+                                         CookScene& out,
+                                         std::string& error) {
+    std::string source;
+    if (!read_text_file(path, source)) {
+        error = "failed to read PsyScript source " + path.string();
+        return false;
+    }
+    if (source.find("transform.spin") == std::string::npos &&
+        source.find("spin") == std::string::npos) {
+        error = "PsyScript behavior currently requires a spin operation";
+        return false;
+    }
+    const std::string name = read_identifier_after(source, "behavior");
+    const std::string target_group = read_quoted_after(source, "target_group");
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    const usize axis_marker = source.find("axis");
+    if (axis_marker != std::string::npos)
+        (void)parse_vec3_literal(std::string_view{source}.substr(axis_marker), axis);
+    BehaviorInput speed{};
+    if (!parse_pair_call(source, "linear_index", speed.base, speed.step))
+        (void)parse_pair_call(source, "linearIndex", speed.base, speed.step);
+    BehaviorInput phase{};
+    (void)parse_assignment_number(source, "phase", phase.base);
+    return append_spin_behavior(out, name, target_group, axis, speed, phase, true, error);
+}
+
 [[nodiscard]] bool cook_behavior_source(const std::filesystem::path& path,
                                         CookScene& out,
                                         std::string& error) {
+    const std::string filename = path.filename().string();
+    if (filename.ends_with(".psyscript"))
+        return cook_psyscript_source(path, out, error);
+    if (filename.ends_with(".psygraph.json"))
+        return cook_psygraph_source(path, out, error);
+
     std::string source;
     if (!read_text_file(path, source)) {
         error = "failed to read behavior source " + path.string();
@@ -753,10 +997,10 @@ void append_chunk(std::vector<u8>& bytes,
                  sizeof(scene::SceneFileMaterial));
     append_chunk(bytes,
                  chunks,
-                 scene::SceneFileChunkType::EntityBehaviorSpin,
-                 std::span<const scene::SceneFileEntityBehaviorSpin>{
-                     scene.spin_behaviors.data(), scene.spin_behaviors.size()},
-                 sizeof(scene::SceneFileEntityBehaviorSpin));
+                 scene::SceneFileChunkType::BehaviorSpinOps,
+                 std::span<const scene::SceneFileBehaviorSpinOp>{
+                     scene.behavior_spin_ops.data(), scene.behavior_spin_ops.size()},
+                 sizeof(scene::SceneFileBehaviorSpinOp));
 
     scene::SceneFileHeader header{};
     header.file_bytes = static_cast<u32>(bytes.size());
@@ -827,6 +1071,7 @@ bool psynder::tools::cook_psyscene_json_file(const std::filesystem::path& input,
         stats->transforms = scene.translations.size();
         stats->cameras = scene.cameras.size();
         stats->mesh_instances = scene.mesh_instances.size();
+        stats->behavior_spin_ops = scene.behavior_spin_ops.size();
     }
     return true;
 }
