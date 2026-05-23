@@ -174,6 +174,12 @@ struct ScenePoolStats {
     u32 render_item_capacity = 0u;
 };
 
+struct SceneGroupId {
+    u32 index = 0xFFFFFFFFu;
+
+    [[nodiscard]] constexpr bool valid() const noexcept { return index != 0xFFFFFFFFu; }
+};
+
 struct SceneCameraView {
     Entity entity{};
     SceneNode node{};
@@ -889,12 +895,23 @@ class Scene {
         return {};
     }
 
+    [[nodiscard]] SceneGroupId group_id(std::string_view group_name) {
+        if (group_name.empty())
+            return {};
+        return group_slot(group_name);
+    }
+
     void add_to_group(std::string_view group_name, Entity entity, const LocalTransform& authored) {
         if (group_name.empty() || !entity.valid())
             return;
-        const u32 slot = group_slot(group_name);
-        groups_[slot].entities.push_back(entity);
-        groups_[slot].authored_locals.push_back(authored);
+        add_to_group(group_id(group_name), entity, authored);
+    }
+
+    void add_to_group(SceneGroupId group, Entity entity, const LocalTransform& authored) {
+        if (!group.valid() || !entity.valid() || group.index >= groups_.size())
+            return;
+        groups_[group.index].entities.push_back(entity);
+        groups_[group.index].authored_locals.push_back(authored);
     }
 
     [[nodiscard]] SceneGroupQuery query_group(std::string_view group_name) {
@@ -909,6 +926,18 @@ class Scene {
             }
         }
         return {};
+    }
+
+    [[nodiscard]] SceneGroupQuery query_group(SceneGroupId group) {
+        if (!group.valid() || group.index >= groups_.size())
+            return {};
+        SceneGroupStorage& storage = groups_[group.index];
+        return SceneGroupQuery{
+            *this,
+            std::span<const Entity>{storage.entities.data(), storage.entities.size()},
+            std::span<const LocalTransform>{storage.authored_locals.data(),
+                                            storage.authored_locals.size()},
+        };
     }
 
     bool attach_camera(Entity entity, const CameraComponent& camera = {}) {
@@ -1055,15 +1084,15 @@ class Scene {
         std::vector<LocalTransform> authored_locals;
     };
 
-    [[nodiscard]] u32 group_slot(std::string_view group_name) {
+    [[nodiscard]] SceneGroupId group_slot(std::string_view group_name) {
         for (u32 i = 0; i < static_cast<u32>(groups_.size()); ++i) {
             if (groups_[i].name == group_name)
-                return i;
+                return SceneGroupId{i};
         }
         SceneGroupStorage group{};
         group.name.assign(group_name.data(), group_name.size());
         groups_.push_back(std::move(group));
-        return static_cast<u32>(groups_.size() - 1u);
+        return SceneGroupId{static_cast<u32>(groups_.size() - 1u)};
     }
 
     EcsRegistry* registry_ = nullptr;

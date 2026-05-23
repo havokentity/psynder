@@ -180,7 +180,8 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     const auto* renderable = scene_ref.registry().get<scene::RenderableComponent>(mesh_entity);
     REQUIRE(renderable != nullptr);
     REQUIRE(renderable->material.raw == material.raw);
-    const auto group = scene_ref.query_group("crates");
+    const scene::SceneGroupId crates_group = scene_ref.group_id("crates");
+    const auto group = scene_ref.query_group(crates_group);
     REQUIRE(group.size() == 1u);
     REQUIRE(group.entities()[0].raw == mesh_entity.raw);
     for (auto [entity, transform, authored] : group.transforms()) {
