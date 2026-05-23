@@ -55,8 +55,8 @@ struct TexturedQuadSample : app::BasicSceneApp {
     void frame(app::WindowFrameContext& ctx, app::WindowFrameCacheReady& cr) {
         instantiate_if_ready(ctx.app, cr.scene());
 
-        const auto edit_mode = ctx.app.engine_frame_update(ctx.dt);
-        const f32 t = edit_mode == editor::Mode::Edit ? 0.0f : static_cast<f32>(ctx.seconds);
+        (void)ctx.app.engine_frame_update(ctx.dt);
+        const f32 t = static_cast<f32>(ctx.seconds);
 
         for (usize i = 0; i < crates.size(); ++i) {
             scene::LocalTransform transform = base_transforms[i];
