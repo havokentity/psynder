@@ -43,6 +43,21 @@
         "PSYNDER_ENABLE_TRACY":        "ON"
       }
     },
+    {
+      "name": "mac-psyarcade",
+      "displayName": "Mac · PsyArcade Player",
+      "inherits": "mac-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE":            "RelWithDebInfo",
+        "PSYNDER_EDITOR":              "ON",
+        "PSYNDER_BUILD_PLAYER":        "ON",
+        "PSYNDER_BUILD_TOOLS":         "ON",
+        "PSYNDER_BUILD_SAMPLES":       "OFF",
+        "PSYNDER_BUILD_TESTS":         "OFF",
+        "PSYNDER_ENABLE_TRACY":        "ON",
+        "PSYNDER_ENABLE_SANITIZERS":   "OFF"
+      }
+    },
 
     {
       "name": "win-base",
@@ -142,6 +157,7 @@
     { "name": "mac-debug",          "configurePreset": "mac-debug",          "jobs": 0 },
     { "name": "mac-release",        "configurePreset": "mac-release",        "jobs": 0 },
     { "name": "mac-relwithdebinfo", "configurePreset": "mac-relwithdebinfo", "jobs": 0 },
+    { "name": "mac-psyarcade",      "configurePreset": "mac-psyarcade",      "jobs": 0, "targets": [ "psynder_player", "scene_cook", "lm_cook", "lm_pak" ] },
     { "name": "win-debug",          "configurePreset": "win-debug",          "jobs": 0 },
     { "name": "win-release",        "configurePreset": "win-release",        "jobs": 0 },
     { "name": "win-clang-debug",    "configurePreset": "win-clang-debug",    "jobs": 0 },

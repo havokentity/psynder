@@ -5,6 +5,12 @@ add_executable(psynder_player ${SRC})
 target_link_libraries(psynder_player PRIVATE
     psynder_core psynder_math psynder_simd psynder_jobs
     psynder_scene psynder_render_raster psynder_render_post psynder_asset psynder_platform
-    psynder_samples_common
-    psynder_ui_imm psynder_editor_core
+    psynder_ui_imm
 )
+
+target_compile_definitions(psynder_player PRIVATE
+    PSYNDER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+if(PSYNDER_EDITOR)
+    target_link_libraries(psynder_player PRIVATE psynder_editor_core)
+endif()
