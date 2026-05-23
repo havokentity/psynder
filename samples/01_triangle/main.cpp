@@ -4,9 +4,12 @@
 // Texture: 32×32 PPM under assets/crate.ppm. Loaded once at startup and
 // sampled by the engine raster path.
 //
+#include "core/BuildMeta.h"
 #include "platform/App.h"
 
 using namespace psynder;
+
+PSYNDER_RUNTIME_BUNDLE("01_triangle");
 
 namespace {
 
