@@ -15,11 +15,15 @@ namespace psynder::editor {
 namespace {
 
 std::string trimmed_editor_web_url() {
-    constexpr std::string_view kFallback = "http://127.0.0.1:5173";
+    constexpr std::string_view kFallback = "http://127.0.0.1:7654";
+    constexpr std::string_view kOldDevDefault = "http://127.0.0.1:5173";
     auto* cvar = console::Console::Get().FindCVar("editor_web_url");
+    auto* dev_mode = console::Console::Get().FindCVar("editor_web_dev_mode");
     std::string out = cvar ? cvar->value : std::string{kFallback};
     while (!out.empty() && out.back() == '/')
         out.pop_back();
+    if ((!dev_mode || !dev_mode->GetBool()) && out == kOldDevDefault)
+        out = std::string{kFallback};
     return out.empty() ? std::string{kFallback} : out;
 }
 
@@ -77,8 +81,12 @@ void ensure_web_panel_commands_registered() {
 
     auto& console_ref = console::Console::Get();
     console_ref.RegisterCVar("editor_web_url",
-                             "http://127.0.0.1:5173",
-                             "Base URL for React editor panels in dev mode.",
+                             "http://127.0.0.1:7654",
+                             "Base URL for editor panels; set to Vite only while developing the web UI.",
+                             console::CVarFlags::Archive);
+    console_ref.RegisterCVar("editor_web_dev_mode",
+                             "0",
+                             "Honor editor_web_url for an external web dev server instead of the bundled panel.",
                              console::CVarFlags::Archive);
     console_ref.RegisterCommand("editor_ipc_start",
                                 "Start the local editor IPC server and print panel URLs.",

@@ -98,32 +98,29 @@ island physics gates fail any PR with >2% regression.
 
 ## Editor panels (optional)
 
-Build with `PSYNDER_EDITOR=ON` (the default). Start a sample, press
-`~` to flip into edit mode, then open Chrome at
-`http://127.0.0.1:7654/panels/inspector?token=<token>`. The session
-token prints to stderr on engine start. Other panels:
-`/panels/console`, `/panels/profiler`, `/panels/assets`,
-`/panels/props`.
+Build with `PSYNDER_EDITOR=ON` (the default). Start any sample that uses the
+engine overlay suite, press `~`, then run:
 
-During local React-panel development, run the Vite server:
+```text
+editor_console
+```
+
+That command starts the local IPC/HTTP server on `127.0.0.1:7654` and opens
+the bundled React console panel. No Node or Vite server is needed. Use
+`editor_ipc_start` when you only want the server/token, or `editor_panel
+psygraph` / `editor_panel inspector` to open a specific panel. `editor_panel
+console noopen` prints the URL without launching the browser.
+
+During local React-panel development only, you can point the launcher at a
+Vite dev server:
 
 ```bash
 cd engine/editor/web
 npm run dev
 ```
 
-Then press `~` in any sample that uses the engine overlay suite and run:
-
-```text
-editor_console
-```
-
-That command starts the local IPC server, prints the session token/URL, and
-opens `/panels/console` through `editor_web_url` (default
-`http://127.0.0.1:5173`). Use `editor_ipc_start` when you only want the
-server/token, or `editor_panel psygraph` / `editor_panel inspector` to open a
-specific panel. `editor_panel console noopen` prints the URL without launching
-the browser.
+Then set `editor_web_dev_mode 1` and `editor_web_url
+http://127.0.0.1:5173` in the engine console.
 
 To skip the editor stack entirely for a shipping build, set
 `PSYNDER_EDITOR=OFF` — the WebSocket server, IDL, and React panels

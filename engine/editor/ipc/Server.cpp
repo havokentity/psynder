@@ -36,6 +36,9 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -82,6 +85,7 @@ namespace psynder::editor::ipc::internal {
 namespace {
 // GUID per RFC 6455 §1.3 — concatenated with Sec-WebSocket-Key for handshake.
 constexpr const char* kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+constexpr std::string_view kPanelIndexName = "index.html";
 
 bool send_all(socket_t s, const ::psynder::u8* buf, ::psynder::usize n) {
     while (n) {
@@ -121,6 +125,51 @@ bool send_all(socket_t s, const ::psynder::u8* buf, ::psynder::usize n) {
         }
         return static_cast<::psynder::isize>(got);
     }
+}
+
+std::filesystem::path editor_web_dist_dir() {
+    auto source_file = std::filesystem::path{__FILE__};
+    return source_file.parent_path().parent_path() / "web" / "dist";
+}
+
+bool path_segment_is_safe(std::string_view s) noexcept {
+    return !s.empty() && s.find("..") == std::string_view::npos &&
+           s.find('\\') == std::string_view::npos;
+}
+
+std::optional<std::string> read_text_file(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return std::nullopt;
+    std::string body;
+    in.seekg(0, std::ios::end);
+    const auto size = in.tellg();
+    if (size > 0)
+        body.resize(static_cast<std::size_t>(size));
+    in.seekg(0, std::ios::beg);
+    if (!body.empty())
+        in.read(body.data(), static_cast<std::streamsize>(body.size()));
+    return body;
+}
+
+std::string_view content_type_for(std::string_view path) noexcept {
+    if (path.ends_with(".css"))
+        return "text/css; charset=utf-8";
+    if (path.ends_with(".js") || path.ends_with(".mjs"))
+        return "text/javascript; charset=utf-8";
+    if (path.ends_with(".json") || path.ends_with(".map"))
+        return "application/json; charset=utf-8";
+    if (path.ends_with(".html"))
+        return "text/html; charset=utf-8";
+    if (path.ends_with(".svg"))
+        return "image/svg+xml";
+    if (path.ends_with(".png"))
+        return "image/png";
+    if (path.ends_with(".jpg") || path.ends_with(".jpeg"))
+        return "image/jpeg";
+    if (path.ends_with(".webp"))
+        return "image/webp";
+    return "application/octet-stream";
 }
 
 }  // namespace
@@ -362,10 +411,13 @@ void Server::send_http(Connection& conn,
 void Server::serve_static(Connection& conn, const std::string& path) {
     // path includes everything after the leading scheme/host, so it starts
     // with '/'. We map:
-    //   /              -> bootstrap HTML
-    //   /panels/<name> -> bootstrap HTML
+    //   /              -> bundled React index
+    //   /panels/<name> -> bundled React index
+    //   /assets/<file> -> bundled React asset
     //   /healthz       -> "ok\n"
     //   /protocol.json -> a tiny version stamp
+    // If the web bundle is missing, fall back to the tiny bootstrap page so
+    // the IPC server remains inspectable in minimal source-only builds.
     std::string clean = path;
     auto qpos = clean.find_first_of("?#");
     if (qpos != std::string::npos)
@@ -382,8 +434,26 @@ void Server::serve_static(Connection& conn, const std::string& path) {
         send_http(conn, 200, "OK", "application/json", body);
         return;
     }
+    if (clean.rfind("/assets/", 0) == 0) {
+        const std::string_view asset_rel(clean.data() + 1, clean.size() - 1);
+        if (!path_segment_is_safe(asset_rel)) {
+            send_http(conn, 400, "Bad Request", "text/plain", "bad asset path\n");
+            return;
+        }
+        const auto asset_path = editor_web_dist_dir() / std::filesystem::path{std::string{asset_rel}};
+        if (auto body = read_text_file(asset_path)) {
+            send_http(conn, 200, "OK", content_type_for(clean), *body);
+            return;
+        }
+        send_http(conn, 404, "Not Found", "text/plain", "asset not found\n");
+        return;
+    }
     if (clean == "/" || clean.rfind("/panels/", 0) == 0) {
-        send_http(conn, 200, "OK", "text/html; charset=utf-8", kPanelBootstrapHtml);
+        if (auto body = read_text_file(editor_web_dist_dir() / std::string{kPanelIndexName})) {
+            send_http(conn, 200, "OK", "text/html; charset=utf-8", *body);
+        } else {
+            send_http(conn, 200, "OK", "text/html; charset=utf-8", kPanelBootstrapHtml);
+        }
         return;
     }
     send_http(conn, 404, "Not Found", "text/plain", "not found\n");

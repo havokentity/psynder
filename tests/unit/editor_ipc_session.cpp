@@ -363,3 +363,39 @@ TEST_CASE("ipc: HTTP healthz route works without auth", "[ipc][http][server]") {
     std::string body(reinterpret_cast<const char*>(tail.data()), tail.size());
     REQUIRE((body == "ok\n" || head.find("ok") != std::string::npos));
 }
+
+TEST_CASE("ipc: HTTP panel route serves an editor page without auth", "[ipc][http][server]") {
+    ServerGuard guard;
+    auto port = pick_port();
+    ServerDesc desc;
+    desc.bind_host = "127.0.0.1";
+    desc.port = port;
+    desc.require_session_token = true;
+    auto& srv = *guard.srv;
+    REQUIRE(srv.start(desc));
+
+    sock_t s = connect_local(port);
+    REQUIRE(sock_valid(s));
+    REQUIRE(send_all(s, "GET /panels/console?token=test HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+    std::vector<::psynder::u8> tail;
+    auto head = read_http_head(s, tail);
+    {
+        set_recv_timeout(s, std::chrono::milliseconds(500));
+        char tmp[1024];
+        for (;;) {
+            auto got = ::recv(s, tmp, sizeof(tmp), 0);
+            if (got <= 0)
+                break;
+            tail.insert(tail.end(),
+                        reinterpret_cast<const ::psynder::u8*>(tmp),
+                        reinterpret_cast<const ::psynder::u8*>(tmp) + got);
+        }
+    }
+    sock_close(s);
+
+    REQUIRE(head.rfind("HTTP/1.1 200", 0) == 0);
+    REQUIRE(head.find("Content-Type: text/html") != std::string::npos);
+    std::string body(reinterpret_cast<const char*>(tail.data()), tail.size());
+    REQUIRE((body.find("<div id=\"root\"></div>") != std::string::npos ||
+             body.find("Psynder Editor") != std::string::npos));
+}
