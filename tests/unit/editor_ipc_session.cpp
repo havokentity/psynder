@@ -325,6 +325,32 @@ TEST_CASE("ipc: live server accepts good WebSocket token", "[ipc][session][serve
     sock_close(s);
 }
 
+TEST_CASE("ipc: server destructor stops live websocket workers", "[ipc][session][server]") {
+    auto port = pick_port();
+    sock_t s;
+    {
+        psynder::editor::ipc::internal::Server srv;
+        REQUIRE(srv.start("127.0.0.1", port, true));
+        const std::string good_token = srv.session_token();
+
+        s = connect_local(port);
+        REQUIRE(sock_valid(s));
+        std::string upgrade = "GET /ws?token=" + good_token +
+                              " HTTP/1.1\r\n"
+                              "Host: 127.0.0.1\r\n"
+                              "Upgrade: websocket\r\n"
+                              "Connection: Upgrade\r\n"
+                              "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                              "Sec-WebSocket-Version: 13\r\n\r\n";
+        REQUIRE(send_all(s, upgrade));
+
+        std::vector<::psynder::u8> tail;
+        auto head = read_http_head(s, tail);
+        REQUIRE(head.rfind("HTTP/1.1 101", 0) == 0);
+    }
+    sock_close(s);
+}
+
 TEST_CASE("ipc: HTTP healthz route works without auth", "[ipc][http][server]") {
     ServerGuard guard;
     auto port = pick_port();

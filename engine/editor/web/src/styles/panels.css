@@ -295,6 +295,23 @@ button {
     font-weight: 700;
 }
 
+.psy-reset-btn {
+    min-height: 34px;
+    padding: 0 13px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-elev-1);
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.psy-reset-btn:hover {
+    border-color: var(--psy-accent);
+    color: var(--psy-accent);
+}
+
 .psy-swatch {
     width: 28px;
     height: 28px;
@@ -605,16 +622,82 @@ button {
     text-transform: uppercase;
 }
 
+.psy-dock-drag {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-input);
+    color: var(--psy-fg-faint);
+    cursor: grab;
+    font-family: var(--psy-mono);
+    font-size: 13px;
+    line-height: 1;
+}
+
+.psy-dock-drag:active {
+    cursor: grabbing;
+}
+
+.psy-dock-drag:hover {
+    border-color: var(--psy-accent);
+    color: var(--psy-accent);
+}
+
+.psy-dock-slot[data-closing="true"] .psy-dock-drag {
+    animation: psy-dock-drag-close 180ms ease-in forwards;
+    border-color: var(--psy-danger);
+    background: color-mix(in srgb, var(--psy-danger) 22%, var(--psy-bg-input));
+    color: var(--psy-danger);
+    pointer-events: none;
+}
+
+@keyframes psy-dock-drag-close {
+    0% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    65% {
+        opacity: 0.9;
+        transform: scale(0.72);
+    }
+    100% {
+        opacity: 0;
+        transform: scale(0);
+    }
+}
+
 .psy-dock-select {
     min-width: 132px;
     height: 28px;
-    margin-left: auto;
     padding: 0 8px;
     border: 1px solid var(--psy-border);
     border-radius: var(--psy-radius-sm);
     background: var(--psy-bg-input);
     color: var(--psy-fg);
     outline: none;
+}
+
+.psy-dock-close {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-input);
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+    font-family: var(--psy-mono);
+    font-size: 13px;
+    line-height: 1;
+}
+
+.psy-dock-close:hover {
+    border-color: var(--psy-danger);
+    color: var(--psy-danger);
 }
 
 .psy-dock-content {

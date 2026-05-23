@@ -243,6 +243,10 @@ Server& Server::Get() {
     return s;
 }
 
+Server::~Server() {
+    stop();
+}
+
 bool Server::validate_token(std::string_view t) const noexcept {
     if (!require_token_)
         return true;

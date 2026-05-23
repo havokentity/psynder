@@ -48,6 +48,7 @@ struct Connection {
 class Server {
    public:
     static Server& Get();
+    ~Server();
 
     bool start(const char* bind_host, ::psynder::u16 port, bool require_session_token);
     void stop();
