@@ -140,7 +140,7 @@ const DEMO_PROPS: PropEntry[] = [
 const DEMO_PSYGRAPH: PsyGraphDocument = {
     id: 'crate-spin',
     name: 'CrateSpin',
-    source_path: 'samples/02_textured_quad/assets/behaviors/crate_spin.psygraph.json',
+    source_path: 'samples/02_textured_quad/assets/behaviors/crate_spin.psyscript',
     target_group: 'crates',
     nodes: [
         {
