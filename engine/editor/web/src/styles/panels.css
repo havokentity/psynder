@@ -475,11 +475,11 @@ button {
 }
 
 .psy-dock-grid[data-layout="split"] {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(260px, var(--psy-dock-split, 50%)) 8px minmax(260px, 1fr);
 }
 
 .psy-dock-grid[data-layout="stack"] {
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(220px, var(--psy-dock-split, 50%)) 8px minmax(220px, 1fr);
 }
 
 .psy-dock-grid[data-layout="quad"] {
@@ -500,6 +500,31 @@ button {
     border: 1px solid var(--psy-border);
     border-radius: var(--psy-radius);
     background: rgba(10, 14, 19, 0.66);
+}
+
+.psy-dock-slot:hover {
+    border-color: var(--psy-border);
+}
+
+.psy-dock-divider {
+    min-width: 0;
+    min-height: 0;
+    border-radius: 999px;
+    background: linear-gradient(180deg, transparent, var(--psy-border), transparent);
+    touch-action: none;
+}
+
+.psy-dock-divider[data-layout="split"] {
+    cursor: col-resize;
+}
+
+.psy-dock-divider[data-layout="stack"] {
+    cursor: row-resize;
+    background: linear-gradient(90deg, transparent, var(--psy-border), transparent);
+}
+
+.psy-dock-divider:hover {
+    background: var(--psy-accent);
 }
 
 .psy-dock-tabbar {
@@ -878,6 +903,34 @@ button {
     gap: 4px;
 }
 
+.psy-console-mode {
+    display: inline-flex;
+    gap: 4px;
+    padding: 3px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: 999px;
+    background: var(--psy-bg-input);
+}
+
+.psy-console-mode-tab {
+    min-height: 30px;
+    min-width: 76px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.psy-console-mode-tab.is-active {
+    background: var(--psy-accent);
+    color: #081018;
+}
+
 .psy-chip-btn {
     background: transparent;
     border: 1px solid var(--psy-border-soft);
@@ -1025,6 +1078,12 @@ button {
 .psy-console-request-id {
     color: var(--psy-accent);
     font-size: 10px;
+}
+
+.psy-console-request-mode {
+    color: var(--psy-accent-2);
+    font-size: 9px;
+    text-transform: uppercase;
 }
 
 .psy-console-request-text {
@@ -1764,6 +1823,10 @@ button {
 
     .psy-dock-slot {
         min-height: 420px;
+    }
+
+    .psy-dock-divider {
+        display: none;
     }
 
     .psy-dock-toolbar {

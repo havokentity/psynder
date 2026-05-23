@@ -260,12 +260,13 @@ export class IpcClient {
             return concat_msgpack(OPCODES.UnsubscribeFrame, [ch]);
         }
         if (ch === 'console' && type === 'eval') {
-            const p = payload as { id?: number; source?: string; text?: string };
+            const p = payload as { id?: number; source?: string; text?: string; mode?: string };
             const text = p.source ?? p.text ?? '';
+            const mode = p.mode === 'lua' ? 'lua' : 'console';
             if (typeof p.id === 'number') {
                 this.pending_console_ids.push(p.id);
             }
-            return concat_msgpack(OPCODES.ConsoleFrame, [text]);
+            return concat_msgpack(OPCODES.ConsoleFrame, [text, mode]);
         }
 
         // Future panels can still use the previous envelope shape until their

@@ -88,32 +88,23 @@ namespace {
 constexpr const char* kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 constexpr std::string_view kPanelIndexName = "index.html";
 
-bool is_unknown_console_input(const ::psynder::console::ExecuteResult& res) {
-    constexpr std::string_view kUnknown = "unknown command or cvar:";
-    return !res.ok && res.error.rfind(kUnknown, 0) == 0;
-}
+bool dispatch_editor_console(std::string_view text,
+                             std::string_view mode,
+                             bool repl_live,
+                             std::string& out) {
+    if (mode == "lua") {
+        if (!repl_live) {
+            out = "lua: REPL backend is not installed";
+            return false;
+        }
+        return ::psynder::script::dispatch_repl(text, out);
+    }
 
-bool dispatch_editor_console(std::string_view text, bool repl_live, std::string& out) {
     auto& console = ::psynder::console::Console::Get();
     auto res = console.ExecuteScript(text);
     if (res.ok) {
         out = std::move(res.output);
         return true;
-    }
-
-    if (repl_live && is_unknown_console_input(res)) {
-        std::string repl_out;
-        const bool repl_ok = ::psynder::script::dispatch_repl(text, repl_out);
-        if (repl_ok) {
-            out = std::move(repl_out);
-            return true;
-        }
-        out = res.error;
-        if (!repl_out.empty()) {
-            out.append("\n[lua] ");
-            out.append(repl_out);
-        }
-        return false;
     }
 
     out = !res.error.empty() ? std::move(res.error) : std::move(res.output);
@@ -312,8 +303,8 @@ bool Server::start(const char* bind_host, ::psynder::u16 port, bool require_sess
     running_.store(true);
     accept_thread_ = std::thread([this]() { this->accept_loop(); });
 
-    // ConsoleFrame messages route through the core console first. The script
-    // REPL stays installed as a fallback for raw Lua/script expressions.
+    // ConsoleFrame messages carry an explicit mode: engine console or Lua.
+    // Keep the script REPL installed for the Lua tab.
     install_repl_backend();
 
     PSY_LOG_INFO("editor-ipc: listening on {}:{}", bind_host_, port_);
@@ -324,7 +315,7 @@ void Server::install_repl_backend() {
     // The script lane's `dispatch_repl(...)` already falls back to the
     // default Vm evaluator when no custom backend is installed (see
     // engine/script/internal/ReplHook.cpp). Calling this method here keeps the
-    // Lua/script fallback available after core console dispatch misses.
+    // Lua tab available without the IPC server owning the script VM.
     //
     // We deliberately do NOT install our own backend that supplants the
     // script lane's default — tests opt in to a fake backend via
@@ -667,7 +658,7 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                     proto::ConsoleCmd cmd;
                     if (proto::ConsoleCmd_decode(r, cmd)) {
                         InboundCmd ic;
-                        ic.channel = proto::channels::kconsole;
+                        ic.channel = cmd.mode.empty() ? std::string{"console"} : std::move(cmd.mode);
                         ic.payload.assign(reinterpret_cast<const ::psynder::u8*>(cmd.text.data()),
                                           reinterpret_cast<const ::psynder::u8*>(cmd.text.data()) +
                                               cmd.text.size());
@@ -809,7 +800,7 @@ void Server::pump() {
         std::string text(reinterpret_cast<const char*>(cmd.payload.data()), cmd.payload.size());
         PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);
         std::string out;
-        const bool ok = dispatch_editor_console(text, repl_live, out);
+        const bool ok = dispatch_editor_console(text, cmd.channel, repl_live, out);
 
         auto conn = cmd.conn.lock();
         if (!conn || !conn->alive.load())

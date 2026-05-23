@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Psynder editor — Console panel. Bidirectional REPL over the lane-19 IPC.
-// Outbound: `eval` envelopes carrying a snippet of Lua / cvar text. Inbound:
-// `log` lines (interleaved engine logging) and `result` (terminal value of
-// the prior eval). The terminal keeps a bounded scroll history.
+// Psynder editor — Console panel. Bidirectional engine console + Lua REPL over
+// lane-19 IPC. Console mode runs commands/cvars only; Lua mode is explicit.
 
 import React from 'react';
 
@@ -22,6 +20,7 @@ import { use_mock_when_offline } from './shared/use_mock_when_offline';
 interface ConsoleEntry {
     id: string;
     kind: 'eval' | 'log' | 'result' | 'system';
+    mode?: ConsoleMode;
     request_id?: number;
     level?: LogLevel;
     tag?: string;
@@ -34,6 +33,7 @@ interface ConsoleEntry {
 
 interface ConsoleRequest {
     id: number;
+    mode: ConsoleMode;
     source: string;
     started_at: number;
     status: 'pending' | 'ok' | 'error';
@@ -46,6 +46,7 @@ const MAX_REQUESTS = 64;
 
 const LEVEL_ORDER: LogLevel[] = ['trace', 'debug', 'info', 'warn', 'error'];
 type ConsoleFilter = 'all' | 'warn' | 'error';
+type ConsoleMode = 'console' | 'lua';
 
 function new_id(): string {
     return `${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 8)}`;
@@ -61,6 +62,7 @@ export function Console() {
     const [input_ring, set_input_ring] = React.useState<string[]>([]);
     const [ring_idx, set_ring_idx] = React.useState(-1);
     const [filter, set_filter] = React.useState<ConsoleFilter>('all');
+    const [mode, set_mode] = React.useState<ConsoleMode>('console');
     const [connection_state, set_connection_state] = React.useState<ConnectionState>(
         client.current_state(),
     );
@@ -196,6 +198,7 @@ export function Console() {
         push({
             id: new_id(),
             kind: 'eval',
+            mode,
             request_id: id,
             ts: started_at,
             text: source,
@@ -203,7 +206,7 @@ export function Console() {
         set_requests((prev) => {
             const next = [
                 ...prev,
-                { id, source, started_at, status: 'pending' as const },
+                { id, mode, source, started_at, status: 'pending' as const },
             ];
             return next.length > MAX_REQUESTS
                 ? next.slice(next.length - MAX_REQUESTS)
@@ -216,7 +219,7 @@ export function Console() {
         } else if (connection_state === 'mock') {
             settle_mock_request(id, source);
         } else if (connection_state === 'open') {
-            client.send<ConsoleEval>('console', 'eval', { id, source });
+            client.send<ConsoleEval>('console', 'eval', { id, source, mode });
         } else {
             request_started.current.delete(id);
             update_request(id, 'error', 0);
@@ -306,6 +309,20 @@ export function Console() {
             </header>
 
             <div className="psy-console-toolbar">
+                <div className="psy-console-mode" role="tablist" aria-label="Console mode">
+                    {(['console', 'lua'] as ConsoleMode[]).map((value) => (
+                        <button
+                            key={value}
+                            type="button"
+                            role="tab"
+                            aria-selected={mode === value}
+                            className={`psy-console-mode-tab${mode === value ? ' is-active' : ''}`}
+                            onClick={() => set_mode(value)}
+                        >
+                            {value}
+                        </button>
+                    ))}
+                </div>
                 <div className="psy-console-filter" role="group" aria-label="Console log filter">
                     {(['all', 'warn', 'error'] as ConsoleFilter[]).map((value) => (
                         <button
@@ -364,11 +381,15 @@ export function Console() {
                             key={req.id}
                             type="button"
                             className={`psy-console-request is-${req.status}`}
-                            onClick={() => set_draft(req.source)}
+                            onClick={() => {
+                                set_mode(req.mode);
+                                set_draft(req.source);
+                            }}
                             title="Load command"
                         >
                             <span className="psy-console-request-status" />
                             <span className="psy-console-request-id">#{req.id}</span>
+                            <span className="psy-console-request-mode">{req.mode}</span>
                             <span className="psy-console-request-text">{req.source}</span>
                             <span className="psy-console-request-ms">
                                 {req.status === 'pending'
@@ -387,7 +408,7 @@ export function Console() {
                 <span className="psy-console-prompt">›</span>
                 <textarea
                     className="psy-console-input"
-                    placeholder="lua snippet or `help`"
+                    placeholder={mode === 'lua' ? 'lua expression or statement' : 'engine command or cvar'}
                     spellCheck={false}
                     autoFocus
                     rows={2}
@@ -428,6 +449,7 @@ function ConsoleRow({ entry }: { entry: ConsoleEntry }) {
             {entry.request_id !== undefined && (
                 <span className="psy-console-req">#{entry.request_id}</span>
             )}
+            {entry.mode && <span className="psy-console-tag">[{entry.mode}]</span>}
             {entry.tag && <span className="psy-console-tag">[{entry.tag}]</span>}
             {entry.level && entry.kind === 'log' && (
                 <span className={`psy-console-level is-level-${entry.level}`}>

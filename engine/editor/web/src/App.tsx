@@ -79,6 +79,11 @@ function safe_panel(value: string | null, fallback: PanelName): PanelName {
         : fallback;
 }
 
+function safe_split(value: string | null): number {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.min(76, Math.max(24, parsed)) : 50;
+}
+
 export function App() {
     const [route, set_route] = React.useState<RouteName>(pick_route);
     const [settings_open, set_settings_open] = React.useState(false);
@@ -100,6 +105,9 @@ export function App() {
         tertiary: safe_panel(window.localStorage.getItem('psy_dock_tertiary'), DEFAULT_DOCKS.tertiary),
         quaternary: safe_panel(window.localStorage.getItem('psy_dock_quaternary'), DEFAULT_DOCKS.quaternary),
     }));
+    const [dock_split, set_dock_split] = React.useState(() => (
+        safe_split(window.localStorage.getItem('psy_dock_split'))
+    ));
 
     // In dev mode there's only a single bundle; let the user flip between
     // panels via the header without reloading. The engine doesn't drive
@@ -135,6 +143,10 @@ export function App() {
             window.localStorage.setItem(`psy_dock_${slot}`, docks[slot]);
         }
     }, [docks]);
+
+    React.useEffect(() => {
+        window.localStorage.setItem('psy_dock_split', String(dock_split));
+    }, [dock_split]);
 
     const current = route === 'workbench' ? WORKBENCH_META : PANEL_META[route];
 
@@ -247,8 +259,13 @@ export function App() {
                         <button
                             key={name}
                             type="button"
+                            draggable
                             className={`psy-nav-btn ${route === name ? 'is-active' : ''}`}
                             onClick={() => switch_route(name)}
+                            onDragStart={(e) => {
+                                e.dataTransfer.setData('application/x-psy-panel', name);
+                                e.dataTransfer.effectAllowed = 'copyMove';
+                            }}
                         >
                             <span className="psy-nav-icon">{PANEL_META[name].icon}</span>
                             <span className="psy-nav-label">{PANEL_META[name].label}</span>
@@ -262,7 +279,9 @@ export function App() {
                         <DockWorkspace
                             layout={layout}
                             docks={docks}
+                            split={dock_split}
                             on_layout={set_layout}
+                            on_split={set_dock_split}
                             on_dock={(slot, panel) => set_docks((prev) => ({ ...prev, [slot]: panel }))}
                         />
                     ) : (
@@ -277,12 +296,16 @@ export function App() {
 function DockWorkspace({
     layout,
     docks,
+    split,
     on_layout,
+    on_split,
     on_dock,
 }: {
     layout: LayoutName;
     docks: Record<DockSlot, PanelName>;
+    split: number;
     on_layout(layout: LayoutName): void;
+    on_split(split: number): void;
     on_dock(slot: DockSlot, panel: PanelName): void;
 }) {
     const slots: DockSlot[] = layout === 'quad'
@@ -304,17 +327,67 @@ function DockWorkspace({
                     on_change={on_layout}
                 />
             </div>
-            <div className="psy-dock-grid" data-layout={layout}>
-                {slots.map((slot) => (
-                    <DockSlotView
-                        key={slot}
-                        slot={slot}
-                        panel={docks[slot]}
-                        on_panel={(panel) => on_dock(slot, panel)}
-                    />
+            <div
+                className="psy-dock-grid"
+                data-layout={layout}
+                style={{ '--psy-dock-split': `${split}%` } as React.CSSProperties}
+            >
+                {slots.map((slot, index) => (
+                    <React.Fragment key={slot}>
+                        <DockSlotView
+                            slot={slot}
+                            panel={docks[slot]}
+                            on_panel={(panel) => on_dock(slot, panel)}
+                        />
+                        {index === 0 && (layout === 'split' || layout === 'stack') && (
+                            <DockDivider layout={layout} split={split} on_split={on_split} />
+                        )}
+                    </React.Fragment>
                 ))}
             </div>
         </section>
+    );
+}
+
+function DockDivider({
+    layout,
+    split,
+    on_split,
+}: {
+    layout: Extract<LayoutName, 'split' | 'stack'>;
+    split: number;
+    on_split(split: number): void;
+}) {
+    const begin_resize = (e: React.PointerEvent<HTMLDivElement>) => {
+        const grid = e.currentTarget.parentElement;
+        if (!grid) return;
+        e.preventDefault();
+        const rect = grid.getBoundingClientRect();
+        const move = (ev: PointerEvent) => {
+            const raw = layout === 'split'
+                ? ((ev.clientX - rect.left) / Math.max(rect.width, 1)) * 100
+                : ((ev.clientY - rect.top) / Math.max(rect.height, 1)) * 100;
+            on_split(Math.min(76, Math.max(24, raw)));
+        };
+        const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+    };
+
+    return (
+        <div
+            className="psy-dock-divider"
+            data-layout={layout}
+            onPointerDown={begin_resize}
+            role="separator"
+            aria-orientation={layout === 'split' ? 'vertical' : 'horizontal'}
+            aria-valuemin={24}
+            aria-valuemax={76}
+            aria-valuenow={Math.round(split)}
+        />
     );
 }
 
@@ -328,7 +401,23 @@ function DockSlotView({
     on_panel(panel: PanelName): void;
 }) {
     return (
-        <section className="psy-dock-slot" data-slot={slot}>
+        <section
+            className="psy-dock-slot"
+            data-slot={slot}
+            onDragOver={(e) => {
+                if (Array.from(e.dataTransfer.types).includes('application/x-psy-panel')) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'copy';
+                }
+            }}
+            onDrop={(e) => {
+                const dropped = e.dataTransfer.getData('application/x-psy-panel');
+                if ((PANEL_NAMES as readonly string[]).includes(dropped)) {
+                    e.preventDefault();
+                    on_panel(dropped as PanelName);
+                }
+            }}
+        >
             <div className="psy-dock-tabbar">
                 <span className="psy-dock-slot-name">{slot}</span>
                 <select

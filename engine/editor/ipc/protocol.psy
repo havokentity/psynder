@@ -21,7 +21,7 @@
 # TypeScript module with the same shape. Both consumers MUST agree on the
 # version field — mismatches are logged + the connection is dropped.
 
-version 2
+version 3
 
 # Wave-B v2 bump: adds SceneDeltaFrame + slice-scoped pub/sub. v1 clients
 # remain wire-compatible: the only mandatory frame they decode (Welcome)
@@ -31,6 +31,9 @@ version 2
 # v2 (selection / perf / schemas) carry slice-tagged deltas via the new
 # SceneDeltaFrame, so a v1 panel that never subscribes to those slices sees
 # no traffic at all.
+#
+# v3 adds ConsoleCmd.mode so the web UI can keep engine console and Lua REPL
+# dispatch separate. Console no longer implicitly falls through to Lua.
 
 channel "log"
 channel "scene"
@@ -76,6 +79,7 @@ struct StatsTick:
 
 struct ConsoleCmd:
     text : str
+    mode : str
 
 # Wave-B: slice-scoped scene-delta envelope. The `slice` field names a logical
 # pub/sub topic ("selection", "perf", "schemas", …) so a single physical

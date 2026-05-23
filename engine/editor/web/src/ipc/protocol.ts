@@ -9,8 +9,8 @@
 //   - "selection" : engine pushes the currently-selected entity's component
 //                   values; panel pushes back property edits. Also carries
 //                   `spawn_prop` commands from the prop-spawn menu.
-//   - "console"   : bi-directional REPL — panel sends `eval`, engine streams
-//                   `log` lines plus the eventual `result`.
+//   - "console"   : bi-directional engine-console / Lua command path — panel
+//                   sends `eval`, engine streams `log` lines plus `result`.
 //   - "profiler"  : engine pushes a `frame` sample per render frame (cpu_ms,
 //                   gpu_ms, ms_per_section breakdown, fps).
 //   - "assets"    : engine pushes the catalog of entries in the loaded
@@ -26,7 +26,7 @@
 // version than the bundle was built against; the React app degrades to
 // best-effort rendering of channels it understands.
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export type Channel =
     | 'stats'
@@ -140,7 +140,8 @@ export interface SelectionSet {
 
 // ─── Console channel ─────────────────────────────────────────────────────
 //
-// `eval`   : panel → engine. Pushes a snippet to the Lua REPL host.
+// `eval`   : panel → engine. Pushes either an engine-console command/cvar
+//            or an explicit Lua REPL snippet.
 // `log`    : engine → panel. Stream of log lines tagged with a severity.
 // `result` : engine → panel. The terminal value (or error) of the prior eval.
 
@@ -151,7 +152,7 @@ export interface ConsoleEval {
     id: number;
     source: string;
     /** Optional UI hint for engines that route multiple console languages. */
-    mode?: 'lua' | 'cvar' | 'command';
+    mode?: 'console' | 'lua';
 }
 
 export interface ConsoleLog {

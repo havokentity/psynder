@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Psynder editor IPC — Wave-B coverage for the slice-scoped delta push,
-// schema v2 welcome, and console command routing. Lane 19.
+// schema welcome, and console command routing. Lane 19.
 //
 // Each test stands up a live server on an ephemeral port, hand-rolls the
 // HTTP+WS upgrade, then exchanges binary frames over the raw socket. We do
@@ -17,16 +17,17 @@
 //      load-bearing invariant lane 20 React panels rely on: each panel can
 //      open one WebSocket and selectively pick up only its own slice.
 //
-//   2. v2 protocol bump remains decodable by a v1 client. The Welcome frame
-//      is unchanged byte-shape; v1 decoders see `server_ver == 2` and can
+//   2. Protocol bumps remain decodable by older clients. The Welcome frame
+//      is unchanged byte-shape; older decoders see the current server_ver and can
 //      gate features off it. The forward-compat fallback for unknown opcodes
 //      is also asserted (the server's `default:` arm in client_loop must
 //      drop unknown frames silently, not disconnect).
 //
-//   3. ConsoleCmd routes through the core console first, then falls back to
-//      `script::dispatch_repl` for raw script input. We install a stub backend
-//      via `script::set_repl_backend(...)` so the test does not depend on a
-//      live Lua VM; the contract under test is the routing, not Lua.
+//   3. ConsoleCmd carries an explicit mode. `console` routes to the engine
+//      command/cvar registry and `lua` routes to `script::dispatch_repl`.
+//      We install a stub backend via `script::set_repl_backend(...)` so the
+//      test does not depend on a live Lua VM; the contract under test is the
+//      routing, not Lua.
 
 #include "core/console/Console.h"
 #include "editor/ipc/Ipc.h"
@@ -412,7 +413,7 @@ TEST_CASE("ipc: push_scene_delta routes per slice", "[ipc][delta]") {
     sock_close(sB);
 }
 
-TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
+TEST_CASE("ipc: schema bump stays back-compat", "[ipc][schema]") {
     ServerGuard guard;
     auto port = pick_port();
     ServerDesc desc;
@@ -423,8 +424,8 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     REQUIRE(srv.start(desc));
     const std::string tok = srv.session_token();
 
-    // The Welcome struct shape is identical between v1 and v2. A v1 panel
-    // decoder sees `server_ver == 2` and can branch on the value — our
+    // The Welcome struct shape is stable across protocol bumps. An older panel
+    // decoder sees the newer server_ver and can branch on the value — our
     // assertion here is that the value flows through and is the bumped
     // version, not the old 1.
     proto::Welcome welcome;
@@ -432,8 +433,8 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     sock_t s = open_panel(port, tok, welcome, tail);
     REQUIRE(sock_valid(s));
     REQUIRE(welcome.accepted);
-    REQUIRE(welcome.server_ver == 2u);
-    REQUIRE(proto::kProtocolVersion == 2u);
+    REQUIRE(welcome.server_ver == 3u);
+    REQUIRE(proto::kProtocolVersion == 3u);
 
     // Forward-compat: ship the server a frame with an unknown opcode and
     // verify the connection stays alive (we can still drive normal traffic
@@ -469,7 +470,7 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     sock_close(s);
 }
 
-TEST_CASE("ipc: console frame hits engine console before REPL fallback", "[ipc][repl]") {
+TEST_CASE("ipc: console frame separates engine console and lua", "[ipc][repl]") {
     auto& console = ::psynder::console::Console::Get();
     console.RegisterCommand("test_ipc_echo",
                             "unit-test echo command",
@@ -516,6 +517,7 @@ TEST_CASE("ipc: console frame hits engine console before REPL fallback", "[ipc][
         w.u16_(proto::opcodes::kConsoleFrame);
         proto::ConsoleCmd cmd;
         cmd.text = "test_ipc_echo hello web";
+        cmd.mode = "console";
         proto::ConsoleCmd_encode(w, cmd);
         send_ws_client_binary(s, w.data(), w.size());
     }
@@ -536,12 +538,14 @@ TEST_CASE("ipc: console frame hits engine console before REPL fallback", "[ipc][
     REQUIRE(rep.text == "engine hello web");
     REQUIRE(g_stub.calls.load() == 0);
 
-    // Unknown engine-console input falls back to the script REPL.
+    // Unknown engine-console input stays a console error and does not fall
+    // through to Lua.
     {
         msgpack::Writer w;
         w.u16_(proto::opcodes::kConsoleFrame);
         proto::ConsoleCmd cmd;
         cmd.text = "1+1";
+        cmd.mode = "console";
         proto::ConsoleCmd_encode(w, cmd);
         send_ws_client_binary(s, w.data(), w.size());
     }
@@ -556,8 +560,33 @@ TEST_CASE("ipc: console frame hits engine console before REPL fallback", "[ipc][
     REQUIRE(op == proto::opcodes::kConsoleReplyFrame);
     proto::ConsoleReply rep2;
     REQUIRE(proto::ConsoleReply_decode(r2, rep2));
-    REQUIRE(rep2.ok);
-    REQUIRE(rep2.text == "2");
+    REQUIRE_FALSE(rep2.ok);
+    REQUIRE(rep2.text.find("unknown command or cvar") != std::string::npos);
+    REQUIRE(g_stub.calls.load() == 0);
+
+    // Lua mode routes explicitly to the script REPL.
+    {
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleFrame);
+        proto::ConsoleCmd cmd;
+        cmd.text = "1+1";
+        cmd.mode = "lua";
+        proto::ConsoleCmd_encode(w, cmd);
+        send_ws_client_binary(s, w.data(), w.size());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    srv.pump();
+
+    pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r3(pl.data(), pl.size());
+    op = 0;
+    REQUIRE(r3.u16_(op));
+    REQUIRE(op == proto::opcodes::kConsoleReplyFrame);
+    proto::ConsoleReply rep3;
+    REQUIRE(proto::ConsoleReply_decode(r3, rep3));
+    REQUIRE(rep3.ok);
+    REQUIRE(rep3.text == "2");
 
     // Sanity: the stub was actually invoked once with the right line.
     REQUIRE(g_stub.calls.load() == 1);
