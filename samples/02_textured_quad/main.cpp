@@ -47,7 +47,8 @@ struct TexturedQuadSample : app::BasicSceneApp {
         crate_material_id = scene_ref.materials().create(crate_material);
 
         scene_load
-            .bind_mesh("builtin.unit_cube.crate", cube_mesh, crate_material_id)
+            .bind_mesh("builtin.unit_cube.crate", cube_mesh)
+            .bind_material("materials.crate.wood", crate_material_id)
             .on_ready([this](const scene::SceneLoadResult& result) {
                 crates.assign(result.mesh_entities.begin(), result.mesh_entities.end());
                 base_transforms.assign(result.base_transforms.begin(),

@@ -45,7 +45,7 @@ void append_chunk(std::vector<u8>& bytes,
 }
 
 std::vector<u8> make_scene_blob() {
-    constexpr char strings[] = "\0crateCube\0";
+    constexpr char strings[] = "\0crateCube\0crate.wood\0";
     const scene::SceneFileEnvironment environment{0xFF182030u, 1u, 1u, {}};
     const math::Vec3 translations[] = {{0.0f, 1.5f, 1.5f}, {-1.3f, 0.0f, -3.0f}};
     const math::Quat rotations[] = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
@@ -56,6 +56,7 @@ std::vector<u8> make_scene_blob() {
     scene::SceneFileMeshInstance mesh{};
     mesh.transform_index = 1u;
     mesh.mesh_name_offset = 1u;
+    mesh.material_name_offset = 11u;
 
     std::vector<u8> bytes(sizeof(scene::SceneFileHeader) +
                           7u * sizeof(scene::SceneFileChunk));
@@ -136,6 +137,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(view.cameras.size() == 1u);
     REQUIRE(view.mesh_instances.size() == 1u);
     REQUIRE(std::string_view{scene::scene_file_string(view, 1u)} == "crateCube");
+    REQUIRE(std::string_view{scene::scene_file_string(view, 11u)} == "crate.wood");
 
     RegistryReset reset;
     auto& registry = scene::EcsRegistry::Get();
@@ -144,17 +146,24 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     const render::MaterialId material{1u};
     const scene::SceneMeshBinding binding{.mesh_name = "crateCube",
                                           .mesh = render::MeshId{1u},
-                                          .material = material};
+                                          .material = {}};
+    const scene::SceneMaterialBinding material_binding{.material_name = "crate.wood",
+                                                       .material = material};
     Entity mesh_entity{};
     const scene::SceneFileInstantiateResult result =
         scene::instantiate_scene_file(scene_ref,
                                       view,
                                       std::span<const scene::SceneMeshBinding>{&binding, 1u},
+                                      std::span<const scene::SceneMaterialBinding>{&material_binding, 1u},
                                       std::span<Entity>{&mesh_entity, 1u});
 
     REQUIRE(result.cameras == 1u);
     REQUIRE(result.mesh_instances == 1u);
     REQUIRE(result.missing_mesh_bindings == 0u);
+    REQUIRE(result.missing_material_bindings == 0u);
     REQUIRE(mesh_entity.valid());
+    const auto* renderable = scene_ref.registry().get<scene::RenderableComponent>(mesh_entity);
+    REQUIRE(renderable != nullptr);
+    REQUIRE(renderable->material.raw == material.raw);
     REQUIRE(scene_ref.active_camera_entity().valid());
 }

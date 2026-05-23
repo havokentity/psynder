@@ -101,6 +101,26 @@ template <class T>
     return binding.material;
 }
 
+[[nodiscard]] ::psynder::render::MaterialId resolve_scene_material(
+    std::string_view material_name,
+    const SceneMeshBinding& mesh_binding,
+    std::span<const SceneMaterialBinding> material_bindings,
+    bool& missing_material) noexcept {
+    if (material_name.empty())
+        return binding_material(mesh_binding);
+
+    const auto it = std::find_if(material_bindings.begin(),
+                                 material_bindings.end(),
+                                 [&](const SceneMaterialBinding& binding) {
+                                     return binding.material_name == material_name;
+                                 });
+    if (it != material_bindings.end() && it->material.valid())
+        return it->material;
+
+    missing_material = true;
+    return binding_material(mesh_binding);
+}
+
 }  // namespace
 
 bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string* error) {
@@ -245,6 +265,15 @@ SceneFileInstantiateResult instantiate_scene_file(Scene& scene,
                                                   const SceneFileView& scene_file,
                                                   std::span<const SceneMeshBinding> mesh_bindings,
                                                   std::span<Entity> out_mesh_entities) {
+    return instantiate_scene_file(scene, scene_file, mesh_bindings, {}, out_mesh_entities);
+}
+
+SceneFileInstantiateResult instantiate_scene_file(
+    Scene& scene,
+    const SceneFileView& scene_file,
+    std::span<const SceneMeshBinding> mesh_bindings,
+    std::span<const SceneMaterialBinding> material_bindings,
+    std::span<Entity> out_mesh_entities) {
     SceneFileInstantiateResult result{};
     if (!scene_file.environments.empty()) {
         const SceneFileEnvironment& e = scene_file.environments[0];
@@ -280,8 +309,15 @@ SceneFileInstantiateResult instantiate_scene_file(Scene& scene,
             ++result.missing_mesh_bindings;
             continue;
         }
+        bool missing_material = false;
+        const std::string_view material_name{
+            scene_file_string(scene_file, mesh_file.material_name_offset)};
+        const ::psynder::render::MaterialId material =
+            resolve_scene_material(material_name, *it, material_bindings, missing_material);
+        if (missing_material)
+            ++result.missing_material_bindings;
         const Entity entity = scene.spawn_mesh_instance(it->mesh,
-                                                        binding_material(*it),
+                                                        material,
                                                         scene_file_transform(scene_file,
                                                                              mesh_file.transform_index),
                                                         kInvalidSceneNode,
@@ -368,6 +404,17 @@ SceneLoadRequest& SceneLoadRequest::bind_mesh(std::string_view mesh_name,
         .material = material,
     });
     binding_views_.clear();
+    material_binding_views_.clear();
+    return *this;
+}
+
+SceneLoadRequest& SceneLoadRequest::bind_material(std::string_view material_name,
+                                                  ::psynder::render::MaterialId material) {
+    owned_material_bindings_.push_back(OwnedMaterialBinding{
+        .material_name = std::string{material_name},
+        .material = material,
+    });
+    material_binding_views_.clear();
     return *this;
 }
 
@@ -436,12 +483,21 @@ bool SceneLoadRequest::update(Scene& scene, SceneLoadRuntimeHooks hooks) {
     SceneFileInstantiateResult instantiate{};
     {
         const ScopedImmediateStructural structural_scope{scene};
-        instantiate = instantiate_scene_file(scene, view, binding_views_, mesh_entities_);
+        instantiate = instantiate_scene_file(scene,
+                                             view,
+                                             binding_views_,
+                                             material_binding_views_,
+                                             mesh_entities_);
     }
     if (instantiate.missing_mesh_bindings != 0u) {
         PSY_LOG_WARN("{}: {} cooked mesh binding(s) were missing",
                      virtual_path_.empty() ? "psyscene" : virtual_path_,
                      instantiate.missing_mesh_bindings);
+    }
+    if (instantiate.missing_material_bindings != 0u) {
+        PSY_LOG_WARN("{}: {} cooked material binding(s) were missing",
+                     virtual_path_.empty() ? "psyscene" : virtual_path_,
+                     instantiate.missing_material_bindings);
     }
 
     base_transforms_.resize(view.mesh_instances.size());
@@ -474,6 +530,14 @@ void SceneLoadRequest::rebuild_binding_views() {
         binding_views_.push_back(SceneMeshBinding{
             .mesh_name = binding.mesh_name,
             .mesh = binding.mesh,
+            .material = binding.material,
+        });
+    }
+    material_binding_views_.clear();
+    material_binding_views_.reserve(owned_material_bindings_.size());
+    for (const OwnedMaterialBinding& binding : owned_material_bindings_) {
+        material_binding_views_.push_back(SceneMaterialBinding{
+            .material_name = binding.material_name,
             .material = binding.material,
         });
     }

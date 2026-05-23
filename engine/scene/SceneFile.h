@@ -105,10 +105,16 @@ struct SceneMeshBinding {
     ::psynder::render::MaterialId material{};
 };
 
+struct SceneMaterialBinding {
+    std::string_view material_name;
+    ::psynder::render::MaterialId material{};
+};
+
 struct SceneFileInstantiateResult {
     u32 cameras = 0u;
     u32 mesh_instances = 0u;
     u32 missing_mesh_bindings = 0u;
+    u32 missing_material_bindings = 0u;
 };
 
 [[nodiscard]] bool parse_scene_file(std::span<const u8> bytes,
@@ -126,6 +132,12 @@ struct SceneFileInstantiateResult {
     Scene& scene,
     const SceneFileView& scene_file,
     std::span<const SceneMeshBinding> mesh_bindings,
+    std::span<Entity> out_mesh_entities = {});
+[[nodiscard]] SceneFileInstantiateResult instantiate_scene_file(
+    Scene& scene,
+    const SceneFileView& scene_file,
+    std::span<const SceneMeshBinding> mesh_bindings,
+    std::span<const SceneMaterialBinding> material_bindings,
     std::span<Entity> out_mesh_entities = {});
 
 namespace scene_file_detail {
@@ -199,7 +211,9 @@ class SceneLoadRequest {
 
     SceneLoadRequest& bind_mesh(std::string_view mesh_name,
                                 ::psynder::render::MeshId mesh,
-                                ::psynder::render::MaterialId material);
+                                ::psynder::render::MaterialId material = {});
+    SceneLoadRequest& bind_material(std::string_view material_name,
+                                    ::psynder::render::MaterialId material);
     SceneLoadRequest& on_progress(ProgressCallback callback);
     SceneLoadRequest& on_ready(ReadyCallback callback);
     SceneLoadRequest& on_error(ErrorCallback callback);
@@ -224,6 +238,10 @@ class SceneLoadRequest {
         ::psynder::render::MeshId mesh{};
         ::psynder::render::MaterialId material{};
     };
+    struct OwnedMaterialBinding {
+        std::string material_name;
+        ::psynder::render::MaterialId material{};
+    };
 
     void emit_progress(SceneLoadStage stage, f32 fraction);
     void rebuild_binding_views();
@@ -232,7 +250,9 @@ class SceneLoadRequest {
     SceneFileRequest file_request_{};
     SceneFileLoaded scene_file_{};
     std::vector<OwnedMeshBinding> owned_bindings_{};
+    std::vector<OwnedMaterialBinding> owned_material_bindings_{};
     std::vector<SceneMeshBinding> binding_views_{};
+    std::vector<SceneMaterialBinding> material_binding_views_{};
     std::vector<Entity> mesh_entities_{};
     std::vector<LocalTransform> base_transforms_{};
     SceneLoadResult result_{};
