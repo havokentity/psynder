@@ -10,6 +10,7 @@
 
 #include "Bindings.h"
 #include "Registry.h"
+#include "WorldState.h"
 
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic push
@@ -36,61 +37,6 @@ extern "C" {
 namespace psynder::script::detail {
 
 namespace {
-
-// ─── Per-VM state stashed on the Lua registry ────────────────────────────
-constexpr const char* kRegistryKey = "psynder.script.registry";
-constexpr const char* kComponentStorage = "psynder.script.components";
-constexpr const char* kEntityCounter = "psynder.script.next_entity";
-
-ScriptRegistry* fetch_registry(lua_State* L) {
-    lua_getfield(L, LUA_REGISTRYINDEX, kRegistryKey);
-    void* p = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return static_cast<ScriptRegistry*>(p);
-}
-
-// Push a fresh per-component storage table onto the stack and stash it on
-// the registry. Returns the table reference for retrieval via the storage
-// key.
-void ensure_component_storage(lua_State* L) {
-    lua_getfield(L, LUA_REGISTRYINDEX, kComponentStorage);
-    if (lua_isnil(L, -1)) {
-        lua_pop(L, 1);
-        lua_newtable(L);
-        lua_setfield(L, LUA_REGISTRYINDEX, kComponentStorage);
-    } else {
-        lua_pop(L, 1);
-    }
-}
-
-void push_component_storage(lua_State* L) {
-    lua_getfield(L, LUA_REGISTRYINDEX, kComponentStorage);
-}
-
-// Per-component table accessor: storage[component_id] -> array of {entity=,data=}
-void push_component_array(lua_State* L, scene::ComponentId id) {
-    push_component_storage(L);  // storage
-    lua_pushinteger(L, lua_Integer(id));
-    lua_gettable(L, -2);  // storage, arr_or_nil
-    if (lua_isnil(L, -1)) {
-        lua_pop(L, 1);    // storage
-        lua_newtable(L);  // storage, new_arr
-        lua_pushinteger(L, lua_Integer(id));
-        lua_pushvalue(L, -2);  // storage, new_arr, id, new_arr
-        lua_settable(L, -4);   // storage, new_arr
-    }
-    lua_remove(L, -2);  // arr
-}
-
-u64 next_entity_id(lua_State* L) {
-    lua_getfield(L, LUA_REGISTRYINDEX, kEntityCounter);
-    lua_Integer cur = lua_isinteger(L, -1) ? lua_tointeger(L, -1) : 0;
-    lua_pop(L, 1);
-    cur += 1;
-    lua_pushinteger(L, cur);
-    lua_setfield(L, LUA_REGISTRYINDEX, kEntityCounter);
-    return static_cast<u64>(cur);
-}
 
 // Helper: read the `reads` / `writes` list off a config table at index `t`.
 // Field is an array of string component names. Each string is registered
@@ -134,7 +80,7 @@ bool extract_id_list(lua_State* L,
 int l_world_component(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);  // self
     const char* name = luaL_checkstring(L, 2);
-    ScriptRegistry* reg = fetch_registry(L);
+    ScriptRegistry* reg = fetch_world_registry(L);
     if (!reg) {
         return luaL_error(L, "world: registry missing");
     }
@@ -149,7 +95,7 @@ int l_world_register_system(lua_State* L) {
     luaL_checktype(L, 2, LUA_TTABLE);  // config
     luaL_checktype(L, 3, LUA_TFUNCTION);
 
-    ScriptRegistry* reg = fetch_registry(L);
+    ScriptRegistry* reg = fetch_world_registry(L);
     if (!reg) {
         return luaL_error(L, "world: registry missing");
     }
@@ -185,38 +131,15 @@ int l_world_create_entity(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);  // self
     luaL_checktype(L, 2, LUA_TTABLE);  // components
 
-    ScriptRegistry* reg = fetch_registry(L);
+    ScriptRegistry* reg = fetch_world_registry(L);
     if (!reg) {
         return luaL_error(L, "world: registry missing");
     }
 
-    const u64 entity_id = next_entity_id(L);
-
-    // For each k,v in the components table: register the component name and
-    // append {entity=entity_id, data=v} to the per-component array.
-    lua_pushnil(L);  // first key
-    while (lua_next(L, 2) != 0) {
-        // -2: key (component name), -1: value (component data table)
-        if (!lua_isstring(L, -2) || !lua_istable(L, -1)) {
-            lua_pop(L, 2);
-            return luaL_error(L, "create_entity: components must be {Name = {field=val}, ...}");
-        }
-        std::size_t len = 0;
-        const char* name = lua_tolstring(L, -2, &len);
-        scene::ComponentId cid = reg->register_or_get(std::string_view(name, len));
-
-        push_component_array(L, cid);  // ..., key, value, arr
-        // Build entry: {entity=entity_id, data=value (deep copied via ref)}
-        lua_newtable(L);  // ..., key, value, arr, entry
-        lua_pushinteger(L, lua_Integer(entity_id));
-        lua_setfield(L, -2, "entity");
-        lua_pushvalue(L, -3);  // copy value to top
-        lua_setfield(L, -2, "data");
-        lua_Integer n = luaL_len(L, -2);
-        lua_seti(L, -2, n + 1);  // arr[n+1] = entry
-        lua_pop(L, 1);           // pop arr
-        // Pop value, leave key for next iteration.
-        lua_pop(L, 1);
+    const u64 entity_id = next_script_entity_id(L);
+    std::string error;
+    if (!append_component_bag(L, *reg, lua_Integer(entity_id), 2, {}, error)) {
+        return luaL_error(L, "create_entity: %s", error.c_str());
     }
 
     lua_pushinteger(L, lua_Integer(entity_id));
@@ -228,7 +151,7 @@ int l_world_create_entity(lua_State* L) {
 int l_world_run_systems(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     f64 dt = luaL_optnumber(L, 2, 0.0);
-    ScriptRegistry* reg = fetch_registry(L);
+    ScriptRegistry* reg = fetch_world_registry(L);
     if (!reg) {
         return luaL_error(L, "world: registry missing");
     }
@@ -241,7 +164,7 @@ int l_world_run_systems(lua_State* L) {
 
 // world:system_count() -> n. Convenience for tests / introspection.
 int l_world_system_count(lua_State* L) {
-    ScriptRegistry* reg = fetch_registry(L);
+    ScriptRegistry* reg = fetch_world_registry(L);
     if (!reg) {
         return luaL_error(L, "world: registry missing");
     }
@@ -261,9 +184,7 @@ const luaL_Reg kWorldMethods[] = {{"component", l_world_component},
 void install_world_api(lua_State* L, ScriptRegistry* registry) {
     // Stash the registry pointer on Lua's registry so binding C closures
     // can recover it without a global.
-    lua_pushlightuserdata(L, registry);
-    lua_setfield(L, LUA_REGISTRYINDEX, kRegistryKey);
-
+    stash_world_registry(L, registry);
     ensure_component_storage(L);
 
     // Build the `world` table with methods. We deliberately do NOT install

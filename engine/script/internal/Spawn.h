@@ -31,10 +31,11 @@ extern "C" {
 
 namespace psynder::script::detail {
 
-// Adds `world:spawn(archetype_name, kv_table)` to the existing `world`
-// global. Pre-conditions: `install_world_api` has already been called on
-// `L`, so the `world` table exists at global scope. The function looks up
-// `world`, sets the `spawn` field on it to a C closure, and returns.
+// Adds `world:spawn(archetype_name, kv_table)` and
+// `world:spawn_prop(prop_id, options)` to the existing `world` global.
+// Pre-conditions: `install_world_api` has already been called on `L`, so
+// the `world` table exists at global scope. The function looks up `world`,
+// extends it with C closures, and returns.
 //
 // The closure's behaviour:
 //   - First argument is the archetype name (string). Validated as string.
@@ -46,6 +47,11 @@ namespace psynder::script::detail {
 //   - Returns the entity handle as an integer (matching the existing
 //     `create_entity` shape so script-side code can treat the two
 //     interchangeably).
+//
+// `spawn_prop` is the VM-side half of the editor prop-spawn path. It creates
+// a real entity handle and records a script-visible `Prop = {id=...}` bag,
+// plus optional Position/components overrides. Resolving prop ids to prefab
+// assets and attaching real typed scene components remains cross-lane work.
 void register_spawn_binding(lua_State* L);
 
 }  // namespace psynder::script::detail

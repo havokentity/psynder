@@ -7,6 +7,7 @@
 #include "Spawn.h"
 
 #include "Registry.h"
+#include "WorldState.h"
 
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic push
@@ -21,10 +22,8 @@ extern "C" {
 #pragma GCC diagnostic pop
 #endif
 
-#include "core/Log.h"
 #include "scene/EcsRegistry.h"
 
-#include <cstring>
 #include <string>
 #include <string_view>
 
@@ -32,44 +31,48 @@ namespace psynder::script::detail {
 
 namespace {
 
-// Registry keys — must match the keys used in Bindings.cpp so the two
-// entry points share state. Re-declared here rather than #include'd from
-// Bindings.cpp because the latter keeps these in an anonymous namespace.
-constexpr const char* kRegistryKey = "psynder.script.registry";
-constexpr const char* kComponentStorage = "psynder.script.components";
-
-ScriptRegistry* fetch_registry(lua_State* L) {
-    lua_getfield(L, LUA_REGISTRYINDEX, kRegistryKey);
-    void* p = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-    return static_cast<ScriptRegistry*>(p);
-}
-
-void push_component_storage(lua_State* L) {
-    lua_getfield(L, LUA_REGISTRYINDEX, kComponentStorage);
-    if (lua_isnil(L, -1)) {
-        // The Vm should have initialised storage during install_world_api,
-        // but be defensive: create it on the fly if absent so a script lane
-        // unit test that pokes spawn directly does not crash.
-        lua_pop(L, 1);
-        lua_newtable(L);
-        lua_pushvalue(L, -1);
-        lua_setfield(L, LUA_REGISTRYINDEX, kComponentStorage);
+bool create_engine_entity(lua_State* L, const char* caller, ::psynder::Entity& entity) {
+    entity = scene::EcsRegistry::Get().create();
+    if (!entity.valid()) {
+        luaL_error(L, "%s: scene::EcsRegistry::create failed", caller);
+        return false;
     }
+    return true;
 }
 
-void push_component_array(lua_State* L, scene::ComponentId id) {
-    push_component_storage(L);  // storage
-    lua_pushinteger(L, lua_Integer(id));
-    lua_gettable(L, -2);  // storage, arr_or_nil
-    if (lua_isnil(L, -1)) {
-        lua_pop(L, 1);
-        lua_newtable(L);
-        lua_pushinteger(L, lua_Integer(id));
+void copy_table_entries(lua_State* L, int source_index, int dest_index) {
+    const int source_abs = lua_absindex(L, source_index);
+    const int dest_abs = lua_absindex(L, dest_index);
+    lua_pushnil(L);
+    while (lua_next(L, source_abs) != 0) {
         lua_pushvalue(L, -2);
-        lua_settable(L, -4);
+        lua_insert(L, -2);
+        lua_settable(L, dest_abs);
     }
-    lua_remove(L, -2);  // arr
+}
+
+bool copy_position(lua_State* L, int options_index, int dest_index) {
+    const int options_abs = lua_absindex(L, options_index);
+    const int dest_abs = lua_absindex(L, dest_index);
+    lua_getfield(L, options_abs, "position");
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        return true;
+    }
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return false;
+    }
+    lua_newtable(L);
+    lua_geti(L, -2, 1);
+    lua_setfield(L, -2, "x");
+    lua_geti(L, -2, 2);
+    lua_setfield(L, -2, "y");
+    lua_geti(L, -2, 3);
+    lua_setfield(L, -2, "z");
+    lua_setfield(L, dest_abs, "Position");
+    lua_pop(L, 1);
+    return true;
 }
 
 // world:spawn(archetype_name, kv_table) -> integer entity raw handle
@@ -78,50 +81,91 @@ int l_world_spawn(lua_State* L) {
     const char* archetype = luaL_checkstring(L, 2);
     luaL_checktype(L, 3, LUA_TTABLE);  // kv table
 
-    ScriptRegistry* reg = fetch_registry(L);
+    ScriptRegistry* reg = fetch_world_registry(L);
     if (!reg) {
         return luaL_error(L, "world:spawn: registry missing");
     }
 
-    // Allocate a real engine entity. The shared `scene::EcsRegistry::Get()` is the
-    // ground truth — handle.raw is non-zero when the entity is valid.
-    // (`Entity` lives in the top-level psynder namespace, not psynder::scene.)
-    ::psynder::Entity entity = scene::EcsRegistry::Get().create();
-    if (!entity.valid()) {
-        return luaL_error(L, "world:spawn: scene::EcsRegistry::create failed");
+    ::psynder::Entity entity;
+    if (!create_engine_entity(L, "world:spawn", entity)) {
+        return 0;
     }
+
+    std::string error;
     const lua_Integer entity_raw = static_cast<lua_Integer>(entity.raw);
-
-    // Record archetype + the per-component bag in the storage table so
-    // DOTS systems see the spawned entity. The wire format mirrors
-    // `create_entity`: per-component array of `{ entity = raw, data = {...} }`.
-    lua_pushnil(L);
-    while (lua_next(L, 3) != 0) {
-        // -2: key (component name), -1: value (component data table)
-        if (!lua_isstring(L, -2) || !lua_istable(L, -1)) {
-            lua_pop(L, 2);
-            return luaL_error(L, "world:spawn: kv must be {Name = {field=val}, ...}");
-        }
-        std::size_t len = 0;
-        const char* name = lua_tolstring(L, -2, &len);
-        scene::ComponentId cid = reg->register_or_get(std::string_view(name, len));
-
-        push_component_array(L, cid);  // ..., key, value, arr
-        lua_newtable(L);               // ..., key, value, arr, entry
-        lua_pushinteger(L, entity_raw);
-        lua_setfield(L, -2, "entity");
-        lua_pushvalue(L, -3);
-        lua_setfield(L, -2, "data");
-        lua_pushstring(L, archetype);
-        lua_setfield(L, -2, "archetype");
-        lua_Integer n = luaL_len(L, -2);
-        lua_seti(L, -2, n + 1);
-        lua_pop(L, 1);  // pop arr
-        lua_pop(L, 1);  // pop value, keep key
+    if (!append_component_bag(L, *reg, entity_raw, 3, archetype, error)) {
+        return luaL_error(L, "world:spawn: %s", error.c_str());
     }
 
-    // Intentionally silent on the hot spawn path — lane 19 / editor tooling
-    // is the natural place to surface spawn telemetry once available.
+    lua_pushinteger(L, entity_raw);
+    return 1;
+}
+
+// world:spawn_prop(prop_id[, { position={x,y,z}, components={...} }]) -> entity
+int l_world_spawn_prop(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const char* prop_id = luaL_checkstring(L, 2);
+    if (!lua_isnoneornil(L, 3)) {
+        luaL_checktype(L, 3, LUA_TTABLE);
+    }
+
+    ScriptRegistry* reg = fetch_world_registry(L);
+    if (!reg) {
+        return luaL_error(L, "world:spawn_prop: registry missing");
+    }
+
+    lua_newtable(L);
+    const int components = lua_gettop(L);
+
+    lua_newtable(L);
+    lua_pushstring(L, prop_id);
+    lua_setfield(L, -2, "id");
+    lua_setfield(L, components, "Prop");
+
+    if (!lua_isnoneornil(L, 3)) {
+        lua_getfield(L, 3, "components");
+        if (!lua_isnil(L, -1)) {
+            if (!lua_istable(L, -1)) {
+                lua_pop(L, 2);
+                return luaL_error(L, "world:spawn_prop: components must be a table");
+            }
+            copy_table_entries(L, -1, components);
+        }
+        lua_pop(L, 1);
+
+        lua_getfield(L, 3, "overrides");
+        if (!lua_isnil(L, -1)) {
+            if (!lua_istable(L, -1)) {
+                lua_pop(L, 2);
+                return luaL_error(L, "world:spawn_prop: overrides must be a table");
+            }
+            copy_table_entries(L, -1, components);
+        }
+        lua_pop(L, 1);
+
+        if (!copy_position(L, 3, components)) {
+            lua_pop(L, 1);
+            return luaL_error(L, "world:spawn_prop: position must be an array table");
+        }
+    }
+
+    ::psynder::Entity entity;
+    if (!create_engine_entity(L, "world:spawn_prop", entity)) {
+        lua_pop(L, 1);
+        return 0;
+    }
+
+    std::string archetype = "prop:";
+    archetype += prop_id;
+    std::string error;
+    const lua_Integer entity_raw = static_cast<lua_Integer>(entity.raw);
+    if (!append_component_bag(L, *reg, entity_raw, components, archetype, error)) {
+        lua_pop(L, 1);
+        return luaL_error(L, "world:spawn_prop: %s", error.c_str());
+    }
+
+    lua_pop(L, 1);
+
     lua_pushinteger(L, entity_raw);
     return 1;
 }
@@ -139,6 +183,8 @@ void register_spawn_binding(lua_State* L) {
     }
     lua_pushcfunction(L, l_world_spawn);
     lua_setfield(L, -2, "spawn");
+    lua_pushcfunction(L, l_world_spawn_prop);
+    lua_setfield(L, -2, "spawn_prop");
     lua_pop(L, 1);  // pop world table
 }
 
