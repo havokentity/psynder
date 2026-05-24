@@ -275,7 +275,7 @@ void merge_modifier_keys(NSEvent* event) {
     }
 }
 
-bool command_shortcut_key(KeyCode k) noexcept {
+bool console_shortcut_key(KeyCode k) noexcept {
     switch (k) {
         case KeyCode::A:
         case KeyCode::C:
@@ -287,8 +287,12 @@ bool command_shortcut_key(KeyCode k) noexcept {
     }
 }
 
-KeyCode command_shortcut_from_event(NSEvent* event) {
-    if (([event modifierFlags] & NSEventModifierFlagCommand) == 0)
+bool console_shortcut_modifier(NSEventModifierFlags flags) noexcept {
+    return (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) != 0;
+}
+
+KeyCode console_shortcut_from_event(NSEvent* event) {
+    if (!console_shortcut_modifier([event modifierFlags]))
         return KeyCode::Unknown;
     NSString* chars = [[event charactersIgnoringModifiers] lowercaseString];
     if (chars == nil || [chars length] == 0)
@@ -305,19 +309,19 @@ KeyCode command_shortcut_from_event(NSEvent* event) {
 void handle_key_down_event(NSEvent* event) {
     merge_modifier_keys(event);
     KeyCode key = translate_key([event keyCode]);
-    const KeyCode command_key = command_shortcut_from_event(event);
-    if (command_key != KeyCode::Unknown)
-        key = command_key;
+    const KeyCode shortcut_key = console_shortcut_from_event(event);
+    if (shortcut_key != KeyCode::Unknown)
+        key = shortcut_key;
     mac_input().on_key(key, true);
     forward_appkit_function_keys(event, true);
 
     // Text entry for the software console overlay. -characters is already
     // mapped through the active keyboard layout + Shift, so we get '@' for
-    // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command
-    // chords (those are shortcuts, not text) and C0/DEL control codes — the
-    // console reads Enter/Backspace/arrows via key_pressed instead.
-    if (([event modifierFlags] & NSEventModifierFlagCommand) != 0) {
-        if (command_shortcut_key(key))
+    // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command/
+    // Control chords (those are shortcuts, not text) and C0/DEL control codes
+    // — the console reads Enter/Backspace/arrows via key_pressed instead.
+    if (console_shortcut_modifier([event modifierFlags])) {
+        if (console_shortcut_key(key))
             mac_input().on_key(key, false);
         return;
     }
@@ -351,7 +355,7 @@ void handle_key_down_event(NSEvent* event) {
 bool handle_key_equivalent_event(NSEvent* event) {
     if ([event type] != NSEventTypeKeyDown)
         return false;
-    if (!command_shortcut_key(command_shortcut_from_event(event)))
+    if (!console_shortcut_key(console_shortcut_from_event(event)))
         return false;
     handle_key_down_event(event);
     return true;
