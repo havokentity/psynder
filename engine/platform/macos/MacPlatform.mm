@@ -289,6 +289,72 @@ bool command_shortcut_key(KeyCode k) noexcept {
     }
 }
 
+void handle_key_down_event(NSEvent* event) {
+    merge_modifier_keys(event);
+    const KeyCode key = translate_key([event keyCode]);
+    mac_input().on_key(key, true);
+    forward_appkit_function_keys(event, true);
+
+    // Text entry for the software console overlay. -characters is already
+    // mapped through the active keyboard layout + Shift, so we get '@' for
+    // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command
+    // chords (those are shortcuts, not text) and C0/DEL control codes — the
+    // console reads Enter/Backspace/arrows via key_pressed instead.
+    if (([event modifierFlags] & NSEventModifierFlagCommand) != 0) {
+        if (command_shortcut_key(key))
+            mac_input().on_key(key, false);
+        return;
+    }
+    NSString* chars = [event characters];
+    const NSUInteger n = [chars length];
+    for (NSUInteger i = 0; i < n;) {
+        const unichar c = [chars characterAtIndex:i];
+        uint32_t cp = c;
+        // Recombine a UTF-16 surrogate pair into one scalar value.
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+            const unichar lo = [chars characterAtIndex:i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000u + ((static_cast<uint32_t>(c) - 0xD800u) << 10) +
+                     (static_cast<uint32_t>(lo) - 0xDC00u);
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+        // Drop C0 controls + DEL, and AppKit's function-key encodings
+        // (arrows, Delete, Home/End, F-keys, ...) which it reports in the
+        // U+F700..U+F8FF private-use block — those are NOT text and would
+        // otherwise insert missing-glyph boxes into the console prompt.
+        if (cp >= 0x20 && cp != 0x7F && !(cp >= 0xF700 && cp <= 0xF8FF))
+            mac_input().on_text(cp);
+    }
+}
+
+void handle_key_up_event(NSEvent* event) {
+    merge_modifier_keys(event);
+    mac_input().on_key(translate_key([event keyCode]), false);
+    forward_appkit_function_keys(event, false);
+    release_physical_navigation_aliases([event keyCode]);
+}
+
+bool handle_keyboard_event(NSEvent* event) {
+    switch ([event type]) {
+        case NSEventTypeKeyDown:
+            handle_key_down_event(event);
+            return true;
+        case NSEventTypeKeyUp:
+            handle_key_up_event(event);
+            return true;
+        case NSEventTypeFlagsChanged:
+            sync_modifier_keys(event);
+            return true;
+        default:
+            return false;
+    }
+}
+
 // ─── NSApp lazy bootstrap ────────────────────────────────────────────────
 // AppKit must be initialised on the main thread before any NSWindow is
 // constructed. Idempotent so re-entering create_window from samples that
@@ -486,56 +552,13 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 
 // ── Keyboard ─────────────────────────────────────────────────────────────
 - (void)keyDown:(NSEvent*)event {
-    psynder::platform::merge_modifier_keys(event);
-    const psynder::platform::KeyCode key = psynder::platform::translate_key([event keyCode]);
-    psynder::platform::mac_input().on_key(key, true);
-    psynder::platform::forward_appkit_function_keys(event, true);
-
-    // Text entry for the software console overlay. -characters is already
-    // mapped through the active keyboard layout + Shift, so we get '@' for
-    // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command
-    // chords (those are shortcuts, not text) and C0/DEL control codes — the
-    // console reads Enter/Backspace/arrows via key_pressed instead.
-    if (([event modifierFlags] & NSEventModifierFlagCommand) != 0) {
-        if (psynder::platform::command_shortcut_key(key))
-            psynder::platform::mac_input().on_key(key, false);
-        return;
-    }
-    NSString* chars = [event characters];
-    const NSUInteger n = [chars length];
-    for (NSUInteger i = 0; i < n;) {
-        const unichar c = [chars characterAtIndex:i];
-        uint32_t cp = c;
-        // Recombine a UTF-16 surrogate pair into one scalar value.
-        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
-            const unichar lo = [chars characterAtIndex:i + 1];
-            if (lo >= 0xDC00 && lo <= 0xDFFF) {
-                cp = 0x10000u + ((static_cast<uint32_t>(c) - 0xD800u) << 10) +
-                     (static_cast<uint32_t>(lo) - 0xDC00u);
-                i += 2;
-            } else {
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
-        // Drop C0 controls + DEL, and AppKit's function-key encodings
-        // (arrows, Delete, Home/End, F-keys, ...) which it reports in the
-        // U+F700..U+F8FF private-use block — those are NOT text and would
-        // otherwise insert missing-glyph boxes into the console prompt.
-        if (cp >= 0x20 && cp != 0x7F && !(cp >= 0xF700 && cp <= 0xF8FF))
-            psynder::platform::mac_input().on_text(cp);
-    }
+    psynder::platform::handle_key_down_event(event);
 }
 - (void)keyUp:(NSEvent*)event {
-    psynder::platform::merge_modifier_keys(event);
-    psynder::platform::mac_input().on_key(
-        psynder::platform::translate_key([event keyCode]), false);
-    psynder::platform::forward_appkit_function_keys(event, false);
-    psynder::platform::release_physical_navigation_aliases([event keyCode]);
+    psynder::platform::handle_key_up_event(event);
 }
 - (void)flagsChanged:(NSEvent*)event {
-    psynder::platform::sync_modifier_keys(event);
+    psynder::platform::handle_keyboard_event(event);
 }
 
 // ── Mouse ────────────────────────────────────────────────────────────────
@@ -676,7 +699,8 @@ public:
                                            untilDate:[NSDate distantPast]
                                               inMode:NSDefaultRunLoopMode
                                              dequeue:YES];
-                if (event) [NSApp sendEvent:event];
+                if (event && !handle_keyboard_event(event))
+                    [NSApp sendEvent:event];
             } while (event);
             [NSApp updateWindows];
 
