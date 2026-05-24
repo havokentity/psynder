@@ -534,6 +534,52 @@ TEST_CASE("ipc: stats frame carries software render sections", "[ipc][stats][ser
     sock_close(s);
 }
 
+TEST_CASE("ipc: profiler stat broadcast tolerates workbench subscriptions", "[ipc][stats][server]") {
+    ServerGuard guard;
+    auto port = pick_port();
+    ServerDesc desc;
+    desc.bind_host = "127.0.0.1";
+    desc.port = port;
+    desc.require_session_token = true;
+    auto& srv = *guard.srv;
+    REQUIRE(srv.start(desc));
+    const std::string tok = srv.session_token();
+
+    proto::Welcome welcome;
+    std::vector<::psynder::u8> tail;
+    sock_t s = open_panel(port, tok, welcome, tail);
+    REQUIRE(sock_valid(s));
+
+    client_subscribe(s, "profiler");
+    client_subscribe(s, "stats");
+    client_subscribe(s, "perf");
+    wait_for_subscriptions();
+
+    const StatsSection sections[] = {
+        {"host/frame", 16.0f},
+        {"render", 3.0f},
+    };
+    for (::psynder::u32 i = 0; i < 300u; ++i) {
+        srv.broadcast_stats_tick(StatsTick{
+            i,
+            16.0f,
+            3.0f,
+            2u,
+            1u,
+            std::span<const StatsSection>{sections},
+        });
+    }
+
+    auto pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r(pl.data(), pl.size());
+    ::psynder::u16 op = 0;
+    REQUIRE(r.u16_(op));
+    REQUIRE(op == proto::opcodes::kStatsFrame);
+
+    sock_close(s);
+}
+
 TEST_CASE("ipc: schema bump stays back-compat", "[ipc][schema]") {
     ServerGuard guard;
     auto port = pick_port();

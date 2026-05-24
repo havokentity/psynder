@@ -37,6 +37,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -92,6 +93,16 @@ constexpr std::string_view kPanelIndexName = "index.html";
 constexpr std::string_view kLegacyChannelProfiler = "profiler";
 constexpr std::string_view kLegacyChannelSchema = "schema";
 constexpr std::size_t kMaxOutboundFramesPerConnection = 256;
+
+void warn_noexcept(const char* message) noexcept {
+    try {
+        PSY_LOG_WARN("{}", message);
+    } catch (...) {
+        std::fputs("[warn] ", stderr);
+        std::fputs(message, stderr);
+        std::fputc('\n', stderr);
+    }
+}
 
 ::psynder::console::ExecuteResult dispatch_editor_console(std::string_view text,
                                                           std::string_view mode,
@@ -706,13 +717,13 @@ void Server::enqueue(Connection& conn, std::vector<::psynder::u8> frame) {
         while (conn.out_queue.size() >= kMaxOutboundFramesPerConnection)
             conn.out_queue.pop_front();
         conn.out_queue.emplace_back(std::move(frame));
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
         conn.alive.store(false);
-        PSY_LOG_WARN("editor-ipc: dropping outbound frame after enqueue failure: {}", e.what());
+        warn_noexcept("editor-ipc: dropping outbound frame after enqueue failure");
         return;
     } catch (...) {
         conn.alive.store(false);
-        PSY_LOG_WARN("editor-ipc: dropping outbound frame after unknown enqueue failure");
+        warn_noexcept("editor-ipc: dropping outbound frame after unknown enqueue failure");
         return;
     }
     conn.out_cv.notify_all();
@@ -951,10 +962,10 @@ void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> 
                                         }),
                          conns_.end());
         }
-    } catch (const std::exception& e) {
-        PSY_LOG_WARN("editor-ipc: broadcast '{}' dropped after exception: {}", channel, e.what());
+    } catch (const std::exception&) {
+        warn_noexcept("editor-ipc: broadcast dropped after exception");
     } catch (...) {
-        PSY_LOG_WARN("editor-ipc: broadcast '{}' dropped after unknown exception", channel);
+        warn_noexcept("editor-ipc: broadcast dropped after unknown exception");
     }
 }
 
@@ -978,10 +989,10 @@ bool Server::has_subscribers(std::string_view channel) {
                     return true;
             }
         }
-    } catch (const std::exception& e) {
-        PSY_LOG_WARN("editor-ipc: subscriber check '{}' failed: {}", channel, e.what());
+    } catch (const std::exception&) {
+        warn_noexcept("editor-ipc: subscriber check failed after exception");
     } catch (...) {
-        PSY_LOG_WARN("editor-ipc: subscriber check '{}' failed with unknown exception", channel);
+        warn_noexcept("editor-ipc: subscriber check failed after unknown exception");
     }
     return false;
 }
@@ -1137,38 +1148,51 @@ void Server::stop() {
 }
 
 void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> msgpack_payload) {
-    internal::Server::Get().broadcast(channel, msgpack_payload);
+    try {
+        internal::Server::Get().broadcast(channel, msgpack_payload);
+    } catch (...) {
+        internal::warn_noexcept("editor-ipc: public broadcast dropped after exception");
+    }
 }
 
 void Server::broadcast_stats_tick(const StatsTick& tick) {
-    msgpack::Writer w;
-    w.u16_(proto::opcodes::kStatsFrame);
-    w.map_header(6);
-    w.str("frame");
-    w.u64_(tick.frame_index);
-    w.str("cpu_ms");
-    w.f32_(tick.cpu_ms);
-    w.str("render_ms");
-    w.f32_(tick.render_ms);
-    w.str("draw_calls");
-    w.u32_(tick.draw_calls);
-    w.str("entities");
-    w.u32_(tick.entities);
-    w.str("sections");
-    w.array_header(tick.sections.size());
-    for (const StatsSection& section : tick.sections) {
-        w.map_header(2);
-        w.str("name");
-        w.str(section.name);
-        w.str("ms");
-        w.f32_(section.ms);
+    try {
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kStatsFrame);
+        w.map_header(6);
+        w.str("frame");
+        w.u64_(tick.frame_index);
+        w.str("cpu_ms");
+        w.f32_(tick.cpu_ms);
+        w.str("render_ms");
+        w.f32_(tick.render_ms);
+        w.str("draw_calls");
+        w.u32_(tick.draw_calls);
+        w.str("entities");
+        w.u32_(tick.entities);
+        w.str("sections");
+        w.array_header(tick.sections.size());
+        for (const StatsSection& section : tick.sections) {
+            w.map_header(2);
+            w.str("name");
+            w.str(section.name);
+            w.str("ms");
+            w.f32_(section.ms);
+        }
+        internal::Server::Get().broadcast(proto::channels::kstats,
+                                          std::span<const ::psynder::u8>(w.data(), w.size()));
+    } catch (...) {
+        internal::warn_noexcept("editor-ipc: stats frame dropped after exception");
     }
-    internal::Server::Get().broadcast(proto::channels::kstats,
-                                      std::span<const ::psynder::u8>(w.data(), w.size()));
 }
 
 bool Server::has_subscribers(std::string_view channel) const {
-    return internal::Server::Get().has_subscribers(channel);
+    try {
+        return internal::Server::Get().has_subscribers(channel);
+    } catch (...) {
+        internal::warn_noexcept("editor-ipc: public subscriber check failed after exception");
+        return false;
+    }
 }
 
 void Server::pump() {
