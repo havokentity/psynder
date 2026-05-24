@@ -6,12 +6,18 @@
 #include "Platform.h"
 
 #include <chrono>
+#include <string>
 
 namespace psynder::platform {
 
 // Each platform lane provides this factory.
 Window* create_window_impl(const WindowDesc& desc);
 void destroy_window_impl(Window* w);
+
+#if defined(__APPLE__)
+std::string mac_clipboard_text_impl();
+void mac_set_clipboard_text_impl(std::string_view text);
+#endif
 
 namespace {
 // The live window (single window per process, DESIGN §11). Lets display
@@ -20,6 +26,9 @@ Window* g_active_window = nullptr;
 // Set by the software console while it's open; suppresses the backend's
 // default Escape-closes-the-window behaviour so the console owns Escape.
 bool g_text_input_capturing = false;
+#if !defined(__APPLE__)
+std::string g_clipboard_fallback;
+#endif
 }  // namespace
 
 Window* create_window(const WindowDesc& desc) {
@@ -54,6 +63,22 @@ void set_text_input_capturing(bool capturing) {
 }
 bool text_input_capturing() {
     return g_text_input_capturing;
+}
+
+std::string clipboard_text() {
+#if defined(__APPLE__)
+    return mac_clipboard_text_impl();
+#else
+    return g_clipboard_fallback;
+#endif
+}
+
+void set_clipboard_text(std::string_view text) {
+#if defined(__APPLE__)
+    mac_set_clipboard_text_impl(text);
+#else
+    g_clipboard_fallback.assign(text.data(), text.size());
+#endif
 }
 
 u64 Clock::ticks_now() {

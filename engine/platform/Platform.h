@@ -102,6 +102,8 @@ enum class KeyCode : u16 {
     Tab,
     Backspace,
     Delete,  // forward delete (Del / fn+Delete) — removes the char AT the caret
+    Home,
+    End,
     Left,
     Right,
     Up,
@@ -151,6 +153,8 @@ enum class KeyCode : u16 {
     RightCtrl,
     LeftAlt,
     RightAlt,
+    LeftSuper,
+    RightSuper,
     Count,
 };
 
@@ -182,6 +186,13 @@ class Input {
 };
 
 Input* input();
+
+// ─── Clipboard ─────────────────────────────────────────────────────────────
+// Plain text clipboard helpers for in-engine text widgets. Backends use the OS
+// clipboard when available; headless/unsupported builds fall back to a process
+// local buffer so unit tests can still exercise copy/paste behavior.
+std::string clipboard_text();
+void set_clipboard_text(std::string_view text);
 
 // ─── Timing ──────────────────────────────────────────────────────────────
 struct Clock {

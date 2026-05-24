@@ -176,6 +176,7 @@ struct State {
 
     std::string input;  // current prompt (UTF-8 bytes; ASCII is the norm)
     usize cursor = 0;   // byte index into `input`
+    usize selection_anchor = 0;
 
     std::vector<Line> scrollback;
     u32 scroll = 0;  // lines scrolled up from the newest
@@ -198,6 +199,7 @@ struct State {
     usize comp_cursor_key = static_cast<usize>(-1);
     bool comp_suppressed_until_text = false;
     bool mouse_left_prev = false;
+    bool text_dragging = false;
     u32 last_fb_w = 0;
     u32 last_fb_h = 0;
 
@@ -677,6 +679,45 @@ bool is_word_char(char c) noexcept {
     return u > ' ';  // any non-whitespace, non-control byte
 }
 
+bool selection_active(const State& s) noexcept {
+    return s.selection_anchor != s.cursor;
+}
+
+std::pair<usize, usize> selection_range(const State& s) noexcept {
+    return {std::min(s.selection_anchor, s.cursor), std::max(s.selection_anchor, s.cursor)};
+}
+
+void clear_selection(State& s) noexcept {
+    s.selection_anchor = s.cursor;
+}
+
+void clamp_editor(State& s) noexcept {
+    s.cursor = std::min(s.cursor, s.input.size());
+    s.selection_anchor = std::min(s.selection_anchor, s.input.size());
+}
+
+void move_cursor_to(State& s, usize cursor, bool extend_selection) noexcept {
+    const usize clamped = std::min(cursor, s.input.size());
+    if (!extend_selection) {
+        s.cursor = clamped;
+        clear_selection(s);
+        return;
+    }
+    if (!selection_active(s))
+        s.selection_anchor = s.cursor;
+    s.cursor = clamped;
+}
+
+bool delete_selection_if_any(State& s) noexcept {
+    if (!selection_active(s))
+        return false;
+    const auto [first, last] = selection_range(s);
+    s.input.erase(first, last - first);
+    s.cursor = first;
+    clear_selection(s);
+    return true;
+}
+
 // The whitespace-delimited token that ends at the cursor (for autocomplete).
 std::string_view token_at_cursor(const State& s) noexcept {
     usize start = s.cursor;
@@ -686,6 +727,7 @@ std::string_view token_at_cursor(const State& s) noexcept {
 }
 
 void replace_token_at_cursor(State& s, std::string_view replacement) noexcept {
+    clear_selection(s);
     usize start = s.cursor;
     while (start > 0 && is_word_char(s.input[start - 1]))
         --start;
@@ -701,6 +743,39 @@ void accept_completion(State& s, int index) noexcept {
     s.comp_items.clear();
     s.comp_sel = 0;
     s.history_pos = -1;
+    clear_selection(s);
+}
+
+std::string printable_ascii_without_toggle(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text) {
+        if (c == '`' || c == '~')
+            continue;
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u >= 0x20u && u <= 0x7Eu)
+            out.push_back(c);
+    }
+    return out;
+}
+
+void insert_text_at_cursor(State& s, std::string_view text) {
+    const std::string filtered = printable_ascii_without_toggle(text);
+    if (filtered.empty())
+        return;
+    delete_selection_if_any(s);
+    s.input.insert(s.cursor, filtered.data(), filtered.size());
+    s.cursor += filtered.size();
+    clear_selection(s);
+    s.history_pos = -1;
+    s.comp_suppressed_until_text = false;
+}
+
+void copy_selection_to_clipboard(const State& s) {
+    if (!selection_active(s))
+        return;
+    const auto [first, last] = selection_range(s);
+    platform::set_clipboard_text(std::string_view{s.input}.substr(first, last - first));
 }
 
 std::string longest_common_prefix(const std::vector<std::string>& v) noexcept {
@@ -761,8 +836,10 @@ void process_text(State& s, const platform::Input& input) noexcept {
             continue;
         char tmp[4];
         const int n = utf8_encode(cp, tmp);
+        delete_selection_if_any(s);
         s.input.insert(s.cursor, tmp, static_cast<usize>(n));
         s.cursor += static_cast<usize>(n);
+        clear_selection(s);
         s.history_pos = -1;  // typing forks off the live line
         s.comp_suppressed_until_text = false;
     }
@@ -786,6 +863,7 @@ void submit(State& s) noexcept {
 
     s.input.clear();
     s.cursor = 0;
+    clear_selection(s);
     s.history_pos = -1;
     s.scroll = 0;
     s.comp_active = false;
@@ -793,6 +871,7 @@ void submit(State& s) noexcept {
     s.comp_input_key.clear();
     s.comp_cursor_key = static_cast<usize>(-1);
     s.comp_suppressed_until_text = false;
+    s.text_dragging = false;
 }
 
 void autocomplete(State& s) noexcept {
@@ -828,6 +907,7 @@ void history_prev(State& s) noexcept {  // Up
     }
     s.input = h[static_cast<usize>(s.history_pos)];
     s.cursor = s.input.size();
+    clear_selection(s);
 }
 
 void history_next(State& s) noexcept {  // Down
@@ -842,6 +922,7 @@ void history_next(State& s) noexcept {  // Down
         s.input = s.saved_live;
     }
     s.cursor = s.input.size();
+    clear_selection(s);
 }
 
 // Edge + auto-repeat for a held editing key. Returns the number of triggers
@@ -916,6 +997,40 @@ CompletionPopupLayout completion_popup_layout(const State& s, f32 fw, f32 fh) no
     return out;
 }
 
+struct PromptLayout {
+    bool visible = false;
+    f32 text_x = 0.0f;
+    f32 text_y = 0.0f;
+    f32 text_h = 0.0f;
+    f32 hit_w = 0.0f;
+};
+
+PromptLayout prompt_layout(const State& s, f32 fw, f32 fh) noexcept {
+    PromptLayout out{};
+    if (fw <= 0.0f || fh <= 0.0f)
+        return out;
+    const f32 panel_h = std::round(s.anim * std::floor(fh * kPanelFrac));
+    if (panel_h < static_cast<f32>(kLineH))
+        return out;
+
+    const f32 prompt_y = panel_h - static_cast<f32>(kLineH) - kPad;
+    out.text_x = kPad + 2.0f * static_cast<f32>(kCharW);
+    out.text_y = prompt_y;
+    out.text_h = static_cast<f32>(kLineH);
+    out.hit_w = std::max(0.0f, fw - out.text_x - kPad);
+    out.visible = true;
+    return out;
+}
+
+usize cursor_from_mouse_x(const State& s, f32 mouse_x, const PromptLayout& layout) noexcept {
+    if (!layout.visible)
+        return s.cursor;
+    const f32 rel = std::max(0.0f, mouse_x - layout.text_x);
+    const usize local = static_cast<usize>(std::floor(
+        (rel + static_cast<f32>(kCharW) * 0.5f) / static_cast<f32>(kCharW)));
+    return std::min(local, s.input.size());
+}
+
 // Rebuild the completion popup from the current cursor token. Resets the
 // highlighted row when the token changes so a fresh prefix starts at the top.
 void refresh_completion(State& s) noexcept {
@@ -952,10 +1067,12 @@ void refresh_completion(State& s) noexcept {
 }
 
 void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept {
+    clamp_editor(s);
     refresh_completion(s);  // popup mirrors the current prompt token
 
     const platform::MouseState& mouse = input.mouse();
     const bool left_pressed = mouse.left && !s.mouse_left_prev;
+    bool popup_mouse_consumed = false;
     if (s.comp_active && s.last_fb_w > 0u && s.last_fb_h > 0u) {
         const CompletionPopupLayout layout = completion_popup_layout(
             s, static_cast<f32>(s.last_fb_w), static_cast<f32>(s.last_fb_h));
@@ -968,8 +1085,54 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
                 s.comp_sel = item_index;
                 if (left_pressed)
                     accept_completion(s, item_index);
+                popup_mouse_consumed = true;
             }
         }
+    }
+
+    const bool shift_down = input.key_down(KeyCode::LeftShift) || input.key_down(KeyCode::RightShift);
+    const bool shortcut_down = input.key_down(KeyCode::LeftCtrl) || input.key_down(KeyCode::RightCtrl) ||
+                               input.key_down(KeyCode::LeftSuper) || input.key_down(KeyCode::RightSuper);
+
+    if (left_pressed && !popup_mouse_consumed && s.last_fb_w > 0u && s.last_fb_h > 0u) {
+        const PromptLayout layout =
+            prompt_layout(s, static_cast<f32>(s.last_fb_w), static_cast<f32>(s.last_fb_h));
+        const bool over_prompt =
+            layout.visible && mouse.y >= layout.text_y - 4.0f && mouse.y <= layout.text_y + layout.text_h + 4.0f &&
+            mouse.x >= layout.text_x - 4.0f && mouse.x <= layout.text_x + layout.hit_w;
+        if (over_prompt) {
+            s.text_dragging = true;
+            move_cursor_to(s, cursor_from_mouse_x(s, mouse.x, layout), /*extend_selection*/ false);
+            s.comp_active = false;
+            s.comp_items.clear();
+        }
+    }
+    if (!mouse.left)
+        s.text_dragging = false;
+    if (s.text_dragging && !popup_mouse_consumed && s.last_fb_w > 0u && s.last_fb_h > 0u) {
+        const PromptLayout layout =
+            prompt_layout(s, static_cast<f32>(s.last_fb_w), static_cast<f32>(s.last_fb_h));
+        move_cursor_to(s, cursor_from_mouse_x(s, mouse.x, layout), /*extend_selection*/ true);
+    }
+
+    if (shortcut_down && input.key_pressed(KeyCode::A) && !s.input.empty()) {
+        s.selection_anchor = 0;
+        s.cursor = s.input.size();
+        s.comp_active = false;
+        s.comp_items.clear();
+    }
+    if (shortcut_down && input.key_pressed(KeyCode::C))
+        copy_selection_to_clipboard(s);
+    if (shortcut_down && input.key_pressed(KeyCode::X)) {
+        copy_selection_to_clipboard(s);
+        if (delete_selection_if_any(s)) {
+            s.history_pos = -1;
+            refresh_completion(s);
+        }
+    }
+    if (shortcut_down && input.key_pressed(KeyCode::V)) {
+        insert_text_at_cursor(s, platform::clipboard_text());
+        refresh_completion(s);
     }
 
     if (input.key_pressed(KeyCode::Enter))
@@ -995,6 +1158,10 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
             autocomplete(s);
         }
     }
+    if (input.key_pressed(KeyCode::Home))
+        move_cursor_to(s, 0, shift_down);
+    if (input.key_pressed(KeyCode::End))
+        move_cursor_to(s, s.input.size(), shift_down);
     // Up/Down navigate the completion list when it's showing; otherwise they
     // walk command history.
     if (input.key_pressed(KeyCode::Up)) {
@@ -1014,22 +1181,28 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         }
     }
 
-    if (key_repeat(s, input, KeyCode::Backspace, dt) && s.cursor > 0) {
-        const usize n = utf8_prev_len(s.input, s.cursor);
-        s.input.erase(s.cursor - n, n);
-        s.cursor -= n;
+    if (key_repeat(s, input, KeyCode::Backspace, dt) && (s.cursor > 0 || selection_active(s))) {
+        if (!delete_selection_if_any(s)) {
+            const usize n = utf8_prev_len(s.input, s.cursor);
+            s.input.erase(s.cursor - n, n);
+            s.cursor -= n;
+            clear_selection(s);
+        }
         s.history_pos = -1;
     }
     // Forward delete: remove the char AT the caret (the one to its right).
-    if (key_repeat(s, input, KeyCode::Delete, dt) && s.cursor < s.input.size()) {
-        const usize n = utf8_next_len(s.input, s.cursor);
-        s.input.erase(s.cursor, n);
+    if (key_repeat(s, input, KeyCode::Delete, dt) && (s.cursor < s.input.size() || selection_active(s))) {
+        if (!delete_selection_if_any(s)) {
+            const usize n = utf8_next_len(s.input, s.cursor);
+            s.input.erase(s.cursor, n);
+            clear_selection(s);
+        }
         s.history_pos = -1;
     }
     if (key_repeat(s, input, KeyCode::Left, dt) && s.cursor > 0)
-        s.cursor -= utf8_prev_len(s.input, s.cursor);
+        move_cursor_to(s, s.cursor - utf8_prev_len(s.input, s.cursor), shift_down);
     if (key_repeat(s, input, KeyCode::Right, dt) && s.cursor < s.input.size())
-        s.cursor += utf8_next_len(s.input, s.cursor);
+        move_cursor_to(s, s.cursor + utf8_next_len(s.input, s.cursor), shift_down);
 
     // Mouse wheel scrolls the scrollback (3 lines/notch). Clamp later in draw.
     const f32 wheel = input.mouse().wheel;
@@ -1206,6 +1379,16 @@ void draw(render::Framebuffer& fb) noexcept {
     // ── Prompt line: "> " + input + ghost completion + blinking caret ───────
     imm::label(math::Vec2{prompt_x, prompt_y}, ">", kColBorder);
     const f32 text_x = prompt_x + 2.0f * static_cast<f32>(kCharW);
+    if (selection_active(s)) {
+        const auto [first, last] = selection_range(s);
+        if (last > first) {
+            imm::filled_rect(math::Vec2{text_x + static_cast<f32>(first) * static_cast<f32>(kCharW),
+                                        prompt_y - 1.0f},
+                             math::Vec2{static_cast<f32>(last - first) * static_cast<f32>(kCharW),
+                                        static_cast<f32>(kLineH)},
+                             rgba(0x2A, 0x3A, 0x5A));
+        }
+    }
     imm::label(math::Vec2{text_x, prompt_y}, s.input, kColInput);
 
     // Ghost: remainder of the HIGHLIGHTED completion, inline past the cursor

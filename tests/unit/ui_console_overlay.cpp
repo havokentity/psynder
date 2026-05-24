@@ -397,6 +397,83 @@ TEST_CASE("console: forward Delete removes the char at the caret", "[ui][console
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: Home and End move the prompt caret", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_home_end_val", "0", "home/end test cvar");
+    con.SetCVarOverride("con_home_end_val", "0");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type(" 4");
+    tick(in);
+    in.press(KeyCode::Home);
+    tick(in);
+    in.type("con_home_end_val");
+    tick(in);
+    in.press(KeyCode::End);
+    tick(in);
+    in.type("2");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_home_end_val")->value == "42");
+
+    con.SetCVarOverride("con_home_end_val", "0");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: mouse selection supports copy and paste replacement", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(true);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_clip_val", "0", "clipboard test cvar");
+    con.SetCVarOverride("con_clip_val", "0");
+
+    const std::string old_clipboard = platform::clipboard_text();
+    std::vector<std::uint32_t> pixels;
+    render::Framebuffer fb = make_console_test_fb(pixels);
+
+    FakeInput in;
+    for (int i = 0; i < 30; ++i) {
+        ui::console::update(in, kDt);
+        in.advance_frame();
+        ui::console::draw(fb);
+    }
+
+    in.type("con_clip_val bad");
+    ui::console::update(in, kDt);
+    in.advance_frame();
+    ui::console::draw(fb);
+
+    // The prompt text starts at x=18 in the 256px test framebuffer. Select the
+    // trailing "bad" token by dragging from char 13 to char 16.
+    in.set_mouse(96.0f, 127.0f, true);
+    tick(in);
+    in.set_mouse(114.0f, 127.0f, true);
+    tick(in);
+    in.press(KeyCode::LeftCtrl);
+    in.press(KeyCode::C);
+    tick(in);
+    REQUIRE(platform::clipboard_text() == "bad");
+
+    platform::set_clipboard_text("7");
+    in.release_all();
+    in.press(KeyCode::LeftCtrl);
+    in.press(KeyCode::V);
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_clip_val")->value == "7");
+
+    platform::set_clipboard_text(old_clipboard);
+    con.SetCVarOverride("con_clip_val", "0");
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: draw into a framebuffer paints the panel without crashing", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(true);
