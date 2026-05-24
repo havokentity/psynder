@@ -125,6 +125,158 @@ void warn_noexcept(const char* message) noexcept {
     return ::psynder::console::Console::Get().ExecuteScript(text);
 }
 
+bool string_ends_with(std::string_view text, std::string_view suffix) noexcept {
+    return text.size() >= suffix.size() &&
+           text.substr(text.size() - suffix.size()) == suffix;
+}
+
+void normalize_console_mode(std::string& mode, bool& quiet) {
+    if (mode.empty()) {
+        mode = "console";
+        return;
+    }
+
+    constexpr std::array<std::string_view, 3> kQuietSuffixes{
+        ":quiet",
+        "+quiet",
+        ",quiet",
+    };
+    for (const auto suffix : kQuietSuffixes) {
+        if (string_ends_with(mode, suffix)) {
+            mode.resize(mode.size() - suffix.size());
+            quiet = true;
+            break;
+        }
+    }
+
+    if (mode == "quiet") {
+        mode = "console";
+        quiet = true;
+    } else if (mode.empty()) {
+        mode = "console";
+    }
+}
+
+std::string console_result_text(const ::psynder::console::ExecuteResult& result) {
+    if (!result.ok)
+        return !result.error.empty() ? result.error : result.output;
+    return !result.output.empty() ? result.output : result.error;
+}
+
+std::string_view console_result_value_kind(const ::psynder::console::ExecuteResult& result) noexcept {
+    return result.ok ? std::string_view{"text"} : std::string_view{"error"};
+}
+
+bool decode_bool_loose(msgpack::Reader& r, bool& out) {
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+    if (tag == 0xC2 || tag == 0xC3)
+        return r.boolean(out);
+    if (!((tag & 0x80) == 0 || tag == 0xCC || tag == 0xCD || tag == 0xCE || tag == 0xCF))
+        return false;
+    ::psynder::u32 numeric = 0;
+    if (r.u32_(numeric)) {
+        out = numeric != 0;
+        return true;
+    }
+    return false;
+}
+
+bool decode_u32_loose(msgpack::Reader& r, ::psynder::u32& out) {
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+    if (!((tag & 0x80) == 0 || tag == 0xCC || tag == 0xCD || tag == 0xCE || tag == 0xCF))
+        return false;
+    return r.u32_(out);
+}
+
+struct ConsoleCommandWire {
+    std::string text;
+    std::string mode = "console";
+    ::psynder::u32 request_id = 0;
+    bool has_request_id = false;
+    bool quiet = false;
+};
+
+bool decode_console_command_array(msgpack::Reader& r, ConsoleCommandWire& out) {
+    ::psynder::u32 count = 0;
+    if (!r.array_header(count) || count == 0)
+        return false;
+
+    if (!r.str(out.text))
+        return false;
+    if (count >= 2) {
+        if (!r.str(out.mode))
+            return false;
+    }
+    if (count >= 3) {
+        if (decode_u32_loose(r, out.request_id)) {
+            out.has_request_id = true;
+        } else if (!r.skip()) {
+            return false;
+        }
+    }
+    if (count >= 4) {
+        if (!decode_bool_loose(r, out.quiet) && !r.skip())
+            return false;
+    }
+    for (::psynder::u32 i = 4; i < count; ++i) {
+        if (!r.skip())
+            return false;
+    }
+
+    normalize_console_mode(out.mode, out.quiet);
+    return true;
+}
+
+bool decode_console_command_map(msgpack::Reader& r, ConsoleCommandWire& out) {
+    ::psynder::u32 count = 0;
+    if (!r.map_header(count))
+        return false;
+
+    for (::psynder::u32 i = 0; i < count; ++i) {
+        std::string key;
+        if (!r.str(key))
+            return false;
+        if (key == "source" || key == "text") {
+            if (!r.str(out.text))
+                return false;
+        } else if (key == "mode") {
+            if (!r.str(out.mode))
+                return false;
+        } else if (key == "id" || key == "request_id") {
+            if (!decode_u32_loose(r, out.request_id))
+                return false;
+            out.has_request_id = true;
+        } else if (key == "quiet") {
+            if (!decode_bool_loose(r, out.quiet))
+                return false;
+        } else if (!r.skip()) {
+            return false;
+        }
+    }
+
+    normalize_console_mode(out.mode, out.quiet);
+    return true;
+}
+
+bool decode_console_command(msgpack::Reader& r, ConsoleCommandWire& out) {
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+    if ((tag & 0xF0) == 0x90 || tag == 0xDC || tag == 0xDD)
+        return decode_console_command_array(r, out);
+    if ((tag & 0xF0) == 0x80 || tag == 0xDE || tag == 0xDF)
+        return decode_console_command_map(r, out);
+    if (r.str(out.text)) {
+        normalize_console_mode(out.mode, out.quiet);
+        return true;
+    }
+    return false;
+}
+
 ::psynder::u8 completion_kind(::psynder::console::CompletionKind kind) noexcept {
     using Kind = ::psynder::console::CompletionKind;
     switch (kind) {
@@ -208,8 +360,13 @@ struct LegacyEnvelope {
     std::string channel;
     std::string type;
     std::string prop_id;
+    std::string console_text;
+    std::string console_mode = "console";
+    ::psynder::u32 console_request_id = 0;
     ::psynder::u32 entity_id = 0;
     bool has_entity_id = false;
+    bool has_console_request_id = false;
+    bool quiet = false;
     std::string component;
     std::string field;
     std::string field_kind;
@@ -357,6 +514,20 @@ bool decode_legacy_payload(msgpack::Reader& r, LegacyEnvelope& out) {
         if (key == "prop_id") {
             if (!r.str(out.prop_id))
                 return false;
+        } else if (key == "source" || key == "text") {
+            if (!r.str(out.console_text))
+                return false;
+        } else if (key == "mode") {
+            if (!r.str(out.console_mode))
+                return false;
+            normalize_console_mode(out.console_mode, out.quiet);
+        } else if (key == "id" || key == "request_id") {
+            if (!decode_u32_loose(r, out.console_request_id))
+                return false;
+            out.has_console_request_id = true;
+        } else if (key == "quiet") {
+            if (!decode_bool_loose(r, out.quiet))
+                return false;
         } else if (key == "entity_id") {
             if (!r.u32_(out.entity_id))
                 return false;
@@ -422,7 +593,10 @@ bool handle_legacy_subscription(Connection& conn, const LegacyEnvelope& env) {
 std::vector<::psynder::u8> encode_legacy_command_ack(std::string_view channel,
                                                      std::string_view command,
                                                      bool ok,
-                                                     std::string_view text) {
+                                                     std::string_view text,
+                                                     std::string_view value_kind = "text",
+                                                     std::string_view output = {},
+                                                     std::string_view error = {}) {
     msgpack::Writer w;
     w.map_header(4);
     w.str("v");
@@ -432,13 +606,50 @@ std::vector<::psynder::u8> encode_legacy_command_ack(std::string_view channel,
     w.str("type");
     w.str("command_ack");
     w.str("payload");
-    w.map_header(3);
+    w.map_header(6);
     w.str("command");
     w.str(command);
     w.str("ok");
     w.boolean(ok);
     w.str("text");
     w.str(text);
+    w.str("value_kind");
+    w.str(value_kind);
+    w.str("output");
+    w.str(output);
+    w.str("error");
+    w.str(error);
+    return w.buffer();
+}
+
+std::vector<::psynder::u8> encode_legacy_console_result(
+    std::string_view channel,
+    const ::psynder::console::ExecuteResult& result,
+    ::psynder::u32 request_id,
+    bool has_request_id) {
+    const std::string text = console_result_text(result);
+    msgpack::Writer w;
+    w.map_header(4);
+    w.str("v");
+    w.u32_(proto::kProtocolVersion);
+    w.str("ch");
+    w.str(channel);
+    w.str("type");
+    w.str("result");
+    w.str("payload");
+    w.map_header(6);
+    w.str("id");
+    w.u32_(has_request_id ? request_id : 0);
+    w.str("ok");
+    w.boolean(result.ok);
+    w.str("text");
+    w.str(text);
+    w.str("value_kind");
+    w.str(console_result_value_kind(result));
+    w.str("output");
+    w.str(result.output);
+    w.str("error");
+    w.str(result.error);
     return w.buffer();
 }
 
@@ -1038,6 +1249,23 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                     ic.reply_command = "spawn_prop";
                     std::lock_guard<std::mutex> lk(inbound_mu_);
                     inbound_.emplace_back(std::move(ic));
+                } else if (env.channel == proto::channels::kconsole &&
+                           env.type == "eval" &&
+                           !env.console_text.empty()) {
+                    InboundCmd ic;
+                    ic.channel = env.console_mode.empty() ? std::string{"console"} : env.console_mode;
+                    ic.payload.assign(
+                        reinterpret_cast<const ::psynder::u8*>(env.console_text.data()),
+                        reinterpret_cast<const ::psynder::u8*>(env.console_text.data()) +
+                            env.console_text.size());
+                    ic.conn = conn;
+                    ic.reply_channel = proto::channels::kconsole;
+                    ic.request_id = env.console_request_id;
+                    ic.has_request_id = env.has_console_request_id;
+                    ic.quiet = env.quiet;
+                    ic.legacy_console_result = true;
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
                 }
                 continue;
             }
@@ -1057,14 +1285,17 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                     break;
                 }
                 case proto::opcodes::kConsoleFrame: {
-                    proto::ConsoleCmd cmd;
-                    if (proto::ConsoleCmd_decode(r, cmd)) {
+                    ConsoleCommandWire cmd;
+                    if (decode_console_command(r, cmd)) {
                         InboundCmd ic;
                         ic.channel = cmd.mode.empty() ? std::string{"console"} : std::move(cmd.mode);
                         ic.payload.assign(reinterpret_cast<const ::psynder::u8*>(cmd.text.data()),
                                           reinterpret_cast<const ::psynder::u8*>(cmd.text.data()) +
                                               cmd.text.size());
                         ic.conn = conn;  // weak ref so pump() can ship the reply.
+                        ic.request_id = cmd.request_id;
+                        ic.has_request_id = cmd.has_request_id;
+                        ic.quiet = cmd.quiet;
                         std::lock_guard<std::mutex> lk(inbound_mu_);
                         inbound_.emplace_back(std::move(ic));
                     }
@@ -1272,32 +1503,50 @@ void Server::pump() {
     const bool repl_live = repl_installed_.load(std::memory_order_acquire);
     for (auto& cmd : local) {
         std::string text(reinterpret_cast<const char*>(cmd.payload.data()), cmd.payload.size());
-        PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);
+        if (!cmd.quiet)
+            PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);
         auto result = dispatch_editor_console(text, cmd.channel, repl_live);
         auto& console = ::psynder::console::Console::Get();
-        if (cmd.channel == "console")
+        if (cmd.channel == "console" && !cmd.quiet)
             console.PushHistory(text);
 
-        std::string mirror_line;
-        if (cmd.channel == "lua") {
-            mirror_line = "[lua] ";
-            mirror_line += text;
-        } else {
-            mirror_line = text;
+        if (!cmd.quiet || !result.ok) {
+            std::string mirror_line;
+            if (cmd.channel == "lua") {
+                mirror_line = "[lua] ";
+                mirror_line += text;
+            } else {
+                mirror_line = text;
+            }
+            console.NotifyExternalExecution(mirror_line, result);
         }
-        console.NotifyExternalExecution(mirror_line, result);
 
         auto conn = cmd.conn.lock();
         if (!conn || !conn->alive.load())
             continue;
 
+        if (cmd.legacy_console_result) {
+            if (cmd.quiet && result.ok)
+                continue;
+            auto reply = encode_legacy_console_result(cmd.reply_channel.empty() ? "console"
+                                                                                : cmd.reply_channel,
+                                                      result,
+                                                      cmd.request_id,
+                                                      cmd.has_request_id);
+            auto frame = wsframe::encode_server_binary(reply.data(), reply.size());
+            enqueue(*conn, std::move(frame));
+            continue;
+        }
+
         if (!cmd.reply_channel.empty()) {
-            const std::string_view reply_text =
-                !result.error.empty() ? std::string_view{result.error} : std::string_view{result.output};
+            const std::string reply_text = console_result_text(result);
             auto ack = encode_legacy_command_ack(cmd.reply_channel,
                                                  cmd.reply_command,
                                                  result.ok,
-                                                 reply_text);
+                                                 reply_text,
+                                                 console_result_value_kind(result),
+                                                 result.output,
+                                                 result.error);
             auto frame = wsframe::encode_server_binary(ack.data(), ack.size());
             enqueue(*conn, std::move(frame));
             continue;
@@ -1307,7 +1556,7 @@ void Server::pump() {
         w.u16_(proto::opcodes::kConsoleReplyFrame);
         proto::ConsoleReply rep;
         rep.ok = result.ok;
-        rep.text = !result.error.empty() ? std::move(result.error) : std::move(result.output);
+        rep.text = console_result_text(result);
         proto::ConsoleReply_encode(w, rep);
         auto frame = wsframe::encode_server_binary(w.data(), w.size());
         enqueue(*conn, std::move(frame));

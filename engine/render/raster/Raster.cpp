@@ -21,6 +21,7 @@
 #include "core/console/Console.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace psynder::render::raster {
@@ -71,6 +72,8 @@ struct FrameState {
     u32 draw_count = 0;
     DrawItem draw_items[kMaxDraws];
     DrawCmd draw_cmds[kMaxDraws];
+    RasterLight preview_lights[1];
+    RasterLightPacket light_packet;
 };
 
 // Single static instance — zero-init in .bss. No exceptions on construction.
@@ -84,6 +87,7 @@ struct Cvars {
     console::CVar* r_affine = nullptr;
     console::CVar* r_tile_size = nullptr;
     console::CVar* r_anisotropy = nullptr;
+    console::CVar* r_raster_preview_light = nullptr;
     Cvars() {
         r_affine = console::Console::Get().RegisterCVar(
             "r_affine",
@@ -100,6 +104,12 @@ struct Cvars {
             "1",
             "Max anisotropic sample count for the EWA filter (1/2/4/8/16). "
             "1 = bilinear/trilinear only. DESIGN.md §7.5.",
+            console::CVarFlags::Archive);
+        r_raster_preview_light = console::Console::Get().RegisterCVar(
+            "r_raster_preview_light",
+            "0",
+            "Debug only: enable lane-07 internal dynamic-light shader with one directional light. "
+            "Scene lights need a render submission API before this can be driven by gameplay.",
             console::CVarFlags::Archive);
     }
 };
@@ -123,6 +133,18 @@ void Rasterizer::begin_frame(const ViewState& view) {
     fs.draw_count = 0;
     fs.in_frame = true;
     (void)cvars();  // ensure cvar registration
+    fs.light_packet = {};
+    fs.light_packet.ambient_linear = {1.0f, 1.0f, 1.0f};
+    if (cvars().r_raster_preview_light && cvars().r_raster_preview_light->GetBool()) {
+        fs.preview_lights[0] = {};
+        fs.preview_lights[0].kind = RasterLightKind::Directional;
+        fs.preview_lights[0].direction_world = {-0.35f, -1.0f, -0.45f};
+        fs.preview_lights[0].color_linear = {1.0f, 0.96f, 0.86f};
+        fs.preview_lights[0].intensity = 1.25f;
+        fs.light_packet.ambient_linear = {0.16f, 0.18f, 0.22f};
+        fs.light_packet.lights = fs.preview_lights;
+        fs.light_packet.light_count = 1;
+    }
     // Bump the surface-cache frame index so hysteresis counts the right
     // number of "consecutive eligible" frames per surface.
     SurfaceCache::Get().begin_frame();
@@ -200,6 +222,23 @@ void Rasterizer::end_frame() {
         }
 
         const math::Mat4 mvp = math::mul(view_proj, d.model);
+        auto transform_point = [&](math::Vec3 p) noexcept {
+            const math::Vec4 wp = math::mul(d.model, math::Vec4{p.x, p.y, p.z, 1.0f});
+            return math::Vec3{wp.x, wp.y, wp.z};
+        };
+        auto transform_normal = [&](math::Vec3 n) noexcept {
+            math::Vec3 out{
+                d.model.m[0] * n.x + d.model.m[4] * n.y + d.model.m[8] * n.z,
+                d.model.m[1] * n.x + d.model.m[5] * n.y + d.model.m[9] * n.z,
+                d.model.m[2] * n.x + d.model.m[6] * n.y + d.model.m[10] * n.z,
+            };
+            const f32 len2 = math::dot(out, out);
+            if (len2 <= 1.0e-12f)
+                out = {0.0f, 1.0f, 0.0f};
+            else
+                out = math::mul(out, 1.0f / std::sqrt(len2));
+            return out;
+        };
         for (u32 i = 0; i < d.vertex_count; ++i) {
             const math::Vec3 p = d.vertices[i].position;
             cp[i] = math::mul(mvp, math::Vec4{p.x, p.y, p.z, 1.0f});
@@ -244,6 +283,8 @@ void Rasterizer::end_frame() {
 
         struct ClipVtx {
             math::Vec4 cp;
+            math::Vec3 world;
+            math::Vec3 normal;
             math::Vec2 uv;
             f32 r, g, b, a;  // unpacked colour, lerp-able across the cut
         };
@@ -251,6 +292,8 @@ void Rasterizer::end_frame() {
             const u32 c = d.vertices[idx].color;
             ClipVtx v;
             v.cp = cp[idx];
+            v.world = transform_point(d.vertices[idx].position);
+            v.normal = transform_normal(d.vertices[idx].normal);
             v.uv = d.vertices[idx].uv;
             v.r = static_cast<f32>(c & 0xFFu);
             v.g = static_cast<f32>((c >> 8) & 0xFFu);
@@ -264,6 +307,12 @@ void Rasterizer::end_frame() {
                               p.cp.y + (q.cp.y - p.cp.y) * t,
                               p.cp.z + (q.cp.z - p.cp.z) * t,
                               p.cp.w + (q.cp.w - p.cp.w) * t};
+            v.world = math::Vec3{p.world.x + (q.world.x - p.world.x) * t,
+                                 p.world.y + (q.world.y - p.world.y) * t,
+                                 p.world.z + (q.world.z - p.world.z) * t};
+            v.normal = math::normalize(math::Vec3{p.normal.x + (q.normal.x - p.normal.x) * t,
+                                                  p.normal.y + (q.normal.y - p.normal.y) * t,
+                                                  p.normal.z + (q.normal.z - p.normal.z) * t});
             v.uv = math::Vec2{p.uv.x + (q.uv.x - p.uv.x) * t, p.uv.y + (q.uv.y - p.uv.y) * t};
             v.r = p.r + (q.r - p.r) * t;
             v.g = p.g + (q.g - p.g) * t;
@@ -354,19 +403,25 @@ void Rasterizer::end_frame() {
 
             // Fan-triangulate the clipped polygon (3..9 verts -> 1..7 tris).
             for (u32 k = 1; k + 1 < np; ++k) {
-                const bool ok = setup_triangle(poly[0].cp,
-                                               poly[k].cp,
-                                               poly[k + 1].cp,
-                                               poly[0].uv,
-                                               poly[k].uv,
-                                               poly[k + 1].uv,
-                                               repack(poly[0]),
-                                               repack(poly[k]),
-                                               repack(poly[k + 1]),
-                                               fs.view.target.width,
-                                               fs.view.target.height,
-                                               tris[produced],
-                                               static_cast<u8>(d.cull));
+                const bool ok = setup_triangle_lit(poly[0].cp,
+                                                   poly[k].cp,
+                                                   poly[k + 1].cp,
+                                                   poly[0].world,
+                                                   poly[k].world,
+                                                   poly[k + 1].world,
+                                                   poly[0].normal,
+                                                   poly[k].normal,
+                                                   poly[k + 1].normal,
+                                                   poly[0].uv,
+                                                   poly[k].uv,
+                                                   poly[k + 1].uv,
+                                                   repack(poly[0]),
+                                                   repack(poly[k]),
+                                                   repack(poly[k + 1]),
+                                                   fs.view.target.width,
+                                                   fs.view.target.height,
+                                                   tris[produced],
+                                                   static_cast<u8>(d.cull));
                 // Advance only on success so cmd.tri_count counts valid tris and
                 // the binner never iterates culled / degenerate setups.
                 if (ok)
@@ -382,6 +437,18 @@ void Rasterizer::end_frame() {
         cmd.aniso_max = frame_aniso_max;
         cmd.blend_mode = static_cast<u8>(d.blend);
         cmd.blend_opacity = static_cast<u8>(std::clamp(d.blend_opacity, 0.0f, 1.0f) * 255.0f + 0.5f);
+        cmd.material_lighting.diffuse = 1.0f;
+        cmd.material_lighting.emissive = 0.0f;
+        cmd.material_lighting.roughness = 1.0f;
+        cmd.material_lighting.reflectivity = 0.0f;
+        cmd.material_lighting.receives_dynamic_lights =
+            fs.light_packet.light_count != 0 && (d.flags & DrawFlags::NoDynamicLights) == 0u;
+        cmd.light_packet = fs.light_packet;
+        if (!cmd.material_lighting.receives_dynamic_lights) {
+            cmd.light_packet.lights = nullptr;
+            cmd.light_packet.light_count = 0;
+            cmd.light_packet.ambient_linear = {1.0f, 1.0f, 1.0f};
+        }
         // ── Surface-cache classify (DESIGN.md §7.6 / ADR-001) ───────────
         SurfaceDesc sd{};
         sd.surface_id = d.material.raw;

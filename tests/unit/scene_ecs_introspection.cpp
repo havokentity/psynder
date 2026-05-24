@@ -3,7 +3,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "scene/EcsEditorSnapshot_Internal.h"
 #include "scene/EcsRegistry.h"
+#include "scene/SceneEcs.h"
 
 #include <array>
 #include <string_view>
@@ -96,8 +98,7 @@ TEST_CASE("scene: registry snapshots entity component ids and metadata",
     REQUIRE(registry.component_count(e) == 0u);
 }
 
-TEST_CASE("scene: registry reports and drains structural queue",
-          "[scene][ecs][deferred]") {
+TEST_CASE("scene: registry reports and drains structural queue", "[scene][ecs][deferred]") {
     auto& registry = EcsRegistry::Get();
     registry.clear();
 
@@ -112,6 +113,77 @@ TEST_CASE("scene: registry reports and drains structural queue",
     registry.set_structural_deferred(false);
     REQUIRE(registry.pending_structural_change_count() == 0u);
     REQUIRE(registry.component_count(e) == 2u);
+
+    registry.clear();
+}
+
+TEST_CASE("scene: editor authoring snapshot exposes hierarchy names and environment",
+          "[scene][ecs][introspection][editor]") {
+    auto& registry = EcsRegistry::Get();
+    registry.clear();
+    registry.set_structural_deferred(false);
+
+    Scene scene{registry};
+    scene.environment().set_clear_color(0x80302010u);
+    scene.environment().set_clear_enabled(true, false);
+
+    LocalTransform root_transform{};
+    root_transform.translation = {1.0f, 0.0f, 0.0f};
+    const Entity root = scene.create_entity(root_transform);
+    REQUIRE(root.valid());
+    REQUIRE(scene.set_entity_name(root, "Scene Root"));
+
+    CameraDesc camera_desc{};
+    camera_desc.position = {0.0f, 2.0f, 5.0f};
+    camera_desc.look_at = {0.0f, 0.0f, 0.0f};
+    const Entity camera = scene.spawn_camera(camera_desc, scene.node(root));
+    REQUIRE(camera.valid());
+    REQUIRE(scene.set_entity_name(camera, "Main Camera"));
+
+    LocalTransform light_transform{};
+    light_transform.translation = {0.0f, 4.0f, 0.0f};
+    const Entity light = scene.create_entity(light_transform, scene.node(root));
+    REQUIRE(light.valid());
+    scene.attach_light(light);
+
+    const scene::detail::EcsEditorSceneSnapshot snapshot =
+        scene::detail::snapshot_scene_authoring(scene);
+
+    REQUIRE(snapshot.environment.clear_color_rgba8 == 0x80302010u);
+    REQUIRE(snapshot.environment.clear_color);
+    REQUIRE_FALSE(snapshot.environment.clear_depth);
+    REQUIRE(snapshot.hierarchy.size() == 3u);
+
+    const auto find_row = [&](Entity entity) -> const scene::detail::EcsEditorEntitySnapshot* {
+        for (const scene::detail::EcsEditorEntitySnapshot& row : snapshot.hierarchy) {
+            if (row.entity == entity)
+                return &row;
+        }
+        return nullptr;
+    };
+
+    const scene::detail::EcsEditorEntitySnapshot* root_row = find_row(root);
+    const scene::detail::EcsEditorEntitySnapshot* camera_row = find_row(camera);
+    const scene::detail::EcsEditorEntitySnapshot* light_row = find_row(light);
+    REQUIRE(root_row != nullptr);
+    REQUIRE(camera_row != nullptr);
+    REQUIRE(light_row != nullptr);
+
+    REQUIRE(root_row->name == "Scene Root");
+    REQUIRE(root_row->kind == scene::detail::EcsEditorEntityKind::Empty);
+    REQUIRE(root_row->depth == 0u);
+    REQUIRE(root_row->child_count == 2u);
+    REQUIRE_FALSE(root_row->parent_entity.valid());
+
+    REQUIRE(camera_row->name == "Main Camera");
+    REQUIRE(camera_row->kind == scene::detail::EcsEditorEntityKind::Camera);
+    REQUIRE(camera_row->parent_entity == root);
+    REQUIRE(camera_row->depth == 1u);
+
+    REQUIRE(light_row->name == "Light");
+    REQUIRE(light_row->kind == scene::detail::EcsEditorEntityKind::Light);
+    REQUIRE(light_row->parent_entity == root);
+    REQUIRE(light_row->depth == 1u);
 
     registry.clear();
 }

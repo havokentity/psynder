@@ -6,6 +6,9 @@
 #include "core/Types.h"
 #include "scene/SceneRuntime.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace psynder::scene {
 
 struct EnvironmentSkySettings {
@@ -35,6 +38,30 @@ struct EnvironmentSettings {
     }
 };
 
+[[nodiscard]] inline EnvironmentSkySettings sanitize_environment_sky(
+    EnvironmentSkySettings sky) noexcept {
+    sky.intensity = std::isfinite(sky.intensity) ? std::max(0.0f, sky.intensity) : 1.0f;
+    return sky;
+}
+
+[[nodiscard]] inline EnvironmentCloudSettings sanitize_environment_clouds(
+    EnvironmentCloudSettings clouds) noexcept {
+    clouds.coverage = std::isfinite(clouds.coverage) ? std::clamp(clouds.coverage, 0.0f, 1.0f)
+                                                     : 0.0f;
+    clouds.density = std::isfinite(clouds.density) ? std::max(0.0f, clouds.density) : 1.0f;
+    clouds.height = std::isfinite(clouds.height) ? std::max(0.0f, clouds.height) : 1200.0f;
+    clouds.wind_x = std::isfinite(clouds.wind_x) ? clouds.wind_x : 0.0f;
+    clouds.wind_y = std::isfinite(clouds.wind_y) ? clouds.wind_y : 0.0f;
+    return clouds;
+}
+
+[[nodiscard]] inline EnvironmentSettings sanitize_environment_settings(
+    EnvironmentSettings settings) noexcept {
+    settings.sky = sanitize_environment_sky(settings.sky);
+    settings.clouds = sanitize_environment_clouds(settings.clouds);
+    return settings;
+}
+
 class Environment {
    public:
     Environment() noexcept = default;
@@ -53,7 +80,7 @@ class Environment {
     [[nodiscard]] const EnvironmentSettings& settings() const noexcept { return settings_; }
 
     void set_settings(const EnvironmentSettings& settings) noexcept {
-        settings_ = settings;
+        settings_ = sanitize_environment_settings(settings);
         sync_runtime_from_settings();
     }
 
@@ -79,12 +106,12 @@ class Environment {
     [[nodiscard]] const EnvironmentCloudSettings& clouds() const noexcept { return settings_.clouds; }
 
     void set_sky(const EnvironmentSkySettings& sky) noexcept {
-        settings_.sky = sky;
+        settings_.sky = sanitize_environment_sky(sky);
         sync_runtime_sky();
     }
 
     void set_clouds(const EnvironmentCloudSettings& clouds) noexcept {
-        settings_.clouds = clouds;
+        settings_.clouds = sanitize_environment_clouds(clouds);
         sync_runtime_clouds();
     }
 

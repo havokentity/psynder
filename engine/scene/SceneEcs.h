@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <mutex>
 #include <span>
 #include <string>
@@ -41,6 +42,16 @@ enum class LightKind : u8 {
     Directional = 1,
     Spot = 2,
 };
+
+[[nodiscard]] constexpr LightKind sanitize_light_kind(LightKind kind) noexcept {
+    switch (kind) {
+        case LightKind::Point:
+        case LightKind::Directional:
+        case LightKind::Spot:
+            return kind;
+    }
+    return LightKind::Point;
+}
 
 enum class RenderableFlags : u32 {
     None = 0,
@@ -117,6 +128,11 @@ PSYNDER_COMPONENT(SceneNodeComponent) {
     Entity entity{};
 };
 
+PSYNDER_COMPONENT(EntityNameComponent) {
+    static constexpr usize kMaxBytes = 64u;
+    std::array<char, kMaxBytes> value{};
+};
+
 PSYNDER_COMPONENT(CameraComponent) {
     f32 fov_y_rad = 60.0f * math::kDegToRad;
     f32 aspect = 0.0f;  // <= 0 means use the active render target aspect.
@@ -151,6 +167,44 @@ PSYNDER_COMPONENT(LightComponent) {
     u8 casts_shadow = 0u;
     u8 _pad[3] = {};
 };
+
+[[nodiscard]] inline EntityNameComponent make_entity_name(std::string_view name) noexcept {
+    EntityNameComponent out{};
+    const usize bytes = std::min(name.size(), EntityNameComponent::kMaxBytes - 1u);
+    if (bytes != 0u)
+        std::memcpy(out.value.data(), name.data(), bytes);
+    out.value[bytes] = '\0';
+    return out;
+}
+
+[[nodiscard]] inline std::string_view entity_name_view(
+    const EntityNameComponent& name) noexcept {
+    usize n = 0u;
+    while (n < name.value.size() && name.value[n] != '\0')
+        ++n;
+    return std::string_view{name.value.data(), n};
+}
+
+[[nodiscard]] inline bool entity_name_empty(const EntityNameComponent& name) noexcept {
+    return name.value[0] == '\0';
+}
+
+[[nodiscard]] inline LightComponent sanitize_light_component(LightComponent light) noexcept {
+    light.kind = sanitize_light_kind(light.kind);
+    light.intensity = std::isfinite(light.intensity) ? std::max(0.0f, light.intensity) : 0.0f;
+    light.range = std::isfinite(light.range) ? std::max(0.0f, light.range) : 0.0f;
+    light.inner_cone_deg = std::isfinite(light.inner_cone_deg)
+                               ? std::clamp(light.inner_cone_deg, 0.0f, 179.0f)
+                               : 20.0f;
+    light.outer_cone_deg = std::isfinite(light.outer_cone_deg)
+                               ? std::clamp(light.outer_cone_deg, light.inner_cone_deg, 179.0f)
+                               : std::max(light.inner_cone_deg, 45.0f);
+    light.casts_shadow = light.casts_shadow != 0u ? 1u : 0u;
+    light._pad[0] = 0u;
+    light._pad[1] = 0u;
+    light._pad[2] = 0u;
+    return light;
+}
 
 PSYNDER_COMPONENT(RenderableComponent) {
     GeometryKind geometry = GeometryKind::None;
@@ -333,8 +387,20 @@ inline bool update_renderable(EcsRegistry& registry, Entity entity, const Render
 inline bool update_light(EcsRegistry& registry, Entity entity, const LightComponent& light) {
     if (!registry.alive(entity) || !registry.get<LightComponent>(entity))
         return false;
-    registry.add<LightComponent>(entity, light);
+    registry.add<LightComponent>(entity, sanitize_light_component(light));
     return true;
+}
+
+inline bool set_entity_name(EcsRegistry& registry, Entity entity, std::string_view name) {
+    if (!registry.alive(entity))
+        return false;
+    registry.add<EntityNameComponent>(entity, make_entity_name(name));
+    return true;
+}
+
+inline std::string_view get_entity_name(EcsRegistry& registry, Entity entity) {
+    const auto* name = registry.get<EntityNameComponent>(entity);
+    return name ? entity_name_view(*name) : std::string_view{};
 }
 
 inline bool set_renderable_mobility(EcsRegistry& registry, Entity entity, ObjectMobility mobility) {
@@ -408,6 +474,8 @@ inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, con
     registry.reserve_entities(scene_entity_count);
     registry.reserve_archetype<TransformComponent>(scene_entity_count);
     registry.reserve_archetype<SceneNodeComponent, TransformComponent>(scene_entity_count);
+    registry.reserve_archetype<EntityNameComponent, SceneNodeComponent, TransformComponent>(
+        scene_entity_count);
     if (config.cameras != 0u) {
         registry.reserve_archetype<CameraComponent, SceneNodeComponent, TransformComponent>(
             config.cameras);
@@ -427,9 +495,10 @@ inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, con
 
     const u32 structural_ops = config.deferred_structural_changes != 0u
                                    ? config.deferred_structural_changes
-                                   : scene_entity_count * 2u + config.renderables;
+                                   : scene_entity_count * 3u + config.renderables;
     const u32 structural_bytes = scene_entity_count * static_cast<u32>(sizeof(TransformComponent) +
-                                                                       sizeof(SceneNodeComponent)) +
+                                                                       sizeof(SceneNodeComponent) +
+                                                                       sizeof(EntityNameComponent)) +
                                  config.renderables * static_cast<u32>(sizeof(RenderableComponent)) +
                                  config.lights * static_cast<u32>(sizeof(LightComponent));
     registry.reserve_structural_changes(structural_ops, structural_bytes);
@@ -1203,9 +1272,17 @@ class Scene {
     bool attach_light(Entity entity, const LightComponent& light = {}) {
         if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
             return false;
-        registry_->add<LightComponent>(entity, light);
+        registry_->add<LightComponent>(entity, sanitize_light_component(light));
         warn_pool_growth("attach_light");
         return true;
+    }
+
+    bool set_entity_name(Entity entity, std::string_view name) {
+        return ::psynder::scene::set_entity_name(*registry_, entity, name);
+    }
+
+    [[nodiscard]] std::string_view entity_name(Entity entity) {
+        return ::psynder::scene::get_entity_name(*registry_, entity);
     }
 
     bool set_active_camera(Entity entity) {

@@ -143,6 +143,34 @@ function find_node_by_id(nodes: readonly HierarchyNode[], id: number): Hierarchy
     return null;
 }
 
+function node_matches_query(node: HierarchyNode, query: string): boolean {
+    const haystack = `${node.label} ${node.kind} ${node.id} ${node.id.toString(16)}`.toLowerCase();
+    return haystack.includes(query);
+}
+
+function filter_tree_by_query(nodes: readonly HierarchyNode[], query: string): HierarchyNode[] {
+    const clean_query = query.trim().toLowerCase();
+    if (!clean_query) return [...nodes];
+
+    const out: HierarchyNode[] = [];
+    for (const node of nodes) {
+        const children = node.children ? filter_tree_by_query(node.children, clean_query) : [];
+        if (node_matches_query(node, clean_query) || children.length > 0) {
+            out.push({ ...node, children });
+        }
+    }
+    return out;
+}
+
+function count_nodes(nodes: readonly HierarchyNode[]): number {
+    let count = 0;
+    for (const node of nodes) {
+        if (!is_placeholder_scene_root(node)) count += 1;
+        if (node.children) count += count_nodes(node.children);
+    }
+    return count;
+}
+
 function is_placeholder_scene_root(node: HierarchyNode | null): boolean {
     return !!node && node.id === 0 && node.kind === 'root' && node.label === EMPTY_TREE[0].label;
 }
@@ -260,6 +288,7 @@ export function Hierarchy() {
     const [collapsed, set_collapsed] = React.useState<Set<number>>(() => new Set());
     const [renaming_id, set_renaming_id] = React.useState<number | null>(null);
     const [drag_over_id, set_drag_over_id] = React.useState<number | null>(null);
+    const [search, set_search] = React.useState('');
 
     React.useEffect(() => subscribe_editor_scene_dirty(set_dirty), []);
     React.useEffect(() => subscribe_recent_scene_paths(set_recent_paths), []);
@@ -407,6 +436,10 @@ export function Hierarchy() {
             },
         ];
     }, [live_tree, selection]);
+    const filtered_tree = React.useMemo(() => filter_tree_by_query(tree, search), [tree, search]);
+    const filtered_count = React.useMemo(() => count_nodes(filtered_tree), [filtered_tree]);
+    const total_count = React.useMemo(() => count_nodes(tree), [tree]);
+    const search_active = search.trim().length > 0;
 
     const select_node = React.useCallback((node: HierarchyNode) => {
         if (!is_selectable_scene_node(node)) {
@@ -584,109 +617,126 @@ export function Hierarchy() {
             <header className="psy-panel-header">
                 <h2>Hierarchy</h2>
                 <ConnectionBadge />
-                <button
-                    type="button"
-                    className="psy-btn psy-btn-ghost"
-                    onClick={undo_scene_edit}
-                    disabled={connection !== 'open'}
-                    title="Undo latest editor scene edit"
-                >
-                    undo
-                </button>
-                <button
-                    type="button"
-                    className="psy-btn psy-btn-ghost"
-                    onClick={redo_scene_edit}
-                    disabled={connection !== 'open'}
-                    title="Redo latest editor scene edit"
-                >
-                    redo
-                </button>
-                <button
-                    type="button"
-                    className="psy-btn psy-btn-ghost"
-                    onClick={duplicate_selected}
-                    disabled={!can_edit_selection}
-                    aria-label={selected_node ? `Duplicate ${selected_node.label}` : 'Duplicate selected entity'}
-                    title={`Duplicate selected entity. ${action_title}`}
-                >
-                    dup
-                </button>
-                <button
-                    type="button"
-                    className="psy-btn psy-btn-ghost"
-                    onClick={begin_rename_selected}
-                    disabled={!can_edit_selection}
-                    aria-label={selected_node ? `Rename ${selected_node.label}` : 'Rename selected entity'}
-                    title={`Rename selected entity. ${action_title}`}
-                >
-                    rename
-                </button>
-                <button
-                    type="button"
-                    className="psy-btn psy-btn-danger"
-                    onClick={delete_selected}
-                    disabled={!can_edit_selection}
-                    aria-label={selected_node ? `Delete ${selected_node.label}` : 'Delete selected entity'}
-                    title={`Delete selected entity. ${action_title}`}
-                >
-                    del
-                </button>
-                <button
-                    type="button"
-                    className="psy-btn psy-btn-primary"
-                    onClick={create_new_scene}
-                >
-                    new
-                </button>
+                <span className={`psy-dirty-pill ${dirty ? 'is-dirty' : ''}`}>
+                    {dirty ? 'modified' : 'saved'}
+                </span>
             </header>
 
             <div className="psy-hierarchy-toolbar">
-                <input
-                    className="psy-input"
-                    value={scene_path}
-                    onChange={(e) => set_scene_path(e.target.value)}
-                    spellCheck={false}
-                    aria-label="Cooked scene path"
-                />
-                <button type="button" className="psy-btn" onClick={load_scene}>
-                    load
-                </button>
-                <button type="button" className="psy-btn" onClick={save_scene}>
-                    save
-                </button>
-                <button type="button" className="psy-btn" onClick={save_scene_as} title="Save scene under another engine path">
-                    save as
-                </button>
-                <select
-                    className="psy-input psy-light-kind-select"
-                    value={String(light_kind)}
-                    onChange={(e) => set_light_kind(Number(e.target.value) as LightKindValue)}
-                    aria-label="Light variant for Add menu"
-                    title="Light variant used by Add > Light"
-                >
-                    {LIGHT_KIND_OPTIONS.map((option) => (
-                        <option key={option.value} value={String(option.value)}>
-                            {option.label}
-                        </option>
-                    ))}
-                </select>
-                <AddSceneMenu
-                    value={palette_selection}
-                    on_change={set_palette_selection}
-                    on_add_primitive={add_primitive}
-                    on_add_empty_entity={add_empty_entity}
-                    on_add_camera={add_camera}
-                    on_add_light={add_light}
-                />
+                <div className="psy-scene-path-row">
+                    <input
+                        className="psy-input"
+                        value={scene_path}
+                        onChange={(e) => set_scene_path(e.target.value)}
+                        spellCheck={false}
+                        aria-label="Cooked scene path"
+                        title="Cooked scene path used for load and save"
+                    />
+                </div>
+
+                <div className="psy-scene-command-row" aria-label="Scene commands">
+                    <button type="button" className="psy-btn psy-btn-primary" onClick={create_new_scene} title="Create a blank scene">
+                        new
+                    </button>
+                    <button type="button" className="psy-btn" onClick={load_scene} title="Load the scene path above">
+                        load
+                    </button>
+                    <button type="button" className="psy-btn" onClick={save_scene} title="Save to the scene path above">
+                        save
+                    </button>
+                    <button type="button" className="psy-btn" onClick={save_scene_as} title="Save scene under another engine path">
+                        save as
+                    </button>
+                    <span className="psy-toolbar-divider" aria-hidden="true" />
+                    <button
+                        type="button"
+                        className="psy-btn psy-btn-ghost"
+                        onClick={undo_scene_edit}
+                        disabled={connection !== 'open'}
+                        title="Undo latest editor scene edit"
+                    >
+                        undo
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-btn psy-btn-ghost"
+                        onClick={redo_scene_edit}
+                        disabled={connection !== 'open'}
+                        title="Redo latest editor scene edit"
+                    >
+                        redo
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-btn psy-btn-ghost"
+                        onClick={duplicate_selected}
+                        disabled={!can_edit_selection}
+                        aria-label={selected_node ? `Duplicate ${selected_node.label}` : 'Duplicate selected entity'}
+                        title={`Duplicate selected entity. ${action_title}`}
+                    >
+                        dup
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-btn psy-btn-ghost"
+                        onClick={begin_rename_selected}
+                        disabled={!can_edit_selection}
+                        aria-label={selected_node ? `Rename ${selected_node.label}` : 'Rename selected entity'}
+                        title={`Rename selected entity. ${action_title}`}
+                    >
+                        rename
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-btn psy-btn-danger"
+                        onClick={delete_selected}
+                        disabled={!can_edit_selection}
+                        aria-label={selected_node ? `Delete ${selected_node.label}` : 'Delete selected entity'}
+                        title={`Delete selected entity. ${action_title}`}
+                    >
+                        del
+                    </button>
+                    <select
+                        className="psy-input psy-light-kind-select"
+                        value={String(light_kind)}
+                        onChange={(e) => set_light_kind(Number(e.target.value) as LightKindValue)}
+                        aria-label="Light variant for Add menu"
+                        title="Light variant used by Add > Light"
+                    >
+                        {LIGHT_KIND_OPTIONS.map((option) => (
+                            <option key={option.value} value={String(option.value)}>
+                                {option.label}
+                            </option>
+                        ))}
+                    </select>
+                    <AddSceneMenu
+                        value={palette_selection}
+                        on_change={set_palette_selection}
+                        on_add_primitive={add_primitive}
+                        on_add_empty_entity={add_empty_entity}
+                        on_add_camera={add_camera}
+                        on_add_light={add_light}
+                    />
+                </div>
+                <div className="psy-hierarchy-searchbar">
+                    <input
+                        className="psy-input psy-hierarchy-search"
+                        type="search"
+                        value={search}
+                        onChange={(e) => set_search(e.target.value)}
+                        placeholder="search hierarchy"
+                        spellCheck={false}
+                        aria-label="Search hierarchy"
+                    />
+                    <span className="psy-hierarchy-count">
+                        {search_active ? `${filtered_count}/${total_count}` : `${total_count}`}
+                    </span>
+                </div>
             </div>
 
             <div className={`psy-hierarchy-status is-${status}`} role="status">
                 <span className="psy-scene-status-dot" />
                 <span>{message}</span>
-                <span className={`psy-dirty-pill ${dirty ? 'is-dirty' : ''}`}>
-                    {dirty ? 'modified' : 'saved'}
-                </span>
             </div>
 
             {recent_paths.length > 0 && (
@@ -707,7 +757,7 @@ export function Hierarchy() {
             )}
 
             <div className="psy-hierarchy-body" role="tree" aria-label="Scene hierarchy">
-                {tree.map((node) => (
+                {filtered_tree.map((node) => (
                     <HierarchyRow
                         key={node.id}
                         node={node}
@@ -725,8 +775,14 @@ export function Hierarchy() {
                         drag_over_id={drag_over_id}
                         on_drag_over={set_drag_over_id}
                         on_reparent={reparent_entity}
+                        force_expanded={search_active}
                     />
                 ))}
+                {search_active && filtered_tree.length === 0 && (
+                    <div className="psy-empty psy-hierarchy-empty-search">
+                        No hierarchy items match "{search}".
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -746,6 +802,7 @@ function HierarchyRow({
     drag_over_id,
     on_drag_over,
     on_reparent,
+    force_expanded,
 }: {
     node: HierarchyNode;
     depth: number;
@@ -760,9 +817,10 @@ function HierarchyRow({
     drag_over_id: number | null;
     on_drag_over(id: number | null): void;
     on_reparent(child: HierarchyNode, parent: HierarchyNode): void;
+    force_expanded?: boolean;
 }) {
     const has_children = !!node.children?.length;
-    const is_collapsed = collapsed.has(node.id);
+    const is_collapsed = !force_expanded && collapsed.has(node.id);
     const is_selected = selected === node.id;
     const renaming = renaming_id === node.id;
     const draggable = is_editable_scene_node(node);
@@ -852,6 +910,7 @@ function HierarchyRow({
                     drag_over_id={drag_over_id}
                     on_drag_over={on_drag_over}
                     on_reparent={on_reparent}
+                    force_expanded={force_expanded}
                 />
             ))}
         </React.Fragment>

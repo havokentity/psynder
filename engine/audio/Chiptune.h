@@ -6,6 +6,7 @@
 #include "core/Types.h"
 
 #include <span>
+#include <string_view>
 
 namespace psynder::audio {
 
@@ -35,10 +36,20 @@ struct ChipSong {
     std::span<const ChipNote> notes{};
 };
 
+enum class ChipTunePreset : u8 {
+    PsyArcadeBoot,
+    PsyArcadeBootMysterious,
+    PsyArcadeBootUplift,
+};
+
 void play_chiptune(const ChipSong& song);
 void stop_chiptune();
 [[nodiscard]] bool chiptune_active();
 
+[[nodiscard]] const char* chiptune_preset_name(ChipTunePreset preset) noexcept;
+[[nodiscard]] ChipTunePreset chiptune_preset_from_name(
+    std::string_view name, ChipTunePreset fallback = ChipTunePreset::PsyArcadeBoot) noexcept;
+[[nodiscard]] const ChipSong& chiptune_preset_song(ChipTunePreset preset);
 [[nodiscard]] const ChipSong& boot_chime_song();
 
 }  // namespace psynder::audio

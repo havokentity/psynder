@@ -7,6 +7,7 @@
 #pragma once
 
 #include "EdgeEq.h"
+#include "RasterLighting.h"
 #include "core/Types.h"
 #include "render/Framebuffer.h"
 #include "render/raster/Raster.h"
@@ -38,6 +39,8 @@ struct PSY_CACHELINE_ALIGN DrawCmd {
     u8 blend_mode = 0;  // DrawBlendMode
     u8 blend_opacity = 255;
     u8 _spad[1] = {};
+    RasterMaterialInputs material_lighting{};
+    RasterLightPacket light_packet{};
     const u32* surface_cache_payload = nullptr;  // pre-multiplied chunk
     u32 surface_cache_width = 0;
     u32 surface_cache_height = 0;

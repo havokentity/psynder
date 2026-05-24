@@ -33,6 +33,7 @@ enum class SceneFileChunkType : u32 {
     Cameras = 0x4D414353u,          // SCAM
     MeshInstances = 0x53454D53u,    // SMES
     Lights = 0x54494C53u,           // SLIT
+    ObjectNames = 0x4D414E53u,      // SNAM
     Materials = 0x54414D53u,        // SMAT
     BehaviorSpinOps = 0x50534253u,  // SBSP
     BehaviorTranslateOps = 0x4C544253u,  // SBTL
@@ -101,6 +102,19 @@ struct SceneFileLight {
     u8 _pad[32] = {};
 };
 
+enum class SceneFileObjectKind : u32 {
+    Camera = 1u,
+    MeshInstance = 2u,
+    Light = 3u,
+};
+
+struct SceneFileObjectName {
+    SceneFileObjectKind kind = SceneFileObjectKind::MeshInstance;
+    u32 object_index = 0u;
+    u32 name_offset = 0u;
+    u32 reserved = 0u;
+};
+
 struct SceneFileMaterial {
     u32 name_offset = 0u;
     u32 base_color_texture_name_offset = 0u;
@@ -153,6 +167,7 @@ struct SceneFileView {
     std::span<const SceneFileCamera> cameras;
     std::span<const SceneFileMeshInstance> mesh_instances;
     std::span<const SceneFileLight> lights;
+    std::span<const SceneFileObjectName> object_names;
     std::span<const SceneFileMaterial> materials;
     std::span<const SceneFileBehaviorSpinOp> behavior_spin_ops;
     std::span<const SceneFileBehaviorTranslateOp> behavior_translate_ops;
@@ -387,6 +402,8 @@ static_assert(sizeof(SceneFileChunk) == 16u);
 static_assert(sizeof(SceneFileEnvironment) == 8u);
 static_assert(sizeof(SceneFileCamera) == 64u);
 static_assert(sizeof(SceneFileMeshInstance) == 24u);
+static_assert(sizeof(SceneFileLight) == 60u);
+static_assert(sizeof(SceneFileObjectName) == 16u);
 static_assert(sizeof(SceneFileMaterial) == 64u);
 static_assert(sizeof(SceneFileBehaviorSpinOp) == 64u);
 static_assert(sizeof(SceneFileBehaviorTranslateOp) == 64u);

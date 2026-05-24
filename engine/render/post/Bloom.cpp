@@ -33,31 +33,32 @@ namespace {
 using detail::HdrPixel;
 
 // Box-2x2 downsample with bright-pass threshold. `thresh` is the luminance
-// floor below which a sample contributes zero — keeps bloom out of the
-// midtones where the look would just be a fuzzy smear.
+// knee centre. The soft shoulder gives placeholder lights, editor feedback,
+// and boot-intro glints a stable glow without forcing callers to overcrank
+// their HDR colour values.
 void downsample_brightpass(
     const HdrPixel* src, u32 sw, u32 sh, HdrPixel* dst, u32 dw, u32 dh, f32 thresh) noexcept {
+    const f32 threshold = std::max(thresh, 0.0f);
+    const f32 knee = std::max(0.05f, threshold * 0.5f);
     for (u32 y = 0; y < dh; ++y) {
         for (u32 x = 0; x < dw; ++x) {
             // 2x2 box, clamped
             f32 r = 0, g = 0, b = 0, a = 0;
-            f32 wsum = 0.0f;
             for (int dy = 0; dy < 2; ++dy) {
                 for (int dx = 0; dx < 2; ++dx) {
                     const u32 sx = std::min(x * 2u + static_cast<u32>(dx), sw - 1u);
                     const u32 sy = std::min(y * 2u + static_cast<u32>(dy), sh - 1u);
                     const HdrPixel& p = src[static_cast<usize>(sy) * sw + sx];
-                    const f32 lum = 0.2126f * p.r + 0.7152f * p.g + 0.0722f * p.b;
-                    const f32 w = lum > thresh ? 1.0f : 0.0f;
-                    r += p.r * w;
-                    g += p.g * w;
-                    b += p.b * w;
+                    const f32 lum = detail::rgb_luminance(p.r, p.g, p.b);
+                    const f32 w = detail::glow_soft_knee_weight(lum, threshold, knee);
+                    const HdrPixel bright = detail::scale_rgb(p, w);
+                    r += bright.r;
+                    g += bright.g;
+                    b += bright.b;
                     a += p.a * w;
-                    wsum += 1.0f;
                 }
             }
-            wsum = wsum > 0.0f ? wsum : 1.0f;
-            dst[static_cast<usize>(y) * dw + x] = HdrPixel{r / wsum, g / wsum, b / wsum, a / wsum};
+            dst[static_cast<usize>(y) * dw + x] = HdrPixel{r * 0.25f, g * 0.25f, b * 0.25f, a * 0.25f};
         }
     }
 }

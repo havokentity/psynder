@@ -6,13 +6,13 @@
 
 #include "scene/SceneEcs.h"
 
+#include <limits>
 #include <vector>
 
 using namespace psynder;
 using namespace psynder::scene;
 
-TEST_CASE("scene: light component exposes stable authoring defaults",
-          "[scene][light][component]") {
+TEST_CASE("scene: light component exposes stable authoring defaults", "[scene][light][component]") {
     LightComponent light{};
 
     REQUIRE(light.kind == LightKind::Point);
@@ -48,6 +48,32 @@ TEST_CASE("scene: light component can be authored and attached through registry.
     registry.clear();
 }
 
+TEST_CASE("scene: light component sanitizer clamps editor-authored values",
+          "[scene][light][component][editor]") {
+    LightComponent authored{};
+    authored.kind = static_cast<LightKind>(255u);
+    authored.intensity = -2.0f;
+    authored.range = std::numeric_limits<f32>::quiet_NaN();
+    authored.inner_cone_deg = 220.0f;
+    authored.outer_cone_deg = 12.0f;
+    authored.casts_shadow = 7u;
+    authored._pad[0] = 1u;
+    authored._pad[1] = 2u;
+    authored._pad[2] = 3u;
+
+    const LightComponent sanitized = sanitize_light_component(authored);
+
+    REQUIRE(sanitized.kind == LightKind::Point);
+    REQUIRE(sanitized.intensity == 0.0f);
+    REQUIRE(sanitized.range == 0.0f);
+    REQUIRE(sanitized.inner_cone_deg == 179.0f);
+    REQUIRE(sanitized.outer_cone_deg == 179.0f);
+    REQUIRE(sanitized.casts_shadow == 1u);
+    REQUIRE(sanitized._pad[0] == 0u);
+    REQUIRE(sanitized._pad[1] == 0u);
+    REQUIRE(sanitized._pad[2] == 0u);
+}
+
 TEST_CASE("scene: light gather publishes world-space authoring snapshot",
           "[scene][light][component]") {
     auto& registry = EcsRegistry::Get();
@@ -76,12 +102,9 @@ TEST_CASE("scene: light gather publishes world-space authoring snapshot",
     REQUIRE(lights[0].kind == LightKind::Point);
     REQUIRE(lights[0].color_rgba8 == light.color_rgba8);
     REQUIRE(lights[0].casts_shadow);
-    REQUIRE_THAT(static_cast<double>(lights[0].position.x),
-                 Catch::Matchers::WithinAbs(2.0, 1e-5));
-    REQUIRE_THAT(static_cast<double>(lights[0].position.y),
-                 Catch::Matchers::WithinAbs(3.0, 1e-5));
-    REQUIRE_THAT(static_cast<double>(lights[0].position.z),
-                 Catch::Matchers::WithinAbs(4.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(lights[0].position.x), Catch::Matchers::WithinAbs(2.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(lights[0].position.y), Catch::Matchers::WithinAbs(3.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(lights[0].position.z), Catch::Matchers::WithinAbs(4.0, 1e-5));
 
     registry.clear();
 }

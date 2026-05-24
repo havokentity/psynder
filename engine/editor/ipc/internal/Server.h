@@ -96,6 +96,10 @@ class Server {
         std::string reply_channel;
         std::string reply_type;
         std::string reply_command;
+        ::psynder::u32 request_id = 0;
+        bool has_request_id = false;
+        bool quiet = false;
+        bool legacy_console_result = false;
     };
     struct InboundCompletion {
         ::psynder::u32 id = 0;

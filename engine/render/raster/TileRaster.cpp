@@ -558,6 +558,8 @@ void rasterize_tile(const Framebuffer& fb,
                         // Attributes: linear-in-1/w then divide at the quad
                         // for perspective-correct, or skip divide for affine.
                         f32 r, g, b, a, u, v;
+                        math::Vec3 world_pos;
+                        math::Vec3 normal_world;
                         if (affine) {
                             // Affine — interpolate the un-/w-divided values
                             // directly. Looks like PS1: textures swim with
@@ -574,6 +576,22 @@ void rasterize_tile(const Framebuffer& fb,
                                 w1 * (t.v1.u_over_w / t.v1.inv_w) + w2 * (t.v2.u_over_w / t.v2.inv_w);
                             v = w0 * (t.v0.v_over_w / t.v0.inv_w) +
                                 w1 * (t.v1.v_over_w / t.v1.inv_w) + w2 * (t.v2.v_over_w / t.v2.inv_w);
+                            world_pos = {
+                                w0 * (t.v0.wx_over_w / t.v0.inv_w) + w1 * (t.v1.wx_over_w / t.v1.inv_w) +
+                                    w2 * (t.v2.wx_over_w / t.v2.inv_w),
+                                w0 * (t.v0.wy_over_w / t.v0.inv_w) + w1 * (t.v1.wy_over_w / t.v1.inv_w) +
+                                    w2 * (t.v2.wy_over_w / t.v2.inv_w),
+                                w0 * (t.v0.wz_over_w / t.v0.inv_w) + w1 * (t.v1.wz_over_w / t.v1.inv_w) +
+                                    w2 * (t.v2.wz_over_w / t.v2.inv_w),
+                            };
+                            normal_world = {
+                                w0 * (t.v0.nx_over_w / t.v0.inv_w) + w1 * (t.v1.nx_over_w / t.v1.inv_w) +
+                                    w2 * (t.v2.nx_over_w / t.v2.inv_w),
+                                w0 * (t.v0.ny_over_w / t.v0.inv_w) + w1 * (t.v1.ny_over_w / t.v1.inv_w) +
+                                    w2 * (t.v2.ny_over_w / t.v2.inv_w),
+                                w0 * (t.v0.nz_over_w / t.v0.inv_w) + w1 * (t.v1.nz_over_w / t.v1.inv_w) +
+                                    w2 * (t.v2.nz_over_w / t.v2.inv_w),
+                            };
                         } else {
                             const f32 w_recip = inv_w != 0.0f ? 1.0f / inv_w : 0.0f;
                             r = (w0 * t.v0.r_over_w + w1 * t.v1.r_over_w + w2 * t.v2.r_over_w) * w_recip;
@@ -582,7 +600,27 @@ void rasterize_tile(const Framebuffer& fb,
                             a = (w0 * t.v0.a_over_w + w1 * t.v1.a_over_w + w2 * t.v2.a_over_w) * w_recip;
                             u = (w0 * t.v0.u_over_w + w1 * t.v1.u_over_w + w2 * t.v2.u_over_w) * w_recip;
                             v = (w0 * t.v0.v_over_w + w1 * t.v1.v_over_w + w2 * t.v2.v_over_w) * w_recip;
+                            world_pos = {
+                                (w0 * t.v0.wx_over_w + w1 * t.v1.wx_over_w + w2 * t.v2.wx_over_w) *
+                                    w_recip,
+                                (w0 * t.v0.wy_over_w + w1 * t.v1.wy_over_w + w2 * t.v2.wy_over_w) *
+                                    w_recip,
+                                (w0 * t.v0.wz_over_w + w1 * t.v1.wz_over_w + w2 * t.v2.wz_over_w) *
+                                    w_recip,
+                            };
+                            normal_world = {
+                                (w0 * t.v0.nx_over_w + w1 * t.v1.nx_over_w + w2 * t.v2.nx_over_w) *
+                                    w_recip,
+                                (w0 * t.v0.ny_over_w + w1 * t.v1.ny_over_w + w2 * t.v2.ny_over_w) *
+                                    w_recip,
+                                (w0 * t.v0.nz_over_w + w1 * t.v1.nz_over_w + w2 * t.v2.nz_over_w) *
+                                    w_recip,
+                            };
                         }
+                        const math::Vec3 light_rgb = evaluate_raster_lighting(d.light_packet,
+                                                                              d.material_lighting,
+                                                                              world_pos,
+                                                                              normal_world);
 
                         u32 out_rgba;
                         if (surface_cached) {
@@ -600,7 +638,10 @@ void rasterize_tile(const Framebuffer& fb,
                             const f32 tg = static_cast<f32>((t_rgba >> 8) & 0xFFu) * (1.0f / 255.0f);
                             const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f / 255.0f);
                             const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f / 255.0f);
-                            out_rgba = pack_rgba(r * tr, g * tg, b * tb, a * ta);
+                            out_rgba = pack_rgba(r * tr * light_rgb.x,
+                                                 g * tg * light_rgb.y,
+                                                 b * tb * light_rgb.z,
+                                                 a * ta);
                         } else if (has_tex) {
                             // OnTheFly: sample base texture. Three paths,
                             // picked by per-draw const bools above:
@@ -626,9 +667,12 @@ void rasterize_tile(const Framebuffer& fb,
                             const f32 tg = static_cast<f32>((t_rgba >> 8) & 0xFFu) * (1.0f / 255.0f);
                             const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f / 255.0f);
                             const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f / 255.0f);
-                            out_rgba = pack_rgba(r * tr, g * tg, b * tb, a * ta);
+                            out_rgba = pack_rgba(r * tr * light_rgb.x,
+                                                 g * tg * light_rgb.y,
+                                                 b * tb * light_rgb.z,
+                                                 a * ta);
                         } else {
-                            out_rgba = pack_rgba(r, g, b, a);
+                            out_rgba = pack_rgba(r * light_rgb.x, g * light_rgb.y, b * light_rgb.z, a);
                         }
                         row_pix[x] =
                             multiply_blend

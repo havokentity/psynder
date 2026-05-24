@@ -25,9 +25,8 @@ void append_bytes(std::vector<u8>& out, const void* data, usize bytes) {
 }
 
 void pad_to_scene_alignment(std::vector<u8>& out) {
-    const usize aligned =
-        ((out.size() + scene::kPsySceneAlignment - 1u) / scene::kPsySceneAlignment) *
-        scene::kPsySceneAlignment;
+    const usize aligned = ((out.size() + scene::kPsySceneAlignment - 1u) / scene::kPsySceneAlignment) *
+                          scene::kPsySceneAlignment;
     out.resize(aligned, 0u);
 }
 
@@ -80,8 +79,7 @@ std::vector<u8> make_scene_blob() {
     translate.amount_base = 0.5f;
     translate.amount_step = 0.25f;
 
-    std::vector<u8> bytes(sizeof(scene::SceneFileHeader) +
-                          10u * sizeof(scene::SceneFileChunk));
+    std::vector<u8> bytes(sizeof(scene::SceneFileHeader) + 10u * sizeof(scene::SceneFileChunk));
     std::vector<scene::SceneFileChunk> chunks;
     append_chunk(bytes,
                  chunks,
@@ -153,8 +151,12 @@ Entity test_spawn_mesh_instance(void*,
                                 scene::SceneNode parent,
                                 scene::RenderableFlags flags,
                                 scene::ObjectMobility mobility) {
-    const scene::RenderableComponent renderable = scene::make_renderable(
-        scene::GeometryKind::Mesh, mesh.raw, material, math::aabb_empty(), mobility, flags);
+    const scene::RenderableComponent renderable = scene::make_renderable(scene::GeometryKind::Mesh,
+                                                                         mesh.raw,
+                                                                         material,
+                                                                         math::aabb_empty(),
+                                                                         mobility,
+                                                                         flags);
     return scene_ref.create_renderable(renderable, local, parent);
 }
 
@@ -217,12 +219,12 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     const scene::SceneMaterialBinding material_binding{.material_name = "crate.wood",
                                                        .material = material};
     Entity mesh_entity{};
-    const scene::SceneFileInstantiateResult result =
-        scene::instantiate_scene_file(scene_ref,
-                                      view,
-                                      std::span<const scene::SceneMeshBinding>{&binding, 1u},
-                                      std::span<const scene::SceneMaterialBinding>{&material_binding, 1u},
-                                      std::span<Entity>{&mesh_entity, 1u});
+    const scene::SceneFileInstantiateResult result = scene::instantiate_scene_file(
+        scene_ref,
+        view,
+        std::span<const scene::SceneMeshBinding>{&binding, 1u},
+        std::span<const scene::SceneMaterialBinding>{&material_binding, 1u},
+        std::span<Entity>{&mesh_entity, 1u});
 
     REQUIRE(result.cameras == 1u);
     REQUIRE(result.mesh_instances == 1u);
@@ -265,8 +267,10 @@ TEST_CASE("scene cooker lowers PsyScript and PsyGraph sources to behavior ops",
         std::ofstream script{root / "behaviors/spin.psyscript"};
         script << "behavior SpinCrates {\n"
                << "  target_group \"crates\"\n"
-               << "  update { transform.spin(axis = [0, 1, 0], speed = linear_index(0.35, 0.12), phase = 0.0) }\n"
-               << "  update { transform.translate(axis = [0, 1, 0], amount = linear_index(0.1, 0.25)) }\n"
+               << "  update { transform.spin(axis = [0, 1, 0], speed = linear_index(0.35, 0.12), "
+                  "phase = 0.0) }\n"
+               << "  update { transform.translate(axis = [0, 1, 0], amount = linear_index(0.1, "
+                  "0.25)) }\n"
                << "}\n";
     }
     {
@@ -330,11 +334,13 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     camera_desc.tile_h = 120u;
     const Entity camera = authored.spawn_camera(camera_desc, parent_node);
     REQUIRE(camera.valid());
+    REQUIRE(authored.set_entity_name(camera, "Editor Camera"));
 
     scene::LocalTransform light_transform{};
     light_transform.translation = {0.0f, 4.0f, -2.0f};
     const Entity light_entity = authored.create_entity(light_transform, parent_node);
     REQUIRE(light_entity.valid());
+    REQUIRE(authored.set_entity_name(light_entity, "Key Light"));
     scene::LightComponent light{};
     light.kind = scene::LightKind::Spot;
     light.color_rgba8 = 0xFFFFCC88u;
@@ -358,15 +364,17 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     const render::MeshId mesh{77u};
     scene::LocalTransform mesh_transform{};
     mesh_transform.translation = {1.0f, 2.0f, 3.0f};
-    const scene::RenderableComponent renderable = scene::make_renderable(
-        scene::GeometryKind::Mesh,
-        mesh.raw,
-        material,
-        math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}},
-        scene::ObjectMobility::Static,
-        scene::RenderableFlags::Visible | scene::RenderableFlags::CastsShadowOverride);
+    const scene::RenderableComponent renderable =
+        scene::make_renderable(scene::GeometryKind::Mesh,
+                               mesh.raw,
+                               material,
+                               math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}},
+                               scene::ObjectMobility::Static,
+                               scene::RenderableFlags::Visible |
+                                   scene::RenderableFlags::CastsShadowOverride);
     const Entity mesh_entity = authored.create_renderable(renderable, mesh_transform, parent_node);
     REQUIRE(mesh_entity.valid());
+    REQUIRE(authored.set_entity_name(mesh_entity, "Hero Box Entity"));
 
     SaveRoundtripHooks hook_user{.mesh_entity = mesh_entity};
     const scene::SceneFileSaveHooks hooks{
@@ -403,13 +411,27 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     REQUIRE(view.cameras.size() == 1u);
     REQUIRE(view.mesh_instances.size() == 1u);
     REQUIRE(view.lights.size() == 1u);
+    REQUIRE(view.object_names.size() == 3u);
     REQUIRE(view.materials.size() == 1u);
-    REQUIRE(std::string_view{scene::scene_file_string(
-                view, view.mesh_instances[0].mesh_name_offset)} == "mesh.box");
-    REQUIRE(std::string_view{scene::scene_file_string(
-                view, view.mesh_instances[0].material_name_offset)} == "preset.clay");
-    REQUIRE(std::string_view{scene::scene_file_string(
-                view, view.mesh_instances[0].group_name_offset)} == "Hero Box");
+    REQUIRE(view.object_names[0].kind == scene::SceneFileObjectKind::Camera);
+    REQUIRE(view.object_names[0].object_index == 0u);
+    REQUIRE(std::string_view{scene::scene_file_string(view, view.object_names[0].name_offset)} ==
+            "Editor Camera");
+    REQUIRE(view.object_names[1].kind == scene::SceneFileObjectKind::Light);
+    REQUIRE(view.object_names[1].object_index == 0u);
+    REQUIRE(std::string_view{scene::scene_file_string(view, view.object_names[1].name_offset)} ==
+            "Key Light");
+    REQUIRE(view.object_names[2].kind == scene::SceneFileObjectKind::MeshInstance);
+    REQUIRE(view.object_names[2].object_index == 0u);
+    REQUIRE(std::string_view{scene::scene_file_string(view, view.object_names[2].name_offset)} ==
+            "Hero Box Entity");
+    REQUIRE(std::string_view{scene::scene_file_string(view, view.mesh_instances[0].mesh_name_offset)} ==
+            "mesh.box");
+    REQUIRE(std::string_view{
+                scene::scene_file_string(view, view.mesh_instances[0].material_name_offset)} ==
+            "preset.clay");
+    REQUIRE(std::string_view{scene::scene_file_string(view, view.mesh_instances[0].group_name_offset)} ==
+            "Hero Box");
     REQUIRE(view.materials[0].albedo_rgba8 == material_desc.albedo_rgba8);
     REQUIRE(std::abs(view.materials[0].reflectivity - material_desc.reflectivity) < 0.0001f);
     REQUIRE(std::abs(view.materials[0].roughness - material_desc.roughness) < 0.0001f);
@@ -447,12 +469,12 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
         .material = render::MaterialId{5u},
     };
     Entity loaded_mesh{};
-    const scene::SceneFileInstantiateResult instantiate =
-        scene::instantiate_scene_file(loaded,
-                                      view,
-                                      std::span<const scene::SceneMeshBinding>{&mesh_binding, 1u},
-                                      std::span<const scene::SceneMaterialBinding>{&material_binding, 1u},
-                                      std::span<Entity>{&loaded_mesh, 1u});
+    const scene::SceneFileInstantiateResult instantiate = scene::instantiate_scene_file(
+        loaded,
+        view,
+        std::span<const scene::SceneMeshBinding>{&mesh_binding, 1u},
+        std::span<const scene::SceneMaterialBinding>{&material_binding, 1u},
+        std::span<Entity>{&loaded_mesh, 1u});
     REQUIRE(instantiate.cameras == 1u);
     REQUIRE(instantiate.mesh_instances == 1u);
     REQUIRE(instantiate.lights == 1u);
@@ -461,6 +483,8 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     REQUIRE(loaded_mesh.valid());
     REQUIRE(loaded.environment().settings().clear_color_rgba8 == 0xFF203040u);
     REQUIRE(!loaded.environment().settings().clear_depth);
+    REQUIRE(loaded.entity_name(loaded.active_camera_entity()) == "Editor Camera");
+    REQUIRE(loaded.entity_name(loaded_mesh) == "Hero Box Entity");
 
     const auto* loaded_renderable = loaded.registry().get<scene::RenderableComponent>(loaded_mesh);
     REQUIRE(loaded_renderable != nullptr);
@@ -474,6 +498,7 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     loaded.gather_lights(loaded_lights);
     REQUIRE(loaded_lights.size() == 1u);
     REQUIRE(loaded_lights[0].kind == scene::LightKind::Spot);
+    REQUIRE(loaded.entity_name(loaded_lights[0].entity) == "Key Light");
     REQUIRE(loaded_lights[0].color_rgba8 == light.color_rgba8);
     REQUIRE(std::abs(loaded_lights[0].intensity - light.intensity) < 0.0001f);
     REQUIRE(std::abs(loaded_lights[0].range - light.range) < 0.0001f);

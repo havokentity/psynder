@@ -4,12 +4,36 @@
 #pragma once
 
 #include "EcsRegistry_Internal.h"
+#include "scene/Environment.h"
+#include "scene/SceneGraph.h"
 
 #include <cstddef>
 #include <span>
+#include <string>
 #include <vector>
 
+namespace psynder::scene {
+class Scene;
+}  // namespace psynder::scene
+
 namespace psynder::scene::detail {
+
+enum class EcsEditorWellKnownComponentKind : u8 {
+    Unknown = 0,
+    Transform,
+    SceneNode,
+    EntityName,
+    Camera,
+    Light,
+    Renderable,
+};
+
+enum class EcsEditorEntityKind : u8 {
+    Empty = 0,
+    Camera,
+    Light,
+    Renderable,
+};
 
 // Minimal schema/value record for editor inspectors. Field-level reflection is
 // intentionally not invented here; this snapshots the component registration
@@ -19,15 +43,30 @@ struct EcsEditorComponentSnapshot {
     u32 size = 0;
     u32 align = 0;
     const char* name = "";
+    EcsEditorWellKnownComponentKind kind = EcsEditorWellKnownComponentKind::Unknown;
     u32 value_offset = 0;
     u32 value_size = 0;
 };
 
 struct EcsEditorEntitySnapshot {
     Entity entity{};
+    SceneNode node{};
+    SceneNode parent_node{};
+    Entity parent_entity{};
+    u32 depth = 0u;
+    u32 child_count = 0u;
     u32 component_begin = 0;
     u32 component_count = 0;
+    EcsEditorEntityKind kind = EcsEditorEntityKind::Empty;
+    std::string name;
     bool alive = false;
+};
+
+struct EcsEditorSceneSnapshot {
+    EnvironmentSettings environment{};
+    std::vector<EcsEditorEntitySnapshot> hierarchy;
+
+    void clear() { hierarchy.clear(); }
 };
 
 struct EcsEditorSelectionSnapshot {
@@ -65,5 +104,9 @@ struct EcsEditorSelectionSnapshot {
 void snapshot_selected_entities(std::span<const Entity> selected, EcsEditorSelectionSnapshot& out);
 
 [[nodiscard]] EcsEditorSelectionSnapshot snapshot_selected_entities(std::span<const Entity> selected);
+
+void snapshot_scene_authoring(Scene& scene, EcsEditorSceneSnapshot& out);
+
+[[nodiscard]] EcsEditorSceneSnapshot snapshot_scene_authoring(Scene& scene);
 
 }  // namespace psynder::scene::detail

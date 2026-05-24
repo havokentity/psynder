@@ -4,8 +4,11 @@
 #include "EcsEditorSnapshot_Internal.h"
 
 #include "Registry.h"
+#include "scene/SceneEcs.h"
 
+#include <algorithm>
 #include <cstring>
+#include <unordered_map>
 
 namespace psynder::scene::detail {
 
@@ -13,6 +16,56 @@ namespace {
 
 constexpr u32 entity_index_of(Entity e) noexcept {
     return e.index() == 0 ? 0xFFFFFFFFu : e.index() - 1u;
+}
+
+[[nodiscard]] EcsEditorWellKnownComponentKind well_known_component_kind(ComponentId id) {
+    if (id == component_id<TransformComponent>())
+        return EcsEditorWellKnownComponentKind::Transform;
+    if (id == component_id<SceneNodeComponent>())
+        return EcsEditorWellKnownComponentKind::SceneNode;
+    if (id == component_id<EntityNameComponent>())
+        return EcsEditorWellKnownComponentKind::EntityName;
+    if (id == component_id<CameraComponent>())
+        return EcsEditorWellKnownComponentKind::Camera;
+    if (id == component_id<LightComponent>())
+        return EcsEditorWellKnownComponentKind::Light;
+    if (id == component_id<RenderableComponent>())
+        return EcsEditorWellKnownComponentKind::Renderable;
+    return EcsEditorWellKnownComponentKind::Unknown;
+}
+
+[[nodiscard]] EcsEditorEntityKind entity_kind(EcsRegistry& registry, Entity entity) {
+    if (registry.get<CameraComponent>(entity))
+        return EcsEditorEntityKind::Camera;
+    if (registry.get<LightComponent>(entity))
+        return EcsEditorEntityKind::Light;
+    if (registry.get<RenderableComponent>(entity))
+        return EcsEditorEntityKind::Renderable;
+    return EcsEditorEntityKind::Empty;
+}
+
+[[nodiscard]] std::string default_entity_name(EcsEditorEntityKind kind, Entity entity) {
+    switch (kind) {
+        case EcsEditorEntityKind::Camera:
+            return "Camera";
+        case EcsEditorEntityKind::Light:
+            return "Light";
+        case EcsEditorEntityKind::Renderable:
+            return "Renderable";
+        case EcsEditorEntityKind::Empty:
+            break;
+    }
+    return "Entity " + std::to_string(entity.raw);
+}
+
+[[nodiscard]] std::string editor_entity_name(EcsRegistry& registry,
+                                             Entity entity,
+                                             EcsEditorEntityKind kind) {
+    if (const auto* name = registry.get<EntityNameComponent>(entity)) {
+        if (!entity_name_empty(*name))
+            return std::string{entity_name_view(*name)};
+    }
+    return default_entity_name(kind, entity);
 }
 
 }  // namespace
@@ -61,6 +114,7 @@ void EcsRegistryImpl::snapshot_selected_entities(std::span<const Entity> selecte
             component_snapshot.size = record.size != 0u ? record.size : value_size;
             component_snapshot.align = record.align;
             component_snapshot.name = record.name ? record.name : "";
+            component_snapshot.kind = well_known_component_kind(component_id);
             component_snapshot.value_offset = value_offset;
             component_snapshot.value_size = value_size;
             out.components.push_back(component_snapshot);
@@ -72,7 +126,29 @@ void EcsRegistryImpl::snapshot_selected_entities(std::span<const Entity> selecte
             const std::byte* src = arche.column_base(chunk, column) +
                                    static_cast<usize>(slot.row_in_chunk) * value_size;
             std::memcpy(out.value_bytes.data() + value_offset, src, value_size);
+            if (component_snapshot.kind == EcsEditorWellKnownComponentKind::SceneNode &&
+                value_size == sizeof(SceneNodeComponent)) {
+                SceneNodeComponent node{};
+                std::memcpy(&node, src, sizeof(node));
+                entity_snapshot.node = node.node;
+            } else if (component_snapshot.kind == EcsEditorWellKnownComponentKind::EntityName &&
+                       value_size == sizeof(EntityNameComponent)) {
+                EntityNameComponent name{};
+                std::memcpy(&name, src, sizeof(name));
+                entity_snapshot.name = std::string{entity_name_view(name)};
+            } else if (component_snapshot.kind == EcsEditorWellKnownComponentKind::Camera) {
+                entity_snapshot.kind = EcsEditorEntityKind::Camera;
+            } else if (component_snapshot.kind == EcsEditorWellKnownComponentKind::Light &&
+                       entity_snapshot.kind != EcsEditorEntityKind::Camera) {
+                entity_snapshot.kind = EcsEditorEntityKind::Light;
+            } else if (component_snapshot.kind == EcsEditorWellKnownComponentKind::Renderable &&
+                       entity_snapshot.kind == EcsEditorEntityKind::Empty) {
+                entity_snapshot.kind = EcsEditorEntityKind::Renderable;
+            }
         }
+
+        if (entity_snapshot.name.empty())
+            entity_snapshot.name = default_entity_name(entity_snapshot.kind, entity);
 
         out.entities.push_back(entity_snapshot);
     }
@@ -85,6 +161,78 @@ void snapshot_selected_entities(std::span<const Entity> selected, EcsEditorSelec
 EcsEditorSelectionSnapshot snapshot_selected_entities(std::span<const Entity> selected) {
     EcsEditorSelectionSnapshot out;
     snapshot_selected_entities(selected, out);
+    return out;
+}
+
+void snapshot_scene_authoring(Scene& scene, EcsEditorSceneSnapshot& out) {
+    out.clear();
+    out.environment = sanitize_environment_settings(scene.environment().settings());
+
+    EcsRegistry& registry = scene.registry();
+    const u32 total = registry.snapshot_live_entities(std::span<Entity>{});
+    std::vector<Entity> entities(total);
+    const u32 copied = registry.snapshot_live_entities(entities);
+    entities.resize(std::min<u32>(total, copied));
+
+    std::unordered_map<u32, Entity> node_to_entity;
+    node_to_entity.reserve(entities.size());
+    out.hierarchy.reserve(entities.size());
+
+    for (Entity entity : entities) {
+        const auto* node_component = registry.get<SceneNodeComponent>(entity);
+        if (!node_component || !scene.graph().alive(node_component->node))
+            continue;
+        node_to_entity.emplace(node_component->node.raw, entity);
+    }
+
+    for (Entity entity : entities) {
+        const auto* node_component = registry.get<SceneNodeComponent>(entity);
+        if (!node_component || !scene.graph().alive(node_component->node))
+            continue;
+
+        EcsEditorEntitySnapshot snapshot{};
+        snapshot.entity = entity;
+        snapshot.node = node_component->node;
+        snapshot.parent_node = scene.graph().parent(snapshot.node);
+        if (snapshot.parent_node.valid()) {
+            if (const auto it = node_to_entity.find(snapshot.parent_node.raw);
+                it != node_to_entity.end()) {
+                snapshot.parent_entity = it->second;
+            }
+        }
+        snapshot.alive = true;
+        snapshot.kind = entity_kind(registry, entity);
+        snapshot.name = editor_entity_name(registry, entity, snapshot.kind);
+
+        for (SceneNode parent = snapshot.parent_node; parent.valid();
+             parent = scene.graph().parent(parent)) {
+            ++snapshot.depth;
+            if (snapshot.depth > 1024u)
+                break;
+        }
+        out.hierarchy.push_back(std::move(snapshot));
+    }
+
+    for (EcsEditorEntitySnapshot& parent : out.hierarchy) {
+        parent.child_count = 0u;
+        for (const EcsEditorEntitySnapshot& child : out.hierarchy) {
+            if (child.parent_node == parent.node)
+                ++parent.child_count;
+        }
+    }
+
+    std::sort(out.hierarchy.begin(),
+              out.hierarchy.end(),
+              [](const EcsEditorEntitySnapshot& a, const EcsEditorEntitySnapshot& b) {
+                  if (a.depth != b.depth)
+                      return a.depth < b.depth;
+                  return a.node.raw < b.node.raw;
+              });
+}
+
+EcsEditorSceneSnapshot snapshot_scene_authoring(Scene& scene) {
+    EcsEditorSceneSnapshot out;
+    snapshot_scene_authoring(scene, out);
     return out;
 }
 
