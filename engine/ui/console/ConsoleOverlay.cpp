@@ -1143,6 +1143,12 @@ bool update_completion_popup_mouse(State& s, const platform::MouseState& mouse) 
         return true;
     }
 
+    if (!mouse.left && hovered >= 0) {
+        s.comp_sel = hovered;
+        s.comp_selection_touched = true;
+        return true;
+    }
+
     if (!mouse.left) {
         s.comp_popup_mouse_active = false;
         s.comp_popup_mouse_index = -1;

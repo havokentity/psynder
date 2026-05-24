@@ -220,13 +220,32 @@ MacInput& mac_input() {
 }
 
 void forward_appkit_function_keys(NSEvent* event, bool down) {
-    NSString* chars = [event charactersIgnoringModifiers];
-    const NSUInteger n = [chars length];
-    for (NSUInteger i = 0; i < n; ++i) {
-        const KeyCode k = translate_appkit_function_char([chars characterAtIndex:i]);
-        if (k != KeyCode::Unknown)
-            mac_input().on_key(k, down);
+    auto forward_chars = [&](NSString* chars) {
+        const NSUInteger n = [chars length];
+        for (NSUInteger i = 0; i < n; ++i) {
+            const KeyCode k = translate_appkit_function_char([chars characterAtIndex:i]);
+            if (k != KeyCode::Unknown)
+                mac_input().on_key(k, down);
+        }
+    };
+    forward_chars([event charactersIgnoringModifiers]);
+    forward_chars([event characters]);
+}
+
+void release_physical_navigation_aliases(unsigned short vk) {
+    switch (vk) {
+        case kVK_LeftArrow:  mac_input().on_key(KeyCode::Home, false); break;
+        case kVK_RightArrow: mac_input().on_key(KeyCode::End, false); break;
+        default: break;
     }
+}
+
+void sync_modifier_keys(NSEvent* event) {
+    const NSEventModifierFlags f = [event modifierFlags];
+    mac_input().on_key(KeyCode::LeftShift, (f & NSEventModifierFlagShift) != 0);
+    mac_input().on_key(KeyCode::LeftCtrl, (f & NSEventModifierFlagControl) != 0);
+    mac_input().on_key(KeyCode::LeftAlt, (f & NSEventModifierFlagOption) != 0);
+    mac_input().on_key(KeyCode::LeftSuper, (f & NSEventModifierFlagCommand) != 0);
 }
 
 // ─── NSApp lazy bootstrap ────────────────────────────────────────────────
@@ -426,6 +445,7 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 
 // ── Keyboard ─────────────────────────────────────────────────────────────
 - (void)keyDown:(NSEvent*)event {
+    psynder::platform::sync_modifier_keys(event);
     psynder::platform::mac_input().on_key(
         psynder::platform::translate_key([event keyCode]), true);
     psynder::platform::forward_appkit_function_keys(event, true);
@@ -463,20 +483,14 @@ void mac_set_clipboard_text_impl(std::string_view text) {
     }
 }
 - (void)keyUp:(NSEvent*)event {
+    psynder::platform::sync_modifier_keys(event);
     psynder::platform::mac_input().on_key(
         psynder::platform::translate_key([event keyCode]), false);
     psynder::platform::forward_appkit_function_keys(event, false);
+    psynder::platform::release_physical_navigation_aliases([event keyCode]);
 }
 - (void)flagsChanged:(NSEvent*)event {
-    NSEventModifierFlags f = [event modifierFlags];
-    using psynder::platform::KeyCode;
-    auto set = [&](KeyCode k, BOOL on) {
-        psynder::platform::mac_input().on_key(k, on ? true : false);
-    };
-    set(KeyCode::LeftShift, (f & NSEventModifierFlagShift)   != 0);
-    set(KeyCode::LeftCtrl,  (f & NSEventModifierFlagControl) != 0);
-    set(KeyCode::LeftAlt,   (f & NSEventModifierFlagOption)  != 0);
-    set(KeyCode::LeftSuper, (f & NSEventModifierFlagCommand) != 0);
+    psynder::platform::sync_modifier_keys(event);
 }
 
 // ── Mouse ────────────────────────────────────────────────────────────────
@@ -493,8 +507,8 @@ void mac_set_clipboard_text_impl(std::string_view text) {
         static_cast<psynder::f32>(p.x),
         static_cast<psynder::f32>(self.bounds.size.height - p.y));
 }
-- (void)mouseDown:(NSEvent*)event        { psynder::platform::mac_input().on_mouse_button(0, true);  }
-- (void)mouseUp:(NSEvent*)event          { psynder::platform::mac_input().on_mouse_button(0, false); }
+- (void)mouseDown:(NSEvent*)event        { [self forwardMouseMove:event]; psynder::platform::mac_input().on_mouse_button(0, true);  }
+- (void)mouseUp:(NSEvent*)event          { [self forwardMouseMove:event]; psynder::platform::mac_input().on_mouse_button(0, false); }
 - (void)rightMouseDown:(NSEvent*)event   { psynder::platform::mac_input().on_mouse_button(1, true);  }
 - (void)rightMouseUp:(NSEvent*)event     { psynder::platform::mac_input().on_mouse_button(1, false); }
 - (void)otherMouseDown:(NSEvent*)event   { psynder::platform::mac_input().on_mouse_button(2, true);  }

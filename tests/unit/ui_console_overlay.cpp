@@ -448,6 +448,32 @@ TEST_CASE("console: Home and End move the prompt caret", "[ui][console]") {
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: Shift Home selects typed prompt text", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_shift_home_val", "0", "shift home test cvar");
+    con.SetCVarOverride("con_shift_home_val", "0");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("bad");
+    tick(in);
+    in.press(KeyCode::LeftShift);
+    in.press(KeyCode::Home);
+    tick(in);
+    in.release_all();
+    in.type("con_shift_home_val 9");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_shift_home_val")->value == "9");
+
+    con.SetCVarOverride("con_shift_home_val", "0");
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: shortcut Left and Right jump to prompt ends", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(false);
@@ -479,6 +505,85 @@ TEST_CASE("console: shortcut Left and Right jump to prompt ends", "[ui][console]
     REQUIRE(con.FindCVar("con_shortcut_edges_val")->value == "42");
 
     con.SetCVarOverride("con_shortcut_edges_val", "0");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: paste works at the beginning and can paste again", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_paste_repeat_val", "0", "paste repeat test cvar");
+    con.SetCVarOverride("con_paste_repeat_val", "0");
+
+    const std::string old_clipboard = platform::clipboard_text();
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type(" 4");
+    tick(in);
+    in.press(KeyCode::Home);
+    tick(in);
+    platform::set_clipboard_text("con_paste_repeat_val");
+    in.release_all();
+    in.press(KeyCode::LeftCtrl);
+    in.press(KeyCode::V);
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::End);
+    tick(in);
+    platform::set_clipboard_text("2");
+    in.release_all();
+    in.press(KeyCode::LeftCtrl);
+    in.press(KeyCode::V);
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_paste_repeat_val")->value == "42");
+
+    platform::set_clipboard_text(old_clipboard);
+    con.SetCVarOverride("con_paste_repeat_val", "0");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: mouse hover selects popup row before Enter", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(true);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_hover_val_a", "0", "hover test cvar a");
+    con.RegisterCVar("con_hover_val_b", "0", "hover test cvar b");
+    con.SetCVarOverride("con_hover_val_a", "0");
+    con.SetCVarOverride("con_hover_val_b", "0");
+
+    std::vector<std::uint32_t> pixels;
+    render::Framebuffer fb = make_console_test_fb(pixels);
+
+    FakeInput in;
+    for (int i = 0; i < 30; ++i) {
+        ui::console::update(in, kDt);
+        in.advance_frame();
+        ui::console::draw(fb);
+    }
+
+    in.type("con_hover_val_");
+    ui::console::update(in, kDt);
+    in.advance_frame();
+    ui::console::draw(fb);
+
+    in.set_mouse(24.0f, 114.0f, false);  // second popup row in the 256px test framebuffer
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    in.type("7");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_hover_val_a")->value == "0");
+    REQUIRE(con.FindCVar("con_hover_val_b")->value == "7");
+
+    con.SetCVarOverride("con_hover_val_a", "0");
+    con.SetCVarOverride("con_hover_val_b", "0");
     ui::console::set_open(false);
 }
 
