@@ -197,6 +197,9 @@ struct State {
     std::string comp_input_key;
     usize comp_cursor_key = static_cast<usize>(-1);
     bool comp_suppressed_until_text = false;
+    bool mouse_left_prev = false;
+    u32 last_fb_w = 0;
+    u32 last_fb_h = 0;
 
     TerrainAutotune terrain_tune;
 
@@ -690,6 +693,16 @@ void replace_token_at_cursor(State& s, std::string_view replacement) noexcept {
     s.cursor = start + replacement.size();
 }
 
+void accept_completion(State& s, int index) noexcept {
+    if (index < 0 || index >= static_cast<int>(s.comp_items.size()))
+        return;
+    replace_token_at_cursor(s, s.comp_items[static_cast<usize>(index)] + " ");
+    s.comp_active = false;
+    s.comp_items.clear();
+    s.comp_sel = 0;
+    s.history_pos = -1;
+}
+
 std::string longest_common_prefix(const std::vector<std::string>& v) noexcept {
     if (v.empty())
         return {};
@@ -863,6 +876,46 @@ usize token_start(const State& s) noexcept {
     return start;
 }
 
+struct CompletionPopupLayout {
+    bool visible = false;
+    int first = 0;
+    int vis = 0;
+    f32 box_x = 0.0f;
+    f32 box_y = 0.0f;
+    f32 box_w = 0.0f;
+    f32 box_h = 0.0f;
+};
+
+CompletionPopupLayout completion_popup_layout(const State& s, f32 fw, f32 fh) noexcept {
+    CompletionPopupLayout out{};
+    if (!s.comp_active || s.comp_items.empty() || fw <= 0.0f || fh <= 0.0f)
+        return out;
+
+    const f32 panel_h = std::round(s.anim * std::floor(fh * kPanelFrac));
+    if (panel_h < static_cast<f32>(kLineH))
+        return out;
+
+    const f32 prompt_y = panel_h - static_cast<f32>(kLineH) - kPad;
+    const f32 text_x = kPad + 2.0f * static_cast<f32>(kCharW);
+
+    const int n = static_cast<int>(s.comp_items.size());
+    constexpr int kMaxVis = 8;
+    out.vis = std::min(kMaxVis, n);
+    if (n > kMaxVis)
+        out.first = std::clamp(s.comp_sel - kMaxVis / 2, 0, n - kMaxVis);
+
+    usize longest = 0;
+    for (int i = 0; i < out.vis; ++i)
+        longest = std::max(longest, s.comp_items[static_cast<usize>(out.first + i)].size());
+
+    out.box_w = static_cast<f32>(longest) * static_cast<f32>(kCharW) + 8.0f;
+    out.box_h = static_cast<f32>(out.vis) * static_cast<f32>(kLineH) + 4.0f;
+    out.box_x = text_x + static_cast<f32>(token_start(s)) * static_cast<f32>(kCharW);
+    out.box_y = std::max(kPad, prompt_y - out.box_h - 3.0f);
+    out.visible = out.vis > 0;
+    return out;
+}
+
 // Rebuild the completion popup from the current cursor token. Resets the
 // highlighted row when the token changes so a fresh prefix starts at the top.
 void refresh_completion(State& s) noexcept {
@@ -901,6 +954,24 @@ void refresh_completion(State& s) noexcept {
 void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept {
     refresh_completion(s);  // popup mirrors the current prompt token
 
+    const platform::MouseState& mouse = input.mouse();
+    const bool left_pressed = mouse.left && !s.mouse_left_prev;
+    if (s.comp_active && s.last_fb_w > 0u && s.last_fb_h > 0u) {
+        const CompletionPopupLayout layout = completion_popup_layout(
+            s, static_cast<f32>(s.last_fb_w), static_cast<f32>(s.last_fb_h));
+        if (layout.visible && mouse.x >= layout.box_x && mouse.x < layout.box_x + layout.box_w &&
+            mouse.y >= layout.box_y + 2.0f && mouse.y < layout.box_y + layout.box_h - 2.0f) {
+            const int row = static_cast<int>((mouse.y - (layout.box_y + 2.0f)) /
+                                             static_cast<f32>(kLineH));
+            if (row >= 0 && row < layout.vis) {
+                const int item_index = layout.first + row;
+                s.comp_sel = item_index;
+                if (left_pressed)
+                    accept_completion(s, item_index);
+            }
+        }
+    }
+
     if (input.key_pressed(KeyCode::Enter))
         submit(s);
     if (input.key_pressed(KeyCode::Escape)) {
@@ -919,9 +990,7 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
     }
     if (input.key_pressed(KeyCode::Tab)) {
         if (s.comp_active && s.comp_sel >= 0 && s.comp_sel < static_cast<int>(s.comp_items.size())) {
-            replace_token_at_cursor(s, s.comp_items[static_cast<usize>(s.comp_sel)] + " ");
-            s.comp_active = false;
-            s.history_pos = -1;
+            accept_completion(s, s.comp_sel);
         } else {
             autocomplete(s);
         }
@@ -968,6 +1037,8 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         s.scroll += 3;
     else if (wheel < 0.0f)
         s.scroll = (s.scroll > 3u) ? s.scroll - 3u : 0u;
+
+    s.mouse_left_prev = mouse.left;
 }
 
 }  // namespace
@@ -997,6 +1068,7 @@ void reset() noexcept {
 bool update(const platform::Input& input, f32 dt) noexcept {
     State& s = state();
     ensure_init(s);
+    const bool mouse_left_now = input.mouse().left;
 
     const bool was_open = s.open;
     const bool toggle_edge = input.key_pressed(KeyCode::Tilde);
@@ -1016,6 +1088,8 @@ bool update(const platform::Input& input, f32 dt) noexcept {
         process_text(s, input);
         process_edit_keys(s, input, dt);
     }
+    if (!s.open || toggle_edge)
+        s.mouse_left_prev = mouse_left_now;
 
     terrain_tune_tick(s, dt);
 
@@ -1042,6 +1116,8 @@ void draw(render::Framebuffer& fb) noexcept {
 
     const f32 fw = static_cast<f32>(fb.width);
     const f32 fh = static_cast<f32>(fb.height);
+    s.last_fb_w = fb.width;
+    s.last_fb_h = fb.height;
     const f32 panel_h = std::round(s.anim * std::floor(fh * kPanelFrac));
     if (panel_h < static_cast<f32>(kLineH))
         return;
@@ -1156,35 +1232,26 @@ void draw(render::Framebuffer& fb) noexcept {
     // ── Completion popup: a navigable list above the prompt, anchored under
     // the token being typed. Up/Down move the highlight; Tab accepts it. ────
     if (s.comp_active && !s.comp_items.empty()) {
-        const int n = static_cast<int>(s.comp_items.size());
-        constexpr int kMaxVis = 8;
-        const int vis = std::min(kMaxVis, n);
-        int first = 0;
-        if (n > kMaxVis)
-            first = std::clamp(s.comp_sel - kMaxVis / 2, 0, n - kMaxVis);
-
-        usize longest = 0;
-        for (int i = 0; i < vis; ++i)
-            longest = std::max(longest, s.comp_items[static_cast<usize>(first + i)].size());
-
-        const f32 box_w = static_cast<f32>(longest) * static_cast<f32>(kCharW) + 8.0f;
-        const f32 box_h = static_cast<f32>(vis) * static_cast<f32>(kLineH) + 4.0f;
-        const f32 box_x = text_x + static_cast<f32>(token_start(s)) * static_cast<f32>(kCharW);
-        const f32 box_y = std::max(kPad, prompt_y - box_h - 3.0f);
-
-        imm::filled_rect(math::Vec2{box_x, box_y}, math::Vec2{box_w, box_h}, rgba(0x0E, 0x13, 0x20));
-        imm::rect_outline(math::Vec2{box_x, box_y}, math::Vec2{box_w, box_h}, kColBorder);
-        for (int i = 0; i < vis; ++i) {
-            const int idx = first + i;
-            const f32 iy = box_y + 2.0f + static_cast<f32>(i) * static_cast<f32>(kLineH);
-            const std::string& item = s.comp_items[static_cast<usize>(idx)];
-            if (idx == s.comp_sel) {
-                imm::filled_rect(math::Vec2{box_x + 1.0f, iy - 1.0f},
-                                 math::Vec2{box_w - 2.0f, static_cast<f32>(kLineH)},
-                                 rgba(0x2A, 0x3A, 0x5A));  // selection highlight
-                imm::label(math::Vec2{box_x + 4.0f, iy}, item, kColInput);
-            } else {
-                imm::label(math::Vec2{box_x + 4.0f, iy}, item, kColText);
+        const CompletionPopupLayout layout = completion_popup_layout(s, fw, fh);
+        if (layout.visible) {
+            imm::filled_rect(math::Vec2{layout.box_x, layout.box_y},
+                             math::Vec2{layout.box_w, layout.box_h},
+                             rgba(0x0E, 0x13, 0x20));
+            imm::rect_outline(math::Vec2{layout.box_x, layout.box_y},
+                              math::Vec2{layout.box_w, layout.box_h},
+                              kColBorder);
+            for (int i = 0; i < layout.vis; ++i) {
+                const int idx = layout.first + i;
+                const f32 iy = layout.box_y + 2.0f + static_cast<f32>(i) * static_cast<f32>(kLineH);
+                const std::string& item = s.comp_items[static_cast<usize>(idx)];
+                if (idx == s.comp_sel) {
+                    imm::filled_rect(math::Vec2{layout.box_x + 1.0f, iy - 1.0f},
+                                     math::Vec2{layout.box_w - 2.0f, static_cast<f32>(kLineH)},
+                                     rgba(0x2A, 0x3A, 0x5A));  // selection highlight
+                    imm::label(math::Vec2{layout.box_x + 4.0f, iy}, item, kColInput);
+                } else {
+                    imm::label(math::Vec2{layout.box_x + 4.0f, iy}, item, kColText);
+                }
             }
         }
     }

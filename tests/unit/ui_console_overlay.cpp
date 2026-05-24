@@ -56,6 +56,11 @@ class FakeInput final : public Input {
             text_.push_back(static_cast<std::uint32_t>(static_cast<unsigned char>(c)));
     }
     void type_cp(std::uint32_t cp) { text_.push_back(cp); }
+    void set_mouse(f32 x, f32 y, bool left) {
+        mouse_.x = x;
+        mouse_.y = y;
+        mouse_.left = left;
+    }
 
     // End-of-frame: drop edge flags + typed text; keep held keys down.
     void advance_frame() {
@@ -88,6 +93,17 @@ bool tick(FakeInput& in) {
 }
 
 }  // namespace
+
+render::Framebuffer make_console_test_fb(std::vector<std::uint32_t>& pixels) {
+    pixels.assign(256 * 256, 0xFF000000u);
+    render::Framebuffer fb{};
+    fb.pixels = reinterpret_cast<std::uint8_t*>(pixels.data());
+    fb.width = 256;
+    fb.height = 256;
+    fb.pitch = 256 * 4;
+    fb.format = render::PixelFormat::RGBA8;
+    return fb;
+}
 
 TEST_CASE("console: tilde toggles open and closed", "[ui][console]") {
     ui::console::reset();
@@ -298,6 +314,44 @@ TEST_CASE("console: fuzzy 'res' completes to r_resolution", "[ui][console]") {
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: mouse click accepts the hovered completion", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(true);
+    auto& con = psynder::console::Console::Get();
+    con.SetCVarOverride("r_resolution", "1280x720");
+
+    std::vector<std::uint32_t> pixels;
+    render::Framebuffer fb = make_console_test_fb(pixels);
+
+    FakeInput in;
+    for (int i = 0; i < 30; ++i) {
+        ui::console::update(in, kDt);
+        in.advance_frame();
+        ui::console::draw(fb);
+    }
+
+    in.type("res");
+    ui::console::update(in, kDt);
+    in.advance_frame();
+    ui::console::draw(fb);
+
+    // 256px framebuffer, fully open: the visible popup top is around y=37 when
+    // the fuzzy list is full, so y=44 clicks the first visible row.
+    in.set_mouse(22.0f, 44.0f, true);
+    tick(in);
+    in.set_mouse(22.0f, 44.0f, false);
+    tick(in);
+
+    in.type("1920x1080");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("r_resolution")->value == "1920x1080");
+
+    con.SetCVarOverride("r_resolution", "1280x720");
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: 'res 1920x1080' smart-resolves and executes", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(false);
@@ -347,13 +401,8 @@ TEST_CASE("console: draw into a framebuffer paints the panel without crashing", 
     ui::console::reset();
     ui::console::set_open(true);
 
-    std::vector<std::uint32_t> pixels(256 * 256, 0xFF000000u);
-    render::Framebuffer fb{};
-    fb.pixels = reinterpret_cast<std::uint8_t*>(pixels.data());
-    fb.width = 256;
-    fb.height = 256;
-    fb.pitch = 256 * 4;
-    fb.format = render::PixelFormat::RGBA8;
+    std::vector<std::uint32_t> pixels;
+    render::Framebuffer fb = make_console_test_fb(pixels);
 
     // Advance the slide animation to fully open, drawing each step.
     FakeInput in;

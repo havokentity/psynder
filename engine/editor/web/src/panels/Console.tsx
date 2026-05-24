@@ -590,7 +590,11 @@ function CompletionPopup({
                     aria-selected={selected === index}
                     className={`psy-console-completion${selected === index ? ' is-selected' : ''}`}
                     onMouseEnter={() => on_select(index)}
-                    onClick={() => on_commit(item)}
+                    onMouseDown={(event) => {
+                        event.preventDefault();
+                        on_select(index);
+                        on_commit(item);
+                    }}
                 >
                     <span className={`psy-console-completion-kind is-${item.kind}`}>
                         {item.kind}
