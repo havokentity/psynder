@@ -18,12 +18,18 @@ struct ServerDesc {
     bool require_session_token = true;
 };
 
+struct StatsSection {
+    std::string_view name;
+    f32 ms = 0.0f;
+};
+
 struct StatsTick {
     u64 frame_index = 0;
     f32 cpu_ms = 0.0f;
-    f32 gpu_ms = 0.0f;
+    f32 render_ms = 0.0f;
     u32 draw_calls = 0;
     u32 entities = 0;
+    std::span<const StatsSection> sections;
 };
 
 class Server {

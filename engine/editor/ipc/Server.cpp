@@ -1118,13 +1118,26 @@ void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> 
 void Server::broadcast_stats_tick(const StatsTick& tick) {
     msgpack::Writer w;
     w.u16_(proto::opcodes::kStatsFrame);
-    proto::StatsTick out;
-    out.frame_index = tick.frame_index;
-    out.cpu_ms = tick.cpu_ms;
-    out.gpu_ms = tick.gpu_ms;
-    out.draw_calls = tick.draw_calls;
-    out.entities = tick.entities;
-    proto::StatsTick_encode(w, out);
+    w.map_header(6);
+    w.str("frame");
+    w.u64_(tick.frame_index);
+    w.str("cpu_ms");
+    w.f32_(tick.cpu_ms);
+    w.str("render_ms");
+    w.f32_(tick.render_ms);
+    w.str("draw_calls");
+    w.u32_(tick.draw_calls);
+    w.str("entities");
+    w.u32_(tick.entities);
+    w.str("sections");
+    w.array_header(tick.sections.size());
+    for (const StatsSection& section : tick.sections) {
+        w.map_header(2);
+        w.str("name");
+        w.str(section.name);
+        w.str("ms");
+        w.f32_(section.ms);
+    }
     internal::Server::Get().broadcast(proto::channels::kstats,
                                       std::span<const ::psynder::u8>(w.data(), w.size()));
 }

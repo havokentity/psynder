@@ -302,9 +302,12 @@ class WindowApp {
     }
 
     void engine_frame_post() noexcept {
+        const u64 render_begin = platform::Clock::ticks_now();
         engine_frame_render();
+        const u64 render_end = platform::Clock::ticks_now();
         const render::FrameStats render_stats = render::frame_stats_snapshot();
         editor::FrameOverlayStats reported = make_engine_overlay_stats(render_stats);
+        reported.render_ms = editor::detail::elapsed_ms(render_begin, render_end);
         if (active_scene_)
             reported.entities = active_scene_->registry().entity_count();
         if (auto* input = platform::input()) {
@@ -324,9 +327,13 @@ class WindowApp {
     }
 
     void engine_frame_post(const editor::FrameOverlayStats& stats) noexcept {
+        const u64 render_begin = platform::Clock::ticks_now();
         engine_frame_render();
+        const u64 render_end = platform::Clock::ticks_now();
         editor::FrameOverlayStats reported = stats;
         reported.render_stats_valid = true;
+        if (reported.render_ms <= 0.0f)
+            reported.render_ms = editor::detail::elapsed_ms(render_begin, render_end);
         if (active_scene_)
             reported.entities = active_scene_->registry().entity_count();
         if (auto* input = platform::input()) {

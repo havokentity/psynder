@@ -5,21 +5,19 @@
 #pragma once
 
 #include "core/Types.h"
+#include "editor/ipc/Ipc.h"
 
 #include <span>
 #include <string_view>
 
 namespace psynder::editor {
 
-struct WebProfilerSection {
-    std::string_view name;
-    f32 ms = 0.0f;
-};
+using WebProfilerSection = ipc::StatsSection;
 
 struct WebProfilerFrame {
     u64 frame_index = 0;
     f32 cpu_ms = 0.0f;
-    f32 gpu_ms = 0.0f;
+    f32 render_ms = 0.0f;
     u32 draw_calls = 0;
     u32 entities = 0;
     std::span<const WebProfilerSection> sections;

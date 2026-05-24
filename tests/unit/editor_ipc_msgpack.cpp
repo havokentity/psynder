@@ -234,7 +234,7 @@ TEST_CASE("ipc: generated Welcome / StatsTick / SceneDelta roundtrip", "[ipc][pr
         proto::StatsTick s;
         s.frame_index = 12345;
         s.cpu_ms = 4.5f;
-        s.gpu_ms = 0.0f;
+        s.render_ms = 0.0f;
         s.draw_calls = 1024;
         s.entities = 9876;
         msgpack::Writer mw;
@@ -244,7 +244,7 @@ TEST_CASE("ipc: generated Welcome / StatsTick / SceneDelta roundtrip", "[ipc][pr
         REQUIRE(proto::StatsTick_decode(mr, out));
         REQUIRE(out.frame_index == s.frame_index);
         REQUIRE(out.cpu_ms == s.cpu_ms);
-        REQUIRE(out.gpu_ms == s.gpu_ms);
+        REQUIRE(out.render_ms == s.render_ms);
         REQUIRE(out.draw_calls == s.draw_calls);
         REQUIRE(out.entities == s.entities);
     }

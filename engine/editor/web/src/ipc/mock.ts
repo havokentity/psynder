@@ -386,7 +386,7 @@ export function start_mock(deliver: Deliver): MockDriver {
         const wiggle = (a: number, b: number) =>
             a + b * Math.sin(t * (1 + a * 0.13));
         const cpu = 5.5 + wiggle(0.3, 1.6);
-        const gpu = 1.1 + wiggle(0.5, 0.4);
+        const render = 1.1 + wiggle(0.5, 0.4);
         const sections = [
             { name: 'scene',    ms: 0.4 + wiggle(0.1, 0.2) },
             { name: 'render',   ms: cpu * 0.55 },
@@ -397,7 +397,7 @@ export function start_mock(deliver: Deliver): MockDriver {
         const frame: ProfilerFrame = {
             frame: frame_idx,
             cpu_ms: cpu,
-            gpu_ms: gpu,
+            render_ms: render,
             sections,
         };
         send({ v: PROTOCOL_VERSION, ch: 'profiler', type: 'frame', payload: frame });

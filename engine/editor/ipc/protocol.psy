@@ -76,7 +76,7 @@ struct SceneDelta:
 struct StatsTick:
     frame_index : u64
     cpu_ms      : f32
-    gpu_ms      : f32
+    render_ms   : f32
     draw_calls  : u32
     entities    : u32
 

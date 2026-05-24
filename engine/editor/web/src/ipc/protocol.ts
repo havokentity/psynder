@@ -12,7 +12,7 @@
 //   - "console"   : bi-directional engine-console / Lua command path — panel
 //                   sends `eval`, engine streams `log` lines plus `result`.
 //   - "profiler"  : engine pushes a `frame` sample per render frame (cpu_ms,
-//                   gpu_ms, ms_per_section breakdown, fps).
+//                   render_ms, ms_per_section breakdown, fps).
 //   - "assets"    : engine pushes the catalog of entries in the loaded
 //                   `.lmpak` archives, plus deltas as packs mount/unmount.
 //   - "props"     : engine pushes the searchable prop library used by the
@@ -213,7 +213,7 @@ export interface ProfilerFrame {
     /** Engine-side frame counter. Monotonic; gaps imply dropped frames. */
     frame: number;
     cpu_ms: number;
-    gpu_ms: number;
+    render_ms: number;
     draw_calls?: number;
     entities?: number;
     /** Per-system / per-pass breakdown — `sum(sections.ms) ≈ cpu_ms`. */
@@ -223,7 +223,7 @@ export interface ProfilerFrame {
 export interface StatsTick {
     frame_index: number;
     cpu_ms: number;
-    gpu_ms: number;
+    render_ms: number;
     draw_calls: number;
     entities: number;
 }

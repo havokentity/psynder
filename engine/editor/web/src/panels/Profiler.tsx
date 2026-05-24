@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Psynder editor — Profiler panel. Streams per-frame samples from the engine
 // over the `profiler` channel and renders them as:
-//   1. a scrolling cpu/gpu line strip chart (top), and
+//   1. a scrolling cpu/render line strip chart (top), and
 //   2. a per-subsystem stacked-bar strip showing where each frame's CPU
 //      budget went (render/physics/audio/ui/…) — Wave B addition, mirroring
 //      the in-engine immediate-mode allocator heatmap idea from DESIGN.md
@@ -28,7 +28,7 @@ const STACK_PALETTE = ['#5fb0ff', '#f49a4b', '#6dd49e', '#c98ee0', '#f6c244', '#
 interface Sample {
     frame: number;
     cpu_ms: number;
-    gpu_ms: number;
+    render_ms: number;
     /** Per-subsystem breakdown for this frame — drives the stacked-bar strip. */
     sections: ProfilerSection[];
 }
@@ -66,7 +66,7 @@ export function Profiler() {
             const sample = {
                 frame: frame.frame,
                 cpu_ms: frame.cpu_ms,
-                gpu_ms: frame.gpu_ms,
+                render_ms: frame.render_ms,
                 // Defensive copy — protocol envelopes are nominally immutable
                 // but we don't trust upstream code to keep them that way.
                 sections: frame.sections.map((s) => ({ name: s.name, ms: s.ms })),
@@ -147,7 +147,7 @@ export function Profiler() {
                 />
                 <div className="psy-profiler-legend">
                     <span className="psy-legend-swatch is-cpu" /> cpu
-                    <span className="psy-legend-swatch is-gpu" /> gpu
+                    <span className="psy-legend-swatch is-render" /> render
                     <span className="psy-legend-swatch is-target" /> 16.6 ms
                 </div>
             </div>
@@ -192,7 +192,7 @@ function normalize_profiler_frame(payload: unknown): ProfilerFrame {
     return {
         frame: number_value(rec.frame ?? rec.frame_index),
         cpu_ms,
-        gpu_ms: number_value(rec.gpu_ms),
+        render_ms: number_value(rec.render_ms),
         draw_calls: number_value(rec.draw_calls),
         entities: number_value(rec.entities),
         sections: sections.length > 0 ? sections : [{ name: 'frame', ms: cpu_ms }],
@@ -227,7 +227,7 @@ function FrameStats({ frame }: { frame: ProfilerFrame | null }) {
         <ul className="psy-stats-grid">
             <li><span>frame</span><code>{frame.frame}</code></li>
             <li><span>cpu</span><code>{frame.cpu_ms.toFixed(2)} ms</code></li>
-            <li><span>gpu</span><code>{frame.gpu_ms.toFixed(2)} ms</code></li>
+            <li><span>render</span><code>{frame.render_ms.toFixed(2)} ms</code></li>
             <li><span>fps</span><code>{(1000 / Math.max(frame.cpu_ms, 0.0001)).toFixed(1)}</code></li>
             <li><span>draws</span><code>{frame.draw_calls ?? 0}</code></li>
             <li><span>entities</span><code>{frame.entities ?? 0}</code></li>
@@ -311,7 +311,7 @@ function draw_strip(canvas: HTMLCanvasElement, ring: Sample[]) {
 
     if (ring.length === 0) return;
 
-    const draw_series = (key: 'cpu_ms' | 'gpu_ms', color: string) => {
+    const draw_series = (key: 'cpu_ms' | 'render_ms', color: string) => {
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -327,7 +327,7 @@ function draw_strip(canvas: HTMLCanvasElement, ring: Sample[]) {
     };
 
     draw_series('cpu_ms', '#5fb0ff');
-    draw_series('gpu_ms', '#f49a4b');
+    draw_series('render_ms', '#f49a4b');
 }
 
 // Per-column stacked-bar of subsystem timings — one column per recent frame.

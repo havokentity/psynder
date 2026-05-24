@@ -133,7 +133,7 @@ TEST_CASE("ui_imm::DebugHud: Compact mode writes fewer pixels than Full", "[ui_i
     imm::push_diag_line("ai: graph rebuilt 2ms");
     imm::push_diag_line("net: snapshot 11kb");
     imm::push_diag_line("snd: 4 voices");
-    imm::push_diag_line("gpu: tile bin 9ms");
+    imm::push_diag_line("rast: tile bin 9ms");
 
     TestFb t_full;
     imm::set_debug_hud_mode(imm::DebugHudMode::Full);

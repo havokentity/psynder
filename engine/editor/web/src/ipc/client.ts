@@ -539,7 +539,7 @@ function infer_scene_delta_type(ch: Channel, payload: unknown): string | null {
             || 'frame' in rec
             || 'frame_index' in rec
             || 'cpu_ms' in rec
-            || 'gpu_ms' in rec) return 'frame';
+            || 'render_ms' in rec) return 'frame';
     }
 
     return null;
@@ -560,7 +560,7 @@ function profiler_frame_from_stats(value: unknown): ProfilerFrame {
         return {
             frame: number_from_wire(value[0]),
             cpu_ms,
-            gpu_ms: number_from_wire(value[2]),
+            render_ms: number_from_wire(value[2]),
             draw_calls: number_from_wire(value[3]),
             entities: number_from_wire(value[4]),
             sections: [{ name: 'frame', ms: cpu_ms }],
@@ -581,7 +581,7 @@ function profiler_frame_from_stats(value: unknown): ProfilerFrame {
         return {
             frame: number_from_wire(rec.frame ?? rec.frame_index),
             cpu_ms,
-            gpu_ms: number_from_wire(rec.gpu_ms),
+            render_ms: number_from_wire(rec.render_ms),
             draw_calls: number_from_wire(rec.draw_calls),
             entities: number_from_wire(rec.entities),
             sections: sections.length > 0 ? sections : [{ name: 'frame', ms: cpu_ms }],
@@ -591,7 +591,7 @@ function profiler_frame_from_stats(value: unknown): ProfilerFrame {
     return {
         frame: 0,
         cpu_ms: 0,
-        gpu_ms: 0,
+        render_ms: 0,
         draw_calls: 0,
         entities: 0,
         sections: [{ name: 'frame', ms: 0 }],

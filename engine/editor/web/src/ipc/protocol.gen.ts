@@ -50,7 +50,7 @@ export interface SceneDelta {
 export interface StatsTick {
     frame_index: bigint;
     cpu_ms: number;
-    gpu_ms: number;
+    render_ms: number;
     draw_calls: number;
     entities: number;
 }

@@ -1849,7 +1849,7 @@ button {
 }
 
 .psy-legend-swatch.is-cpu    { background: #5fb0ff; }
-.psy-legend-swatch.is-gpu    { background: #f49a4b; }
+.psy-legend-swatch.is-render { background: #f49a4b; }
 .psy-legend-swatch.is-target { background: #3a3a3a; outline: 1px dashed #6e6e6e; }
 .psy-legend-swatch.is-c0     { background: #5fb0ff; }
 .psy-legend-swatch.is-c1     { background: #f49a4b; }
