@@ -242,10 +242,19 @@ void release_physical_navigation_aliases(unsigned short vk) {
 
 void sync_modifier_keys(NSEvent* event) {
     const NSEventModifierFlags f = [event modifierFlags];
-    mac_input().on_key(KeyCode::LeftShift, (f & NSEventModifierFlagShift) != 0);
-    mac_input().on_key(KeyCode::LeftCtrl, (f & NSEventModifierFlagControl) != 0);
-    mac_input().on_key(KeyCode::LeftAlt, (f & NSEventModifierFlagOption) != 0);
-    mac_input().on_key(KeyCode::LeftSuper, (f & NSEventModifierFlagCommand) != 0);
+    const bool shift = (f & NSEventModifierFlagShift) != 0;
+    const bool ctrl  = (f & NSEventModifierFlagControl) != 0;
+    const bool alt   = (f & NSEventModifierFlagOption) != 0;
+    const bool super = (f & NSEventModifierFlagCommand) != 0;
+
+    mac_input().on_key(KeyCode::LeftShift, shift);
+    mac_input().on_key(KeyCode::RightShift, shift);
+    mac_input().on_key(KeyCode::LeftCtrl, ctrl);
+    mac_input().on_key(KeyCode::RightCtrl, ctrl);
+    mac_input().on_key(KeyCode::LeftAlt, alt);
+    mac_input().on_key(KeyCode::RightAlt, alt);
+    mac_input().on_key(KeyCode::LeftSuper, super);
+    mac_input().on_key(KeyCode::RightSuper, super);
 }
 
 // ─── NSApp lazy bootstrap ────────────────────────────────────────────────
