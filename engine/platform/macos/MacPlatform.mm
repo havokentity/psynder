@@ -581,6 +581,9 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 - (void)doCommandBySelector:(SEL)selector {
     (void)selector;
 }
+- (void)noResponderFor:(SEL)selector {
+    (void)selector;
+}
 - (void)cut:(id)sender       { (void)sender; }
 - (void)copy:(id)sender      { (void)sender; }
 - (void)paste:(id)sender     { (void)sender; }
@@ -631,6 +634,9 @@ void mac_set_clipboard_text_impl(std::string_view text) {
     if (psynder::platform::handle_key_equivalent_event(event))
         return YES;
     return [super performKeyEquivalent:event];
+}
+- (void)noResponderFor:(SEL)selector {
+    (void)selector;
 }
 @end
 
