@@ -160,11 +160,7 @@ public:
     bool key_pressed(KeyCode k) const override {
         auto i = static_cast<usize>(k);
         if (i >= pressed_.size()) return false;
-        // exchange() is non-const on std::atomic but the read-and-clear is
-        // the documented semantic of key_pressed (edge-triggered query),
-        // so we cast through the const this pointer.
-        auto& slot = const_cast<std::atomic<bool>&>(pressed_[i]);
-        return slot.exchange(false, std::memory_order_relaxed);
+        return pressed_[i].load(std::memory_order_relaxed);
     }
     const MouseState& mouse() const override { return mouse_state_; }
     std::span<const u32> text_input() const override { return text_; }
@@ -199,6 +195,8 @@ public:
         mouse_state_.dx = 0;
         mouse_state_.dy = 0;
         mouse_state_.wheel = 0;
+        for (auto& key : pressed_)
+            key.store(false, std::memory_order_relaxed);
         text_.clear();  // text_input() reports only this frame's codepoints
     }
 

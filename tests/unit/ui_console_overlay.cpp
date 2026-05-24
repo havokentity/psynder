@@ -36,15 +36,12 @@ namespace {
 
 // Fake input device. Per frame: queue typed text + edge-press keys, call the
 // overlay, then advance_frame() to clear edges (held keys persist until
-// release()). key_pressed() is read-and-clear, matching the real backends.
+// release()). key_pressed() is a stable per-frame edge, matching the real
+// backends.
 class FakeInput final : public Input {
    public:
     bool key_down(KeyCode k) const override { return down_[idx(k)]; }
-    bool key_pressed(KeyCode k) const override {
-        const bool v = pressed_[idx(k)];
-        pressed_[idx(k)] = false;  // read-and-clear edge
-        return v;
-    }
+    bool key_pressed(KeyCode k) const override { return pressed_[idx(k)]; }
     const MouseState& mouse() const override { return mouse_; }
     std::span<const u32> text_input() const override { return text_; }
 
@@ -474,6 +471,33 @@ TEST_CASE("console: Shift Home selects typed prompt text", "[ui][console]") {
     REQUIRE(con.FindCVar("con_shift_home_val")->value == "9");
 
     con.SetCVarOverride("con_shift_home_val", "0");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: Shift Home survives earlier Home edge reads", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_shift_home_edge_val", "0", "shift home edge test cvar");
+    con.SetCVarOverride("con_shift_home_edge_val", "0");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("bad");
+    tick(in);
+    in.press(KeyCode::LeftShift);
+    in.press(KeyCode::Home);
+    REQUIRE(in.key_pressed(KeyCode::Home));
+    tick(in);
+    in.release_all();
+    in.type("con_shift_home_edge_val 5");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_shift_home_edge_val")->value == "5");
+
+    con.SetCVarOverride("con_shift_home_edge_val", "0");
     ui::console::set_open(false);
 }
 
