@@ -256,23 +256,7 @@ void sync_modifier_keys(NSEvent* event) {
 }
 
 void merge_modifier_keys(NSEvent* event) {
-    const NSEventModifierFlags f = [event modifierFlags];
-    if ((f & NSEventModifierFlagShift) != 0) {
-        mac_input().on_key(KeyCode::LeftShift, true);
-        mac_input().on_key(KeyCode::RightShift, true);
-    }
-    if ((f & NSEventModifierFlagControl) != 0) {
-        mac_input().on_key(KeyCode::LeftCtrl, true);
-        mac_input().on_key(KeyCode::RightCtrl, true);
-    }
-    if ((f & NSEventModifierFlagOption) != 0) {
-        mac_input().on_key(KeyCode::LeftAlt, true);
-        mac_input().on_key(KeyCode::RightAlt, true);
-    }
-    if ((f & NSEventModifierFlagCommand) != 0) {
-        mac_input().on_key(KeyCode::LeftSuper, true);
-        mac_input().on_key(KeyCode::RightSuper, true);
-    }
+    sync_modifier_keys(event);
 }
 
 bool console_shortcut_key(KeyCode k) noexcept {
@@ -594,6 +578,27 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 - (void)flagsChanged:(NSEvent*)event {
     psynder::platform::handle_keyboard_event(event);
 }
+- (void)doCommandBySelector:(SEL)selector {
+    if (selector == @selector(deleteBackward:) ||
+        selector == @selector(deleteForward:) ||
+        selector == @selector(deleteWordBackward:) ||
+        selector == @selector(deleteWordForward:) ||
+        selector == @selector(deleteToBeginningOfLine:) ||
+        selector == @selector(deleteToEndOfLine:) ||
+        selector == @selector(cut:) ||
+        selector == @selector(copy:) ||
+        selector == @selector(paste:) ||
+        selector == @selector(selectAll:)) {
+        return;
+    }
+    [super doCommandBySelector:selector];
+}
+- (void)cut:(id)sender       { (void)sender; }
+- (void)copy:(id)sender      { (void)sender; }
+- (void)paste:(id)sender     { (void)sender; }
+- (void)selectAll:(id)sender { (void)sender; }
+- (void)deleteBackward:(id)sender { (void)sender; }
+- (void)deleteForward:(id)sender  { (void)sender; }
 
 // ── Mouse ────────────────────────────────────────────────────────────────
 - (void)mouseMoved:(NSEvent*)event       { [self forwardMouseMove:event]; }
