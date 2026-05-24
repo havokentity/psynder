@@ -257,6 +257,26 @@ void sync_modifier_keys(NSEvent* event) {
     mac_input().on_key(KeyCode::RightSuper, super);
 }
 
+void merge_modifier_keys(NSEvent* event) {
+    const NSEventModifierFlags f = [event modifierFlags];
+    if ((f & NSEventModifierFlagShift) != 0) {
+        mac_input().on_key(KeyCode::LeftShift, true);
+        mac_input().on_key(KeyCode::RightShift, true);
+    }
+    if ((f & NSEventModifierFlagControl) != 0) {
+        mac_input().on_key(KeyCode::LeftCtrl, true);
+        mac_input().on_key(KeyCode::RightCtrl, true);
+    }
+    if ((f & NSEventModifierFlagOption) != 0) {
+        mac_input().on_key(KeyCode::LeftAlt, true);
+        mac_input().on_key(KeyCode::RightAlt, true);
+    }
+    if ((f & NSEventModifierFlagCommand) != 0) {
+        mac_input().on_key(KeyCode::LeftSuper, true);
+        mac_input().on_key(KeyCode::RightSuper, true);
+    }
+}
+
 // ─── NSApp lazy bootstrap ────────────────────────────────────────────────
 // AppKit must be initialised on the main thread before any NSWindow is
 // constructed. Idempotent so re-entering create_window from samples that
@@ -454,7 +474,7 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 
 // ── Keyboard ─────────────────────────────────────────────────────────────
 - (void)keyDown:(NSEvent*)event {
-    psynder::platform::sync_modifier_keys(event);
+    psynder::platform::merge_modifier_keys(event);
     psynder::platform::mac_input().on_key(
         psynder::platform::translate_key([event keyCode]), true);
     psynder::platform::forward_appkit_function_keys(event, true);
@@ -492,7 +512,7 @@ void mac_set_clipboard_text_impl(std::string_view text) {
     }
 }
 - (void)keyUp:(NSEvent*)event {
-    psynder::platform::sync_modifier_keys(event);
+    psynder::platform::merge_modifier_keys(event);
     psynder::platform::mac_input().on_key(
         psynder::platform::translate_key([event keyCode]), false);
     psynder::platform::forward_appkit_function_keys(event, false);
