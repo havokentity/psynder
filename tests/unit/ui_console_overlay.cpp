@@ -477,6 +477,33 @@ TEST_CASE("console: Shift Home selects typed prompt text", "[ui][console]") {
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: delayed Shift after Home still extends selection", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_shift_home_late_val", "0", "shift home late test cvar");
+    con.SetCVarOverride("con_shift_home_late_val", "0");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("bad");
+    tick(in);
+    in.press(KeyCode::Home);
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::LeftShift);
+    in.type("con_shift_home_late_val 7");
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_shift_home_late_val")->value == "7");
+
+    con.SetCVarOverride("con_shift_home_late_val", "0");
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: shortcut Left and Right jump to prompt ends", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(false);

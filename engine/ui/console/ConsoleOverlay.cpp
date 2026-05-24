@@ -207,6 +207,10 @@ struct State {
     u32 last_fb_w = 0;
     u32 last_fb_h = 0;
 
+    usize pending_shift_nav_anchor = 0;
+    usize pending_shift_nav_cursor = 0;
+    u8 pending_shift_nav_frames = 0;
+
     TerrainAutotune terrain_tune;
 
     bool initialised = false;
@@ -712,6 +716,36 @@ void move_cursor_to(State& s, usize cursor, bool extend_selection) noexcept {
     s.cursor = clamped;
 }
 
+void clear_pending_shift_nav(State& s) noexcept {
+    s.pending_shift_nav_frames = 0;
+}
+
+void arm_pending_shift_nav(State& s, usize anchor, usize cursor) noexcept {
+    anchor = std::min(anchor, s.input.size());
+    cursor = std::min(cursor, s.input.size());
+    if (anchor == cursor) {
+        clear_pending_shift_nav(s);
+        return;
+    }
+    s.pending_shift_nav_anchor = anchor;
+    s.pending_shift_nav_cursor = cursor;
+    s.pending_shift_nav_frames = 2;
+}
+
+void recover_pending_shift_nav(State& s, bool shift_down) noexcept {
+    if (s.pending_shift_nav_frames == 0)
+        return;
+
+    if (shift_down && !selection_active(s) && s.cursor == s.pending_shift_nav_cursor) {
+        s.selection_anchor = std::min(s.pending_shift_nav_anchor, s.input.size());
+        s.cursor = std::min(s.pending_shift_nav_cursor, s.input.size());
+        clear_pending_shift_nav(s);
+        return;
+    }
+
+    --s.pending_shift_nav_frames;
+}
+
 bool delete_selection_if_any(State& s) noexcept {
     if (!selection_active(s))
         return false;
@@ -771,6 +805,7 @@ void insert_text_at_cursor(State& s, std::string_view text) {
     const std::string filtered = printable_ascii_without_toggle(text);
     if (filtered.empty())
         return;
+    clear_pending_shift_nav(s);
     delete_selection_if_any(s);
     s.input.insert(s.cursor, filtered.data(), filtered.size());
     s.cursor += filtered.size();
@@ -848,6 +883,7 @@ void process_text(State& s, const platform::Input& input) noexcept {
         s.input.insert(s.cursor, tmp, static_cast<usize>(n));
         s.cursor += static_cast<usize>(n);
         clear_selection(s);
+        clear_pending_shift_nav(s);
         s.history_pos = -1;  // typing forks off the live line
         s.comp_suppressed_until_text = false;
     }
@@ -1223,6 +1259,7 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
     const bool shift_down = input.key_down(KeyCode::LeftShift) || input.key_down(KeyCode::RightShift);
     const bool shortcut_down = input.key_down(KeyCode::LeftCtrl) || input.key_down(KeyCode::RightCtrl) ||
                                input.key_down(KeyCode::LeftSuper) || input.key_down(KeyCode::RightSuper);
+    recover_pending_shift_nav(s, shift_down);
 
     if (left_pressed && !popup_mouse_consumed && s.last_fb_w > 0u && s.last_fb_h > 0u) {
         const PromptLayout layout =
@@ -1231,6 +1268,7 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
             layout.visible && mouse.y >= layout.text_y - 4.0f && mouse.y <= layout.text_y + layout.text_h + 4.0f &&
             mouse.x >= layout.text_x - 4.0f && mouse.x <= layout.text_x + layout.hit_w;
         if (over_prompt) {
+            clear_pending_shift_nav(s);
             s.text_dragging = true;
             move_cursor_to(s, cursor_from_mouse_x(s, mouse.x, layout), /*extend_selection*/ false);
             s.comp_active = false;
@@ -1293,10 +1331,18 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
             autocomplete(s);
         }
     }
-    if (input.key_pressed(KeyCode::Home))
+    if (input.key_pressed(KeyCode::Home)) {
+        const usize anchor = s.cursor;
         move_cursor_to(s, 0, shift_down);
-    if (input.key_pressed(KeyCode::End))
+        if (!shift_down)
+            arm_pending_shift_nav(s, anchor, s.cursor);
+    }
+    if (input.key_pressed(KeyCode::End)) {
+        const usize anchor = s.cursor;
         move_cursor_to(s, s.input.size(), shift_down);
+        if (!shift_down)
+            arm_pending_shift_nav(s, anchor, s.cursor);
+    }
     // Up/Down navigate the completion list when it's showing; otherwise they
     // walk command history.
     if (input.key_pressed(KeyCode::Up)) {
@@ -1394,6 +1440,8 @@ bool update(const platform::Input& input, f32 dt) noexcept {
     // Skip input on the toggle frame so the backtick that opened us doesn't
     // land in the prompt (process_text also filters '`'/'~' belt-and-braces).
     if (s.open && !toggle_edge) {
+        const bool shift_down = input.key_down(KeyCode::LeftShift) || input.key_down(KeyCode::RightShift);
+        recover_pending_shift_nav(s, shift_down);
         process_text(s, input);
         process_edit_keys(s, input, dt);
     }
