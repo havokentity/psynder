@@ -38,6 +38,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -90,6 +91,7 @@ constexpr const char* kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 constexpr std::string_view kPanelIndexName = "index.html";
 constexpr std::string_view kLegacyChannelProfiler = "profiler";
 constexpr std::string_view kLegacyChannelSchema = "schema";
+constexpr std::size_t kMaxOutboundFramesPerConnection = 256;
 
 ::psynder::console::ExecuteResult dispatch_editor_console(std::string_view text,
                                                           std::string_view mode,
@@ -699,9 +701,19 @@ bool Server::handle_http_upgrade(Connection& conn,
 }
 
 void Server::enqueue(Connection& conn, std::vector<::psynder::u8> frame) {
-    {
+    try {
         std::lock_guard<std::mutex> lk(conn.out_mu);
+        while (conn.out_queue.size() >= kMaxOutboundFramesPerConnection)
+            conn.out_queue.pop_front();
         conn.out_queue.emplace_back(std::move(frame));
+    } catch (const std::exception& e) {
+        conn.alive.store(false);
+        PSY_LOG_WARN("editor-ipc: dropping outbound frame after enqueue failure: {}", e.what());
+        return;
+    } catch (...) {
+        conn.alive.store(false);
+        PSY_LOG_WARN("editor-ipc: dropping outbound frame after unknown enqueue failure");
+        return;
     }
     conn.out_cv.notify_all();
 }
@@ -899,64 +911,77 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
 
 // ─── Pub/sub broadcast & pump ──────────────────────────────────────────────
 void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> payload) {
-    auto frame = wsframe::encode_server_binary(payload.data(), payload.size());
-    std::vector<std::shared_ptr<Connection>> snapshot;
-    {
-        std::lock_guard<std::mutex> lk(conns_mu_);
-        snapshot = conns_;
-    }
-    auto aliases = subscription_aliases(channel);
-    for (auto& c : snapshot) {
-        if (!c || !c->authed.load() || !c->alive.load())
-            continue;
-        bool subscribed = false;
+    try {
+        auto frame = wsframe::encode_server_binary(payload.data(), payload.size());
+        std::vector<std::shared_ptr<Connection>> snapshot;
         {
-            std::lock_guard<std::mutex> lk(c->sub_mu);
-            subscribed = c->subscribed.count(std::string(channel)) > 0;
-            if (!subscribed) {
-                for (const auto& alias : aliases) {
-                    if (c->subscribed.count(alias) > 0) {
-                        subscribed = true;
-                        break;
+            std::lock_guard<std::mutex> lk(conns_mu_);
+            snapshot = conns_;
+        }
+        const std::string channel_str(channel);
+        auto aliases = subscription_aliases(channel);
+        for (auto& c : snapshot) {
+            if (!c || !c->authed.load() || !c->alive.load())
+                continue;
+            bool subscribed = false;
+            {
+                std::lock_guard<std::mutex> lk(c->sub_mu);
+                subscribed = c->subscribed.count(channel_str) > 0;
+                if (!subscribed) {
+                    for (const auto& alias : aliases) {
+                        if (c->subscribed.count(alias) > 0) {
+                            subscribed = true;
+                            break;
+                        }
                     }
                 }
             }
+            if (!subscribed)
+                continue;
+            enqueue(*c, frame);  // copy intentionally — each conn owns its outbound buf.
         }
-        if (!subscribed)
-            continue;
-        enqueue(*c, frame);  // copy intentionally — each conn owns its outbound buf.
-    }
 
-    // Garbage-collect dead connections opportunistically.
-    {
-        std::lock_guard<std::mutex> lk(conns_mu_);
-        conns_.erase(std::remove_if(conns_.begin(),
-                                    conns_.end(),
-                                    [](const std::shared_ptr<Connection>& c) {
-                                        return !c || !c->alive.load();
-                                    }),
-                     conns_.end());
+        // Garbage-collect dead connections opportunistically.
+        {
+            std::lock_guard<std::mutex> lk(conns_mu_);
+            conns_.erase(std::remove_if(conns_.begin(),
+                                        conns_.end(),
+                                        [](const std::shared_ptr<Connection>& c) {
+                                            return !c || !c->alive.load();
+                                        }),
+                         conns_.end());
+        }
+    } catch (const std::exception& e) {
+        PSY_LOG_WARN("editor-ipc: broadcast '{}' dropped after exception: {}", channel, e.what());
+    } catch (...) {
+        PSY_LOG_WARN("editor-ipc: broadcast '{}' dropped after unknown exception", channel);
     }
 }
 
 bool Server::has_subscribers(std::string_view channel) {
-    std::vector<std::shared_ptr<Connection>> snapshot;
-    {
-        std::lock_guard<std::mutex> lk(conns_mu_);
-        snapshot = conns_;
-    }
-    const std::string channel_str(channel);
-    auto aliases = subscription_aliases(channel);
-    for (auto& c : snapshot) {
-        if (!c || !c->authed.load() || !c->alive.load())
-            continue;
-        std::lock_guard<std::mutex> sub_lk(c->sub_mu);
-        if (c->subscribed.count(channel_str) > 0)
-            return true;
-        for (const auto& alias : aliases) {
-            if (c->subscribed.count(alias) > 0)
-                return true;
+    try {
+        std::vector<std::shared_ptr<Connection>> snapshot;
+        {
+            std::lock_guard<std::mutex> lk(conns_mu_);
+            snapshot = conns_;
         }
+        const std::string channel_str(channel);
+        auto aliases = subscription_aliases(channel);
+        for (auto& c : snapshot) {
+            if (!c || !c->authed.load() || !c->alive.load())
+                continue;
+            std::lock_guard<std::mutex> sub_lk(c->sub_mu);
+            if (c->subscribed.count(channel_str) > 0)
+                return true;
+            for (const auto& alias : aliases) {
+                if (c->subscribed.count(alias) > 0)
+                    return true;
+            }
+        }
+    } catch (const std::exception& e) {
+        PSY_LOG_WARN("editor-ipc: subscriber check '{}' failed: {}", channel, e.what());
+    } catch (...) {
+        PSY_LOG_WARN("editor-ipc: subscriber check '{}' failed with unknown exception", channel);
     }
     return false;
 }

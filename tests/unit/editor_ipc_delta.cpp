@@ -431,6 +431,109 @@ TEST_CASE("ipc: push_scene_delta routes per slice", "[ipc][delta]") {
     sock_close(sB);
 }
 
+TEST_CASE("ipc: stats frame carries software render sections", "[ipc][stats][server]") {
+    ServerGuard guard;
+    auto port = pick_port();
+    ServerDesc desc;
+    desc.bind_host = "127.0.0.1";
+    desc.port = port;
+    desc.require_session_token = true;
+    auto& srv = *guard.srv;
+    REQUIRE(srv.start(desc));
+    const std::string tok = srv.session_token();
+
+    proto::Welcome welcome;
+    std::vector<::psynder::u8> tail;
+    sock_t s = open_panel(port, tok, welcome, tail);
+    REQUIRE(sock_valid(s));
+
+    client_subscribe(s, "profiler");
+    wait_for_subscriptions();
+
+    const StatsSection sections[] = {
+        {"host/frame", 12.0f},
+        {"render", 2.5f},
+    };
+    srv.broadcast_stats_tick(StatsTick{
+        77u,
+        12.5f,
+        2.5f,
+        9u,
+        3u,
+        std::span<const StatsSection>{sections},
+    });
+
+    auto pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r(pl.data(), pl.size());
+    ::psynder::u16 op = 0;
+    REQUIRE(r.u16_(op));
+    REQUIRE(op == proto::opcodes::kStatsFrame);
+
+    ::psynder::u32 field_count = 0;
+    REQUIRE(r.map_header(field_count));
+    REQUIRE(field_count == 6u);
+
+    ::psynder::u64 frame_index = 0;
+    ::psynder::f32 cpu_ms = 0.0f;
+    ::psynder::f32 render_ms = 0.0f;
+    ::psynder::u32 draw_calls = 0;
+    ::psynder::u32 entities = 0;
+    ::psynder::u32 section_count = 0;
+
+    for (::psynder::u32 i = 0; i < field_count; ++i) {
+        std::string key;
+        REQUIRE(r.str(key));
+        if (key == "frame") {
+            REQUIRE(r.u64_(frame_index));
+        } else if (key == "cpu_ms") {
+            REQUIRE(r.f32_(cpu_ms));
+        } else if (key == "render_ms") {
+            REQUIRE(r.f32_(render_ms));
+        } else if (key == "draw_calls") {
+            REQUIRE(r.u32_(draw_calls));
+        } else if (key == "entities") {
+            REQUIRE(r.u32_(entities));
+        } else if (key == "sections") {
+            REQUIRE(r.array_header(section_count));
+            REQUIRE(section_count == 2u);
+            for (::psynder::u32 j = 0; j < section_count; ++j) {
+                ::psynder::u32 section_fields = 0;
+                REQUIRE(r.map_header(section_fields));
+                REQUIRE(section_fields == 2u);
+                std::string section_name;
+                ::psynder::f32 section_ms = 0.0f;
+                for (::psynder::u32 k = 0; k < section_fields; ++k) {
+                    std::string section_key;
+                    REQUIRE(r.str(section_key));
+                    if (section_key == "name") {
+                        REQUIRE(r.str(section_name));
+                    } else if (section_key == "ms") {
+                        REQUIRE(r.f32_(section_ms));
+                    } else {
+                        REQUIRE(r.skip());
+                    }
+                }
+                if (j == 1u) {
+                    REQUIRE(section_name == "render");
+                    REQUIRE(section_ms == 2.5f);
+                }
+            }
+        } else {
+            REQUIRE(r.skip());
+        }
+    }
+
+    REQUIRE(frame_index == 77u);
+    REQUIRE(cpu_ms == 12.5f);
+    REQUIRE(render_ms == 2.5f);
+    REQUIRE(draw_calls == 9u);
+    REQUIRE(entities == 3u);
+    REQUIRE(r.eof());
+
+    sock_close(s);
+}
+
 TEST_CASE("ipc: schema bump stays back-compat", "[ipc][schema]") {
     ServerGuard guard;
     auto port = pick_port();
