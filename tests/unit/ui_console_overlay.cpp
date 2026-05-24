@@ -352,6 +352,29 @@ TEST_CASE("console: mouse click accepts the hovered completion", "[ui][console]"
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: Enter commits an active non-exact completion", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.SetCVarOverride("r_resolution", "1280x720");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("res");
+    tick(in);  // fuzzy popup -> r_resolution at the top
+    in.press(KeyCode::Enter);
+    tick(in);  // commit completion, do not submit yet
+    in.type("1920x1080");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("r_resolution")->value == "1920x1080");
+
+    con.SetCVarOverride("r_resolution", "1280x720");
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: 'res 1920x1080' smart-resolves and executes", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(false);
@@ -422,6 +445,40 @@ TEST_CASE("console: Home and End move the prompt caret", "[ui][console]") {
     REQUIRE(con.FindCVar("con_home_end_val")->value == "42");
 
     con.SetCVarOverride("con_home_end_val", "0");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: shortcut Left and Right jump to prompt ends", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_shortcut_edges_val", "0", "shortcut edge test cvar");
+    con.SetCVarOverride("con_shortcut_edges_val", "0");
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type(" 4");
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::LeftCtrl);
+    in.press(KeyCode::Left);
+    tick(in);
+    in.release_all();
+    in.type("con_shortcut_edges_val");
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::LeftCtrl);
+    in.press(KeyCode::Right);
+    tick(in);
+    in.release_all();
+    in.type("2");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_shortcut_edges_val")->value == "42");
+
+    con.SetCVarOverride("con_shortcut_edges_val", "0");
     ui::console::set_open(false);
 }
 

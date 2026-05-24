@@ -198,6 +198,9 @@ struct State {
     std::string comp_input_key;
     usize comp_cursor_key = static_cast<usize>(-1);
     bool comp_suppressed_until_text = false;
+    bool comp_selection_touched = false;
+    bool comp_popup_mouse_active = false;
+    int comp_popup_mouse_index = -1;
     bool mouse_left_prev = false;
     bool text_dragging = false;
     u32 last_fb_w = 0;
@@ -742,6 +745,9 @@ void accept_completion(State& s, int index) noexcept {
     s.comp_active = false;
     s.comp_items.clear();
     s.comp_sel = 0;
+    s.comp_selection_touched = false;
+    s.comp_popup_mouse_active = false;
+    s.comp_popup_mouse_index = -1;
     s.history_pos = -1;
     clear_selection(s);
 }
@@ -1044,6 +1050,9 @@ void refresh_completion(State& s) noexcept {
         s.comp_token = token.text;
         s.comp_input_key = s.input;
         s.comp_cursor_key = s.cursor;
+        s.comp_selection_touched = false;
+        s.comp_popup_mouse_active = false;
+        s.comp_popup_mouse_index = -1;
         return;
     }
 
@@ -1058,6 +1067,9 @@ void refresh_completion(State& s) noexcept {
     if (changed || token.text != s.comp_token) {
         s.comp_token = token.text;
         s.comp_sel = 0;
+        s.comp_selection_touched = false;
+        s.comp_popup_mouse_active = false;
+        s.comp_popup_mouse_index = -1;
     }
     const int n = static_cast<int>(s.comp_items.size());
     if (s.comp_sel >= n)
@@ -1066,29 +1078,98 @@ void refresh_completion(State& s) noexcept {
         s.comp_sel = 0;
 }
 
+bool update_completion_popup_mouse(State& s, const platform::MouseState& mouse) noexcept {
+    const bool pressed_now = mouse.left && !s.mouse_left_prev;
+    const bool released_now = !mouse.left && s.mouse_left_prev;
+    if (!s.comp_active || s.comp_items.empty()) {
+        s.comp_popup_mouse_active = false;
+        s.comp_popup_mouse_index = -1;
+        return false;
+    }
+    if (s.last_fb_w == 0u || s.last_fb_h == 0u) {
+        s.comp_popup_mouse_active = false;
+        s.comp_popup_mouse_index = -1;
+        return false;
+    }
+
+    const CompletionPopupLayout layout =
+        completion_popup_layout(s, static_cast<f32>(s.last_fb_w), static_cast<f32>(s.last_fb_h));
+    if (!layout.visible) {
+        s.comp_popup_mouse_active = false;
+        s.comp_popup_mouse_index = -1;
+        return false;
+    }
+
+    const bool over_popup = mouse.x >= layout.box_x && mouse.x <= layout.box_x + layout.box_w &&
+                            mouse.y >= layout.box_y &&
+                            mouse.y <= layout.box_y + layout.box_h;
+    int hovered = -1;
+    if (over_popup && mouse.y >= layout.box_y + 2.0f) {
+        const f32 rel_y = mouse.y - (layout.box_y + 2.0f);
+        const int row = static_cast<int>(std::floor(std::max(0.0f, rel_y) / static_cast<f32>(kLineH)));
+        if (row >= 0 && row < layout.vis) {
+            const int idx = layout.first + row;
+            if (idx >= 0 && idx < static_cast<int>(s.comp_items.size()))
+                hovered = idx;
+        }
+    }
+
+    if (pressed_now && hovered >= 0) {
+        s.comp_popup_mouse_active = true;
+        s.comp_popup_mouse_index = hovered;
+        s.comp_sel = hovered;
+        s.comp_selection_touched = true;
+        return true;
+    }
+
+    if (mouse.left && s.comp_popup_mouse_active) {
+        if (hovered >= 0) {
+            s.comp_popup_mouse_index = hovered;
+            s.comp_sel = hovered;
+            s.comp_selection_touched = true;
+        }
+        return true;
+    }
+
+    if (released_now && s.comp_popup_mouse_active) {
+        const bool commit = hovered == s.comp_popup_mouse_index && hovered >= 0;
+        s.comp_popup_mouse_active = false;
+        s.comp_popup_mouse_index = -1;
+        if (commit) {
+            s.comp_sel = hovered;
+            s.comp_selection_touched = true;
+            accept_completion(s, hovered);
+        }
+        return true;
+    }
+
+    if (!mouse.left) {
+        s.comp_popup_mouse_active = false;
+        s.comp_popup_mouse_index = -1;
+    }
+    return over_popup;
+}
+
+bool enter_should_commit_completion(const State& s) noexcept {
+    if (!s.comp_active || s.comp_items.empty())
+        return false;
+    if (s.comp_selection_touched)
+        return true;
+    if (s.comp_sel < 0 || s.comp_sel >= static_cast<int>(s.comp_items.size()))
+        return false;
+    const auto token = psynder::console::CurrentToken(s.input, s.cursor);
+    return s.comp_items[static_cast<usize>(s.comp_sel)] != token.text;
+}
+
 void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept {
     clamp_editor(s);
     refresh_completion(s);  // popup mirrors the current prompt token
 
     const platform::MouseState& mouse = input.mouse();
     const bool left_pressed = mouse.left && !s.mouse_left_prev;
-    bool popup_mouse_consumed = false;
-    if (s.comp_active && s.last_fb_w > 0u && s.last_fb_h > 0u) {
-        const CompletionPopupLayout layout = completion_popup_layout(
-            s, static_cast<f32>(s.last_fb_w), static_cast<f32>(s.last_fb_h));
-        if (layout.visible && mouse.x >= layout.box_x && mouse.x < layout.box_x + layout.box_w &&
-            mouse.y >= layout.box_y + 2.0f && mouse.y < layout.box_y + layout.box_h - 2.0f) {
-            const int row = static_cast<int>((mouse.y - (layout.box_y + 2.0f)) /
-                                             static_cast<f32>(kLineH));
-            if (row >= 0 && row < layout.vis) {
-                const int item_index = layout.first + row;
-                s.comp_sel = item_index;
-                if (left_pressed)
-                    accept_completion(s, item_index);
-                popup_mouse_consumed = true;
-            }
-        }
-    }
+    const bool popup_mouse_consumed = update_completion_popup_mouse(s, mouse);
+    if (popup_mouse_consumed)
+        s.text_dragging = false;
 
     const bool shift_down = input.key_down(KeyCode::LeftShift) || input.key_down(KeyCode::RightShift);
     const bool shortcut_down = input.key_down(KeyCode::LeftCtrl) || input.key_down(KeyCode::RightCtrl) ||
@@ -1135,8 +1216,12 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         refresh_completion(s);
     }
 
-    if (input.key_pressed(KeyCode::Enter))
-        submit(s);
+    if (input.key_pressed(KeyCode::Enter)) {
+        if (enter_should_commit_completion(s))
+            accept_completion(s, s.comp_sel);
+        else
+            submit(s);
+    }
     if (input.key_pressed(KeyCode::Escape)) {
         // Esc never quits while the console owns input: dismiss the popup,
         // else clear the prompt. We intentionally keep the console open.
@@ -1147,6 +1232,7 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         } else {
             s.input.clear();
             s.cursor = 0;
+            clear_selection(s);
             s.history_pos = -1;
             s.comp_suppressed_until_text = false;
         }
@@ -1168,6 +1254,7 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         if (s.comp_active) {
             const int n = static_cast<int>(s.comp_items.size());
             s.comp_sel = (s.comp_sel > 0) ? s.comp_sel - 1 : n - 1;
+            s.comp_selection_touched = true;
         } else {
             history_prev(s);
         }
@@ -1176,6 +1263,7 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         if (s.comp_active) {
             const int n = static_cast<int>(s.comp_items.size());
             s.comp_sel = (n > 0) ? (s.comp_sel + 1) % n : 0;
+            s.comp_selection_touched = true;
         } else {
             history_next(s);
         }
@@ -1199,10 +1287,12 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
         }
         s.history_pos = -1;
     }
-    if (key_repeat(s, input, KeyCode::Left, dt) && s.cursor > 0)
-        move_cursor_to(s, s.cursor - utf8_prev_len(s.input, s.cursor), shift_down);
-    if (key_repeat(s, input, KeyCode::Right, dt) && s.cursor < s.input.size())
-        move_cursor_to(s, s.cursor + utf8_next_len(s.input, s.cursor), shift_down);
+    const bool left_action = key_repeat(s, input, KeyCode::Left, dt);
+    const bool right_action = key_repeat(s, input, KeyCode::Right, dt);
+    if (left_action)
+        move_cursor_to(s, shortcut_down ? 0 : s.cursor - utf8_prev_len(s.input, s.cursor), shift_down);
+    if (right_action)
+        move_cursor_to(s, shortcut_down ? s.input.size() : s.cursor + utf8_next_len(s.input, s.cursor), shift_down);
 
     // Mouse wheel scrolls the scrollback (3 lines/notch). Clamp later in draw.
     const f32 wheel = input.mouse().wheel;

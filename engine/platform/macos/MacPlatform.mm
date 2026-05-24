@@ -135,6 +135,21 @@ KeyCode translate_key(unsigned short vk) {
     }
 }
 
+KeyCode translate_appkit_function_char(unichar c) {
+    // AppKit reports Fn-modified arrows and some navigation keys as private-use
+    // function characters in -charactersIgnoringModifiers.
+    switch (c) {
+        case 0xF700: return KeyCode::Up;      // NSUpArrowFunctionKey
+        case 0xF701: return KeyCode::Down;    // NSDownArrowFunctionKey
+        case 0xF702: return KeyCode::Left;    // NSLeftArrowFunctionKey
+        case 0xF703: return KeyCode::Right;   // NSRightArrowFunctionKey
+        case 0xF728: return KeyCode::Delete;  // NSDeleteFunctionKey
+        case 0xF729: return KeyCode::Home;    // NSHomeFunctionKey
+        case 0xF72B: return KeyCode::End;     // NSEndFunctionKey
+        default:     return KeyCode::Unknown;
+    }
+}
+
 // ─── Per-process Input state (single window per process is the design) ───
 class MacInput final : public Input {
 public:
@@ -202,6 +217,16 @@ private:
 MacInput& mac_input() {
     static MacInput i;
     return i;
+}
+
+void forward_appkit_function_keys(NSEvent* event, bool down) {
+    NSString* chars = [event charactersIgnoringModifiers];
+    const NSUInteger n = [chars length];
+    for (NSUInteger i = 0; i < n; ++i) {
+        const KeyCode k = translate_appkit_function_char([chars characterAtIndex:i]);
+        if (k != KeyCode::Unknown)
+            mac_input().on_key(k, down);
+    }
 }
 
 // ─── NSApp lazy bootstrap ────────────────────────────────────────────────
@@ -403,6 +428,7 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 - (void)keyDown:(NSEvent*)event {
     psynder::platform::mac_input().on_key(
         psynder::platform::translate_key([event keyCode]), true);
+    psynder::platform::forward_appkit_function_keys(event, true);
 
     // Text entry for the software console overlay. -characters is already
     // mapped through the active keyboard layout + Shift, so we get '@' for
@@ -439,6 +465,7 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 - (void)keyUp:(NSEvent*)event {
     psynder::platform::mac_input().on_key(
         psynder::platform::translate_key([event keyCode]), false);
+    psynder::platform::forward_appkit_function_keys(event, false);
 }
 - (void)flagsChanged:(NSEvent*)event {
     NSEventModifierFlags f = [event modifierFlags];
