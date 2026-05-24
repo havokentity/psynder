@@ -67,6 +67,7 @@ void print_arcade_help(console::Output& out) {
     out.PrintLine("  arcade_boot_tune          Replay the 8-bit boot chime");
     out.PrintLine("  arcade_startup_tune 0|1   Disable/enable boot music");
     out.PrintLine("  config_open_dir           Open saved settings folder");
+    out.PrintLine("  editor_panel hierarchy    Open scene hierarchy");
     out.PrintLine("  editor_panel psygraph     Open visual scripting");
     out.PrintLine("  editor_panel assets       Open the asset browser");
     out.PrintLine("  editor_panel props        Open prop spawning");
@@ -149,6 +150,7 @@ void log_arcade_startup_help(std::string_view status) {
     PSY_LOG_INFO("psynder_arcade: arcade_boot_tune replays the 8-bit boot chime");
     PSY_LOG_INFO("psynder_arcade: arcade_startup_tune 0 disables startup music");
     PSY_LOG_INFO("psynder_arcade: config_open_dir opens saved settings");
+    PSY_LOG_INFO("psynder_arcade: editor_panel hierarchy opens scene hierarchy");
     PSY_LOG_INFO("psynder_arcade: editor_panel psygraph opens visual scripting");
 }
 
@@ -319,11 +321,12 @@ void draw_attract_mode(render::Framebuffer& fb, f64 seconds, std::string_view st
     constexpr f32 kLineH = 10.0f;
     constexpr f32 kPadX = 14.0f;
     constexpr f32 kPadY = 12.0f;
-    const std::array<std::string_view, 7> lines{
+    const std::array<std::string_view, 8> lines{
         status,
         "Press `~` for the console.",
         "arcade_load_scene <path>  Load a cooked .psyscene",
         "arcade_open_editor        Open the web editor workbench",
+        "editor_panel hierarchy    Open scene hierarchy",
         "editor_panel psygraph     Open visual scripting",
         "editor_panel assets       Open the asset browser",
         "arcade_help               Print this list",

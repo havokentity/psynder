@@ -7,11 +7,11 @@ import React from 'react';
 
 import { AssetBrowser } from './panels/AssetBrowser';
 import { Console } from './panels/Console';
+import { Hierarchy } from './panels/Hierarchy';
 import { Inspector } from './panels/Inspector';
 import { Profiler } from './panels/Profiler';
 import { PropSpawn } from './panels/PropSpawn';
 import { PsyGraph } from './panels/PsyGraph';
-import { SceneView } from './panels/SceneView';
 
 type PanelName = 'scene' | 'inspector' | 'console' | 'profiler' | 'assets' | 'props' | 'psygraph';
 type RouteName = PanelName | 'workbench';
@@ -50,7 +50,7 @@ const LAYOUT_NAMES: readonly LayoutName[] = [...LAYOUT_PRESETS, 'custom'];
 const DOCK_SLOTS: readonly DockSlot[] = ['primary', 'secondary', 'tertiary', 'quaternary'];
 
 const PANEL_META: Record<PanelName, { icon: string; label: string; hot: string }> = {
-    scene:     { icon: '@', label: 'Scene', hot: 'world' },
+    scene:     { icon: 'H', label: 'Hierarchy', hot: 'tree' },
     inspector: { icon: 'I', label: 'Inspector', hot: 'sel' },
     console:   { icon: '>', label: 'Console', hot: 'repl' },
     profiler:  { icon: '~', label: 'Profiler', hot: 'fps' },
@@ -72,6 +72,7 @@ const DEFAULT_DOCKS: Record<DockSlot, PanelName> = {
 const PATH_TO_ROUTE: Record<string, RouteName> = {
     workbench: 'workbench',
     scene:     'scene',
+    hierarchy: 'scene',
     inspector: 'inspector',
     console:   'console',
     profiler:  'profiler',
@@ -102,6 +103,7 @@ function safe_panel(value: string | null, fallback: PanelName): PanelName {
 }
 
 function safe_route(value: string | null): RouteName | null {
+    if (value === 'hierarchy') return 'scene';
     if (value === 'workbench' || (value && (PANEL_NAMES as readonly string[]).includes(value))) {
         return value as RouteName;
     }
@@ -1206,7 +1208,7 @@ function DockSlotView({
 }
 
 function PanelView({ name }: { name: PanelName }) {
-    if (name === 'scene') return <SceneView />;
+    if (name === 'scene') return <Hierarchy />;
     if (name === 'inspector') return <Inspector />;
     if (name === 'console') return <Console />;
     if (name === 'profiler') return <Profiler />;

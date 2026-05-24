@@ -277,6 +277,18 @@ void merge_modifier_keys(NSEvent* event) {
     }
 }
 
+bool command_shortcut_key(KeyCode k) noexcept {
+    switch (k) {
+        case KeyCode::A:
+        case KeyCode::C:
+        case KeyCode::V:
+        case KeyCode::X:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // ─── NSApp lazy bootstrap ────────────────────────────────────────────────
 // AppKit must be initialised on the main thread before any NSWindow is
 // constructed. Idempotent so re-entering create_window from samples that
@@ -475,8 +487,8 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 // ── Keyboard ─────────────────────────────────────────────────────────────
 - (void)keyDown:(NSEvent*)event {
     psynder::platform::merge_modifier_keys(event);
-    psynder::platform::mac_input().on_key(
-        psynder::platform::translate_key([event keyCode]), true);
+    const psynder::platform::KeyCode key = psynder::platform::translate_key([event keyCode]);
+    psynder::platform::mac_input().on_key(key, true);
     psynder::platform::forward_appkit_function_keys(event, true);
 
     // Text entry for the software console overlay. -characters is already
@@ -484,7 +496,11 @@ void mac_set_clipboard_text_impl(std::string_view text) {
     // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command
     // chords (those are shortcuts, not text) and C0/DEL control codes — the
     // console reads Enter/Backspace/arrows via key_pressed instead.
-    if (([event modifierFlags] & NSEventModifierFlagCommand) != 0) return;
+    if (([event modifierFlags] & NSEventModifierFlagCommand) != 0) {
+        if (psynder::platform::command_shortcut_key(key))
+            psynder::platform::mac_input().on_key(key, false);
+        return;
+    }
     NSString* chars = [event characters];
     const NSUInteger n = [chars length];
     for (NSUInteger i = 0; i < n;) {

@@ -577,6 +577,39 @@ TEST_CASE("console: paste works at the beginning and can paste again", "[ui][con
     ui::console::set_open(false);
 }
 
+TEST_CASE("console: same clipboard text can paste repeatedly", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    con.RegisterCVar("con_paste_same_val", "0", "same paste test cvar");
+    con.SetCVarOverride("con_paste_same_val", "0");
+
+    const std::string old_clipboard = platform::clipboard_text();
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("con_paste_same_val ");
+    tick(in);
+    platform::set_clipboard_text("1");
+    in.release_all();
+    in.press(KeyCode::LeftCtrl);
+    in.press(KeyCode::V);
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::LeftCtrl);
+    in.press(KeyCode::V);
+    tick(in);
+    in.release_all();
+    in.press(KeyCode::Enter);
+    tick(in);
+    REQUIRE(con.FindCVar("con_paste_same_val")->value == "11");
+
+    platform::set_clipboard_text(old_clipboard);
+    con.SetCVarOverride("con_paste_same_val", "0");
+    ui::console::set_open(false);
+}
+
 TEST_CASE("console: mouse hover selects popup row before Enter", "[ui][console]") {
     ui::console::reset();
     ui::console::set_open(true);
