@@ -31,13 +31,27 @@ struct ComponentTypeInfo {
 };
 
 ComponentId register_component(const ComponentTypeInfo& info);
+ComponentTypeInfo component_type_info(ComponentId id);
+
+namespace detail {
+template <class T>
+const char* component_type_name() noexcept {
+#if defined(__clang__) || defined(__GNUC__)
+    return __PRETTY_FUNCTION__;
+#elif defined(_MSC_VER)
+    return __FUNCSIG__;
+#else
+    return "unknown_component";
+#endif
+}
+}  // namespace detail
 
 template <class T>
 ComponentId component_id() {
     static_assert(std::is_trivially_copyable_v<T>,
                   "Psynder components must be trivially copyable POD");
     static const ComponentId id =
-        register_component(ComponentTypeInfo{0, sizeof(T), alignof(T), ""});
+        register_component(ComponentTypeInfo{0, sizeof(T), alignof(T), detail::component_type_name<T>()});
     return id;
 }
 
@@ -63,8 +77,17 @@ class EcsRegistry {
     template <class... Ts>
     void reserve_archetype(u32 row_count);
 
+    void clear() noexcept;
+    u32 entity_count() const noexcept;
     u32 entity_capacity() const noexcept;
     u32 chunk_live_count() const noexcept;
+    u32 pending_structural_change_count() const noexcept;
+
+    // Snapshot surfaces for editor/script source-of-truth reads. Return the
+    // total count available; copy up to out.size() entries into `out`.
+    u32 snapshot_live_entities(std::span<Entity> out) const;
+    u32 snapshot_components(Entity e, std::span<ComponentId> out) const;
+    u32 component_count(Entity e) const noexcept;
 
     template <class T>
     void add(Entity e, const T& component);

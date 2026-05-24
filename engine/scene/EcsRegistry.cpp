@@ -39,12 +39,36 @@ void EcsRegistry::reserve_structural_changes(u32 op_count, u32 byte_count) {
     detail::EcsRegistryImpl::Get().reserve_structural_changes(op_count, byte_count);
 }
 
+void EcsRegistry::clear() noexcept {
+    detail::EcsRegistryImpl::Get().clear();
+}
+
+u32 EcsRegistry::entity_count() const noexcept {
+    return detail::EcsRegistryImpl::Get().entity_count();
+}
+
 u32 EcsRegistry::entity_capacity() const noexcept {
     return detail::EcsRegistryImpl::Get().entity_capacity();
 }
 
 u32 EcsRegistry::chunk_live_count() const noexcept {
     return detail::EcsRegistryImpl::Get().chunk_live_count();
+}
+
+u32 EcsRegistry::pending_structural_change_count() const noexcept {
+    return detail::EcsRegistryImpl::Get().pending_structural_change_count();
+}
+
+u32 EcsRegistry::snapshot_live_entities(std::span<Entity> out) const {
+    return detail::EcsRegistryImpl::Get().snapshot_live_entities(out);
+}
+
+u32 EcsRegistry::snapshot_components(Entity e, std::span<ComponentId> out) const {
+    return detail::EcsRegistryImpl::Get().snapshot_components(e, out);
+}
+
+u32 EcsRegistry::component_count(Entity e) const noexcept {
+    return detail::EcsRegistryImpl::Get().component_count(e);
 }
 
 void EcsRegistry::set_structural_deferred(bool on) noexcept {
@@ -114,6 +138,11 @@ void EcsRegistryImpl::reserve_structural_changes(u32 op_count, u32 byte_count) {
     deferred_arena_.reserve(byte_count);
 }
 
+u32 EcsRegistryImpl::entity_count() const noexcept {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return live_entities_;
+}
+
 u32 EcsRegistryImpl::entity_capacity() const noexcept {
     std::lock_guard<std::mutex> lk(mutex_);
     return static_cast<u32>(entities_.capacity());
@@ -122,6 +151,11 @@ u32 EcsRegistryImpl::entity_capacity() const noexcept {
 u32 EcsRegistryImpl::chunk_live_count() const noexcept {
     std::lock_guard<std::mutex> lk(mutex_);
     return static_cast<u32>(pool_.live_count());
+}
+
+u32 EcsRegistryImpl::pending_structural_change_count() const noexcept {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return static_cast<u32>(pending_.size());
 }
 
 Entity EcsRegistryImpl::create() {
@@ -198,6 +232,51 @@ bool EcsRegistryImpl::alive(Entity e) const noexcept {
         return false;
     const auto& slot = entities_[idx];
     return slot.alive && slot.generation == e.gen();
+}
+
+u32 EcsRegistryImpl::snapshot_live_entities(std::span<Entity> out) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    u32 total = 0u;
+    u32 written = 0u;
+    for (u32 idx = 0; idx < entities_.size(); ++idx) {
+        const auto& slot = entities_[idx];
+        if (!slot.alive)
+            continue;
+        Entity e{};
+        e.raw = ((idx + 1u) & 0x00FFFFFFu) | (slot.generation << 24);
+        if (written < out.size())
+            out[written++] = e;
+        ++total;
+    }
+    return total;
+}
+
+u32 EcsRegistryImpl::component_count(Entity e) const noexcept {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const u32 idx = entity_index_of(e);
+    if (idx == 0xFFFFFFFFu || idx >= entities_.size())
+        return 0u;
+    const auto& slot = entities_[idx];
+    if (!slot.alive || slot.generation != e.gen())
+        return 0u;
+    return static_cast<u32>(archetypes_[slot.archetype_id].components().size());
+}
+
+u32 EcsRegistryImpl::snapshot_components(Entity e, std::span<ComponentId> out) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    const u32 idx = entity_index_of(e);
+    if (idx == 0xFFFFFFFFu || idx >= entities_.size())
+        return 0u;
+    const auto& slot = entities_[idx];
+    if (!slot.alive || slot.generation != e.gen())
+        return 0u;
+
+    const auto components = archetypes_[slot.archetype_id].components();
+    const u32 total = static_cast<u32>(components.size());
+    const u32 n = std::min<u32>(total, static_cast<u32>(out.size()));
+    for (u32 i = 0; i < n; ++i)
+        out[i] = components[i];
+    return total;
 }
 
 std::vector<ComponentId> EcsRegistryImpl::merged_components(std::span<const ComponentId> base,

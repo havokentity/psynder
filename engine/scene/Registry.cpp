@@ -48,4 +48,9 @@ ComponentId register_component(const ComponentTypeInfo& info) {
     return detail::ComponentRegistry::Get().register_type(info.size, info.align, info.name);
 }
 
+ComponentTypeInfo component_type_info(ComponentId id) {
+    const detail::ComponentRecord rec = detail::ComponentRegistry::Get().lookup(id);
+    return ComponentTypeInfo{rec.id, rec.size, rec.align, rec.name};
+}
+
 }  // namespace psynder::scene

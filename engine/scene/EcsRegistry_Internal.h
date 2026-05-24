@@ -74,6 +74,7 @@ class EcsRegistryImpl {
     bool alive(Entity e) const noexcept;
     void reserve_entities(u32 count);
     void reserve_structural_changes(u32 op_count, u32 byte_count);
+    void clear() noexcept { shutdown(); }
 
     // Type-erased component ops
     void add_raw(Entity e, ComponentId comp, const void* bytes, u32 byte_count);
@@ -96,6 +97,9 @@ class EcsRegistryImpl {
     // Query support — given sorted reads + writes, populate matching
     // archetype indices.
     void resolve_query(std::span<const ComponentId> required, std::vector<u32>& matched) const;
+    u32 snapshot_live_entities(std::span<Entity> out) const;
+    u32 snapshot_components(Entity e, std::span<ComponentId> out) const;
+    u32 component_count(Entity e) const noexcept;
     void snapshot_selected_entities(std::span<const Entity> selected,
                                     EcsEditorSelectionSnapshot& out) const;
 
@@ -105,9 +109,10 @@ class EcsRegistryImpl {
     u32 archetype_count() const noexcept { return static_cast<u32>(archetypes_.size()); }
 
     // Stats
-    u32 entity_count() const noexcept { return live_entities_; }
+    u32 entity_count() const noexcept;
     u32 entity_capacity() const noexcept;
     u32 chunk_live_count() const noexcept;
+    u32 pending_structural_change_count() const noexcept;
 
    private:
     EcsRegistryImpl();
