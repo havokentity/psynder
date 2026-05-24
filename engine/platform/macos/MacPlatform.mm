@@ -287,9 +287,27 @@ bool command_shortcut_key(KeyCode k) noexcept {
     }
 }
 
+KeyCode command_shortcut_from_event(NSEvent* event) {
+    if (([event modifierFlags] & NSEventModifierFlagCommand) == 0)
+        return KeyCode::Unknown;
+    NSString* chars = [[event charactersIgnoringModifiers] lowercaseString];
+    if (chars == nil || [chars length] == 0)
+        return KeyCode::Unknown;
+    switch ([chars characterAtIndex:0]) {
+        case 'a': return KeyCode::A;
+        case 'c': return KeyCode::C;
+        case 'v': return KeyCode::V;
+        case 'x': return KeyCode::X;
+        default:  return KeyCode::Unknown;
+    }
+}
+
 void handle_key_down_event(NSEvent* event) {
     merge_modifier_keys(event);
-    const KeyCode key = translate_key([event keyCode]);
+    KeyCode key = translate_key([event keyCode]);
+    const KeyCode command_key = command_shortcut_from_event(event);
+    if (command_key != KeyCode::Unknown)
+        key = command_key;
     mac_input().on_key(key, true);
     forward_appkit_function_keys(event, true);
 
@@ -328,6 +346,15 @@ void handle_key_down_event(NSEvent* event) {
         if (cp >= 0x20 && cp != 0x7F && !(cp >= 0xF700 && cp <= 0xF8FF))
             mac_input().on_text(cp);
     }
+}
+
+bool handle_key_equivalent_event(NSEvent* event) {
+    if ([event type] != NSEventTypeKeyDown)
+        return false;
+    if (!command_shortcut_key(command_shortcut_from_event(event)))
+        return false;
+    handle_key_down_event(event);
+    return true;
 }
 
 void handle_key_up_event(NSEvent* event) {
@@ -549,6 +576,11 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 }
 
 // ── Keyboard ─────────────────────────────────────────────────────────────
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+    if (psynder::platform::handle_key_equivalent_event(event))
+        return YES;
+    return [super performKeyEquivalent:event];
+}
 - (void)keyDown:(NSEvent*)event {
     psynder::platform::handle_key_down_event(event);
 }
@@ -596,6 +628,11 @@ void mac_set_clipboard_text_impl(std::string_view text) {
 }
 - (BOOL)canBecomeMainWindow {
     return YES;
+}
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+    if (psynder::platform::handle_key_equivalent_event(event))
+        return YES;
+    return [super performKeyEquivalent:event];
 }
 @end
 
