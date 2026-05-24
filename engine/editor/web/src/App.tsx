@@ -12,6 +12,8 @@ import { Inspector } from './panels/Inspector';
 import { Profiler } from './panels/Profiler';
 import { PropSpawn } from './panels/PropSpawn';
 import { PsyGraph } from './panels/PsyGraph';
+import { get_client } from './ipc/client';
+import type { ConsoleEval } from './ipc/protocol';
 
 type PanelName = 'scene' | 'inspector' | 'console' | 'profiler' | 'assets' | 'props' | 'psygraph';
 type RouteName = PanelName | 'workbench';
@@ -395,6 +397,8 @@ function split_dock_leaf(target: DockNode, panel: PanelName, zone: DockDropZone)
 }
 
 export function App() {
+    const ipc_client = React.useMemo(() => get_client(), []);
+    const command_seq = React.useRef(90000);
     const [route, set_route] = React.useState<RouteName>(pick_route);
     const [settings_open, set_settings_open] = React.useState(false);
     const [theme, set_theme] = React.useState<ThemeName>(() => (
@@ -540,6 +544,15 @@ export function App() {
         set_custom_dock_tree(snapshot.custom_tree);
     };
 
+    const request_quit = React.useCallback(() => {
+        if (!window.confirm('Quit Psynder Arcade?')) return;
+        ipc_client.send<ConsoleEval>('console', 'eval', {
+            id: ++command_seq.current,
+            source: 'quit',
+            mode: 'console',
+        });
+    }, [ipc_client]);
+
     const current = route === 'workbench' ? WORKBENCH_META : PANEL_META[route];
 
     return (
@@ -592,6 +605,15 @@ export function App() {
                         title="Panel settings"
                     >
                         *
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-toolbar-btn psy-toolbar-btn-danger"
+                        onClick={request_quit}
+                        aria-label="Quit Psynder Arcade"
+                        title="Quit Psynder Arcade"
+                    >
+                        <span className="psy-power-icon" aria-hidden="true" />
                     </button>
                 </div>
 

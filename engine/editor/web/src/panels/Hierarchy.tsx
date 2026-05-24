@@ -197,17 +197,6 @@ export function Hierarchy() {
                 >
                     new
                 </button>
-                <button
-                    type="button"
-                    className="psy-btn psy-btn-danger"
-                    onClick={() => {
-                        if (window.confirm('Quit Psynder Arcade?')) {
-                            send_command('quit', 'quitting Psynder Arcade');
-                        }
-                    }}
-                >
-                    quit
-                </button>
             </header>
 
             <div className="psy-hierarchy-toolbar">

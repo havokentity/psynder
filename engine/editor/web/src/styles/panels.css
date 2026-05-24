@@ -19,6 +19,7 @@
     --psy-good:         #68d391;
     --psy-warn:         #f3c04f;
     --psy-bad:          #ec6b7b;
+    --psy-danger:       var(--psy-bad);
     --psy-bad-dim:      #5e3232;
     --psy-glow:         rgba(109, 183, 255, 0.18);
     --psy-panel-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
@@ -238,6 +239,32 @@ button {
 .psy-toolbar-btn[aria-expanded="true"] {
     border-color: var(--psy-accent);
     color: var(--psy-accent);
+}
+
+.psy-toolbar-btn-danger:hover {
+    border-color: var(--psy-danger);
+    color: var(--psy-danger);
+}
+
+.psy-power-icon {
+    position: relative;
+    width: 17px;
+    height: 17px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+}
+
+.psy-power-icon::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: -4px;
+    width: 2px;
+    height: 10px;
+    border-radius: 2px;
+    background: currentColor;
+    transform: translateX(-50%);
 }
 
 .psy-settings-pop {
