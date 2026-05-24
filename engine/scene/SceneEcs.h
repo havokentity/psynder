@@ -36,6 +36,12 @@ enum class ObjectMobility : u8 {
     Dynamic = 1,
 };
 
+enum class LightKind : u8 {
+    Point = 0,
+    Directional = 1,
+    Spot = 2,
+};
+
 enum class RenderableFlags : u32 {
     None = 0,
     Visible = 1u << 0,
@@ -135,6 +141,17 @@ struct CameraDesc {
     bool active = true;
 };
 
+PSYNDER_COMPONENT(LightComponent) {
+    LightKind kind = LightKind::Point;
+    u32 color_rgba8 = 0xFFFFFFFFu;
+    f32 intensity = 3.0f;
+    f32 range = 8.0f;
+    f32 inner_cone_deg = 20.0f;
+    f32 outer_cone_deg = 45.0f;
+    u8 casts_shadow = 0u;
+    u8 _pad[3] = {};
+};
+
 PSYNDER_COMPONENT(RenderableComponent) {
     GeometryKind geometry = GeometryKind::None;
     u32 geometry_id = 0u;
@@ -156,10 +173,26 @@ struct SceneRenderItem {
     ObjectMobility mobility = ObjectMobility::Dynamic;
 };
 
+struct SceneLightItem {
+    Entity entity{};
+    SceneNode node{};
+    math::Mat4 world{};
+    math::Vec3 position{};
+    math::Vec3 direction{0.0f, 0.0f, -1.0f};
+    LightKind kind = LightKind::Point;
+    u32 color_rgba8 = 0xFFFFFFFFu;
+    f32 intensity = 1.0f;
+    f32 range = 1.0f;
+    f32 inner_cone_deg = 20.0f;
+    f32 outer_cone_deg = 45.0f;
+    bool casts_shadow = false;
+};
+
 struct ScenePrewarmConfig {
     u32 scene_entities = 0u;
     u32 renderables = 0u;
     u32 cameras = 0u;
+    u32 lights = 0u;
     u32 analytic_spheres = 0u;
     u32 render_items = 0u;
     u32 deferred_structural_changes = 0u;
@@ -297,6 +330,13 @@ inline bool update_renderable(EcsRegistry& registry, Entity entity, const Render
     return true;
 }
 
+inline bool update_light(EcsRegistry& registry, Entity entity, const LightComponent& light) {
+    if (!registry.alive(entity) || !registry.get<LightComponent>(entity))
+        return false;
+    registry.add<LightComponent>(entity, light);
+    return true;
+}
+
 inline bool set_renderable_mobility(EcsRegistry& registry, Entity entity, ObjectMobility mobility) {
     auto* renderable = registry.get<RenderableComponent>(entity);
     if (!renderable)
@@ -360,7 +400,8 @@ inline bool set_renderable_geometry(EcsRegistry& registry,
 }
 
 inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, const ScenePrewarmConfig& config) {
-    const u32 scene_entity_count = std::max(config.scene_entities, config.renderables);
+    const u32 scene_entity_count =
+        std::max({config.scene_entities, config.renderables, config.cameras, config.lights});
     graph.reserve_nodes(scene_entity_count);
     graph.reserve_analytic_spheres(config.analytic_spheres);
 
@@ -370,6 +411,14 @@ inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, con
     if (config.cameras != 0u) {
         registry.reserve_archetype<CameraComponent, SceneNodeComponent, TransformComponent>(
             config.cameras);
+    }
+    if (config.lights != 0u) {
+        registry.reserve_archetype<LightComponent, SceneNodeComponent, TransformComponent>(
+            config.lights);
+        registry.reserve_archetype<LightComponent,
+                                   RenderableComponent,
+                                   SceneNodeComponent,
+                                   TransformComponent>(config.lights);
     }
     if (config.renderables != 0u) {
         registry.reserve_archetype<RenderableComponent, SceneNodeComponent, TransformComponent>(
@@ -381,7 +430,8 @@ inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, con
                                    : scene_entity_count * 2u + config.renderables;
     const u32 structural_bytes = scene_entity_count * static_cast<u32>(sizeof(TransformComponent) +
                                                                        sizeof(SceneNodeComponent)) +
-                                 config.renderables * static_cast<u32>(sizeof(RenderableComponent));
+                                 config.renderables * static_cast<u32>(sizeof(RenderableComponent)) +
+                                 config.lights * static_cast<u32>(sizeof(LightComponent));
     registry.reserve_structural_changes(structural_ops, structural_bytes);
 }
 
@@ -539,6 +589,49 @@ inline void gather_scene_render_items(EcsRegistry& registry,
                 item.material = r.material;
                 item.flags = r.flags;
                 item.mobility = r.mobility;
+                chunk_items[chunk_count++] = item;
+            }
+            if (chunk_count != 0u) {
+                std::scoped_lock lock{append_mutex};
+                out.reserve(out.size() + chunk_count);
+                out.insert(out.end(), chunk_items.begin(), chunk_items.begin() + chunk_count);
+            }
+        });
+}
+
+inline void gather_scene_lights(EcsRegistry& registry,
+                                const SceneGraph& graph,
+                                std::vector<SceneLightItem>& out) {
+    out.clear();
+    std::mutex append_mutex;
+    registry.query<reads<SceneNodeComponent, LightComponent>, writes<>>(
+        [&](std::span<const SceneNodeComponent> nodes, std::span<const LightComponent> lights) {
+            const usize n = std::min(nodes.size(), lights.size());
+            constexpr usize kMaxChunkRows = 256u;
+            std::array<SceneLightItem, kMaxChunkRows> chunk_items{};
+            usize chunk_count = 0u;
+            for (usize i = 0; i < n; ++i) {
+                const SceneNode node = nodes[i].node;
+                if (!graph.alive(node))
+                    continue;
+                const LightComponent& light = lights[i];
+                const math::Mat4 world = graph.world_matrix(node);
+                SceneLightItem item{};
+                item.entity = nodes[i].entity;
+                item.node = node;
+                item.world = world;
+                item.position = math::Vec3{world.m[12], world.m[13], world.m[14]};
+                item.direction =
+                    math::normalize(math::Vec3{-world.m[8], -world.m[9], -world.m[10]});
+                item.kind = light.kind;
+                item.color_rgba8 = light.color_rgba8;
+                item.intensity = std::max(0.0f, light.intensity);
+                item.range = std::max(0.0f, light.range);
+                item.inner_cone_deg = std::clamp(light.inner_cone_deg, 0.0f, 179.0f);
+                item.outer_cone_deg = std::clamp(light.outer_cone_deg,
+                                                 item.inner_cone_deg,
+                                                 179.0f);
+                item.casts_shadow = light.casts_shadow != 0u;
                 chunk_items[chunk_count++] = item;
             }
             if (chunk_count != 0u) {
@@ -1107,6 +1200,14 @@ class Scene {
         return true;
     }
 
+    bool attach_light(Entity entity, const LightComponent& light = {}) {
+        if (!registry_->alive(entity) || !registry_->get<SceneNodeComponent>(entity))
+            return false;
+        registry_->add<LightComponent>(entity, light);
+        warn_pool_growth("attach_light");
+        return true;
+    }
+
     bool set_active_camera(Entity entity) {
         if (!registry_->alive(entity) || !registry_->get<CameraComponent>(entity))
             return false;
@@ -1131,6 +1232,10 @@ class Scene {
 
     bool update_renderable(Entity entity, const RenderableComponent& renderable) {
         return ::psynder::scene::update_renderable(*registry_, entity, renderable);
+    }
+
+    bool update_light(Entity entity, const LightComponent& light) {
+        return ::psynder::scene::update_light(*registry_, entity, light);
     }
 
     bool set_renderable_mobility(Entity entity, ObjectMobility mobility) {
@@ -1172,6 +1277,11 @@ class Scene {
     void gather_render_items(std::vector<SceneRenderItem>& out) {
         reserve_render_items(out);
         gather_scene_render_items(*registry_, graph_, out);
+    }
+
+    void gather_lights(std::vector<SceneLightItem>& out) {
+        out.reserve(std::max<usize>(out.capacity(), render_item_capacity_));
+        gather_scene_lights(*registry_, graph_, out);
     }
 
    private:

@@ -28,7 +28,7 @@ const DEMO_SCHEMAS: ComponentSchema[] = [
         layout_hash: 'mock-transform-v1',
         fields: [
             { name: 'position', kind: 'vec3', numeric: { step: 0.01, unit: 'm' } },
-            { name: 'rotation', kind: 'quat' },
+            { name: 'rotation', kind: 'vec3', numeric: { step: 0.1, unit: 'deg' } },
             { name: 'scale',    kind: 'vec3', numeric: { step: 0.01, min: 0.001 } },
         ],
     },
@@ -71,7 +71,7 @@ const DEMO_SELECTION: SelectionState = {
     components: {
         Transform: {
             position: [1.5, 0.0, -3.25],
-            rotation: [0, 0, 0, 1],
+            rotation: [0, 0, 0],
             scale: [1, 1, 1],
         },
         Visible: {

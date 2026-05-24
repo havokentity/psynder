@@ -36,6 +36,25 @@ function numeric_step(field: FieldSchema): number {
     return is_integer_kind(field.kind) ? 1 : 0.01;
 }
 
+function decimal_places(step: number): number {
+    if (!Number.isFinite(step) || step <= 0) return 3;
+    const text = String(step);
+    const exponent = /e-(\d+)$/i.exec(text);
+    if (exponent) return Math.min(Number(exponent[1]), 6);
+    const dot = text.indexOf('.');
+    return dot >= 0 ? Math.min(text.length - dot - 1, 6) : 0;
+}
+
+function format_number(field: FieldSchema, value: unknown): string {
+    const n = typeof value === 'number' ? value : Number(value ?? 0);
+    if (!Number.isFinite(n)) return '0';
+    if (is_integer_kind(field.kind)) return String(Math.trunc(n));
+
+    const places = Math.max(decimal_places(numeric_step(field)), 3);
+    const rounded = Math.abs(n) < 1e-9 ? 0 : Number(n.toFixed(places));
+    return String(rounded);
+}
+
 function clamp(v: number, hints?: NumericFieldHints): number {
     if (!hints) return v;
     if (hints.min != null && v < hints.min) return hints.min;
@@ -44,18 +63,18 @@ function clamp(v: number, hints?: NumericFieldHints): number {
 }
 
 export function NumberField({ field, value, on_change }: WidgetProps<number>) {
-    const [draft, set_draft] = React.useState(String(value ?? 0));
-    React.useEffect(() => { set_draft(String(value ?? 0)); }, [value]);
+    const [draft, set_draft] = React.useState(format_number(field, value));
+    React.useEffect(() => { set_draft(format_number(field, value)); }, [field, value]);
 
     const commit = (raw: string) => {
         const n = Number(raw);
         if (!Number.isFinite(n)) {
-            set_draft(String(value ?? 0));
+            set_draft(format_number(field, value));
             return;
         }
         const clamped = clamp(n, field.numeric);
         on_change(clamped);
-        if (clamped !== n) set_draft(String(clamped));
+        set_draft(format_number(field, clamped));
     };
 
     return (
@@ -137,13 +156,13 @@ export function StringField({ field, value, on_change }: WidgetProps<string>) {
 
 // ─── Color ───────────────────────────────────────────────────────────────
 //
-// Wire format: RGBA8 packed into a u32 in 0xAARRGGBB order. The HTML input
-// type=color only takes #RRGGBB so we surface the alpha as a separate slider.
+// Wire format: engine RGBA8 packed into a u32 with R in the low byte
+// (numeric 0xAABBGGRR). HTML color inputs use #RRGGBB, so convert at the edge.
 
 function u32_to_hex(packed: number): string {
-    const r = (packed >>> 16) & 0xff;
+    const r = (packed >>>  0) & 0xff;
     const g = (packed >>>  8) & 0xff;
-    const b = (packed >>>  0) & 0xff;
+    const b = (packed >>> 16) & 0xff;
     const pad = (n: number) => n.toString(16).padStart(2, '0');
     return `#${pad(r)}${pad(g)}${pad(b)}`;
 }
@@ -158,9 +177,9 @@ function hex_to_rgb(hex: string): [number, number, number] {
 function pack_rgba(r: number, g: number, b: number, a: number): number {
     return (
         ((a & 0xff) << 24) |
-        ((r & 0xff) << 16) |
+        ((b & 0xff) << 16) |
         ((g & 0xff) <<  8) |
-        ((b & 0xff) <<  0)
+        ((r & 0xff) <<  0)
     ) >>> 0;
 }
 

@@ -11,6 +11,8 @@
 //                   `spawn_prop` commands from the prop-spawn menu.
 //   - "console"   : bi-directional engine-console / Lua command path — panel
 //                   sends `eval`, engine streams `log` lines plus `result`.
+//   - "scene"     : active engine scene snapshots/deltas, including the
+//                   hierarchy shown by the web editor.
 //   - "profiler"  : engine pushes a `frame` sample per render frame (cpu_ms,
 //                   render_ms, ms_per_section breakdown, fps).
 //   - "assets"    : engine pushes the catalog of entries in the loaded
@@ -37,6 +39,7 @@ export type Channel =
     | 'schemas'
     | 'selection'
     | 'console'
+    | 'scene'
     | 'profiler'
     | 'assets'
     | 'props'
@@ -62,9 +65,9 @@ export type FieldKind =
     | 'bool'
     | 'enum'
     | 'string'
-    | 'color'    // RGBA8 packed in a u32; widget = color picker.
+    | 'color'    // Engine RGBA8 packed in a u32, R in low byte; widget = color picker.
     | 'vec2' | 'vec3' | 'vec4'
-    | 'quat';    // four floats — surfaced as Euler degrees for editing.
+    | 'quat';    // four raw quaternion floats; engine-facing Transform rotation uses vec3 degrees.
 
 export interface NumericFieldHints {
     min?: number;
@@ -142,6 +145,11 @@ export interface SelectionSet {
     value: unknown;
 }
 
+export interface SceneDirtyState {
+    dirty: boolean;
+    generation?: number;
+}
+
 // ─── Console channel ─────────────────────────────────────────────────────
 //
 // `eval`        : panel → engine. Pushes either an engine-console command/cvar
@@ -159,6 +167,8 @@ export interface ConsoleEval {
     source: string;
     /** Optional UI hint for engines that route multiple console languages. */
     mode?: 'console' | 'lua';
+    /** Suppress successful result rows for GUI-generated commands. Errors still surface. */
+    quiet?: boolean;
 }
 
 export interface ConsoleLog {

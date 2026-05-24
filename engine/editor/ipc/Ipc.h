@@ -9,6 +9,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace psynder::editor::ipc {
 
@@ -32,6 +33,42 @@ struct StatsTick {
     std::span<const StatsSection> sections;
 };
 
+using SelectionSelectHandler = void (*)(u32 entity_id);
+
+enum class SelectionComponentEditValueKind : u8 {
+    Null,
+    Bool,
+    I64,
+    U64,
+    F64,
+    String,
+    BoolArray,
+    F64Array,
+    StringArray,
+};
+
+struct SelectionComponentEditValue {
+    SelectionComponentEditValueKind kind = SelectionComponentEditValueKind::Null;
+    bool bool_value = false;
+    i64 i64_value = 0;
+    u64 u64_value = 0;
+    f64 f64_value = 0.0;
+    std::string string_value;
+    std::vector<u8> bool_values;
+    std::vector<f64> f64_values;
+    std::vector<std::string> string_values;
+};
+
+struct SelectionComponentEdit {
+    u32 entity_id = 0;
+    std::string component;
+    std::string field;
+    std::string field_kind;
+    SelectionComponentEditValue value;
+};
+
+using SelectionComponentEditHandler = void (*)(const SelectionComponentEdit& edit);
+
 class Server {
    public:
     static Server& Get();
@@ -42,6 +79,8 @@ class Server {
     // Push a state delta to all connected panels (one-directional engine→UI).
     void broadcast(std::string_view channel, std::span<const u8> msgpack_payload);
     void broadcast_stats_tick(const StatsTick& tick);
+    void set_selection_select_handler(SelectionSelectHandler handler);
+    void set_selection_component_edit_handler(SelectionComponentEditHandler handler);
 
     [[nodiscard]] bool has_subscribers(std::string_view channel) const;
 

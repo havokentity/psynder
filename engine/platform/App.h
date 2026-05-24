@@ -229,6 +229,14 @@ class WindowApp {
         active_scene_rendered_ = false;
     }
 
+    void reset_scenes() noexcept {
+        clear_scene();
+        for (u32 i = 0; i < owned_scene_count_; ++i)
+            owned_scenes_[i].reset();
+        owned_scene_count_ = 0;
+        loaded_scene_count_ = 0;
+    }
+
     void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
         rendering_system_.reserve_scene_capacity(renderables, meshes);
     }
@@ -322,6 +330,7 @@ class WindowApp {
                 editor::frame_overlays(*input, framebuffer_, reported);
             }
         }
+        editor::publish_web_scene_hierarchy(active_scene_);
         render::reset_frame_stats();
         engine_frame_update_ran_ = false;
     }
@@ -348,6 +357,7 @@ class WindowApp {
                 editor::frame_overlays(*input, framebuffer_, reported);
             }
         }
+        editor::publish_web_scene_hierarchy(active_scene_);
         render::reset_frame_stats();
         engine_frame_update_ran_ = false;
     }
@@ -361,6 +371,7 @@ class WindowApp {
             }
         }
         editor::draw_frame_overlays(framebuffer_, hud);
+        editor::publish_web_scene_hierarchy(active_scene_);
         render::reset_frame_stats();
         engine_frame_update_ran_ = false;
     }

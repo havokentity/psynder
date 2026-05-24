@@ -39,6 +39,7 @@ export type ConnectionState =
 type Listener = (env: Envelope) => void;
 type StateListener = (state: ConnectionState) => void;
 type SceneSlice = Channel | 'perf' | 'scene';
+type PendingConsoleRequest = { id: number; quiet: boolean };
 
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS  = 8000;
@@ -56,7 +57,7 @@ export class IpcClient {
     private destroyed = false;
     private highest_seen_version = PROTOCOL_VERSION;
     private version_warned = false;
-    private pending_console_ids: number[] = [];
+    private pending_console_requests: PendingConsoleRequest[] = [];
 
     constructor(opts: ClientOptions = {}) {
         this.url = opts.url ?? this.default_url();
@@ -255,11 +256,20 @@ export class IpcClient {
             return concat_msgpack(OPCODES.UnsubscribeFrame, [ch]);
         }
         if (ch === 'console' && type === 'eval') {
-            const p = payload as { id?: number; source?: string; text?: string; mode?: string };
+            const p = payload as {
+                id?: number;
+                source?: string;
+                text?: string;
+                mode?: string;
+                quiet?: boolean;
+            };
             const text = p.source ?? p.text ?? '';
             const mode = p.mode === 'lua' ? 'lua' : 'console';
             if (typeof p.id === 'number') {
-                this.pending_console_ids.push(p.id);
+                this.pending_console_requests.push({
+                    id: p.id,
+                    quiet: p.quiet === true,
+                });
             }
             return concat_msgpack(OPCODES.ConsoleFrame, [text, mode]);
         }
@@ -292,9 +302,11 @@ export class IpcClient {
         }
         if (op === OPCODES.ConsoleReplyFrame) {
             const reply = Array.isArray(body) ? body : [];
-            const id = this.pending_console_ids.shift() ?? 0;
+            const request = this.pending_console_requests.shift();
+            const id = request?.id ?? 0;
             const ok = Boolean(reply[0]);
             const text = typeof reply[1] === 'string' ? reply[1] : '';
+            if (request?.quiet && ok) return true;
             this.handle_envelope({
                 v: PROTOCOL_VERSION,
                 ch: 'console',
@@ -494,7 +506,7 @@ function typed_payload(value: unknown): { type: string; payload: unknown } | nul
 
 function legacy_channel_for_scene_slice(slice: SceneSlice): Channel | null {
     if (slice === 'perf') return 'profiler';
-    if (slice === 'scene') return null;
+    if (slice === 'scene') return 'scene';
     if (slice === 'stats') return 'profiler';
     if (slice === 'schemas'
         || slice === 'selection'
@@ -533,6 +545,9 @@ function infer_scene_delta_type(ch: Channel, payload: unknown): string | null {
     }
     if (ch === 'psygraph') {
         if (Array.isArray(rec.nodes) && Array.isArray(rec.links)) return 'document';
+    }
+    if (ch === 'scene') {
+        if (Array.isArray(rec.nodes) || 'entity_count' in rec) return 'hierarchy';
     }
     if (ch === 'profiler') {
         if (Array.isArray(payload)

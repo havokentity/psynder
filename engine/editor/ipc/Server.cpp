@@ -208,7 +208,142 @@ struct LegacyEnvelope {
     std::string channel;
     std::string type;
     std::string prop_id;
+    ::psynder::u32 entity_id = 0;
+    bool has_entity_id = false;
+    std::string component;
+    std::string field;
+    std::string field_kind;
+    ::psynder::editor::ipc::SelectionComponentEditValue value;
+    bool has_value = false;
 };
+
+std::atomic<::psynder::editor::ipc::SelectionSelectHandler> g_selection_select_handler{nullptr};
+std::atomic<::psynder::editor::ipc::SelectionComponentEditHandler>
+    g_selection_component_edit_handler{nullptr};
+
+bool msgpack_tag_is_signed_integer(::psynder::u8 tag) noexcept {
+    return (tag & 0xE0) == 0xE0 || tag == 0xD0 || tag == 0xD1 || tag == 0xD2 || tag == 0xD3;
+}
+
+bool msgpack_tag_is_unsigned_integer(::psynder::u8 tag) noexcept {
+    return (tag & 0x80) == 0 || tag == 0xCC || tag == 0xCD || tag == 0xCE || tag == 0xCF;
+}
+
+bool msgpack_tag_is_float(::psynder::u8 tag) noexcept {
+    return tag == 0xCA || tag == 0xCB;
+}
+
+bool decode_numeric_f64(msgpack::Reader& r, ::psynder::f64& out) {
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+    if (msgpack_tag_is_float(tag))
+        return r.f64_(out);
+    if (msgpack_tag_is_signed_integer(tag)) {
+        ::psynder::i64 value = 0;
+        if (!r.i64_(value))
+            return false;
+        out = static_cast<::psynder::f64>(value);
+        return true;
+    }
+    if (msgpack_tag_is_unsigned_integer(tag)) {
+        ::psynder::u64 value = 0;
+        if (!r.u64_(value))
+            return false;
+        out = static_cast<::psynder::f64>(value);
+        return true;
+    }
+    return false;
+}
+
+bool decode_legacy_component_value(msgpack::Reader& r,
+                                   ::psynder::editor::ipc::SelectionComponentEditValue& out) {
+    namespace pub = ::psynder::editor::ipc;
+
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+
+    if (tag == 0xC0) {
+        if (!r.nil())
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::Null;
+        return true;
+    }
+    if (tag == 0xC2 || tag == 0xC3) {
+        if (!r.boolean(out.bool_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::Bool;
+        return true;
+    }
+    if ((tag & 0xE0) == 0xA0 || tag == 0xD9 || tag == 0xDA || tag == 0xDB) {
+        if (!r.str(out.string_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::String;
+        return true;
+    }
+    if (msgpack_tag_is_float(tag)) {
+        if (!r.f64_(out.f64_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::F64;
+        return true;
+    }
+    if (msgpack_tag_is_signed_integer(tag)) {
+        if (!r.i64_(out.i64_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::I64;
+        return true;
+    }
+    if (msgpack_tag_is_unsigned_integer(tag)) {
+        if (!r.u64_(out.u64_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::U64;
+        return true;
+    }
+
+    ::psynder::u32 count = 0;
+    if (!r.array_header(count))
+        return false;
+    if (count == 0) {
+        out.kind = pub::SelectionComponentEditValueKind::F64Array;
+        return true;
+    }
+
+    if (!r.peek(tag))
+        return false;
+    if (tag == 0xC2 || tag == 0xC3) {
+        out.kind = pub::SelectionComponentEditValueKind::BoolArray;
+        out.bool_values.reserve(count);
+        for (::psynder::u32 i = 0; i < count; ++i) {
+            bool value = false;
+            if (!r.boolean(value))
+                return false;
+            out.bool_values.push_back(value ? 1u : 0u);
+        }
+        return true;
+    }
+    if ((tag & 0xE0) == 0xA0 || tag == 0xD9 || tag == 0xDA || tag == 0xDB) {
+        out.kind = pub::SelectionComponentEditValueKind::StringArray;
+        out.string_values.reserve(count);
+        for (::psynder::u32 i = 0; i < count; ++i) {
+            std::string value;
+            if (!r.str(value))
+                return false;
+            out.string_values.push_back(std::move(value));
+        }
+        return true;
+    }
+
+    out.kind = pub::SelectionComponentEditValueKind::F64Array;
+    out.f64_values.reserve(count);
+    for (::psynder::u32 i = 0; i < count; ++i) {
+        ::psynder::f64 value = 0.0;
+        if (!decode_numeric_f64(r, value))
+            return false;
+        out.f64_values.push_back(value);
+    }
+    return true;
+}
 
 bool decode_legacy_payload(msgpack::Reader& r, LegacyEnvelope& out) {
     ::psynder::u32 count = 0;
@@ -222,6 +357,23 @@ bool decode_legacy_payload(msgpack::Reader& r, LegacyEnvelope& out) {
         if (key == "prop_id") {
             if (!r.str(out.prop_id))
                 return false;
+        } else if (key == "entity_id") {
+            if (!r.u32_(out.entity_id))
+                return false;
+            out.has_entity_id = true;
+        } else if (key == "component") {
+            if (!r.str(out.component))
+                return false;
+        } else if (key == "field") {
+            if (!r.str(out.field))
+                return false;
+        } else if (key == "field_kind") {
+            if (!r.str(out.field_kind))
+                return false;
+        } else if (key == "value") {
+            if (!decode_legacy_component_value(r, out.value))
+                return false;
+            out.has_value = true;
         } else if (!r.skip()) {
             return false;
         }
@@ -848,6 +1000,28 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                 if (handle_legacy_subscription(*conn, env))
                     continue;
                 if (env.channel == proto::channels::kselection &&
+                    env.type == "select" &&
+                    env.has_entity_id) {
+                    if (auto* handler = g_selection_select_handler.load(std::memory_order_acquire))
+                        handler(env.entity_id);
+                } else if (env.channel == proto::channels::kselection &&
+                           env.type == "component_edit" &&
+                           env.has_entity_id &&
+                           !env.component.empty() &&
+                           !env.field.empty() &&
+                           !env.field_kind.empty() &&
+                           env.has_value) {
+                    if (auto* handler =
+                            g_selection_component_edit_handler.load(std::memory_order_acquire)) {
+                        ::psynder::editor::ipc::SelectionComponentEdit edit;
+                        edit.entity_id = env.entity_id;
+                        edit.component = std::move(env.component);
+                        edit.field = std::move(env.field);
+                        edit.field_kind = std::move(env.field_kind);
+                        edit.value = std::move(env.value);
+                        handler(edit);
+                    }
+                } else if (env.channel == proto::channels::kselection &&
                     env.type == "spawn_prop" &&
                     !env.prop_id.empty()) {
                     std::string text = "editor_spawn_prop ";
@@ -1195,6 +1369,14 @@ void Server::broadcast_stats_tick(const StatsTick& tick) {
     } catch (...) {
         internal::warn_noexcept("editor-ipc: stats frame dropped after exception");
     }
+}
+
+void Server::set_selection_select_handler(SelectionSelectHandler handler) {
+    internal::g_selection_select_handler.store(handler, std::memory_order_release);
+}
+
+void Server::set_selection_component_edit_handler(SelectionComponentEditHandler handler) {
+    internal::g_selection_component_edit_handler.store(handler, std::memory_order_release);
 }
 
 bool Server::has_subscribers(std::string_view channel) const {

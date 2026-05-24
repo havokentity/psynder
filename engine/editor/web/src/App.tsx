@@ -399,6 +399,7 @@ function split_dock_leaf(target: DockNode, panel: PanelName, zone: DockDropZone)
 export function App() {
     const ipc_client = React.useMemo(() => get_client(), []);
     const command_seq = React.useRef(90000);
+    const saw_engine_connection = React.useRef(false);
     const [route, set_route] = React.useState<RouteName>(pick_route);
     const [settings_open, set_settings_open] = React.useState(false);
     const [theme, set_theme] = React.useState<ThemeName>(() => (
@@ -472,6 +473,22 @@ export function App() {
         window.addEventListener('keydown', on_key);
         return () => window.removeEventListener('keydown', on_key);
     }, [switch_route]);
+
+    React.useEffect(() => {
+        const unsub = ipc_client.on_state((state) => {
+            if (state === 'open') {
+                saw_engine_connection.current = true;
+                return;
+            }
+            if (!saw_engine_connection.current) return;
+            if (state === 'reconnecting' || state === 'closed') {
+                window.setTimeout(() => {
+                    window.close();
+                }, 120);
+            }
+        });
+        return unsub;
+    }, [ipc_client]);
 
     React.useEffect(() => {
         window.localStorage.setItem('psy_theme', theme);
@@ -551,7 +568,22 @@ export function App() {
             source: 'quit',
             mode: 'console',
         });
+        window.setTimeout(() => {
+            window.close();
+        }, 120);
     }, [ipc_client]);
+
+    const close_editor_window = React.useCallback(() => {
+        window.close();
+    }, []);
+
+    const toggle_fullscreen = React.useCallback(() => {
+        if (document.fullscreenElement) {
+            void document.exitFullscreen();
+        } else {
+            void document.documentElement.requestFullscreen?.();
+        }
+    }, []);
 
     const current = route === 'workbench' ? WORKBENCH_META : PANEL_META[route];
 
@@ -565,6 +597,24 @@ export function App() {
         >
             <div className="psy-fx" aria-hidden="true" />
             <header className="psy-topbar">
+                <div className="psy-window-controls" aria-label="Editor window controls">
+                    <button
+                        type="button"
+                        className="psy-window-control is-close"
+                        onClick={close_editor_window}
+                        aria-label="Close editor window"
+                        title="Close editor window"
+                    />
+                    <span className="psy-window-control is-minimize" aria-hidden="true" />
+                    <button
+                        type="button"
+                        className="psy-window-control is-fullscreen"
+                        onClick={toggle_fullscreen}
+                        aria-label="Toggle fullscreen"
+                        title="Toggle fullscreen"
+                    />
+                </div>
+
                 <div className="psy-brand" aria-label="Psynder editor">
                     <span className="psy-brand-mark">P</span>
                     <span className="psy-brand-name">Psynder</span>

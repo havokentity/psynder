@@ -163,6 +163,29 @@ struct RegistryReset {
     ~RegistryReset() { scene::detail::EcsRegistryImpl::Get().shutdown(); }
 };
 
+struct SaveRoundtripHooks {
+    Entity mesh_entity{};
+};
+
+std::string_view save_roundtrip_mesh_name(void*, render::MeshId mesh) {
+    return mesh.raw == 77u ? "mesh.box" : std::string_view{};
+}
+
+std::string_view save_roundtrip_material_name(void*, render::MaterialId material) {
+    return material.valid() ? "material.generated" : std::string_view{};
+}
+
+std::string_view save_roundtrip_material_preset_name(void*,
+                                                     render::MaterialId material,
+                                                     const render::MaterialDesc&) {
+    return material.valid() ? "preset.clay" : std::string_view{};
+}
+
+std::string_view save_roundtrip_group_name(void* user, Entity entity, scene::SceneNode) {
+    const auto* hooks = static_cast<const SaveRoundtripHooks*>(user);
+    return hooks && entity == hooks->mesh_entity ? "Hero Box" : std::string_view{};
+}
+
 }  // namespace
 
 TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[scene][scene_file]") {
@@ -173,6 +196,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
     REQUIRE(view.translations.size() == 2u);
     REQUIRE(view.cameras.size() == 1u);
     REQUIRE(view.mesh_instances.size() == 1u);
+    REQUIRE(view.lights.empty());
     REQUIRE(view.materials.size() == 1u);
     REQUIRE(view.behavior_spin_ops.size() == 1u);
     REQUIRE(view.behavior_translate_ops.size() == 1u);
@@ -202,6 +226,7 @@ TEST_CASE("cooked scene file exposes SoA chunks and instantiates entities", "[sc
 
     REQUIRE(result.cameras == 1u);
     REQUIRE(result.mesh_instances == 1u);
+    REQUIRE(result.lights == 0u);
     REQUIRE(result.missing_mesh_bindings == 0u);
     REQUIRE(result.missing_material_bindings == 0u);
     REQUIRE(mesh_entity.valid());
@@ -277,4 +302,180 @@ TEST_CASE("scene cooker lowers PsyScript and PsyGraph sources to behavior ops",
     cook_with_source("behaviors/spin.psygraph.json", "graph.psyscene.json");
 
     std::filesystem::remove_all(root);
+}
+
+TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
+          "[scene][scene_file][editor]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    scene::Scene authored{registry};
+    authored.environment().set_clear_color(0xFF203040u);
+    authored.environment().set_clear_enabled(true, false);
+
+    scene::LocalTransform parent_transform{};
+    parent_transform.translation = {10.0f, 0.0f, 0.0f};
+    const Entity parent = authored.create_entity(parent_transform);
+    REQUIRE(parent.valid());
+    const scene::SceneNode parent_node = authored.node(parent);
+    REQUIRE(parent_node.valid());
+
+    scene::CameraDesc camera_desc{};
+    camera_desc.position = {0.0f, 2.0f, 6.0f};
+    camera_desc.look_at = {0.0f, 1.0f, 0.0f};
+    camera_desc.near_z = 0.25f;
+    camera_desc.far_z = 250.0f;
+    camera_desc.tile_w = 160u;
+    camera_desc.tile_h = 120u;
+    const Entity camera = authored.spawn_camera(camera_desc, parent_node);
+    REQUIRE(camera.valid());
+
+    scene::LocalTransform light_transform{};
+    light_transform.translation = {0.0f, 4.0f, -2.0f};
+    const Entity light_entity = authored.create_entity(light_transform, parent_node);
+    REQUIRE(light_entity.valid());
+    scene::LightComponent light{};
+    light.kind = scene::LightKind::Spot;
+    light.color_rgba8 = 0xFFFFCC88u;
+    light.intensity = 9.5f;
+    light.range = 24.0f;
+    light.inner_cone_deg = 18.0f;
+    light.outer_cone_deg = 44.0f;
+    light.casts_shadow = 1u;
+    REQUIRE(authored.attach_light(light_entity, light));
+
+    render::MaterialDesc material_desc{};
+    material_desc.albedo_rgba8 = 0xFFAA7733u;
+    material_desc.reflectivity = 0.42f;
+    material_desc.roughness = 0.31f;
+    material_desc.emissive = 0.125f;
+    material_desc.blend = render::MaterialBlendMode::AlphaBlend;
+    material_desc.shadow_opacity = 0.66f;
+    const render::MaterialId material = authored.materials().create(material_desc);
+    REQUIRE(material.valid());
+
+    const render::MeshId mesh{77u};
+    scene::LocalTransform mesh_transform{};
+    mesh_transform.translation = {1.0f, 2.0f, 3.0f};
+    const scene::RenderableComponent renderable = scene::make_renderable(
+        scene::GeometryKind::Mesh,
+        mesh.raw,
+        material,
+        math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}},
+        scene::ObjectMobility::Static,
+        scene::RenderableFlags::Visible | scene::RenderableFlags::CastsShadowOverride);
+    const Entity mesh_entity = authored.create_renderable(renderable, mesh_transform, parent_node);
+    REQUIRE(mesh_entity.valid());
+
+    SaveRoundtripHooks hook_user{.mesh_entity = mesh_entity};
+    const scene::SceneFileSaveHooks hooks{
+        .user = &hook_user,
+        .mesh_name = &save_roundtrip_mesh_name,
+        .material_name = &save_roundtrip_material_name,
+        .material_base_color_texture_name = nullptr,
+        .material_preset_name = &save_roundtrip_material_preset_name,
+        .mesh_instance_group_name = &save_roundtrip_group_name,
+    };
+
+    scene::detail::AlignedVector<u8> bytes;
+    scene::SceneFileSaveStats stats{};
+    std::string error;
+    REQUIRE(scene::save_scene_file(authored, hooks, bytes, &stats, &error));
+    REQUIRE(error.empty());
+    REQUIRE(stats.cameras == 1u);
+    REQUIRE(stats.mesh_instances == 1u);
+    REQUIRE(stats.lights == 1u);
+    REQUIRE(stats.materials == 1u);
+    REQUIRE(stats.material_preset_names == 1u);
+    REQUIRE(stats.mesh_instance_group_names == 1u);
+    REQUIRE(stats.parented_cameras == 1u);
+    REQUIRE(stats.parented_mesh_instances == 1u);
+    REQUIRE(stats.parented_lights == 1u);
+    REQUIRE(stats.baked_world_transforms == 3u);
+
+    scene::SceneFileView view{};
+    REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()}, view, &error));
+    REQUIRE(view.environments.size() == 1u);
+    REQUIRE(view.environments[0].clear_color_rgba8 == 0xFF203040u);
+    REQUIRE(view.environments[0].clear_color == 1u);
+    REQUIRE(view.environments[0].clear_depth == 0u);
+    REQUIRE(view.cameras.size() == 1u);
+    REQUIRE(view.mesh_instances.size() == 1u);
+    REQUIRE(view.lights.size() == 1u);
+    REQUIRE(view.materials.size() == 1u);
+    REQUIRE(std::string_view{scene::scene_file_string(
+                view, view.mesh_instances[0].mesh_name_offset)} == "mesh.box");
+    REQUIRE(std::string_view{scene::scene_file_string(
+                view, view.mesh_instances[0].material_name_offset)} == "preset.clay");
+    REQUIRE(std::string_view{scene::scene_file_string(
+                view, view.mesh_instances[0].group_name_offset)} == "Hero Box");
+    REQUIRE(view.materials[0].albedo_rgba8 == material_desc.albedo_rgba8);
+    REQUIRE(std::abs(view.materials[0].reflectivity - material_desc.reflectivity) < 0.0001f);
+    REQUIRE(std::abs(view.materials[0].roughness - material_desc.roughness) < 0.0001f);
+    REQUIRE(view.materials[0].blend == render::MaterialBlendMode::AlphaBlend);
+
+    const scene::LocalTransform saved_mesh_transform =
+        scene::scene_file_transform(view, view.mesh_instances[0].transform_index);
+    REQUIRE(std::abs(saved_mesh_transform.translation.x - 11.0f) < 0.0001f);
+    REQUIRE(std::abs(saved_mesh_transform.translation.y - 2.0f) < 0.0001f);
+    REQUIRE(std::abs(saved_mesh_transform.translation.z - 3.0f) < 0.0001f);
+    const scene::SceneFileLight& saved_light = view.lights[0];
+    REQUIRE(saved_light.kind == scene::LightKind::Spot);
+    REQUIRE(saved_light.color_rgba8 == light.color_rgba8);
+    REQUIRE(std::abs(saved_light.intensity - light.intensity) < 0.0001f);
+    REQUIRE(std::abs(saved_light.range - light.range) < 0.0001f);
+    REQUIRE(saved_light.casts_shadow == 1u);
+    const scene::LocalTransform saved_light_transform =
+        scene::scene_file_transform(view, saved_light.transform_index);
+    REQUIRE(std::abs(saved_light_transform.translation.x - 10.0f) < 0.0001f);
+    REQUIRE(std::abs(saved_light_transform.translation.y - 4.0f) < 0.0001f);
+    REQUIRE(std::abs(saved_light_transform.translation.z + 2.0f) < 0.0001f);
+
+    RegistryReset reload_reset;
+    auto& reload_registry = scene::EcsRegistry::Get();
+    reload_registry.set_structural_deferred(false);
+    scene::Scene loaded{reload_registry};
+    loaded.bind_mesh_spawner(nullptr, nullptr, test_spawn_mesh_instance);
+    const scene::SceneMeshBinding mesh_binding{
+        .mesh_name = "mesh.box",
+        .mesh = mesh,
+        .material = {},
+    };
+    const scene::SceneMaterialBinding material_binding{
+        .material_name = "preset.clay",
+        .material = render::MaterialId{5u},
+    };
+    Entity loaded_mesh{};
+    const scene::SceneFileInstantiateResult instantiate =
+        scene::instantiate_scene_file(loaded,
+                                      view,
+                                      std::span<const scene::SceneMeshBinding>{&mesh_binding, 1u},
+                                      std::span<const scene::SceneMaterialBinding>{&material_binding, 1u},
+                                      std::span<Entity>{&loaded_mesh, 1u});
+    REQUIRE(instantiate.cameras == 1u);
+    REQUIRE(instantiate.mesh_instances == 1u);
+    REQUIRE(instantiate.lights == 1u);
+    REQUIRE(instantiate.missing_mesh_bindings == 0u);
+    REQUIRE(instantiate.missing_material_bindings == 0u);
+    REQUIRE(loaded_mesh.valid());
+    REQUIRE(loaded.environment().settings().clear_color_rgba8 == 0xFF203040u);
+    REQUIRE(!loaded.environment().settings().clear_depth);
+
+    const auto* loaded_renderable = loaded.registry().get<scene::RenderableComponent>(loaded_mesh);
+    REQUIRE(loaded_renderable != nullptr);
+    REQUIRE(loaded_renderable->material.raw == material_binding.material.raw);
+    const scene::CachedSceneGroup hero_group = loaded.cache_group(loaded.group_id("Hero Box"));
+    REQUIRE(hero_group.size() == 1u);
+    REQUIRE(hero_group.entities()[0] == loaded_mesh);
+
+    std::vector<scene::SceneLightItem> loaded_lights;
+    loaded.update_transforms();
+    loaded.gather_lights(loaded_lights);
+    REQUIRE(loaded_lights.size() == 1u);
+    REQUIRE(loaded_lights[0].kind == scene::LightKind::Spot);
+    REQUIRE(loaded_lights[0].color_rgba8 == light.color_rgba8);
+    REQUIRE(std::abs(loaded_lights[0].intensity - light.intensity) < 0.0001f);
+    REQUIRE(std::abs(loaded_lights[0].range - light.range) < 0.0001f);
+    REQUIRE(loaded_lights[0].casts_shadow);
 }

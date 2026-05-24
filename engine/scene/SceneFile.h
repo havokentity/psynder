@@ -32,6 +32,7 @@ enum class SceneFileChunkType : u32 {
     TransformScale = 0x53584654u,        // TXFS
     Cameras = 0x4D414353u,          // SCAM
     MeshInstances = 0x53454D53u,    // SMES
+    Lights = 0x54494C53u,           // SLIT
     Materials = 0x54414D53u,        // SMAT
     BehaviorSpinOps = 0x50534253u,  // SBSP
     BehaviorTranslateOps = 0x4C544253u,  // SBTL
@@ -87,6 +88,19 @@ struct SceneFileMeshInstance {
     u8 _pad[3] = {};
 };
 
+struct SceneFileLight {
+    u32 transform_index = 0u;
+    LightKind kind = LightKind::Point;
+    u8 casts_shadow = 0u;
+    u8 _pad0[2] = {};
+    u32 color_rgba8 = 0xFFFFFFFFu;
+    f32 intensity = 3.0f;
+    f32 range = 8.0f;
+    f32 inner_cone_deg = 20.0f;
+    f32 outer_cone_deg = 45.0f;
+    u8 _pad[32] = {};
+};
+
 struct SceneFileMaterial {
     u32 name_offset = 0u;
     u32 base_color_texture_name_offset = 0u;
@@ -138,6 +152,7 @@ struct SceneFileView {
     std::span<const math::Vec3> scales;
     std::span<const SceneFileCamera> cameras;
     std::span<const SceneFileMeshInstance> mesh_instances;
+    std::span<const SceneFileLight> lights;
     std::span<const SceneFileMaterial> materials;
     std::span<const SceneFileBehaviorSpinOp> behavior_spin_ops;
     std::span<const SceneFileBehaviorTranslateOp> behavior_translate_ops;
@@ -162,8 +177,51 @@ struct SceneMaterialBinding {
 struct SceneFileInstantiateResult {
     u32 cameras = 0u;
     u32 mesh_instances = 0u;
+    u32 lights = 0u;
     u32 missing_mesh_bindings = 0u;
     u32 missing_material_bindings = 0u;
+};
+
+struct SceneFileSaveHooks {
+    void* user = nullptr;
+    // Required for mesh renderables; cooked v1 stores mesh references by name.
+    std::string_view (*mesh_name)(void* user, ::psynder::render::MeshId mesh) = nullptr;
+    std::string_view (*material_name)(void* user, ::psynder::render::MaterialId material) = nullptr;
+    std::string_view (*material_base_color_texture_name)(
+        void* user,
+        ::psynder::render::MaterialId material,
+        const ::psynder::render::MaterialDesc& material_desc) = nullptr;
+    // Optional override for the material string written to SMAT and mesh refs.
+    // Empty falls back to material_name().
+    std::string_view (*material_preset_name)(
+        void* user,
+        ::psynder::render::MaterialId material,
+        const ::psynder::render::MaterialDesc& material_desc) = nullptr;
+    // Cooked v1 has one mesh-instance group string, but no general label or
+    // hierarchy chunk. Callers may return a label/path here to roundtrip that
+    // value as a group; parent-child links are still flattened on load.
+    std::string_view (*mesh_instance_group_name)(void* user,
+                                                Entity entity,
+                                                SceneNode node) = nullptr;
+};
+
+struct SceneFileSaveStats {
+    u32 cameras = 0u;
+    u32 mesh_instances = 0u;
+    u32 lights = 0u;
+    u32 materials = 0u;
+    u32 skipped_non_mesh_renderables = 0u;
+    u32 skipped_dead_nodes = 0u;
+    u32 missing_mesh_names = 0u;
+    u32 missing_material_names = 0u;
+    u32 material_preset_names = 0u;
+    u32 mesh_instance_group_names = 0u;
+    u32 parented_cameras = 0u;
+    u32 parented_mesh_instances = 0u;
+    u32 parented_lights = 0u;
+    u32 flattened_parent_relations = 0u;
+    u32 baked_world_transforms = 0u;
+    u32 approximate_world_transforms = 0u;
 };
 
 [[nodiscard]] bool parse_scene_file(std::span<const u8> bytes,
@@ -188,6 +246,12 @@ struct SceneFileInstantiateResult {
     std::span<const SceneMeshBinding> mesh_bindings,
     std::span<const SceneMaterialBinding> material_bindings,
     std::span<Entity> out_mesh_entities = {});
+
+[[nodiscard]] bool save_scene_file(Scene& scene,
+                                   const SceneFileSaveHooks& hooks,
+                                   detail::AlignedVector<u8>& out_bytes,
+                                   SceneFileSaveStats* stats = nullptr,
+                                   std::string* error = nullptr);
 
 namespace scene_file_detail {
 struct LoadState;

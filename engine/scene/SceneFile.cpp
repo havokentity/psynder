@@ -4,10 +4,14 @@
 #include "scene/SceneFile.h"
 
 #include "core/Log.h"
+#include "math/MathExt.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 
 namespace psynder::scene {
@@ -121,6 +125,335 @@ template <class T>
     return binding_material(mesh_binding);
 }
 
+struct SceneFileSaveScratch {
+    SceneFileEnvironment environment{};
+    std::vector<math::Vec3> translations;
+    std::vector<math::Quat> rotations;
+    std::vector<math::Vec3> scales;
+    std::vector<SceneFileCamera> cameras;
+    std::vector<SceneFileMeshInstance> mesh_instances;
+    std::vector<SceneFileLight> lights;
+    std::vector<SceneFileMaterial> materials;
+    std::vector<SceneFileBehaviorSpinOp> behavior_spin_ops;
+    std::vector<SceneFileBehaviorTranslateOp> behavior_translate_ops;
+    std::vector<char> strings{'\0'};
+    std::unordered_map<std::string, u32> string_offsets;
+    std::unordered_map<u32, u32> material_slots;
+};
+
+[[nodiscard]] bool fail_save(std::string* error, std::string_view message) {
+    if (error)
+        error->assign(message.data(), message.size());
+    return false;
+}
+
+[[nodiscard]] bool fail_save_missing_mesh_name(std::string* error,
+                                               ::psynder::render::MeshId mesh,
+                                               bool hook_present) {
+    if (error) {
+        *error = hook_present ? "psyscene save: mesh_name hook returned empty for mesh "
+                              : "psyscene save: mesh_name hook is required for mesh ";
+        *error += std::to_string(mesh.raw);
+    }
+    return false;
+}
+
+[[nodiscard]] bool fits_u32(usize value) noexcept {
+    return value <= static_cast<usize>(std::numeric_limits<u32>::max());
+}
+
+[[nodiscard]] bool add_save_string(SceneFileSaveScratch& scene,
+                                   std::string_view value,
+                                   u32& out_offset,
+                                   std::string* error) {
+    if (value.empty()) {
+        out_offset = 0u;
+        return true;
+    }
+
+    const std::string key{value};
+    if (const auto it = scene.string_offsets.find(key); it != scene.string_offsets.end()) {
+        out_offset = it->second;
+        return true;
+    }
+
+    const usize next_size = scene.strings.size() + key.size() + 1u;
+    if (!fits_u32(next_size))
+        return fail_save(error, "psyscene save: string table exceeds 4 GiB");
+
+    out_offset = static_cast<u32>(scene.strings.size());
+    scene.strings.insert(scene.strings.end(), key.begin(), key.end());
+    scene.strings.push_back('\0');
+    scene.string_offsets.emplace(key, out_offset);
+    return true;
+}
+
+[[nodiscard]] bool append_save_transform(SceneFileSaveScratch& scene,
+                                         const LocalTransform& local,
+                                         u32& out_index,
+                                         std::string* error) {
+    if (scene.translations.size() == static_cast<usize>(std::numeric_limits<u32>::max()))
+        return fail_save(error, "psyscene save: too many transforms");
+
+    out_index = static_cast<u32>(scene.translations.size());
+    scene.translations.push_back(local.translation);
+    scene.rotations.push_back(local.rotation);
+    scene.scales.push_back(local.scale);
+    return true;
+}
+
+[[nodiscard]] math::Vec3 camera_forward(const LocalTransform& local) noexcept {
+    return math::normalize(math::quat_rotate(local.rotation, math::Vec3{0.0f, 0.0f, -1.0f}));
+}
+
+[[nodiscard]] math::Vec3 camera_up(const LocalTransform& local) noexcept {
+    return math::normalize(math::quat_rotate(local.rotation, math::Vec3{0.0f, 1.0f, 0.0f}));
+}
+
+[[nodiscard]] math::Vec3 matrix_column(const math::Mat4& m, u32 column) noexcept {
+    const u32 base = column * 4u;
+    return {m.m[base + 0u], m.m[base + 1u], m.m[base + 2u]};
+}
+
+[[nodiscard]] f32 abs_dot(math::Vec3 a, math::Vec3 b) noexcept {
+    return std::fabs(math::dot(a, b));
+}
+
+[[nodiscard]] math::Quat quat_from_basis(math::Vec3 x,
+                                         math::Vec3 y,
+                                         math::Vec3 z) noexcept {
+    const f32 m00 = x.x;
+    const f32 m01 = y.x;
+    const f32 m02 = z.x;
+    const f32 m10 = x.y;
+    const f32 m11 = y.y;
+    const f32 m12 = z.y;
+    const f32 m20 = x.z;
+    const f32 m21 = y.z;
+    const f32 m22 = z.z;
+    const f32 trace = m00 + m11 + m22;
+
+    math::Quat q{};
+    if (trace > 0.0f) {
+        const f32 s = std::sqrt(trace + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (m21 - m12) / s;
+        q.y = (m02 - m20) / s;
+        q.z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const f32 s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q.w = (m21 - m12) / s;
+        q.x = 0.25f * s;
+        q.y = (m01 + m10) / s;
+        q.z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const f32 s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q.w = (m02 - m20) / s;
+        q.x = (m01 + m10) / s;
+        q.y = 0.25f * s;
+        q.z = (m12 + m21) / s;
+    } else {
+        const f32 s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q.w = (m10 - m01) / s;
+        q.x = (m02 + m20) / s;
+        q.y = (m12 + m21) / s;
+        q.z = 0.25f * s;
+    }
+    return math::quat_normalize(q);
+}
+
+[[nodiscard]] LocalTransform decompose_world_transform(const math::Mat4& world,
+                                                       const LocalTransform& fallback,
+                                                       bool& approximate) noexcept {
+    constexpr f32 kMinScale = 1.0e-6f;
+    constexpr f32 kShearEpsilon = 1.0e-3f;
+
+    LocalTransform out = fallback;
+    out.translation = {world.m[12], world.m[13], world.m[14]};
+
+    math::Vec3 x = matrix_column(world, 0u);
+    math::Vec3 y = matrix_column(world, 1u);
+    math::Vec3 z = matrix_column(world, 2u);
+    f32 sx = math::length(x);
+    f32 sy = math::length(y);
+    f32 sz = math::length(z);
+
+    if (sx <= kMinScale || sy <= kMinScale || sz <= kMinScale) {
+        approximate = true;
+        out.scale = {sx, sy, sz};
+        return out;
+    }
+
+    x = math::mul(x, 1.0f / sx);
+    y = math::mul(y, 1.0f / sy);
+    z = math::mul(z, 1.0f / sz);
+
+    if (math::dot(math::cross(x, y), z) < 0.0f) {
+        sz = -sz;
+        z = math::mul(z, -1.0f);
+    }
+
+    if (abs_dot(x, y) > kShearEpsilon || abs_dot(x, z) > kShearEpsilon ||
+        abs_dot(y, z) > kShearEpsilon) {
+        approximate = true;
+    }
+
+    out.rotation = quat_from_basis(x, y, z);
+    out.scale = {sx, sy, sz};
+    return out;
+}
+
+[[nodiscard]] LocalTransform save_transform_for_node(Scene& scene,
+                                                     SceneNode node,
+                                                     const LocalTransform& local,
+                                                     bool& parented,
+                                                     bool& approximate) noexcept {
+    parented = scene.graph().parent(node).valid();
+    approximate = false;
+    if (!parented)
+        return local;
+    return decompose_world_transform(scene.graph().world_matrix(node), local, approximate);
+}
+
+void pad_save_blob(detail::AlignedVector<u8>& out) {
+    const usize aligned =
+        ((out.size() + kPsySceneAlignment - 1u) / kPsySceneAlignment) * kPsySceneAlignment;
+    out.resize(aligned, 0u);
+}
+
+[[nodiscard]] bool append_save_bytes(detail::AlignedVector<u8>& out,
+                                     const void* data,
+                                     usize bytes,
+                                     std::string* error) {
+    if (bytes > static_cast<usize>(std::numeric_limits<u32>::max()) ||
+        out.size() > static_cast<usize>(std::numeric_limits<u32>::max()) - bytes) {
+        return fail_save(error, "psyscene save: file exceeds 4 GiB");
+    }
+    const usize offset = out.size();
+    out.resize(offset + bytes);
+    if (bytes != 0u)
+        std::memcpy(out.data() + offset, data, bytes);
+    return true;
+}
+
+template <class T>
+[[nodiscard]] bool append_save_chunk(detail::AlignedVector<u8>& bytes,
+                                     std::vector<SceneFileChunk>& chunks,
+                                     SceneFileChunkType type,
+                                     std::span<const T> data,
+                                     u32 stride,
+                                     std::string* error) {
+    pad_save_blob(bytes);
+    if (!fits_u32(bytes.size()) || !fits_u32(data.size_bytes()))
+        return fail_save(error, "psyscene save: chunk exceeds 4 GiB");
+
+    SceneFileChunk chunk{};
+    chunk.type = type;
+    chunk.offset = static_cast<u32>(bytes.size());
+    chunk.bytes = static_cast<u32>(data.size_bytes());
+    chunk.stride = stride;
+    if (!data.empty() && !append_save_bytes(bytes, data.data(), data.size_bytes(), error))
+        return false;
+    chunks.push_back(chunk);
+    return true;
+}
+
+[[nodiscard]] bool write_save_blob(const SceneFileSaveScratch& scene,
+                                   detail::AlignedVector<u8>& out,
+                                   std::string* error) {
+    constexpr usize kSceneFileChunkCount = 11u;
+    out.clear();
+    out.resize(sizeof(SceneFileHeader) + kSceneFileChunkCount * sizeof(SceneFileChunk));
+
+    std::vector<SceneFileChunk> chunks;
+    chunks.reserve(kSceneFileChunkCount);
+    if (!append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::Strings,
+                           std::span<const char>{scene.strings.data(), scene.strings.size()},
+                           1u,
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::Environment,
+                           std::span<const SceneFileEnvironment>{&scene.environment, 1u},
+                           sizeof(SceneFileEnvironment),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::TransformTranslation,
+                           std::span<const math::Vec3>{scene.translations.data(),
+                                                       scene.translations.size()},
+                           sizeof(math::Vec3),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::TransformRotation,
+                           std::span<const math::Quat>{scene.rotations.data(), scene.rotations.size()},
+                           sizeof(math::Quat),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::TransformScale,
+                           std::span<const math::Vec3>{scene.scales.data(), scene.scales.size()},
+                           sizeof(math::Vec3),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::Cameras,
+                           std::span<const SceneFileCamera>{scene.cameras.data(), scene.cameras.size()},
+                           sizeof(SceneFileCamera),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::MeshInstances,
+                           std::span<const SceneFileMeshInstance>{scene.mesh_instances.data(),
+                                                                  scene.mesh_instances.size()},
+                           sizeof(SceneFileMeshInstance),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::Lights,
+                           std::span<const SceneFileLight>{scene.lights.data(), scene.lights.size()},
+                           sizeof(SceneFileLight),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::Materials,
+                           std::span<const SceneFileMaterial>{scene.materials.data(),
+                                                              scene.materials.size()},
+                           sizeof(SceneFileMaterial),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::BehaviorSpinOps,
+                           std::span<const SceneFileBehaviorSpinOp>{scene.behavior_spin_ops.data(),
+                                                                    scene.behavior_spin_ops.size()},
+                           sizeof(SceneFileBehaviorSpinOp),
+                           error) ||
+        !append_save_chunk(
+            out,
+            chunks,
+            SceneFileChunkType::BehaviorTranslateOps,
+            std::span<const SceneFileBehaviorTranslateOp>{scene.behavior_translate_ops.data(),
+                                                          scene.behavior_translate_ops.size()},
+            sizeof(SceneFileBehaviorTranslateOp),
+            error)) {
+        out.clear();
+        return false;
+    }
+
+    SceneFileHeader header{};
+    header.file_bytes = static_cast<u32>(out.size());
+    header.chunk_count = static_cast<u32>(chunks.size());
+    header.transform_count = static_cast<u32>(scene.translations.size());
+    header.camera_count = static_cast<u32>(scene.cameras.size());
+    header.mesh_instance_count = static_cast<u32>(scene.mesh_instances.size());
+    std::memcpy(out.data(), &header, sizeof(header));
+    std::memcpy(out.data() + sizeof(header), chunks.data(), chunks.size() * sizeof(chunks[0]));
+    return true;
+}
+
 }  // namespace
 
 bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string* error) {
@@ -209,6 +542,7 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
                    sizeof(SceneFileMeshInstance),
                    out.mesh_instances,
                    "mesh_instances") ||
+        !load_span(SceneFileChunkType::Lights, sizeof(SceneFileLight), out.lights, "lights") ||
         !load_span(SceneFileChunkType::Materials,
                    sizeof(SceneFileMaterial),
                    out.materials,
@@ -265,12 +599,14 @@ LocalTransform scene_file_transform(const SceneFileView& scene_file, u32 index) 
 ScenePrewarmConfig scene_file_prewarm_config(const SceneFileView& scene_file) noexcept {
     const u32 mesh_instances = static_cast<u32>(scene_file.mesh_instances.size());
     const u32 cameras = static_cast<u32>(scene_file.cameras.size());
-    return {.scene_entities = mesh_instances + cameras,
+    const u32 lights = static_cast<u32>(scene_file.lights.size());
+    return {.scene_entities = mesh_instances + cameras + lights,
             .renderables = mesh_instances,
             .cameras = cameras,
+            .lights = lights,
             .analytic_spheres = 0u,
             .render_items = mesh_instances,
-            .deferred_structural_changes = (mesh_instances + cameras) * 3u};
+            .deferred_structural_changes = (mesh_instances + cameras + lights) * 3u};
 }
 
 SceneFileInstantiateResult instantiate_scene_file(Scene& scene,
@@ -306,6 +642,23 @@ SceneFileInstantiateResult instantiate_scene_file(
         camera.active = camera_file.active != 0u;
         if (scene.spawn_camera(camera).valid())
             ++result.cameras;
+    }
+
+    for (const SceneFileLight& light_file : scene_file.lights) {
+        const LocalTransform local = scene_file_transform(scene_file, light_file.transform_index);
+        const Entity entity = scene.create_entity(local);
+        if (!entity.valid())
+            continue;
+        LightComponent light{};
+        light.kind = light_file.kind;
+        light.color_rgba8 = light_file.color_rgba8;
+        light.intensity = light_file.intensity;
+        light.range = light_file.range;
+        light.inner_cone_deg = light_file.inner_cone_deg;
+        light.outer_cone_deg = light_file.outer_cone_deg;
+        light.casts_shadow = light_file.casts_shadow != 0u ? 1u : 0u;
+        if (scene.attach_light(entity, light))
+            ++result.lights;
     }
 
     const usize writable = out_mesh_entities.size();
@@ -377,6 +730,289 @@ SceneFileInstantiateResult instantiate_scene_file(
         });
     }
     return result;
+}
+
+bool save_scene_file(Scene& scene,
+                     const SceneFileSaveHooks& hooks,
+                     detail::AlignedVector<u8>& out_bytes,
+                     SceneFileSaveStats* stats,
+                     std::string* error) {
+    out_bytes.clear();
+    if (error)
+        error->clear();
+
+    SceneFileSaveScratch saved{};
+    SceneFileSaveStats local_stats{};
+
+    const EnvironmentSettings& env = scene.environment().settings();
+    saved.environment.clear_color_rgba8 = env.clear_color_rgba8;
+    saved.environment.clear_color = env.clear_color ? 1u : 0u;
+    saved.environment.clear_depth = env.clear_depth ? 1u : 0u;
+    scene.graph().update_world_transforms();
+
+    bool ok = true;
+    scene.registry().query<reads<SceneNodeComponent, CameraComponent, TransformComponent>, writes<>>(
+        [&](std::span<const SceneNodeComponent> nodes,
+            std::span<const CameraComponent> cameras,
+            std::span<const TransformComponent> transforms) {
+            if (!ok)
+                return;
+            const usize n = std::min({nodes.size(), cameras.size(), transforms.size()});
+            for (usize i = 0; i < n; ++i) {
+                if (!scene.graph().alive(nodes[i].node)) {
+                    ++local_stats.skipped_dead_nodes;
+                    continue;
+                }
+
+                u32 transform_index = 0u;
+                bool parented = false;
+                bool approximate = false;
+                const LocalTransform local = save_transform_for_node(scene,
+                                                                     nodes[i].node,
+                                                                     transforms[i].local,
+                                                                     parented,
+                                                                     approximate);
+                if (parented) {
+                    ++local_stats.parented_cameras;
+                    ++local_stats.flattened_parent_relations;
+                    ++local_stats.baked_world_transforms;
+                }
+                if (approximate)
+                    ++local_stats.approximate_world_transforms;
+                if (!append_save_transform(saved, local, transform_index, error)) {
+                    ok = false;
+                    return;
+                }
+
+                const math::Vec3 forward = camera_forward(local);
+                SceneFileCamera camera{};
+                camera.transform_index = transform_index;
+                camera.look_at = math::add(local.translation, forward);
+                camera.up = camera_up(local);
+                camera.fov_y_rad = cameras[i].fov_y_rad;
+                camera.near_z = cameras[i].near_z;
+                camera.far_z = cameras[i].far_z;
+                camera.tile_w = cameras[i].tile_w;
+                camera.tile_h = cameras[i].tile_h;
+                camera.active = cameras[i].active != 0u ? 1u : 0u;
+                saved.cameras.push_back(camera);
+                ++local_stats.cameras;
+            }
+        });
+    if (!ok) {
+        if (stats)
+            *stats = local_stats;
+        return false;
+    }
+
+    scene.registry().query<reads<SceneNodeComponent, LightComponent, TransformComponent>, writes<>>(
+        [&](std::span<const SceneNodeComponent> nodes,
+            std::span<const LightComponent> lights,
+            std::span<const TransformComponent> transforms) {
+            if (!ok)
+                return;
+            const usize n = std::min({nodes.size(), lights.size(), transforms.size()});
+            for (usize i = 0; i < n; ++i) {
+                if (!scene.graph().alive(nodes[i].node)) {
+                    ++local_stats.skipped_dead_nodes;
+                    continue;
+                }
+
+                u32 transform_index = 0u;
+                bool parented = false;
+                bool approximate = false;
+                const LocalTransform local = save_transform_for_node(scene,
+                                                                     nodes[i].node,
+                                                                     transforms[i].local,
+                                                                     parented,
+                                                                     approximate);
+                if (parented) {
+                    ++local_stats.parented_lights;
+                    ++local_stats.flattened_parent_relations;
+                    ++local_stats.baked_world_transforms;
+                }
+                if (approximate)
+                    ++local_stats.approximate_world_transforms;
+                if (!append_save_transform(saved, local, transform_index, error)) {
+                    ok = false;
+                    return;
+                }
+
+                SceneFileLight light{};
+                light.transform_index = transform_index;
+                light.kind = lights[i].kind;
+                light.color_rgba8 = lights[i].color_rgba8;
+                light.intensity = lights[i].intensity;
+                light.range = lights[i].range;
+                light.inner_cone_deg = lights[i].inner_cone_deg;
+                light.outer_cone_deg = lights[i].outer_cone_deg;
+                light.casts_shadow = lights[i].casts_shadow != 0u ? 1u : 0u;
+                saved.lights.push_back(light);
+                ++local_stats.lights;
+            }
+        });
+    if (!ok) {
+        if (stats)
+            *stats = local_stats;
+        return false;
+    }
+
+    scene.registry().query<reads<SceneNodeComponent, RenderableComponent, TransformComponent>, writes<>>(
+        [&](std::span<const SceneNodeComponent> nodes,
+            std::span<const RenderableComponent> renderables,
+            std::span<const TransformComponent> transforms) {
+            if (!ok)
+                return;
+            const usize n = std::min({nodes.size(), renderables.size(), transforms.size()});
+            for (usize i = 0; i < n; ++i) {
+                if (!scene.graph().alive(nodes[i].node)) {
+                    ++local_stats.skipped_dead_nodes;
+                    continue;
+                }
+
+                const RenderableComponent& renderable = renderables[i];
+                if (renderable.geometry != GeometryKind::Mesh) {
+                    ++local_stats.skipped_non_mesh_renderables;
+                    continue;
+                }
+
+                const ::psynder::render::MeshId mesh =
+                    ::psynder::render::mesh_id_from_raw(renderable.geometry_id);
+                const std::string_view mesh_name =
+                    hooks.mesh_name ? hooks.mesh_name(hooks.user, mesh) : std::string_view{};
+                if (mesh_name.empty()) {
+                    ++local_stats.missing_mesh_names;
+                    ok = fail_save_missing_mesh_name(error, mesh, hooks.mesh_name != nullptr);
+                    return;
+                }
+
+                u32 mesh_name_offset = 0u;
+                if (!add_save_string(saved, mesh_name, mesh_name_offset, error)) {
+                    ok = false;
+                    return;
+                }
+
+                u32 material_name_offset = 0u;
+                const ::psynder::render::MaterialId material = renderable.material;
+                if (material.valid() && scene.materials().valid(material)) {
+                    const ::psynder::render::MaterialDesc desc = scene.materials().get(material);
+                    std::string_view material_name =
+                        hooks.material_name ? hooks.material_name(hooks.user, material)
+                                            : std::string_view{};
+                    if (hooks.material_preset_name) {
+                        const std::string_view preset_name =
+                            hooks.material_preset_name(hooks.user, material, desc);
+                        if (!preset_name.empty()) {
+                            material_name = preset_name;
+                            ++local_stats.material_preset_names;
+                        }
+                    }
+                    if (material_name.empty()) {
+                        ++local_stats.missing_material_names;
+                    } else {
+                        if (!add_save_string(saved, material_name, material_name_offset, error)) {
+                            ok = false;
+                            return;
+                        }
+
+                        const auto [slot_it, inserted] =
+                            saved.material_slots.emplace(material.raw,
+                                                         static_cast<u32>(saved.materials.size()));
+                        (void)slot_it;
+                        if (inserted) {
+                            SceneFileMaterial material_file{};
+                            material_file.name_offset = material_name_offset;
+                            if (hooks.material_base_color_texture_name) {
+                                const std::string_view texture_name =
+                                    hooks.material_base_color_texture_name(hooks.user, material, desc);
+                                if (!add_save_string(saved,
+                                                     texture_name,
+                                                     material_file.base_color_texture_name_offset,
+                                                     error)) {
+                                    ok = false;
+                                    return;
+                                }
+                            }
+                            material_file.albedo_rgba8 = desc.albedo_rgba8;
+                            material_file.flags = desc.flags;
+                            material_file.alpha_cutoff = desc.alpha_cutoff;
+                            material_file.reflectivity = desc.reflectivity;
+                            material_file.roughness = desc.roughness;
+                            material_file.emissive = desc.emissive;
+                            material_file.winding = desc.winding;
+                            material_file.blend = desc.blend;
+                            material_file.raster_shadow_mode = desc.raster_shadow_mode;
+                            material_file.shadow_alpha = desc.shadow_alpha;
+                            material_file.shadow_opacity = desc.shadow_opacity;
+                            material_file.shadow_softness = desc.shadow_softness;
+                            saved.materials.push_back(material_file);
+                            ++local_stats.materials;
+                        }
+                    }
+                }
+
+                u32 transform_index = 0u;
+                bool parented = false;
+                bool approximate = false;
+                const LocalTransform local = save_transform_for_node(scene,
+                                                                     nodes[i].node,
+                                                                     transforms[i].local,
+                                                                     parented,
+                                                                     approximate);
+                if (parented) {
+                    ++local_stats.parented_mesh_instances;
+                    ++local_stats.flattened_parent_relations;
+                    ++local_stats.baked_world_transforms;
+                }
+                if (approximate)
+                    ++local_stats.approximate_world_transforms;
+                if (!append_save_transform(saved, local, transform_index, error)) {
+                    ok = false;
+                    return;
+                }
+
+                u32 group_name_offset = 0u;
+                if (hooks.mesh_instance_group_name) {
+                    const std::string_view group_name =
+                        hooks.mesh_instance_group_name(hooks.user, nodes[i].entity, nodes[i].node);
+                    if (!group_name.empty()) {
+                        if (!add_save_string(saved, group_name, group_name_offset, error)) {
+                            ok = false;
+                            return;
+                        }
+                        ++local_stats.mesh_instance_group_names;
+                    }
+                }
+
+                SceneFileMeshInstance instance{};
+                instance.transform_index = transform_index;
+                instance.mesh_name_offset = mesh_name_offset;
+                instance.material_name_offset = material_name_offset;
+                instance.group_name_offset = group_name_offset;
+                instance.flags = renderable.flags;
+                instance.mobility = renderable.mobility;
+                saved.mesh_instances.push_back(instance);
+                ++local_stats.mesh_instances;
+            }
+        });
+
+    if (!ok) {
+        out_bytes.clear();
+        if (stats)
+            *stats = local_stats;
+        return false;
+    }
+
+    if (!write_save_blob(saved, out_bytes, error)) {
+        out_bytes.clear();
+        if (stats)
+            *stats = local_stats;
+        return false;
+    }
+
+    if (stats)
+        *stats = local_stats;
+    return true;
 }
 
 void SceneFileRequest::load_async(std::string_view virtual_path) {

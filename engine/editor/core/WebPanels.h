@@ -8,7 +8,12 @@
 #include "editor/ipc/Ipc.h"
 
 #include <span>
+#include <string>
 #include <string_view>
+
+namespace psynder::scene {
+class Scene;
+}
 
 namespace psynder::editor {
 
@@ -24,6 +29,20 @@ struct WebProfilerFrame {
 };
 
 void ensure_web_panel_commands_registered();
+void clear_web_scene_authoring_state();
+std::string web_entity_label(Entity entity);
+void set_web_entity_label(Entity entity, std::string_view label);
+
+struct WebSceneDirtyState {
+    bool dirty = false;
+    u32 generation = 0;
+};
+
+[[nodiscard]] WebSceneDirtyState web_scene_dirty_state();
+void set_web_scene_dirty(bool dirty);
+void mark_web_scene_dirty();
+void publish_web_scene_hierarchy(scene::Scene* scene);
+void publish_web_scene_dirty();
 void publish_web_profiler_frame(const WebProfilerFrame& frame);
 void pump_web_panels();
 
