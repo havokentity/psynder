@@ -43,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <span>
 
 namespace psynder::editor {
 
@@ -214,6 +215,27 @@ inline ui::imm::DebugHudStats make_debug_hud_stats_with_render(f32 frame_ms,
     return hud;
 }
 
+inline u32 saturated_u32(usize value) noexcept {
+    return static_cast<u32>(value > 0xFFFFFFFFull ? 0xFFFFFFFFull : value);
+}
+
+inline void publish_frame_profile(f32 frame_ms,
+                                  const FrameOverlayStats& stats = {},
+                                  std::span<const WebProfilerSection> sections = {}) noexcept {
+    if (!overlays_enabled())
+        return;
+
+    auto& st = detail::overlay_state();
+    publish_web_profiler_frame(WebProfilerFrame{
+        st.web_frame_index++,
+        frame_ms,
+        0.0f,
+        saturated_u32(stats.draw_calls),
+        saturated_u32(stats.entities),
+        sections,
+    });
+}
+
 inline void draw_frame_overlays(render::Framebuffer& fb, const ui::imm::DebugHudStats& hud) noexcept {
     if (!overlays_enabled())
         return;
@@ -270,14 +292,7 @@ inline Mode frame_overlays(const platform::Input& input,
         {"editor/draw", draw_ms},
     }};
 
-    publish_web_profiler_frame(WebProfilerFrame{
-        st.web_frame_index++,
-        frame_ms,
-        0.0f,
-        static_cast<u32>(stats.draw_calls > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.draw_calls),
-        static_cast<u32>(stats.entities > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.entities),
-        sections,
-    });
+    publish_frame_profile(frame_ms, stats, sections);
     return mode;
 }
 

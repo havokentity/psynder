@@ -304,11 +304,19 @@ class WindowApp {
     void engine_frame_post() noexcept {
         engine_frame_render();
         const render::FrameStats render_stats = render::frame_stats_snapshot();
+        editor::FrameOverlayStats reported = make_engine_overlay_stats(render_stats);
+        if (active_scene_)
+            reported.entities = active_scene_->registry().entity_count();
         if (auto* input = platform::input()) {
             if (engine_frame_update_ran_) {
-                editor::draw_frame_overlays(framebuffer_, make_engine_debug_hud(render_stats));
+                editor::draw_frame_overlays(framebuffer_,
+                                            editor::make_debug_hud_stats_with_render(
+                                                engine_frame_ms_,
+                                                average_engine_frame_ms(),
+                                                reported));
+                editor::publish_frame_profile(engine_frame_ms_, reported);
             } else {
-                editor::frame_overlays(*input, framebuffer_, make_engine_overlay_stats(render_stats));
+                editor::frame_overlays(*input, framebuffer_, reported);
             }
         }
         render::reset_frame_stats();
@@ -319,6 +327,8 @@ class WindowApp {
         engine_frame_render();
         editor::FrameOverlayStats reported = stats;
         reported.render_stats_valid = true;
+        if (active_scene_)
+            reported.entities = active_scene_->registry().entity_count();
         if (auto* input = platform::input()) {
             if (engine_frame_update_ran_) {
                 editor::draw_frame_overlays(framebuffer_,
@@ -326,6 +336,7 @@ class WindowApp {
                                                 engine_frame_ms_,
                                                 engine_frame_ms_,
                                                 reported));
+                editor::publish_frame_profile(engine_frame_ms_, reported);
             } else {
                 editor::frame_overlays(*input, framebuffer_, reported);
             }
