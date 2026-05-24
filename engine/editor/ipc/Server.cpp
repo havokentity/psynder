@@ -378,6 +378,16 @@ std::string_view content_type_for(std::string_view path) noexcept {
 }  // namespace
 
 // ─── Singleton wiring ──────────────────────────────────────────────────────
+Connection::~Connection() noexcept {
+    alive.store(false);
+    out_cv.notify_all();
+    try {
+        if (worker.joinable())
+            worker.detach();
+    } catch (...) {
+    }
+}
+
 Server& Server::Get() {
     static Server s;
     return s;
@@ -585,6 +595,7 @@ void Server::accept_loop() {
             if (auto c = wconn.lock())
                 this->client_loop(c);
         });
+        conn->worker.detach();
     }
 }
 

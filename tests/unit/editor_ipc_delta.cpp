@@ -580,6 +580,44 @@ TEST_CASE("ipc: profiler stat broadcast tolerates workbench subscriptions", "[ip
     sock_close(s);
 }
 
+TEST_CASE("ipc: stats broadcast reaps disconnected subscribers safely", "[ipc][stats][server]") {
+    ServerGuard guard;
+    auto port = pick_port();
+    ServerDesc desc;
+    desc.bind_host = "127.0.0.1";
+    desc.port = port;
+    desc.require_session_token = true;
+    auto& srv = *guard.srv;
+    REQUIRE(srv.start(desc));
+    const std::string tok = srv.session_token();
+
+    proto::Welcome welcome;
+    std::vector<::psynder::u8> tail;
+    sock_t s = open_panel(port, tok, welcome, tail);
+    REQUIRE(sock_valid(s));
+
+    client_subscribe(s, "profiler");
+    wait_for_subscriptions();
+    sock_close(s);
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+
+    const StatsSection sections[] = {
+        {"host/frame", 11.0f},
+        {"render", 1.0f},
+    };
+    for (::psynder::u32 i = 0; i < 8u; ++i) {
+        srv.broadcast_stats_tick(StatsTick{
+            i,
+            11.0f,
+            1.0f,
+            1u,
+            1u,
+            std::span<const StatsSection>{sections},
+        });
+    }
+    SUCCEED("dead profiler subscriber was reaped without terminating");
+}
+
 TEST_CASE("ipc: schema bump stays back-compat", "[ipc][schema]") {
     ServerGuard guard;
     auto port = pick_port();

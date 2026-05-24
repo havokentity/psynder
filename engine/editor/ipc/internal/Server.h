@@ -29,6 +29,8 @@ namespace psynder::editor::ipc::internal {
 // and runs its read/write loop on its own OS thread (one thread per client —
 // editor panels are O(handful) so this is fine).
 struct Connection {
+    ~Connection() noexcept;
+
     int sock = -1;
     std::thread worker;
     std::atomic<bool> authed{false};
