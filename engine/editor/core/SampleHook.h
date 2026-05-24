@@ -179,6 +179,7 @@ inline Mode sample_step(const platform::Input& input, render::Framebuffer& fb, f
 struct FrameOverlayStats {
     usize draw_calls = 0;
     usize triangles = 0;
+    usize entities = 0;
     usize active_voices = 0;
     u32 rt_tiles = 0;
     u32 rt_jobs = 0;
@@ -272,8 +273,9 @@ inline Mode frame_overlays(const platform::Input& input,
     publish_web_profiler_frame(WebProfilerFrame{
         st.web_frame_index++,
         frame_ms,
+        0.0f,
         static_cast<u32>(stats.draw_calls > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.draw_calls),
-        static_cast<u32>(stats.triangles > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.triangles),
+        static_cast<u32>(stats.entities > 0xFFFFFFFFull ? 0xFFFFFFFFull : stats.entities),
         sections,
     });
     return mode;

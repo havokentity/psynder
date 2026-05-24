@@ -134,7 +134,7 @@ std::vector<u8> encode_profiler_envelope(const WebProfilerFrame& frame) {
     w.str("cpu_ms");
     w.f32_(frame.cpu_ms);
     w.str("gpu_ms");
-    w.f32_(0.0f);
+    w.f32_(frame.gpu_ms);
     w.str("draw_calls");
     w.u32_(frame.draw_calls);
     w.str("entities");
@@ -261,12 +261,23 @@ void publish_web_profiler_frame(const WebProfilerFrame& frame) {
     auto& server = ipc::Server::Get();
     const bool has_profiler_subscribers = server.has_subscribers("profiler");
     const bool has_stats_subscribers = server.has_subscribers("stats");
-    if (!has_profiler_subscribers && !has_stats_subscribers)
+    const bool has_perf_subscribers = server.has_subscribers("perf");
+    if (!has_profiler_subscribers && !has_stats_subscribers && !has_perf_subscribers)
+        return;
+
+    server.broadcast_stats_tick(ipc::StatsTick{
+        frame.frame_index,
+        frame.cpu_ms,
+        frame.gpu_ms,
+        frame.draw_calls,
+        frame.entities,
+    });
+
+    if (frame.sections.empty() || (!has_profiler_subscribers && !has_perf_subscribers))
         return;
 
     const std::vector<u8> payload = encode_profiler_envelope(frame);
-    const std::span<const u8> bytes(payload.data(), payload.size());
-    server.broadcast(has_profiler_subscribers ? "profiler" : "stats", bytes);
+    server.broadcast("profiler", std::span<const u8>(payload.data(), payload.size()));
 }
 
 void pump_web_panels() {

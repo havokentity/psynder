@@ -26,6 +26,7 @@ const BAD_MS    = 33.3;   // 30 Hz threshold — bar color flips warning red.
 const STACK_PALETTE = ['#5fb0ff', '#f49a4b', '#6dd49e', '#c98ee0', '#f6c244', '#e16a6a', '#7dc7d8'];
 
 interface Sample {
+    frame: number;
     cpu_ms: number;
     gpu_ms: number;
     /** Per-subsystem breakdown for this frame — drives the stacked-bar strip. */
@@ -59,16 +60,22 @@ export function Profiler() {
     React.useEffect(() => {
         const unsub = client.subscribe('profiler', (env: Envelope) => {
             if (env.type !== 'frame' || paused) return;
-            const frame = normalize_profiler_frame(env.payload);
+            const frame = merge_profiler_frame(latest_ref.current, normalize_profiler_frame(env.payload));
             latest_ref.current = frame;
             const ring = ring_ref.current;
-            ring.push({
+            const sample = {
+                frame: frame.frame,
                 cpu_ms: frame.cpu_ms,
                 gpu_ms: frame.gpu_ms,
                 // Defensive copy — protocol envelopes are nominally immutable
                 // but we don't trust upstream code to keep them that way.
                 sections: frame.sections.map((s) => ({ name: s.name, ms: s.ms })),
-            });
+            };
+            if (ring.length > 0 && ring[ring.length - 1].frame === sample.frame) {
+                ring[ring.length - 1] = sample;
+            } else {
+                ring.push(sample);
+            }
             if (ring.length > HISTORY) ring.splice(0, ring.length - HISTORY);
         });
         return unsub;
@@ -192,6 +199,20 @@ function normalize_profiler_frame(payload: unknown): ProfilerFrame {
     };
 }
 
+function merge_profiler_frame(previous: ProfilerFrame | null, incoming: ProfilerFrame): ProfilerFrame {
+    if (!previous || previous.frame !== incoming.frame) return incoming;
+    if (has_rich_sections(incoming.sections)) return incoming;
+    if (!has_rich_sections(previous.sections)) return incoming;
+    return {
+        ...incoming,
+        sections: previous.sections.map((s) => ({ name: s.name, ms: s.ms })),
+    };
+}
+
+function has_rich_sections(sections: ProfilerSection[]): boolean {
+    return sections.length > 1 || sections.some((s) => s.name !== 'frame');
+}
+
 function number_value(value: unknown): number {
     if (typeof value === 'bigint') return Number(value);
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -209,7 +230,7 @@ function FrameStats({ frame }: { frame: ProfilerFrame | null }) {
             <li><span>gpu</span><code>{frame.gpu_ms.toFixed(2)} ms</code></li>
             <li><span>fps</span><code>{(1000 / Math.max(frame.cpu_ms, 0.0001)).toFixed(1)}</code></li>
             <li><span>draws</span><code>{frame.draw_calls ?? 0}</code></li>
-            <li><span>work</span><code>{frame.entities ?? 0}</code></li>
+            <li><span>entities</span><code>{frame.entities ?? 0}</code></li>
         </ul>
     );
 }
