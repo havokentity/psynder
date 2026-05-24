@@ -84,6 +84,8 @@ void request_fullscreen(bool on);
 void toggle_fullscreen();
 bool is_fullscreen();
 void request_window_size(u32 width, u32 height);
+u32 active_window_width();
+u32 active_window_height();
 
 // When true, the platform suppresses its default Escape-closes-the-window
 // behaviour because something is capturing text (the software console is
@@ -164,6 +166,8 @@ struct MouseState {
     f32 wheel = 0;
     bool left = false, right = false, middle = false;
 };
+
+MouseState mouse_to_framebuffer_space(const MouseState& mouse, u32 fb_w, u32 fb_h);
 
 class Input {
    public:

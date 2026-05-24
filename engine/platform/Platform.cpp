@@ -5,7 +5,9 @@
 
 #include "Platform.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <string>
 
 namespace psynder::platform {
@@ -23,6 +25,7 @@ namespace {
 // The live window (single window per process, DESIGN §11). Lets display
 // control reach the window without the caller holding the pointer.
 Window* g_active_window = nullptr;
+WindowDesc g_active_desc{};
 // Set by the software console while it's open; suppresses the backend's
 // default Escape-closes-the-window behaviour so the console owns Escape.
 bool g_text_input_capturing = false;
@@ -34,6 +37,7 @@ std::string g_clipboard_fallback;
 Window* create_window(const WindowDesc& desc) {
     Window* w = create_window_impl(desc);
     g_active_window = w;
+    g_active_desc = desc;
     return w;
 }
 void destroy_window(Window* w) {
@@ -56,6 +60,84 @@ bool is_fullscreen() {
 void request_window_size(u32 width, u32 height) {
     if (g_active_window)
         g_active_window->set_window_size(width, height);
+}
+u32 active_window_width() {
+    return g_active_window ? g_active_window->window_width() : 0u;
+}
+u32 active_window_height() {
+    return g_active_window ? g_active_window->window_height() : 0u;
+}
+
+MouseState mouse_to_framebuffer_space(const MouseState& mouse, u32 fb_w, u32 fb_h) {
+    MouseState out = mouse;
+    const u32 win_w_u = active_window_width();
+    const u32 win_h_u = active_window_height();
+    if (win_w_u == 0u || win_h_u == 0u || fb_w == 0u || fb_h == 0u)
+        return out;
+
+    const f64 win_w = static_cast<f64>(win_w_u);
+    const f64 win_h = static_cast<f64>(win_h_u);
+    const f64 fb_wd = static_cast<f64>(fb_w);
+    const f64 fb_hd = static_cast<f64>(fb_h);
+
+    f64 drawn_w = win_w;
+    f64 drawn_h = win_h;
+    f64 src_u0 = 0.0;
+    f64 src_v0 = 0.0;
+    f64 src_u1 = 1.0;
+    f64 src_v1 = 1.0;
+
+    if (g_active_desc.aspect_mode == AspectMode::Stretch) {
+        // Full window; no aspect preservation.
+    } else if (g_active_desc.scale_mode == ScaleMode::Integer) {
+        const u32 nx = static_cast<u32>(std::max<f64>(1.0, std::floor(win_w / fb_wd)));
+        const u32 ny = static_cast<u32>(std::max<f64>(1.0, std::floor(win_h / fb_hd)));
+        const u32 n = std::max<u32>(1u, std::min(nx, ny));
+        drawn_w = fb_wd * static_cast<f64>(n);
+        drawn_h = fb_hd * static_cast<f64>(n);
+    } else if (g_active_desc.aspect_mode == AspectMode::Crop) {
+        const f64 a_win = win_w / win_h;
+        const f64 a_fb = fb_wd / fb_hd;
+        if (a_win > a_fb) {
+            drawn_w = win_w;
+            drawn_h = win_w / a_fb;
+            const f64 over = (drawn_h - win_h) / drawn_h;
+            src_v0 = 0.5 * over;
+            src_v1 = 1.0 - 0.5 * over;
+            drawn_h = win_h;
+        } else {
+            drawn_h = win_h;
+            drawn_w = win_h * a_fb;
+            const f64 over = (drawn_w - win_w) / drawn_w;
+            src_u0 = 0.5 * over;
+            src_u1 = 1.0 - 0.5 * over;
+            drawn_w = win_w;
+        }
+    } else {
+        const f64 a_win = win_w / win_h;
+        const f64 a_fb = fb_wd / fb_hd;
+        if (a_win > a_fb) {
+            drawn_h = win_h;
+            drawn_w = drawn_h * a_fb;
+        } else {
+            drawn_w = win_w;
+            drawn_h = drawn_w / a_fb;
+        }
+    }
+
+    const f64 rect_x = (win_w - drawn_w) * 0.5;
+    const f64 rect_y = (win_h - drawn_h) * 0.5;
+    const f64 u = src_u0 + ((static_cast<f64>(mouse.x) - rect_x) / drawn_w) * (src_u1 - src_u0);
+    const f64 v = src_v0 + ((static_cast<f64>(mouse.y) - rect_y) / drawn_h) * (src_v1 - src_v0);
+    out.x = static_cast<f32>(u * fb_wd);
+    out.y = static_cast<f32>(v * fb_hd);
+    out.dx = drawn_w > 0.0
+                 ? static_cast<f32>((static_cast<f64>(mouse.dx) / drawn_w) * (src_u1 - src_u0) * fb_wd)
+                 : mouse.dx;
+    out.dy = drawn_h > 0.0
+                 ? static_cast<f32>((static_cast<f64>(mouse.dy) / drawn_h) * (src_v1 - src_v0) * fb_hd)
+                 : mouse.dy;
+    return out;
 }
 
 void set_text_input_capturing(bool capturing) {

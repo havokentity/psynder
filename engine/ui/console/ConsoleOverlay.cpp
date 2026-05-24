@@ -1171,7 +1171,8 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
     clamp_editor(s);
     refresh_completion(s);  // popup mirrors the current prompt token
 
-    const platform::MouseState& mouse = input.mouse();
+    const platform::MouseState mouse =
+        platform::mouse_to_framebuffer_space(input.mouse(), s.last_fb_w, s.last_fb_h);
     const bool left_pressed = mouse.left && !s.mouse_left_prev;
     const bool popup_mouse_consumed = update_completion_popup_mouse(s, mouse);
     if (popup_mouse_consumed)
