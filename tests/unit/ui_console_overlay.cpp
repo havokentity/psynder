@@ -20,6 +20,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cstdio>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -61,12 +62,14 @@ class FakeInput final : public Input {
         mouse_.y = y;
         mouse_.left = left;
     }
+    void set_wheel(f32 wheel) { mouse_.wheel = wheel; }
 
     // End-of-frame: drop edge flags + typed text; keep held keys down.
     void advance_frame() {
         for (auto& b : pressed_)
             b = false;
         text_.clear();
+        mouse_.wheel = 0.0f;
     }
     void release_all() {
         for (auto& b : down_)
@@ -584,6 +587,81 @@ TEST_CASE("console: mouse hover selects popup row before Enter", "[ui][console]"
 
     con.SetCVarOverride("con_hover_val_a", "0");
     con.SetCVarOverride("con_hover_val_b", "0");
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: completion arrows clamp inside the visible popup", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    for (int i = 0; i < 12; ++i) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "con_arrow_vis_%02d", i);
+        con.RegisterCVar(name, "0", "arrow visible clamp test cvar");
+        con.SetCVarOverride(name, "0");
+    }
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("con_arrow_vis_");
+    tick(in);
+    for (int i = 0; i < 20; ++i) {
+        in.press(KeyCode::Down);
+        tick(in);
+        in.release_all();
+    }
+    in.press(KeyCode::Enter);
+    tick(in);
+    in.type("5");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+
+    REQUIRE(con.FindCVar("con_arrow_vis_07")->value == "5");
+    REQUIRE(con.FindCVar("con_arrow_vis_08")->value == "0");
+
+    for (int i = 0; i < 12; ++i) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "con_arrow_vis_%02d", i);
+        con.SetCVarOverride(name, "0");
+    }
+    ui::console::set_open(false);
+}
+
+TEST_CASE("console: wheel scrolls completion popup rows", "[ui][console]") {
+    ui::console::reset();
+    ui::console::set_open(false);
+    auto& con = psynder::console::Console::Get();
+    for (int i = 0; i < 12; ++i) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "con_wheel_vis_%02d", i);
+        con.RegisterCVar(name, "0", "wheel visible popup test cvar");
+        con.SetCVarOverride(name, "0");
+    }
+
+    FakeInput in;
+    in.press(KeyCode::Tilde);
+    tick(in);
+    in.type("con_wheel_vis_");
+    tick(in);
+    in.set_wheel(-1.0f);
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+    in.type("6");
+    tick(in);
+    in.press(KeyCode::Enter);
+    tick(in);
+
+    REQUIRE(con.FindCVar("con_wheel_vis_00")->value == "0");
+    REQUIRE(con.FindCVar("con_wheel_vis_01")->value == "6");
+
+    for (int i = 0; i < 12; ++i) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "con_wheel_vis_%02d", i);
+        con.SetCVarOverride(name, "0");
+    }
     ui::console::set_open(false);
 }
 

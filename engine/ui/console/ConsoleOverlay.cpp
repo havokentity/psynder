@@ -193,6 +193,7 @@ struct State {
     // list instead of command history.
     std::vector<std::string> comp_items;
     int comp_sel = 0;
+    int comp_first = 0;
     bool comp_active = false;
     std::string comp_token;  // token the list was built for (detect changes)
     std::string comp_input_key;
@@ -745,6 +746,7 @@ void accept_completion(State& s, int index) noexcept {
     s.comp_active = false;
     s.comp_items.clear();
     s.comp_sel = 0;
+    s.comp_first = 0;
     s.comp_selection_touched = false;
     s.comp_popup_mouse_active = false;
     s.comp_popup_mouse_index = -1;
@@ -989,7 +991,7 @@ CompletionPopupLayout completion_popup_layout(const State& s, f32 fw, f32 fh) no
     constexpr int kMaxVis = 8;
     out.vis = std::min(kMaxVis, n);
     if (n > kMaxVis)
-        out.first = std::clamp(s.comp_sel - kMaxVis / 2, 0, n - kMaxVis);
+        out.first = std::clamp(s.comp_first, 0, n - kMaxVis);
 
     usize longest = 0;
     for (int i = 0; i < out.vis; ++i)
@@ -1050,6 +1052,7 @@ void refresh_completion(State& s) noexcept {
         s.comp_token = token.text;
         s.comp_input_key = s.input;
         s.comp_cursor_key = s.cursor;
+        s.comp_first = 0;
         s.comp_selection_touched = false;
         s.comp_popup_mouse_active = false;
         s.comp_popup_mouse_index = -1;
@@ -1067,6 +1070,7 @@ void refresh_completion(State& s) noexcept {
     if (changed || token.text != s.comp_token) {
         s.comp_token = token.text;
         s.comp_sel = 0;
+        s.comp_first = 0;
         s.comp_selection_touched = false;
         s.comp_popup_mouse_active = false;
         s.comp_popup_mouse_index = -1;
@@ -1076,6 +1080,44 @@ void refresh_completion(State& s) noexcept {
         s.comp_sel = n - 1;
     if (s.comp_sel < 0)
         s.comp_sel = 0;
+    const int max_first = std::max(0, n - 8);
+    s.comp_first = std::clamp(s.comp_first, 0, max_first);
+}
+
+void move_completion_selection_visible(State& s, int delta) noexcept {
+    if (!s.comp_active || s.comp_items.empty())
+        return;
+    const CompletionPopupLayout layout =
+        completion_popup_layout(s, static_cast<f32>(s.last_fb_w), static_cast<f32>(s.last_fb_h));
+    const int n = static_cast<int>(s.comp_items.size());
+    const int visible = layout.visible ? layout.vis : std::min(8, n);
+    const int first = layout.visible ? layout.first : std::clamp(s.comp_first, 0, std::max(0, n - visible));
+    const int last = first + visible - 1;
+    s.comp_sel = std::clamp(s.comp_sel + delta, first, last);
+    s.comp_selection_touched = true;
+}
+
+bool scroll_completion_window(State& s, f32 wheel) noexcept {
+    if (!s.comp_active || s.comp_items.empty() || wheel == 0.0f)
+        return false;
+    const int n = static_cast<int>(s.comp_items.size());
+    const int visible = std::min(8, n);
+    const int max_first = std::max(0, n - visible);
+    if (max_first == 0)
+        return true;
+
+    const int step = std::max(1, static_cast<int>(std::ceil(std::abs(wheel) / 12.0f)));
+    const int dir = wheel < 0.0f ? 1 : -1;
+    const int old_first = s.comp_first;
+    s.comp_first = std::clamp(s.comp_first + dir * step, 0, max_first);
+    if (s.comp_sel < s.comp_first)
+        s.comp_sel = s.comp_first;
+    const int last = std::min(n - 1, s.comp_first + visible - 1);
+    if (s.comp_sel > last)
+        s.comp_sel = last;
+    if (s.comp_first != old_first)
+        s.comp_selection_touched = true;
+    return true;
 }
 
 bool update_completion_popup_mouse(State& s, const platform::MouseState& mouse) noexcept {
@@ -1259,18 +1301,14 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
     // walk command history.
     if (input.key_pressed(KeyCode::Up)) {
         if (s.comp_active) {
-            const int n = static_cast<int>(s.comp_items.size());
-            s.comp_sel = (s.comp_sel > 0) ? s.comp_sel - 1 : n - 1;
-            s.comp_selection_touched = true;
+            move_completion_selection_visible(s, -1);
         } else {
             history_prev(s);
         }
     }
     if (input.key_pressed(KeyCode::Down)) {
         if (s.comp_active) {
-            const int n = static_cast<int>(s.comp_items.size());
-            s.comp_sel = (n > 0) ? (s.comp_sel + 1) % n : 0;
-            s.comp_selection_touched = true;
+            move_completion_selection_visible(s, +1);
         } else {
             history_next(s);
         }
@@ -1303,9 +1341,10 @@ void process_edit_keys(State& s, const platform::Input& input, f32 dt) noexcept 
 
     // Mouse wheel scrolls the scrollback (3 lines/notch). Clamp later in draw.
     const f32 wheel = input.mouse().wheel;
-    if (wheel > 0.0f)
+    const bool wheel_consumed_by_completion = scroll_completion_window(s, wheel);
+    if (!wheel_consumed_by_completion && wheel > 0.0f)
         s.scroll += 3;
-    else if (wheel < 0.0f)
+    else if (!wheel_consumed_by_completion && wheel < 0.0f)
         s.scroll = (s.scroll > 3u) ? s.scroll - 3u : 0u;
 
     s.mouse_left_prev = mouse.left;
