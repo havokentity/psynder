@@ -985,6 +985,16 @@ public:
         desc_.window_height = h;
     }
 
+    void raise_and_focus() override {
+        if (!ns_window_) return;
+        @autoreleasepool {
+            [ns_window_ deminiaturize:nil];
+            [ns_window_ makeFirstResponder:metal_view_];
+            [ns_window_ makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        }
+    }
+
 private:
     // ─── Metal pipeline / sampler setup ──────────────────────────────────
     void build_pipeline_() {
@@ -1127,6 +1137,11 @@ struct CoreAudioState {
     std::atomic<bool>      running{false};
     u32                    sample_rate = 48000;
     u32                    channels    = 2;
+    // Interleave scratch the render callback fills. Heap-owned and sized once
+    // at audio_start so the CoreAudio RT thread neither allocates per-callback
+    // nor carries a 128 KB stack frame (kMaxFrames*8*4) — RT threads can have
+    // small/unknown stacks, and a worst-case VLA-on-stack risks overflow.
+    std::vector<f32>       scratch;
 };
 
 CoreAudioState& ca_state() {
@@ -1157,12 +1172,19 @@ OSStatus core_audio_render(void* in_ref_con,
     if (ch == 0) return noErr;
 
     if (st->callback) {
-        // Interleave float scratch the callback fills, then de-interleave
-        // into AudioBufferList. Buffer size is small (typ. 512), stack-OK.
+        // De-interleave from a heap scratch the callback fills (pre-sized in
+        // audio_start; never allocated on this RT thread — see CoreAudioState).
         constexpr UInt32 kMaxFrames = 4096;
         UInt32 frames = std::min<UInt32>(in_number_frames, kMaxFrames);
-        f32 scratch[kMaxFrames * 8];
         UInt32 use_ch = std::min<UInt32>(ch, 8);
+        f32* scratch = st->scratch.data();
+        // Defensive: if scratch wasn't sized (callback registered out of band),
+        // emit silence rather than write through a null/short buffer.
+        if (st->scratch.size() < static_cast<usize>(kMaxFrames) * 8u) {
+            for (UInt32 c = 0; c < ch; ++c)
+                std::memset(io_data->mBuffers[c].mData, 0, io_data->mBuffers[c].mDataByteSize);
+            return noErr;
+        }
         st->callback(st->user, scratch, frames, use_ch, st->sample_rate);
         for (UInt32 c = 0; c < ch; ++c) {
             f32* dst = static_cast<f32*>(io_data->mBuffers[c].mData);
@@ -1190,6 +1212,9 @@ bool audio_start(const AudioDeviceDesc& desc, AudioRenderCallback cb, void* user
     st.user        = user;
     st.sample_rate = desc.sample_rate;
     st.channels    = desc.channels;
+    // Size the RT interleave scratch once, here on the caller's thread — the
+    // render callback must never allocate. Worst case kMaxFrames(4096)*8 ch.
+    st.scratch.assign(static_cast<usize>(4096) * 8u, 0.0f);
 
     // Locate DefaultOutput AudioComponent
     AudioComponentDescription cd{};

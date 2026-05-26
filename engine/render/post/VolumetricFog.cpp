@@ -94,6 +94,19 @@ math::Vec3 froxel_centre(const FogScene& s, u32 fx, u32 fy, u32 fz) noexcept {
     };
 }
 
+bool is_occluded(const FogScene& s, math::Vec3 a, math::Vec3 b) noexcept {
+    if (s.occluder.fn && s.occluder(a, b))
+        return true;
+    if (!s.occluders)
+        return false;
+    for (u32 i = 0; i < s.occluder_count; ++i) {
+        const OccluderFn& occluder = s.occluders[i];
+        if (occluder.fn && occluder(a, b))
+            return true;
+    }
+    return false;
+}
+
 // Per-cell radiance accumulator: sum over lights of (colour × atten ×
 // visibility). Phase is left isotropic for Wave B (Henyey-Greenstein lands
 // when lane 11 ships sky scattering in Wave D).
@@ -116,13 +129,10 @@ math::Vec3 in_scatter_at(const math::Vec3& world_pos, const FogScene& s, f32 lig
             atten = 1.0f / std::max(dist2, 1e-4f);
         }
 
-        // Shadow query. Occluder marches scene geometry between froxel
-        // and light. For the unshadowed path the occluder is a no-op.
-        if (s.occluder.fn) {
-            if (s.occluder(world_pos, l.position)) {
-                continue;
-            }
-        }
+        // Shadow query. Occluders march scene geometry between froxel and
+        // light. For the unshadowed path the occluder list is empty.
+        if (is_occluded(s, world_pos, l.position))
+            continue;
         out.x += l.colour.x * atten;
         out.y += l.colour.y * atten;
         out.z += l.colour.z * atten;

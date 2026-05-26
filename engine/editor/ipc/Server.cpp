@@ -915,8 +915,19 @@ void Server::stop() {
             c->sock = -1;
         }
         c->out_cv.notify_all();
-        if (c->worker.joinable())
-            c->worker.join();
+        // NB: workers are detached (see accept_loop), so join() is a no-op here.
+        // We wait on the worker counter below instead.
+    }
+
+    // Drop our refs so the only thing keeping a Connection alive is the worker
+    // that still holds its locked shared_ptr. Then block until every detached
+    // worker has run off the end of client_loop — guarantees no worker touches
+    // `this` after stop()/~Server returns.
+    snapshot.clear();
+    {
+        std::unique_lock<std::mutex> lk(workers_mu_);
+        workers_done_cv_.wait(
+            lk, [this] { return active_workers_.load(std::memory_order_acquire) == 0; });
     }
 }
 
@@ -954,9 +965,16 @@ void Server::accept_loop() {
             conns_.push_back(conn);
         }
         std::weak_ptr<Connection> wconn = conn;
+        // Bump BEFORE spawning so stop() can never observe a zero count while a
+        // worker is mid-launch. The worker decrements + notifies on exit.
+        active_workers_.fetch_add(1, std::memory_order_acq_rel);
         conn->worker = std::thread([this, wconn]() {
             if (auto c = wconn.lock())
                 this->client_loop(c);
+            if (active_workers_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                std::lock_guard<std::mutex> lk(workers_mu_);
+                workers_done_cv_.notify_all();
+            }
         });
         conn->worker.detach();
     }

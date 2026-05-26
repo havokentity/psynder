@@ -878,7 +878,14 @@ bool chiptune_is_active() {
 
 void chiptune_render_into(f32* stereo, u32 frames) noexcept {
     Playback& p = playback();
-    std::lock_guard<std::mutex> lk(p.mu);
+    // Real-time audio thread: MUST NOT block. chiptune_play() holds p.mu while
+    // it reserves/push_backs the note vector (heap allocation) — blocking on
+    // that here would stall the audio callback (priority inversion, glitch).
+    // try_lock instead: if play/stop is mid-mutation we skip this one block
+    // (outputs the silence already in `stereo`), which is imperceptible.
+    std::unique_lock<std::mutex> lk(p.mu, std::try_to_lock);
+    if (!lk.owns_lock())
+        return;
     if (!p.active || p.notes.empty() || p.sample_rate == 0u)
         return;
 

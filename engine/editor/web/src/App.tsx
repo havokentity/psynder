@@ -13,7 +13,27 @@ import { Profiler } from './panels/Profiler';
 import { PropSpawn } from './panels/PropSpawn';
 import { PsyGraph } from './panels/PsyGraph';
 import { get_client } from './ipc/client';
-import type { ConsoleEval } from './ipc/protocol';
+import type { ConnectionState } from './ipc/client';
+import type { ConsoleEval, ConsoleResult, Envelope, SceneDirtyState } from './ipc/protocol';
+import {
+    editor_scene_dirty,
+    last_scene_path,
+    mark_editor_scene_dirty,
+    remember_scene_path,
+    set_editor_scene_dirty,
+    subscribe_editor_scene_dirty,
+    subscribe_recent_scene_paths,
+} from './state/editorPersistence';
+import {
+    confirm_dirty_scene_navigation,
+    DEFAULT_SCENE_PATH,
+    ENGINE_SCENE_PATH_HELP,
+    is_noop_history_result,
+    load_scene_command,
+    prompt_save_scene_path,
+    save_scene_command,
+    scene_load_failure_from_event,
+} from './state/sceneCommands';
 
 type PanelName = 'scene' | 'inspector' | 'console' | 'profiler' | 'assets' | 'props' | 'psygraph';
 type RouteName = PanelName | 'workbench';
@@ -43,6 +63,15 @@ type DockLayoutSnapshot = {
     custom_tree: DockNode;
 };
 type DockUndo = { id: number; snapshot: DockLayoutSnapshot; message: string };
+type SceneToolbarStatus = 'idle' | 'busy' | 'ok' | 'error';
+type SceneToolbarAction = 'new' | 'load' | 'save' | 'undo' | 'redo';
+type SceneToolbarCommand = {
+    id: number;
+    label: string;
+    action: SceneToolbarAction;
+    path?: string;
+    acknowledged?: boolean;
+};
 
 const PANEL_NAMES: readonly PanelName[] = [
     'scene', 'inspector', 'console', 'profiler', 'assets', 'props', 'psygraph',
@@ -67,6 +96,28 @@ const DEFAULT_DOCKS: Record<DockSlot, PanelName> = {
     tertiary: 'inspector',
     quaternary: 'props',
 };
+
+function take_scene_toolbar_command(
+    pending: Map<number, SceneToolbarCommand>,
+    actions: readonly SceneToolbarAction[],
+    require_acknowledged = true,
+    request_id?: number,
+): SceneToolbarCommand | null {
+    if (request_id !== undefined) {
+        const command = pending.get(request_id);
+        if (command && actions.includes(command.action)) {
+            pending.delete(request_id);
+            return command;
+        }
+    }
+    for (const [id, command] of pending) {
+        if (!actions.includes(command.action)) continue;
+        if (require_acknowledged && !command.acknowledged) continue;
+        pending.delete(id);
+        return command;
+    }
+    return null;
+}
 
 // Engine route paths map onto panel names; "assets" / "props" land on the
 // `/panels/assets` and `/panels/props` URLs that the engine launches Chrome
@@ -399,8 +450,14 @@ function split_dock_leaf(target: DockNode, panel: PanelName, zone: DockDropZone)
 export function App() {
     const ipc_client = React.useMemo(() => get_client(), []);
     const command_seq = React.useRef(90000);
+    const scene_pending = React.useRef(new Map<number, SceneToolbarCommand>());
     const saw_engine_connection = React.useRef(false);
     const [route, set_route] = React.useState<RouteName>(pick_route);
+    const [connection, set_connection] = React.useState<ConnectionState>(ipc_client.current_state());
+    const [scene_dirty, set_scene_dirty] = React.useState(() => editor_scene_dirty());
+    const [scene_path, set_scene_path] = React.useState(() => last_scene_path() ?? DEFAULT_SCENE_PATH);
+    const [scene_status, set_scene_status] = React.useState<SceneToolbarStatus>('idle');
+    const [scene_message, set_scene_message] = React.useState('scene ready');
     const [settings_open, set_settings_open] = React.useState(false);
     const [theme, set_theme] = React.useState<ThemeName>(() => (
         (window.localStorage.getItem('psy_theme') as ThemeName | null) ?? 'forge'
@@ -476,6 +533,7 @@ export function App() {
 
     React.useEffect(() => {
         const unsub = ipc_client.on_state((state) => {
+            set_connection(state);
             if (state === 'open') {
                 saw_engine_connection.current = true;
                 return;
@@ -488,6 +546,125 @@ export function App() {
             }
         });
         return unsub;
+    }, [ipc_client]);
+
+    React.useEffect(() => subscribe_editor_scene_dirty(set_scene_dirty), []);
+
+    React.useEffect(() => {
+        const on_before_unload = (event: BeforeUnloadEvent) => {
+            if (!editor_scene_dirty()) return;
+            event.preventDefault();
+            event.returnValue = '';
+        };
+        window.addEventListener('beforeunload', on_before_unload);
+        return () => window.removeEventListener('beforeunload', on_before_unload);
+    }, []);
+
+    React.useEffect(() => subscribe_recent_scene_paths((paths) => {
+        const latest = last_scene_path() ?? paths[0];
+        if (latest) set_scene_path(latest);
+    }), []);
+
+    React.useEffect(() => {
+        const unsub_state = ipc_client.on_state((state) => {
+            if (state === 'open') {
+                ipc_client.send('console', 'subscribe', {});
+                ipc_client.send('scene', 'subscribe', {});
+            }
+        });
+        const unsub_console = ipc_client.subscribe('console', (env: Envelope) => {
+            if (env.type !== 'result') return;
+            const result = env.payload as ConsoleResult;
+            const command = scene_pending.current.get(result.id);
+            if (!command) return;
+
+            const result_text = result.text || command.label;
+            if (!result.ok) {
+                scene_pending.current.delete(result.id);
+                set_scene_status('error');
+                set_scene_message(result_text);
+                return;
+            }
+
+            if (command.action === 'save') {
+                command.acknowledged = true;
+                set_scene_status('busy');
+                set_scene_message(command.path ? `save accepted; waiting for clean scene ${command.path}` : result_text);
+                return;
+            }
+            if (command.action === 'load') {
+                command.acknowledged = true;
+                set_scene_status('busy');
+                set_scene_message(command.path ? `load accepted; waiting for scene ${command.path}` : result_text);
+                return;
+            }
+            if (command.action === 'new') {
+                command.acknowledged = true;
+                set_scene_status('busy');
+                set_scene_message(result.text || 'new scene accepted; waiting for scene');
+                return;
+            }
+
+            scene_pending.current.delete(result.id);
+            set_scene_status('ok');
+            if (command.action === 'undo' || command.action === 'redo') {
+                if (!is_noop_history_result(command.action, result_text)) mark_editor_scene_dirty();
+                set_scene_message(result_text);
+                return;
+            }
+            set_scene_message(result_text);
+        });
+        const unsub_scene = ipc_client.subscribe('scene', (env: Envelope) => {
+            const load_failure = scene_load_failure_from_event(env.type, env.payload);
+            if (load_failure) {
+                const command = take_scene_toolbar_command(
+                    scene_pending.current,
+                    ['load'],
+                    false,
+                    load_failure.request_id,
+                );
+                if (command || load_failure.request_id === undefined) {
+                    set_scene_status('error');
+                    set_scene_message(load_failure.text);
+                }
+                return;
+            }
+            if (env.type === 'dirty_state') {
+                const payload = env.payload as SceneDirtyState;
+                const dirty = !!payload.dirty;
+                set_editor_scene_dirty(dirty);
+                if (!dirty) {
+                    const command = take_scene_toolbar_command(scene_pending.current, ['save']);
+                    if (command) {
+                        if (command.path) {
+                            remember_scene_path(command.path);
+                            set_scene_path(command.path);
+                        }
+                        set_scene_status('ok');
+                        set_scene_message(command.path ? `saved ${command.path}` : 'scene saved');
+                    }
+                }
+                return;
+            }
+            if (env.type === 'hierarchy') {
+                const command = take_scene_toolbar_command(scene_pending.current, ['load', 'new']);
+                if (!command) return;
+                if (command.path) {
+                    remember_scene_path(command.path);
+                    set_scene_path(command.path);
+                }
+                set_editor_scene_dirty(false);
+                set_scene_status('ok');
+                set_scene_message(command.action === 'new'
+                    ? 'new scene ready'
+                    : `opened ${command.path ?? 'scene'}`);
+            }
+        });
+        return () => {
+            unsub_state();
+            unsub_console();
+            unsub_scene();
+        };
     }, [ipc_client]);
 
     React.useEffect(() => {
@@ -562,6 +739,7 @@ export function App() {
     };
 
     const request_quit = React.useCallback(() => {
+        if (!confirm_dirty_scene_navigation(scene_dirty, 'quit Psynder Arcade')) return;
         if (!window.confirm('Quit Psynder Arcade?')) return;
         ipc_client.send<ConsoleEval>('console', 'eval', {
             id: ++command_seq.current,
@@ -571,11 +749,12 @@ export function App() {
         window.setTimeout(() => {
             window.close();
         }, 120);
-    }, [ipc_client]);
+    }, [ipc_client, scene_dirty]);
 
     const close_editor_window = React.useCallback(() => {
+        if (!confirm_dirty_scene_navigation(scene_dirty, 'close the editor window')) return;
         window.close();
-    }, []);
+    }, [scene_dirty]);
 
     const toggle_fullscreen = React.useCallback(() => {
         if (document.fullscreenElement) {
@@ -585,7 +764,78 @@ export function App() {
         }
     }, []);
 
+    const send_scene_command = React.useCallback((
+        source: string,
+        label: string,
+        action: SceneToolbarAction,
+        path?: string,
+    ) => {
+        const id = ++command_seq.current;
+        scene_pending.current.set(id, { id, label, action, path });
+        set_scene_status('busy');
+        set_scene_message(label);
+        if (connection === 'open') {
+            ipc_client.send<ConsoleEval>('console', 'eval', { id, source, mode: 'console' });
+        } else {
+            scene_pending.current.delete(id);
+            set_scene_status('error');
+            set_scene_message(`connection is ${connection}`);
+        }
+    }, [connection, ipc_client]);
+
+    const request_new_scene = React.useCallback(() => {
+        if (!confirm_dirty_scene_navigation(scene_dirty, 'create a new scene')) return;
+        send_scene_command('arcade_new_scene', 'creating blank scene', 'new');
+    }, [scene_dirty, send_scene_command]);
+
+    const request_open_scene = React.useCallback(() => {
+        if (!confirm_dirty_scene_navigation(scene_dirty, 'open another scene')) return;
+        const next_path = window.prompt(`Open ${ENGINE_SCENE_PATH_HELP}`, scene_path.trim() || DEFAULT_SCENE_PATH);
+        if (next_path === null) return;
+        const path = next_path.trim();
+        if (!path) {
+            set_scene_status('error');
+            set_scene_message('scene path required');
+            return;
+        }
+        send_scene_command(load_scene_command(path), `opening ${path}`, 'load', path);
+    }, [scene_dirty, scene_path, send_scene_command]);
+
+    const request_save_scene = React.useCallback(() => {
+        const path = scene_path.trim();
+        if (!path) {
+            set_scene_status('error');
+            set_scene_message('scene save path required');
+            return;
+        }
+        send_scene_command(save_scene_command(path), `saving ${path}`, 'save', path);
+    }, [scene_path, send_scene_command]);
+
+    const request_save_scene_as = React.useCallback(async () => {
+        const next_path = await prompt_save_scene_path(scene_path);
+        if (next_path === null) return;
+        const path = next_path.trim();
+        if (!path) {
+            set_scene_status('error');
+            set_scene_message('scene save path required');
+            return;
+        }
+        send_scene_command(save_scene_command(path), `saving ${path}`, 'save', path);
+    }, [scene_path, send_scene_command]);
+
+    const request_scene_undo = React.useCallback(() => {
+        send_scene_command('editor_undo', 'undoing scene edit', 'undo');
+    }, [send_scene_command]);
+
+    const request_scene_redo = React.useCallback(() => {
+        send_scene_command('editor_redo', 'redoing scene edit', 'redo');
+    }, [send_scene_command]);
+
     const current = route === 'workbench' ? WORKBENCH_META : PANEL_META[route];
+    const scene_pending_ui = scene_status === 'busy';
+    const scene_state_label = scene_pending_ui ? 'pending' : scene_dirty ? 'dirty' : 'clean';
+    const scene_dirty_label = scene_pending_ui ? 'pending' : scene_dirty ? 'modified' : 'saved';
+    const scene_toolbar_disabled = connection !== 'open' || scene_pending_ui;
 
     return (
         <div
@@ -627,13 +877,94 @@ export function App() {
                         <small>{current.label}</small>
                     </span>
                     <span className="psy-status-tile">
-                        <b>7654</b>
+                        <b>{connection}</b>
                         <small>ipc</small>
                     </span>
                     <span className="psy-status-tile">
-                        <b>{density === 'comfortable' ? 'touch' : 'dense'}</b>
-                        <small>ui</small>
+                        <b>{scene_state_label}</b>
+                        <small>scene</small>
                     </span>
+                </div>
+
+                <div
+                    className="psy-scene-chrome"
+                    aria-label="scene toolbar"
+                    data-status={scene_status}
+                    title={scene_message}
+                >
+                    <span className={`psy-dirty-pill ${scene_dirty ? 'is-dirty' : ''} ${scene_pending_ui ? 'is-pending' : ''}`}>
+                        {scene_dirty_label}
+                    </span>
+                    <span className="psy-scene-chrome-message" aria-live="polite">{scene_message}</span>
+                    <input
+                        className="psy-scene-chrome-path"
+                        value={scene_path}
+                        onChange={(e) => set_scene_path(e.target.value)}
+                        spellCheck={false}
+                        aria-label="Scene path"
+                        title={`${ENGINE_SCENE_PATH_HELP}; used by Open and Save`}
+                    />
+                    <button
+                        type="button"
+                        className="psy-scene-tool"
+                        onClick={request_new_scene}
+                        disabled={scene_toolbar_disabled}
+                        title="New scene"
+                    >
+                        <span aria-hidden="true">+</span>
+                        <b>New</b>
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-scene-tool"
+                        onClick={request_open_scene}
+                        disabled={scene_toolbar_disabled}
+                        title="Open scene path"
+                    >
+                        <span aria-hidden="true">^</span>
+                        <b>Open</b>
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-scene-tool"
+                        onClick={request_save_scene}
+                        disabled={scene_toolbar_disabled}
+                        title="Save scene"
+                    >
+                        <span aria-hidden="true">v</span>
+                        <b>Save</b>
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-scene-tool"
+                        onClick={request_save_scene_as}
+                        disabled={scene_toolbar_disabled}
+                        title={`Save scene as a ${ENGINE_SCENE_PATH_HELP}`}
+                    >
+                        <span aria-hidden="true">...</span>
+                        <b>Save As</b>
+                    </button>
+                    <span className="psy-toolbar-divider" aria-hidden="true" />
+                    <button
+                        type="button"
+                        className="psy-scene-tool is-icon-only"
+                        onClick={request_scene_undo}
+                        disabled={scene_toolbar_disabled}
+                        aria-label="Undo scene edit"
+                        title="Undo scene edit"
+                    >
+                        <span aria-hidden="true">U</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-scene-tool is-icon-only"
+                        onClick={request_scene_redo}
+                        disabled={scene_toolbar_disabled}
+                        aria-label="Redo scene edit"
+                        title="Redo scene edit"
+                    >
+                        <span aria-hidden="true">R</span>
+                    </button>
                 </div>
 
                 <div className="psy-topbar-actions">

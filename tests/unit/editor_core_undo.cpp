@@ -8,6 +8,8 @@
 // psynder_editor_core into tests/unit/CMakeLists.txt.
 
 #include "editor/core/Undo.h"
+#include "editor/core/CommandHistory.h"
+#include "scene/SceneGraph.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -109,4 +111,35 @@ TEST_CASE("undo: pushing a new delta clears the redo stack", "[editor][undo]") {
 
 TEST_CASE("undo: delta is exactly 32 bytes (O(1) push invariant)", "[editor][undo]") {
     STATIC_REQUIRE(sizeof(undo::Delta) == 32);
+}
+
+TEST_CASE("undo: transform callback restores and reapplies a gizmo move",
+          "[editor][undo][gizmo]") {
+    using editor::command_history::Command;
+    using editor::command_history::History;
+
+    scene::LocalTransform transform{};
+    transform.translation = {0.0f, 1.0f, 2.0f};
+    const scene::LocalTransform before = transform;
+    scene::LocalTransform after = before;
+    after.translation.x = 4.5f;
+    after.translation.z = -3.25f;
+
+    History history{8u};
+    transform = after;
+    history.push(Command::callback(
+        "move entity",
+        [&transform, before]() { transform = before; },
+        [&transform, after]() { transform = after; }));
+
+    Command command{};
+    REQUIRE(history.undo(command));
+    REQUIRE(transform.translation.x == before.translation.x);
+    REQUIRE(transform.translation.y == before.translation.y);
+    REQUIRE(transform.translation.z == before.translation.z);
+
+    REQUIRE(history.redo(command));
+    REQUIRE(transform.translation.x == after.translation.x);
+    REQUIRE(transform.translation.y == after.translation.y);
+    REQUIRE(transform.translation.z == after.translation.z);
 }

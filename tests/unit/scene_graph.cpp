@@ -105,6 +105,43 @@ TEST_CASE("scene graph: set local transform defers world math until update",
     REQUIRE_THAT(static_cast<double>(world_after.m[13]), Catch::Matchers::WithinAbs(2.0, 1e-5));
 }
 
+TEST_CASE("scene graph: overlapping dirty roots drain at the update checkpoint",
+          "[scene][scene_graph][dirty]") {
+    SceneGraph graph;
+    SceneNode root = graph.create_node(kInvalidSceneNode, trs({1.0f, 0.0f, 0.0f}));
+    SceneNode child = graph.create_node(root, trs({0.0f, 2.0f, 0.0f}));
+    SceneNode grandchild = graph.create_node(child, trs({0.0f, 0.0f, 3.0f}));
+    SceneNode sibling = graph.create_node(root, trs({0.0f, 4.0f, 0.0f}));
+    graph.update_world_transforms();
+
+    graph.set_local_transform(root, trs({10.0f, 0.0f, 0.0f}));
+    graph.set_local_transform(child, trs({0.0f, 20.0f, 0.0f}));
+    graph.mark_dirty(grandchild);
+
+    SceneGraphUpdateStats stats = graph.update_world_transforms();
+    REQUIRE(stats.nodes_visited == 4u);
+    REQUIRE(stats.transforms_updated == 4u);
+
+    const math::Mat4& grandchild_world = graph.world_matrix(grandchild);
+    REQUIRE_THAT(static_cast<double>(grandchild_world.m[12]), Catch::Matchers::WithinAbs(10.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(grandchild_world.m[13]), Catch::Matchers::WithinAbs(20.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(grandchild_world.m[14]), Catch::Matchers::WithinAbs(3.0, 1e-5));
+
+    const math::Mat4& sibling_world = graph.world_matrix(sibling);
+    REQUIRE_THAT(static_cast<double>(sibling_world.m[12]), Catch::Matchers::WithinAbs(10.0, 1e-5));
+    REQUIRE_THAT(static_cast<double>(sibling_world.m[13]), Catch::Matchers::WithinAbs(4.0, 1e-5));
+
+    stats = graph.update_world_transforms();
+    REQUIRE(stats.nodes_visited == 0u);
+    REQUIRE(stats.transforms_updated == 0u);
+
+    graph.mark_dirty(grandchild);
+    graph.mark_dirty(grandchild);
+    stats = graph.update_world_transforms();
+    REQUIRE(stats.nodes_visited == 1u);
+    REQUIRE(stats.transforms_updated == 1u);
+}
+
 TEST_CASE("scene graph: destroyed node slots are pooled and reused",
           "[scene][scene_graph][pool]") {
     SceneGraph graph;

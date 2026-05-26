@@ -61,6 +61,10 @@ void request_window_size(u32 width, u32 height) {
     if (g_active_window)
         g_active_window->set_window_size(width, height);
 }
+void request_window_focus() {
+    if (g_active_window)
+        g_active_window->raise_and_focus();
+}
 u32 active_window_width() {
     return g_active_window ? g_active_window->window_width() : 0u;
 }

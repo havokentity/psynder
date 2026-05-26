@@ -271,7 +271,12 @@ export class IpcClient {
                     quiet: p.quiet === true,
                 });
             }
-            return concat_msgpack(OPCODES.ConsoleFrame, [text, mode]);
+            return concat_msgpack(OPCODES.ConsoleFrame, [
+                text,
+                mode,
+                Number(p.id ?? 0),
+                p.quiet === true,
+            ]);
         }
         if (ch === 'console' && type === 'complete') {
             const p = payload as { id?: number; input?: string; cursor?: number };

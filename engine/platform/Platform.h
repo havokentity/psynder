@@ -70,6 +70,7 @@ class Window {
         (void)width;
         (void)height;
     }
+    virtual void raise_and_focus() {}
 };
 
 Window* create_window(const WindowDesc& desc);
@@ -84,6 +85,7 @@ void request_fullscreen(bool on);
 void toggle_fullscreen();
 bool is_fullscreen();
 void request_window_size(u32 width, u32 height);
+void request_window_focus();
 u32 active_window_width();
 u32 active_window_height();
 

@@ -142,6 +142,15 @@ class Server {
     std::mutex conns_mu_;
     std::vector<std::shared_ptr<Connection>> conns_;
 
+    // Client workers are detached (a worker can outlive its Connection's slot in
+    // conns_, which is GC'd opportunistically; a joinable std::thread destroyed
+    // by ~Connection would std::terminate). Detaching means stop() cannot join
+    // them, so we count live workers and block stop() until the count hits zero
+    // — otherwise a detached worker keeps touching `this` after ~Server (UAF).
+    std::atomic<int> active_workers_{0};
+    std::mutex workers_mu_;
+    std::condition_variable workers_done_cv_;
+
     std::mutex inbound_mu_;
     std::deque<InboundCmd> inbound_;
     std::deque<InboundCompletion> inbound_completions_;

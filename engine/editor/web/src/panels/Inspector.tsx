@@ -10,6 +10,8 @@ import { get_client } from '../ipc/client';
 import type {
     ComponentSchema,
     ConsoleEval,
+    ConsoleResult,
+    EditorCommandAck,
     Envelope,
     FieldSchema,
     SchemaCatalog,
@@ -31,6 +33,7 @@ import {
     set_editor_scene_dirty,
     subscribe_editor_scene_dirty,
 } from '../state/editorPersistence';
+import { console_arg } from '../state/sceneCommands';
 import { ConnectionBadge } from './shared/ConnectionBadge';
 import { use_mock_when_offline } from './shared/use_mock_when_offline';
 import {
@@ -39,6 +42,23 @@ import {
     material_preset_component_values,
     type MaterialPresetId,
 } from './PrimitiveMaterialPalette';
+
+type EditAckStatus = 'pending' | 'applied' | 'error';
+
+interface PendingEdit {
+    entity_id: number;
+    component: string;
+    field: string;
+    value: unknown;
+    sent_at: number;
+    fallback_request_id?: number;
+}
+
+interface InspectorEditAck {
+    status: EditAckStatus;
+    text: string;
+    sent_at: number;
+}
 
 export function Inspector() {
     use_mock_when_offline();
@@ -50,8 +70,50 @@ export function Inspector() {
     );
     const [selection, set_selection] = React.useState<SelectionState | null>(null);
     const [dirty, set_dirty] = React.useState(() => editor_scene_dirty());
+    const [edit_ack, set_edit_ack] = React.useState<InspectorEditAck | null>(null);
+    const pending_edit = React.useRef<PendingEdit | null>(null);
+    const fallback_timer = React.useRef<number | null>(null);
 
     React.useEffect(() => subscribe_editor_scene_dirty(set_dirty), []);
+
+    const clear_fallback_timer = React.useCallback(() => {
+        if (fallback_timer.current === null) return;
+        window.clearTimeout(fallback_timer.current);
+        fallback_timer.current = null;
+    }, []);
+
+    React.useEffect(() => () => clear_fallback_timer(), [clear_fallback_timer]);
+
+    const settle_edit_ack = React.useCallback((status: EditAckStatus, text: string) => {
+        clear_fallback_timer();
+        pending_edit.current = null;
+        set_edit_ack({ status, text, sent_at: Date.now() });
+    }, [clear_fallback_timer]);
+
+    const pending_matches = React.useCallback((
+        entity_id: number | undefined,
+        component: string | undefined,
+        field: string | undefined,
+    ) => {
+        const edit = pending_edit.current;
+        if (!edit) return false;
+        return (entity_id === undefined || edit.entity_id === entity_id)
+            && (component === undefined || edit.component === component)
+            && (field === undefined || edit.field === field);
+    }, []);
+
+    const settle_from_selection_value = React.useCallback((
+        entity_id: number,
+        component: string,
+        field: string,
+        value: unknown,
+    ) => {
+        const edit = pending_edit.current;
+        if (!edit) return;
+        if (!pending_matches(entity_id, component, field)) return;
+        if (!values_equal(edit.value, value)) return;
+        settle_edit_ack('applied', `applied ${component}.${field}`);
+    }, [pending_matches, settle_edit_ack]);
 
     // ── Schemas subscription ────────────────────────────────────────────
     React.useEffect(() => {
@@ -80,7 +142,13 @@ export function Inspector() {
     React.useEffect(() => {
         const unsub = client.subscribe('selection', (env: Envelope) => {
             if (env.type === 'state') {
-                set_selection(env.payload as SelectionState);
+                const next = env.payload as SelectionState;
+                set_selection(next);
+                const edit = pending_edit.current;
+                if (edit && edit.entity_id === next.entity_id) {
+                    const value = next.components[edit.component]?.[edit.field];
+                    settle_from_selection_value(edit.entity_id, edit.component, edit.field, value);
+                }
             } else if (env.type === 'patch') {
                 const p = env.payload as SelectionPatch;
                 set_selection((prev) => {
@@ -97,12 +165,28 @@ export function Inspector() {
                     };
                     return next;
                 });
+                settle_from_selection_value(p.entity_id, p.component, p.field, p.value);
+            } else if (env.type === 'command_ack') {
+                const ack = env.payload as EditorCommandAck & {
+                    entity_id?: number;
+                    component?: string;
+                    field?: string;
+                };
+                if (
+                    (ack.command === COMPONENT_EDIT_TYPE || ack.command === 'component_field_edit.v1') &&
+                    pending_matches(ack.entity_id, ack.component, ack.field)
+                ) {
+                    settle_edit_ack(
+                        ack.ok ? 'applied' : 'error',
+                        ack.text || (ack.ok ? 'edit applied' : 'edit failed'),
+                    );
+                }
             } else if (env.type === 'cleared') {
                 set_selection(null);
             }
         });
         return unsub;
-    }, [client]);
+    }, [client, pending_matches, settle_edit_ack, settle_from_selection_value]);
 
     React.useEffect(() => {
         const unsub = client.subscribe('scene', (env: Envelope) => {
@@ -112,6 +196,20 @@ export function Inspector() {
         });
         return unsub;
     }, [client]);
+
+    React.useEffect(() => {
+        const unsub = client.subscribe('console', (env: Envelope) => {
+            if (env.type !== 'result') return;
+            const result = env.payload as ConsoleResult;
+            const edit = pending_edit.current;
+            if (!edit || edit.fallback_request_id !== result.id) return;
+            settle_edit_ack(
+                result.ok ? 'applied' : 'error',
+                result.text || (result.ok ? `applied ${edit.component}.${edit.field}` : 'edit failed'),
+            );
+        });
+        return unsub;
+    }, [client, settle_edit_ack]);
 
     // ── Subscribe-request hint ──────────────────────────────────────────
     //
@@ -124,6 +222,7 @@ export function Inspector() {
                 client.send('schemas',   'subscribe', {});
                 client.send('selection', 'subscribe', {});
                 client.send('scene',     'subscribe', {});
+                client.send('console',   'subscribe', {});
             }
         });
         return unsub;
@@ -156,15 +255,39 @@ export function Inspector() {
                     previous_value,
                 }),
             );
-            client.send<ConsoleEval>('console', 'eval', {
-                id: ++edit_console_seq.current,
-                source: component_set_command(selection.entity_id, component, field.name, value),
-                mode: 'console',
-                quiet: true,
+            clear_fallback_timer();
+            const sent_at = Date.now();
+            pending_edit.current = {
+                entity_id: selection.entity_id,
+                component,
+                field: field.name,
+                value,
+                sent_at,
+            };
+            set_edit_ack({
+                status: 'pending',
+                text: `sent ${component}.${field.name}`,
+                sent_at,
             });
+            fallback_timer.current = window.setTimeout(() => {
+                const edit = pending_edit.current;
+                if (!edit || edit.sent_at !== sent_at || edit.fallback_request_id !== undefined) return;
+                const request_id = ++edit_console_seq.current;
+                pending_edit.current = { ...edit, fallback_request_id: request_id };
+                set_edit_ack({
+                    status: 'pending',
+                    text: `waiting for ${component}.${field.name} echo`,
+                    sent_at,
+                });
+                client.send<ConsoleEval>('console', 'eval', {
+                    id: request_id,
+                    source: component_set_command(edit.entity_id, edit.component, edit.field, edit.value),
+                    mode: 'console',
+                });
+            }, 650);
             mark_editor_scene_dirty();
         },
-        [client, selection],
+        [clear_fallback_timer, client, selection],
     );
 
     const apply_material_preset = React.useCallback((preset_id: MaterialPresetId) => {
@@ -196,6 +319,11 @@ export function Inspector() {
                 <span className={`psy-dirty-pill ${dirty ? 'is-dirty' : ''}`}>
                     {dirty ? 'modified' : 'saved'}
                 </span>
+                {edit_ack && (
+                    <span className={`psy-edit-ack is-${edit_ack.status}`} aria-live="polite">
+                        {edit_ack.text}
+                    </span>
+                )}
             </header>
 
             {!selection && (
@@ -251,8 +379,8 @@ function component_set_command(
     return [
         'component_set',
         String(entity_id),
-        component,
-        field,
+        console_arg(component),
+        console_arg(field),
         encode_component_value(value),
     ].join(' ');
 }
@@ -262,6 +390,15 @@ function encode_component_value(value: unknown): string {
     if (typeof value === 'boolean') return value ? 'true' : 'false';
     if (typeof value === 'number') return String(value);
     return JSON.stringify(String(value ?? ''));
+}
+
+function values_equal(a: unknown, b: unknown): boolean {
+    if (Object.is(a, b)) return true;
+    try {
+        return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+        return false;
+    }
 }
 
 interface ComponentBlockProps {

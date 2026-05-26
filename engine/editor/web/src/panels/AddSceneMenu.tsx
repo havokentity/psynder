@@ -20,6 +20,8 @@ interface AddSceneMenuProps {
     on_add_empty_entity(): void;
     on_add_camera(): void;
     on_add_light(): void;
+    on_add_gameplay(kind: string): void;
+    on_create_fps_starter(): void;
 }
 
 export function AddSceneMenu({
@@ -29,6 +31,8 @@ export function AddSceneMenu({
     on_add_empty_entity,
     on_add_camera,
     on_add_light,
+    on_add_gameplay,
+    on_create_fps_starter,
 }: AddSceneMenuProps) {
     const details_ref = React.useRef<HTMLDetailsElement | null>(null);
 
@@ -104,6 +108,39 @@ export function AddSceneMenu({
                         </button>
                         <button type="button" className="psy-btn" role="menuitem" onClick={() => run_template(on_add_light)}>
                             Light
+                        </button>
+                    </div>
+                </section>
+
+                <section className="psy-add-section" aria-label="Gameplay templates">
+                    <span className="psy-add-section-title">gameplay</span>
+                    <button
+                        type="button"
+                        className="psy-btn psy-btn-primary psy-add-wide-action"
+                        role="menuitem"
+                        onClick={() => run_template(on_create_fps_starter)}
+                        title="template_create fps_starter"
+                    >
+                        FPS Starter
+                    </button>
+                    <div className="psy-add-grid">
+                        <button type="button" className="psy-btn" role="menuitem" onClick={() => run_template(() => on_add_gameplay('player_start'))}>
+                            Player Start
+                        </button>
+                        <button type="button" className="psy-btn" role="menuitem" onClick={() => run_template(() => on_add_gameplay('fps_player'))}>
+                            FPS Player
+                        </button>
+                        <button type="button" className="psy-btn" role="menuitem" onClick={() => run_template(() => on_add_gameplay('enemy'))}>
+                            Enemy
+                        </button>
+                        <button type="button" className="psy-btn" role="menuitem" onClick={() => run_template(() => on_add_gameplay('pickup'))}>
+                            Pickup
+                        </button>
+                        <button type="button" className="psy-btn" role="menuitem" onClick={() => run_template(() => on_add_gameplay('trigger'))}>
+                            Trigger
+                        </button>
+                        <button type="button" className="psy-btn" role="menuitem" onClick={() => run_template(() => on_add_gameplay('door'))}>
+                            Door
                         </button>
                     </div>
                 </section>

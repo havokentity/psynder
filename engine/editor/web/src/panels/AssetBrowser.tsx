@@ -16,8 +16,10 @@ import type {
     AssetCategory,
     AssetDelta,
     AssetEntry,
+    ConsoleEval,
     Envelope,
 } from '../ipc/protocol';
+import { console_command } from '../state/sceneCommands';
 import { ConnectionBadge } from './shared/ConnectionBadge';
 import { use_mock_when_offline } from './shared/use_mock_when_offline';
 
@@ -62,6 +64,7 @@ export function AssetBrowser() {
     const [collapsed, set_collapsed] = React.useState<Set<AssetCategory>>(
         () => new Set(),
     );
+    const [status, set_status] = React.useState('');
 
     // ── Catalog + delta subscription ─────────────────────────────────────
     React.useEffect(() => {
@@ -125,6 +128,17 @@ export function AssetBrowser() {
         });
     };
 
+    const apply_texture_to_selection = React.useCallback((path: string) => {
+        const id = Date.now() & 0x7fffffff;
+        client.send<ConsoleEval>('console', 'eval', {
+            id,
+            source: console_command('material_texture_apply_selected', path),
+            mode: 'console',
+            quiet: true,
+        });
+        set_status(path === 'none' ? 'texture cleared' : 'texture applied');
+    }, [client]);
+
     return (
         <div className="psy-panel psy-assets">
             <header className="psy-panel-header">
@@ -141,6 +155,11 @@ export function AssetBrowser() {
                 <span className="psy-assets-count" title="visible / total">
                     {total_visible}/{entries.size}
                 </span>
+                {status && (
+                    <span className="psy-assets-status" title={status}>
+                        {status}
+                    </span>
+                )}
             </header>
 
             <div className="psy-assets-body">
@@ -180,6 +199,7 @@ export function AssetBrowser() {
                                             <th>Path</th>
                                             <th>Pack</th>
                                             <th className="psy-cell-num">Size</th>
+                                            <th className="psy-cell-action">Use</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -193,8 +213,37 @@ export function AssetBrowser() {
                                                 <td className="psy-cell-num">
                                                     {format_bytes(e.size_bytes)}
                                                 </td>
+                                                <td className="psy-cell-action">
+                                                    {e.category === 'texture' && (
+                                                        <button
+                                                            type="button"
+                                                            className="psy-mini-button"
+                                                            title="Apply texture to selected renderable"
+                                                            onClick={() => apply_texture_to_selection(e.path)}
+                                                        >
+                                                            Apply
+                                                        </button>
+                                                    )}
+                                                </td>
                                             </tr>
                                         ))}
+                                        {cat === 'texture' && (
+                                            <tr>
+                                                <td className="psy-assets-path">none</td>
+                                                <td className="psy-assets-pack">material</td>
+                                                <td className="psy-cell-num">0 B</td>
+                                                <td className="psy-cell-action">
+                                                    <button
+                                                        type="button"
+                                                        className="psy-mini-button"
+                                                        title="Clear selected renderable texture"
+                                                        onClick={() => apply_texture_to_selection('none')}
+                                                    >
+                                                        Clear
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        )}
                                     </tbody>
                                 </table>
                             )}

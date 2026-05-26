@@ -12,11 +12,15 @@
 #include "editor/core/Selection.h"
 #include "editor/core/ViewportGizmo.h"
 #include "editor/core/WebPanels.h"
+#include "editor/ipc/Ipc.h"
 #include "math/MathExt.h"
 #include "platform/App.h"
 #include "platform/RuntimeConfig.h"
+#include "render/Image.h"
+#include "render/TextureGenerators.h"
 #include "scene/SceneFile.h"
 #include "ui/imm/Imm.h"
+#include "ui/imm/Overlay.h"
 #include "ui/imm/detail/Font.h"
 
 #include <algorithm>
@@ -24,9 +28,13 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 using namespace psynder;
@@ -46,10 +54,12 @@ PlayerApp* g_active_arcade = nullptr;
 
 void load_active_arcade_scene(std::string_view path);
 void create_active_arcade_scene();
+void create_active_arcade_fps_template();
 Entity add_active_arcade_primitive(std::string_view kind, std::string_view material_preset = {});
 Entity add_active_arcade_empty_entity();
 Entity add_active_arcade_camera();
 Entity add_active_arcade_light(scene::LightKind kind = scene::LightKind::Point);
+Entity add_active_arcade_gameplay(std::string_view kind);
 bool rename_active_arcade_entity(Entity entity, std::string_view name);
 bool delete_active_arcade_entity(Entity entity);
 Entity duplicate_active_arcade_entity(Entity entity);
@@ -59,13 +69,17 @@ bool set_active_arcade_component_field(Entity entity,
                                        std::string_view field,
                                        std::string_view value);
 bool apply_active_arcade_material_preset(Entity entity, std::string_view preset);
+bool apply_active_arcade_material_texture(Entity entity, std::string_view texture_name);
+bool apply_active_arcade_material_texture_to_selection(std::string_view texture_name);
 bool undo_active_arcade_editor_command(std::string& label);
 bool redo_active_arcade_editor_command(std::string& label);
 bool save_active_arcade_scene(std::string_view path, std::string& error);
+void apply_active_arcade_component_edit(const editor::ipc::SelectionComponentEdit& edit);
 std::optional<Entity> parse_entity_arg(std::string_view text);
 std::string joined_name_args(std::span<const std::string_view> args, usize first);
 std::string_view material_preset_arg(std::span<const std::string_view> args);
 std::optional<scene::LightKind> parse_light_kind_arg(std::string_view text);
+std::optional<scene::GameplayRole> parse_gameplay_role_arg(std::string_view text);
 
 PlayerArgs parse_player_args(int argc, char** argv) {
     PlayerArgs args{};
@@ -91,11 +105,16 @@ PlayerArgs parse_player_args(int argc, char** argv) {
 void print_arcade_help(console::Output& out) {
     out.PrintLine("Psynder Arcade is waiting for a scene.");
     out.PrintLine("Commands:");
+    out.PrintLine("  arcade_new_scene          Create a blank live scene");
+    out.PrintLine("  arcade_fps_template       Create a playable FPS starter scene");
     out.PrintLine("  arcade_load_scene <path>  Load a cooked .psyscene");
     out.PrintLine("  primitive_add <kind>      Add box, sphere, plane, cone, pyramid, triangle");
     out.PrintLine("  light_add [kind]          Add point, spot, or directional light");
+    out.PrintLine("  gameplay_add <kind>       Add player_start, fps_player, enemy, pickup, trigger, door");
     out.PrintLine("  entity_reparent <e> <p>   Reparent entity; use 0/root for scene root");
     out.PrintLine("  scene_dirty               Print backend dirty state");
+    out.PrintLine("  arcade_play_mode          Switch to playable runtime mode");
+    out.PrintLine("  arcade_edit_mode          Switch to scene editing mode");
     out.PrintLine("  web_console               Open the web editor workbench");
     out.PrintLine("  arcade_boot_tune          Replay the 8-bit boot chime");
     out.PrintLine("  arcade_startup_tune 0|1   Disable/enable boot music");
@@ -126,6 +145,30 @@ void register_arcade_console_commands() {
                                     print_arcade_help(out);
                                 });
     console_ref.RegisterCommand(
+        "arcade_play_mode",
+        "Switch Psynder Arcade to playable runtime mode.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (editor::current_mode() != editor::Mode::Play)
+                editor::toggle_mode();
+            platform::request_window_focus();
+            out.PrintLine("arcade_play_mode: PLAY");
+        });
+    console_ref.RegisterCommand(
+        "arcade_focus_window",
+        "Bring the Psynder Arcade engine window to the front.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            platform::request_window_focus();
+            out.PrintLine("arcade_focus_window: requested");
+        });
+    console_ref.RegisterCommand(
+        "arcade_edit_mode",
+        "Switch Psynder Arcade to scene editing mode.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (editor::current_mode() != editor::Mode::Edit)
+                editor::toggle_mode();
+            out.PrintLine("arcade_edit_mode: EDIT");
+        });
+    console_ref.RegisterCommand(
         "arcade_load_scene",
         "Load a cooked .psyscene into Psynder Arcade.",
         [](std::span<const std::string_view> args, console::Output& out) {
@@ -151,6 +194,32 @@ void register_arcade_console_commands() {
             }
             create_active_arcade_scene();
             out.PrintLine("arcade_new_scene: created blank scene with active camera");
+        });
+    console_ref.RegisterCommand(
+        "arcade_fps_template",
+        "Create a playable FPS starter scene with player, props, lights, and gameplay markers.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (!g_active_arcade) {
+                out.PrintLine("arcade_fps_template: Psynder Arcade is not running");
+                return;
+            }
+            create_active_arcade_fps_template();
+            out.PrintLine("arcade_fps_template: created FPS starter scene");
+        });
+    console_ref.RegisterCommand(
+        "template_create",
+        "Create a named scene template: template_create fps_starter.",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            if (args.empty() || !(args[0] == "fps_starter" || args[0] == "fps")) {
+                out.PrintLine("template_create: expected fps_starter");
+                return;
+            }
+            if (!g_active_arcade) {
+                out.PrintLine("template_create: Psynder Arcade is not running");
+                return;
+            }
+            create_active_arcade_fps_template();
+            out.PrintLine("template_create: created fps_starter");
         });
     console_ref.RegisterCommand(
         "entity_add_empty",
@@ -195,6 +264,23 @@ void register_arcade_console_commands() {
             out.FormatLine("light_add: added {}", entity.raw);
         });
     console_ref.RegisterCommand(
+        "gameplay_add",
+        "Add an FPS gameplay authoring object: gameplay_add <player_start|fps_player|enemy|pickup|trigger|door>.",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            if (args.empty()) {
+                out.PrintLine("gameplay_add: expected a kind");
+                out.PrintLine("kinds: player_start, fps_player, enemy, pickup, trigger, door");
+                return;
+            }
+            const Entity entity = add_active_arcade_gameplay(args[0]);
+            if (!entity.valid()) {
+                out.PrintLine("gameplay_add: failed");
+                out.PrintLine("kinds: player_start, fps_player, enemy, pickup, trigger, door");
+                return;
+            }
+            out.FormatLine("gameplay_add: added {} as entity {}", args[0], entity.raw);
+        });
+    console_ref.RegisterCommand(
         "primitive_add",
         "Add a primitive to the active scene: box, sphere, plane, cone, pyramid, triangle.",
         [](std::span<const std::string_view> args, console::Output& out) {
@@ -229,6 +315,37 @@ void register_arcade_console_commands() {
                 return;
             }
             out.FormatLine("material_apply: {} -> {}", entity->raw, args[1]);
+        });
+    console_ref.RegisterCommand(
+        "material_texture_apply",
+        "Apply a base-color texture to a renderable: material_texture_apply <entity_id> <texture_path|none>.",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            if (args.size() < 2u) {
+                out.PrintLine("material_texture_apply: expected <entity_id> <texture_path|none>");
+                return;
+            }
+            const std::optional<Entity> entity = parse_entity_arg(args[0]);
+            const std::string texture_name = joined_name_args(args, 1u);
+            if (!entity || !apply_active_arcade_material_texture(*entity, texture_name)) {
+                out.PrintLine("material_texture_apply: failed");
+                return;
+            }
+            out.FormatLine("material_texture_apply: {} -> {}", entity->raw, texture_name);
+        });
+    console_ref.RegisterCommand(
+        "material_texture_apply_selected",
+        "Apply a base-color texture to the selected renderable.",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            if (args.empty()) {
+                out.PrintLine("material_texture_apply_selected: expected <texture_path|none>");
+                return;
+            }
+            const std::string texture_name = joined_name_args(args, 0u);
+            if (!apply_active_arcade_material_texture_to_selection(texture_name)) {
+                out.PrintLine("material_texture_apply_selected: no selected renderable");
+                return;
+            }
+            out.FormatLine("material_texture_apply_selected: {}", texture_name);
         });
     console_ref.RegisterCommand(
         "entity_rename",
@@ -474,6 +591,24 @@ std::optional<scene::LightKind> parse_light_kind_arg(std::string_view text) {
     return std::nullopt;
 }
 
+std::optional<scene::GameplayRole> parse_gameplay_role_arg(std::string_view text) {
+    if (text == "none" || text == "None")
+        return scene::GameplayRole::None;
+    if (text == "player_start" || text == "PlayerStart" || text == "spawn")
+        return scene::GameplayRole::PlayerStart;
+    if (text == "fps_player" || text == "player" || text == "PlayerController")
+        return scene::GameplayRole::PlayerController;
+    if (text == "enemy" || text == "Enemy")
+        return scene::GameplayRole::Enemy;
+    if (text == "pickup" || text == "Pickup")
+        return scene::GameplayRole::Pickup;
+    if (text == "trigger" || text == "Trigger")
+        return scene::GameplayRole::Trigger;
+    if (text == "door" || text == "Door")
+        return scene::GameplayRole::Door;
+    return std::nullopt;
+}
+
 std::string_view light_kind_label(scene::LightKind kind) {
     switch (kind) {
         case scene::LightKind::Point:
@@ -498,6 +633,36 @@ Entity parent_entity_for_node(scene::Scene& scene, scene::SceneNode node) {
             return entity;
     }
     return {};
+}
+
+void sync_scene_names_to_web_labels(scene::Scene* scene) {
+    if (!scene)
+        return;
+    auto& registry = scene->registry();
+    const u32 total = registry.snapshot_live_entities(std::span<Entity>{});
+    std::vector<Entity> entities(total);
+    const u32 copied = registry.snapshot_live_entities(entities);
+    entities.resize(copied);
+    for (Entity entity : entities) {
+        const std::string_view name = scene->entity_name(entity);
+        if (!name.empty())
+            editor::set_web_entity_label(entity, name);
+    }
+}
+
+void sync_web_labels_to_scene_names(scene::Scene* scene) {
+    if (!scene)
+        return;
+    auto& registry = scene->registry();
+    const u32 total = registry.snapshot_live_entities(std::span<Entity>{});
+    std::vector<Entity> entities(total);
+    const u32 copied = registry.snapshot_live_entities(entities);
+    entities.resize(copied);
+    for (Entity entity : entities) {
+        const std::string label = editor::web_entity_label(entity);
+        if (!label.empty())
+            scene->set_entity_name(entity, label);
+    }
 }
 
 bool parse_f32_value(std::string_view text, f32& out) {
@@ -552,6 +717,66 @@ bool parse_f32_array(std::string_view text, std::span<f32> out) {
         start = comma + 1u;
     }
     return index == out.size();
+}
+
+std::string compact_f64(f64 value) {
+    if (!std::isfinite(value))
+        return "0";
+    std::string out = std::to_string(value);
+    while (out.size() > 1u && out.back() == '0')
+        out.pop_back();
+    if (!out.empty() && out.back() == '.')
+        out.pop_back();
+    return out.empty() ? std::string{"0"} : out;
+}
+
+std::string component_edit_value_text(const editor::ipc::SelectionComponentEditValue& value) {
+    using Kind = editor::ipc::SelectionComponentEditValueKind;
+    switch (value.kind) {
+        case Kind::Bool:
+            return value.bool_value ? "true" : "false";
+        case Kind::I64:
+            return std::to_string(value.i64_value);
+        case Kind::U64:
+            return std::to_string(value.u64_value);
+        case Kind::F64:
+            return compact_f64(value.f64_value);
+        case Kind::String:
+            return value.string_value;
+        case Kind::BoolArray: {
+            std::string out = "[";
+            for (usize i = 0u; i < value.bool_values.size(); ++i) {
+                if (i != 0u)
+                    out += ",";
+                out += value.bool_values[i] ? "1" : "0";
+            }
+            out += "]";
+            return out;
+        }
+        case Kind::F64Array: {
+            std::string out = "[";
+            for (usize i = 0u; i < value.f64_values.size(); ++i) {
+                if (i != 0u)
+                    out += ",";
+                out += compact_f64(value.f64_values[i]);
+            }
+            out += "]";
+            return out;
+        }
+        case Kind::StringArray: {
+            std::string out = "[";
+            for (usize i = 0u; i < value.string_values.size(); ++i) {
+                if (i != 0u)
+                    out += ",";
+                out += value.string_values[i];
+            }
+            out += "]";
+            return out;
+        }
+        case Kind::Null:
+            break;
+    }
+    return {};
 }
 
 f32 ping_pong(f32 value, f32 limit) noexcept {
@@ -698,13 +923,16 @@ void draw_attract_mode(render::Framebuffer& fb, f64 seconds, std::string_view st
     constexpr f32 kLineH = 10.0f;
     constexpr f32 kPadX = 14.0f;
     constexpr f32 kPadY = 12.0f;
-    const std::array<std::string_view, 9> lines{
+    const std::array<std::string_view, 12> lines{
         status,
         "Press `~` for the console.",
         "arcade_load_scene <path>  Load a cooked .psyscene",
         "primitive_add box         Add primitives to the active scene",
         "web_console               Open the web editor workbench",
         "arcade_new_scene          Create a blank scene",
+        "arcade_play_mode          Test authored FPS/player controls",
+        "arcade_edit_mode          Return to transform/selection editing",
+        "RMB + WASD/QE            Fly the editor viewport camera",
         "config_open_dir           Open saved settings folder",
         "arcade_startup_tune 0|1   Toggle boot music",
         "arcade_help               Print this list",
@@ -744,6 +972,7 @@ struct PlayerApp {
     scene::SceneLoadRequest scene_load{};
     app::WindowApp* app = nullptr;
     scene::Scene* load_target_scene = nullptr;
+    std::string loading_scene_path{};
     std::string idle_status = "No scene loaded.";
     u32 primitive_spawn_count = 0u;
     bool show_idle_panel = true;
@@ -751,6 +980,18 @@ struct PlayerApp {
     bool replaying_history = false;
     editor::command_history::History edit_history{128u};
     std::vector<scene::SceneLightItem> gathered_lights{};
+    std::vector<scene::SceneRenderItem> pick_render_items{};
+    std::unordered_map<std::string, render::Texture2D> authored_textures{};
+    scene::detail::AlignedVector<u8> saved_scene_checkpoint{};
+    bool has_saved_scene_checkpoint = false;
+    editor::viewport::GizmoState gizmo_state{};
+    bool viewport_mouse_left_prev = false;
+    Entity fps_controlled_entity{};
+    f32 fps_yaw = 0.0f;
+    f32 fps_pitch = 0.0f;
+    Entity editor_camera_entity{};
+    f32 editor_camera_yaw = 0.0f;
+    f32 editor_camera_pitch = 0.0f;
     struct GizmoDragEdit {
         Entity entity{};
         editor::viewport::GizmoMode mode = editor::viewport::GizmoMode::Translate;
@@ -759,6 +1000,14 @@ struct PlayerApp {
         bool active = false;
     };
     GizmoDragEdit gizmo_drag{};
+    struct SceneSnapshot {
+        bool has_scene = false;
+        scene::detail::AlignedVector<u8> bytes{};
+        u32 selected_raw = 0u;
+        u32 primitive_spawn_count = 0u;
+        bool show_idle_panel = true;
+        std::string idle_status{};
+    };
 
     static PlayerArgs parse_args(int argc, char** argv) { return parse_player_args(argc, argv); }
 
@@ -777,6 +1026,7 @@ struct PlayerApp {
         load_target_scene = &app->create_scene();
         idle_status = "Loading ";
         idle_status.append(path.data(), path.size());
+        loading_scene_path.assign(path.data(), path.size());
         show_idle_panel = true;
         scene_load.load_async(path);
     }
@@ -799,9 +1049,218 @@ struct PlayerApp {
         PSY_LOG_INFO("psynder_arcade: created blank scene");
     }
 
+    void create_fps_template_scene() {
+        if (!app)
+            return;
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
+        reset_active_authoring_scene();
+
+        scene::Scene& scene = app->create_active_scene();
+        scene.environment().set_clear_color(ui::imm::rgba(0x08, 0x0D, 0x16));
+        scene.environment().set_sky(scene::EnvironmentSkySettings{
+            .zenith_rgba8 = ui::imm::rgba(0x16, 0x24, 0x36),
+            .horizon_rgba8 = ui::imm::rgba(0x2E, 0x45, 0x58),
+            .intensity = 1.1f,
+        });
+
+        auto make_material = [](u32 color, f32 roughness = 0.8f, f32 emissive = 0.0f) {
+            render::MaterialDesc material{};
+            material.albedo_rgba8 = color;
+            material.roughness = roughness;
+            material.emissive = emissive;
+            return material;
+        };
+        auto create_mesh = [&](render::BuiltInMesh mesh_kind,
+                               render::MaterialDesc material,
+                               scene::LocalTransform local,
+                               std::string_view label,
+                               scene::ObjectMobility mobility = scene::ObjectMobility::Dynamic) {
+            const render::MeshId mesh = app->rendering_system().builtin_mesh(mesh_kind);
+            const render::MaterialId material_id = scene.materials().create(material);
+            const render::SceneMeshEntity created =
+                app->rendering_system().create_mesh_instance(scene,
+                                                             mesh,
+                                                             material_id,
+                                                             local,
+                                                             scene::kInvalidSceneNode,
+                                                             scene::RenderableFlags::Visible,
+                                                             mobility);
+            if (created.entity.valid()) {
+                editor::set_web_entity_label(created.entity, label);
+                scene.set_entity_name(created.entity, label);
+            }
+            return created.entity;
+        };
+
+        scene::LocalTransform floor{};
+        floor.translation = {0.0f, -0.04f, -2.5f};
+        floor.scale = {8.0f, 0.04f, 8.0f};
+        create_mesh(render::BuiltInMesh::UnitCube,
+                    make_material(ui::imm::rgba(0x44, 0x4B, 0x54), 0.92f),
+                    floor,
+                    "Arena Floor",
+                    scene::ObjectMobility::Static);
+
+        scene::LocalTransform cover_a{};
+        cover_a.translation = {-1.6f, 0.45f, -2.4f};
+        cover_a.scale = {0.75f, 0.45f, 0.75f};
+        create_mesh(render::BuiltInMesh::UnitCube,
+                    make_material(ui::imm::rgba(0x62, 0x7B, 0x90), 0.85f),
+                    cover_a,
+                    "Cover Box A",
+                    scene::ObjectMobility::Static);
+
+        scene::LocalTransform cover_b{};
+        cover_b.translation = {1.7f, 0.45f, -3.6f};
+        cover_b.scale = {0.55f, 0.9f, 0.55f};
+        create_mesh(render::BuiltInMesh::UnitCube,
+                    make_material(ui::imm::rgba(0x75, 0x67, 0x9A), 0.78f),
+                    cover_b,
+                    "Cover Box B",
+                    scene::ObjectMobility::Static);
+
+        const Entity player = scene.create_entity(scene::LocalTransform{
+            .translation = {0.0f, 0.0f, 1.4f},
+            .rotation = math::quat_identity(),
+            .scale = {1.0f, 1.0f, 1.0f},
+        });
+        scene::GameplayTagComponent player_tag{};
+        player_tag.role = scene::GameplayRole::PlayerController;
+        scene.registry().add<scene::GameplayTagComponent>(
+            player, scene::sanitize_gameplay_tag(player_tag));
+        scene::PlayerControllerComponent controller{};
+        scene.registry().add<scene::PlayerControllerComponent>(
+            player, scene::sanitize_player_controller(controller));
+        scene::HealthComponent player_health{};
+        scene.registry().add<scene::HealthComponent>(
+            player, scene::sanitize_health_component(player_health));
+        scene::WeaponComponent weapon{};
+        scene.registry().add<scene::WeaponComponent>(
+            player, scene::sanitize_weapon_component(weapon));
+        editor::set_web_entity_label(player, "FPS Player");
+        scene.set_entity_name(player, "FPS Player");
+
+        scene::CameraDesc fps_camera{};
+        fps_camera.position = {0.0f, controller.height, 0.0f};
+        fps_camera.look_at = {0.0f, controller.height, -1.0f};
+        fps_camera.active = false;
+        const Entity fps_camera_entity = scene.spawn_camera(fps_camera, scene.node(player));
+        if (fps_camera_entity.valid()) {
+            editor::set_web_entity_label(fps_camera_entity, "FPS Camera");
+            scene.set_entity_name(fps_camera_entity, "FPS Camera");
+        }
+
+        const Entity player_start = scene.create_entity(scene::LocalTransform{
+            .translation = {0.0f, 0.0f, 1.4f},
+            .rotation = math::quat_identity(),
+            .scale = {1.0f, 1.0f, 1.0f},
+        });
+        scene::GameplayTagComponent start_tag{};
+        start_tag.role = scene::GameplayRole::PlayerStart;
+        scene.registry().add<scene::GameplayTagComponent>(
+            player_start, scene::sanitize_gameplay_tag(start_tag));
+        editor::set_web_entity_label(player_start, "Player Start");
+        scene.set_entity_name(player_start, "Player Start");
+
+        scene::LocalTransform enemy_local{};
+        enemy_local.translation = {0.0f, 0.65f, -4.2f};
+        enemy_local.scale = {0.55f, 0.75f, 0.55f};
+        const Entity enemy = create_mesh(render::BuiltInMesh::UvSphere,
+                                         make_material(ui::imm::rgba(0xEF, 0x5A, 0x5A), 0.55f),
+                                         enemy_local,
+                                         "Enemy Dummy");
+        scene::GameplayTagComponent enemy_tag{};
+        enemy_tag.role = scene::GameplayRole::Enemy;
+        scene.registry().add<scene::GameplayTagComponent>(
+            enemy, scene::sanitize_gameplay_tag(enemy_tag));
+        scene::HealthComponent enemy_health{};
+        enemy_health.max_health = 75.0f;
+        enemy_health.current_health = 75.0f;
+        enemy_health.faction = 1u;
+        scene.registry().add<scene::HealthComponent>(
+            enemy, scene::sanitize_health_component(enemy_health));
+
+        scene::LocalTransform pickup_local{};
+        pickup_local.translation = {2.4f, 0.25f, -1.2f};
+        pickup_local.scale = {0.22f, 0.22f, 0.22f};
+        const Entity pickup =
+            create_mesh(render::BuiltInMesh::UvSphere,
+                        make_material(ui::imm::rgba(0x68, 0xF0, 0xB6), 0.35f, 0.85f),
+                        pickup_local,
+                        "Health Pickup");
+        scene::GameplayTagComponent pickup_tag{};
+        pickup_tag.role = scene::GameplayRole::Pickup;
+        scene.registry().add<scene::GameplayTagComponent>(
+            pickup, scene::sanitize_gameplay_tag(pickup_tag));
+
+        scene::LocalTransform door_local{};
+        door_local.translation = {-2.8f, 0.8f, -4.1f};
+        door_local.scale = {0.55f, 0.8f, 0.12f};
+        const Entity door = create_mesh(render::BuiltInMesh::UnitCube,
+                                        make_material(ui::imm::rgba(0x5C, 0xA8, 0xFF), 0.5f),
+                                        door_local,
+                                        "Blue Door",
+                                        scene::ObjectMobility::Static);
+        scene::GameplayTagComponent door_tag{};
+        door_tag.role = scene::GameplayRole::Door;
+        scene.registry().add<scene::GameplayTagComponent>(
+            door, scene::sanitize_gameplay_tag(door_tag));
+
+        scene::LocalTransform trigger_local{};
+        trigger_local.translation = {-2.8f, 0.05f, -3.2f};
+        const Entity trigger = scene.create_entity(trigger_local);
+        scene::GameplayTagComponent trigger_tag{};
+        trigger_tag.role = scene::GameplayRole::Trigger;
+        scene.registry().add<scene::GameplayTagComponent>(
+            trigger, scene::sanitize_gameplay_tag(trigger_tag));
+        editor::set_web_entity_label(trigger, "Door Trigger");
+        scene.set_entity_name(trigger, "Door Trigger");
+
+        scene::LocalTransform light_marker{};
+        light_marker.translation = {0.0f, 2.7f, -1.6f};
+        light_marker.scale = {0.18f, 0.18f, 0.18f};
+        const u32 light_color = ui::imm::rgba(0xFF, 0xE6, 0xA8);
+        const Entity light = create_mesh(render::BuiltInMesh::UvSphere,
+                                         make_material(light_color, 0.3f, 1.8f),
+                                         light_marker,
+                                         "Key Light");
+        scene::LightComponent key_light{};
+        key_light.kind = scene::LightKind::Point;
+        key_light.color_rgba8 = light_color;
+        key_light.intensity = 5.0f;
+        key_light.range = 9.0f;
+        key_light.casts_shadow = 1u;
+        scene.attach_light(light, key_light);
+
+        const Entity editor_camera = scene.spawn_camera(scene::CameraDesc{
+            .position = math::Vec3{0.0f, 3.0f, 5.8f},
+            .look_at = math::Vec3{0.0f, 0.65f, -2.0f},
+            .up = math::Vec3{0.0f, 1.0f, 0.0f},
+            .fov_y_rad = 58.0f * math::kDegToRad,
+            .active = true,
+        });
+        if (editor_camera.valid()) {
+            editor::set_web_entity_label(editor_camera, "Editor Camera");
+            scene.set_entity_name(editor_camera, "Editor Camera");
+        }
+
+        primitive_spawn_count = 12u;
+        load_target_scene = nullptr;
+        show_idle_panel = false;
+        idle_status = "FPS starter scene active.";
+        editor::selection::select_scene_entity(&scene, player);
+        mark_authoring_dirty();
+        editor::publish_web_scene_hierarchy(&scene);
+        push_snapshot_history_after("Create FPS template", before);
+        PSY_LOG_INFO("psynder_arcade: created FPS starter scene");
+    }
+
     Entity add_primitive(std::string_view kind, std::string_view material_preset = {}) {
         if (!app)
             return {};
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
         if (!app->active_scene())
             create_blank_scene();
         scene::Scene* scene = app->active_scene();
@@ -853,10 +1312,13 @@ struct PlayerApp {
         show_idle_panel = false;
         mark_authoring_dirty();
         editor::publish_web_scene_hierarchy(scene);
+        push_snapshot_history_after("Add primitive", before);
         return created.entity;
     }
 
     Entity add_empty_entity() {
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
         scene::Scene* scene = ensure_active_scene();
         if (!scene)
             return {};
@@ -868,11 +1330,14 @@ struct PlayerApp {
             show_idle_panel = false;
             mark_authoring_dirty();
             editor::publish_web_scene_hierarchy(scene);
+            push_snapshot_history_after("Add empty entity", before);
         }
         return entity;
     }
 
     Entity add_camera_entity() {
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
         scene::Scene* scene = ensure_active_scene();
         if (!scene)
             return {};
@@ -887,11 +1352,14 @@ struct PlayerApp {
             show_idle_panel = false;
             mark_authoring_dirty();
             editor::publish_web_scene_hierarchy(scene);
+            push_snapshot_history_after("Add camera", before);
         }
         return entity;
     }
 
     Entity add_light_entity(scene::LightKind kind = scene::LightKind::Point) {
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
         scene::Scene* scene = ensure_active_scene();
         if (!scene)
             return {};
@@ -930,8 +1398,90 @@ struct PlayerApp {
             show_idle_panel = false;
             mark_authoring_dirty();
             editor::publish_web_scene_hierarchy(scene);
+            push_snapshot_history_after("Add light", before);
         }
         return created.entity;
+    }
+
+    Entity add_gameplay_entity(std::string_view kind) {
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
+        scene::Scene* scene = ensure_active_scene();
+        if (!scene)
+            return {};
+
+        const std::optional<scene::GameplayRole> role = parse_gameplay_role_arg(kind);
+        if (!role || *role == scene::GameplayRole::None)
+            return {};
+
+        scene::LocalTransform local{};
+        local.translation = primitive_spawn_position(primitive_spawn_count++);
+        local.translation.y = 0.0f;
+        const Entity entity = scene->create_entity(local);
+        if (!entity.valid())
+            return {};
+
+        scene::GameplayTagComponent tag{};
+        tag.role = *role;
+        scene->registry().add<scene::GameplayTagComponent>(
+            entity, scene::sanitize_gameplay_tag(tag));
+
+        std::string label;
+        switch (*role) {
+            case scene::GameplayRole::PlayerStart:
+                label = numbered_label("Player Start");
+                break;
+            case scene::GameplayRole::PlayerController: {
+                label = numbered_label("FPS Player");
+                scene::PlayerControllerComponent controller{};
+                scene->registry().add<scene::PlayerControllerComponent>(
+                    entity, scene::sanitize_player_controller(controller));
+                scene::HealthComponent health{};
+                scene->registry().add<scene::HealthComponent>(
+                    entity, scene::sanitize_health_component(health));
+                scene::WeaponComponent weapon{};
+                scene->registry().add<scene::WeaponComponent>(
+                    entity, scene::sanitize_weapon_component(weapon));
+
+                scene::CameraDesc camera_desc{};
+                camera_desc.position = {0.0f, controller.height, 0.0f};
+                camera_desc.look_at = {0.0f, controller.height, -1.0f};
+                camera_desc.active = scene->active_camera_entity().valid() ? false : true;
+                const Entity camera =
+                    scene->spawn_camera(camera_desc, scene->node(entity));
+                if (camera.valid())
+                    editor::set_web_entity_label(camera, "FPS Camera");
+                break;
+            }
+            case scene::GameplayRole::Enemy: {
+                label = numbered_label("Enemy");
+                scene::HealthComponent health{};
+                health.max_health = 75.0f;
+                health.current_health = 75.0f;
+                health.faction = 1u;
+                scene->registry().add<scene::HealthComponent>(
+                    entity, scene::sanitize_health_component(health));
+                break;
+            }
+            case scene::GameplayRole::Pickup:
+                label = numbered_label("Pickup");
+                break;
+            case scene::GameplayRole::Trigger:
+                label = numbered_label("Trigger");
+                break;
+            case scene::GameplayRole::Door:
+                label = numbered_label("Door");
+                break;
+            case scene::GameplayRole::None:
+                break;
+        }
+
+        editor::set_web_entity_label(entity, label.empty() ? numbered_label("Gameplay") : label);
+        show_idle_panel = false;
+        mark_authoring_dirty();
+        editor::publish_web_scene_hierarchy(scene);
+        push_snapshot_history_after("Add gameplay entity", before);
+        return entity;
     }
 
     bool rename_entity(Entity entity, std::string_view name) {
@@ -964,11 +1514,21 @@ struct PlayerApp {
         scene::Scene* scene = app ? app->active_scene() : nullptr;
         if (!scene || !scene->registry().alive(entity))
             return false;
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
+        if (editor::selection::is_scene_selected(entity))
+            editor::selection::clear_selection();
+        if (gizmo_state.drag.active && gizmo_state.drag.entity == entity)
+            editor::viewport::cancel_gizmo_drag(gizmo_state);
+        if (gizmo_drag.active && gizmo_drag.entity == entity)
+            gizmo_drag.active = false;
         const bool deleted = scene->destroy_entity(entity);
         editor::set_web_entity_label(entity, {});
         editor::publish_web_scene_hierarchy(scene);
         if (deleted)
             mark_authoring_dirty();
+        if (deleted)
+            push_snapshot_history_after("Delete entity", before);
         return deleted;
     }
 
@@ -976,10 +1536,29 @@ struct PlayerApp {
         scene::Scene* scene = app ? app->active_scene() : nullptr;
         if (!scene || !scene->registry().alive(entity))
             return {};
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
         auto& registry = scene->registry();
         scene::LocalTransform local = scene->transform(entity);
         local.translation.x += 0.75f;
         local.translation.z -= 0.25f;
+        const auto copy_gameplay_components = [&](Entity duplicate) {
+            if (!duplicate.valid())
+                return;
+            if (const auto* tag = registry.get<scene::GameplayTagComponent>(entity))
+                registry.add<scene::GameplayTagComponent>(
+                    duplicate, scene::sanitize_gameplay_tag(*tag));
+            if (const auto* controller = registry.get<scene::PlayerControllerComponent>(entity)) {
+                registry.add<scene::PlayerControllerComponent>(
+                    duplicate, scene::sanitize_player_controller(*controller));
+            }
+            if (const auto* health = registry.get<scene::HealthComponent>(entity))
+                registry.add<scene::HealthComponent>(
+                    duplicate, scene::sanitize_health_component(*health));
+            if (const auto* weapon = registry.get<scene::WeaponComponent>(entity))
+                registry.add<scene::WeaponComponent>(
+                    duplicate, scene::sanitize_weapon_component(*weapon));
+        };
 
         if (const auto* renderable = registry.get<scene::RenderableComponent>(entity)) {
             scene::RenderableComponent copy = *renderable;
@@ -989,9 +1568,11 @@ struct PlayerApp {
             if (duplicate.valid()) {
                 if (const auto* light = registry.get<scene::LightComponent>(entity))
                     scene->attach_light(duplicate, *light);
+                copy_gameplay_components(duplicate);
                 editor::set_web_entity_label(duplicate, duplicate_label(entity, "Renderable"));
                 editor::publish_web_scene_hierarchy(scene);
                 mark_authoring_dirty();
+                push_snapshot_history_after("Duplicate entity", before);
             }
             return duplicate;
         }
@@ -999,18 +1580,22 @@ struct PlayerApp {
         if (const auto* camera = registry.get<scene::CameraComponent>(entity)) {
             const Entity duplicate = scene->create_camera(*camera, local);
             if (duplicate.valid()) {
+                copy_gameplay_components(duplicate);
                 editor::set_web_entity_label(duplicate, duplicate_label(entity, "Camera"));
                 editor::publish_web_scene_hierarchy(scene);
                 mark_authoring_dirty();
+                push_snapshot_history_after("Duplicate entity", before);
             }
             return duplicate;
         }
 
         const Entity duplicate = scene->create_entity(local);
         if (duplicate.valid()) {
+            copy_gameplay_components(duplicate);
             editor::set_web_entity_label(duplicate, duplicate_label(entity, "Entity"));
             editor::publish_web_scene_hierarchy(scene);
             mark_authoring_dirty();
+            push_snapshot_history_after("Duplicate entity", before);
         }
         return duplicate;
     }
@@ -1183,6 +1768,8 @@ struct PlayerApp {
             const render::MaterialDesc material = scene->materials().get(renderable->material);
             if (field == "albedo_rgba8")
                 return std::to_string(material.albedo_rgba8);
+            if (field == "base_color_texture_name")
+                return editor::web_material_texture_name(renderable->material.raw);
             if (field == "reflectivity")
                 return f32_text(material.reflectivity);
             if (field == "roughness")
@@ -1218,6 +1805,66 @@ struct PlayerApp {
                 return f32_text(light->outer_cone_deg);
             if (field == "casts_shadow")
                 return bool_text(light->casts_shadow != 0u);
+            return std::nullopt;
+        }
+
+        if (component == "GameplayTagComponent") {
+            const auto* tag = registry.get<scene::GameplayTagComponent>(entity);
+            if (!tag)
+                return std::nullopt;
+            if (field == "role")
+                return std::to_string(static_cast<u32>(tag->role));
+            if (field == "flags")
+                return std::to_string(tag->flags);
+            return std::nullopt;
+        }
+
+        if (component == "PlayerControllerComponent") {
+            const auto* controller = registry.get<scene::PlayerControllerComponent>(entity);
+            if (!controller)
+                return std::nullopt;
+            if (field == "walk_speed")
+                return f32_text(controller->walk_speed);
+            if (field == "run_speed")
+                return f32_text(controller->run_speed);
+            if (field == "jump_speed")
+                return f32_text(controller->jump_speed);
+            if (field == "mouse_sensitivity")
+                return f32_text(controller->mouse_sensitivity);
+            if (field == "height")
+                return f32_text(controller->height);
+            if (field == "radius")
+                return f32_text(controller->radius);
+            return std::nullopt;
+        }
+
+        if (component == "HealthComponent") {
+            const auto* health = registry.get<scene::HealthComponent>(entity);
+            if (!health)
+                return std::nullopt;
+            if (field == "max_health")
+                return f32_text(health->max_health);
+            if (field == "current_health")
+                return f32_text(health->current_health);
+            if (field == "faction")
+                return std::to_string(health->faction);
+            return std::nullopt;
+        }
+
+        if (component == "WeaponComponent") {
+            const auto* weapon = registry.get<scene::WeaponComponent>(entity);
+            if (!weapon)
+                return std::nullopt;
+            if (field == "damage")
+                return f32_text(weapon->damage);
+            if (field == "range")
+                return f32_text(weapon->range);
+            if (field == "fire_rate")
+                return f32_text(weapon->fire_rate);
+            if (field == "ammo")
+                return std::to_string(weapon->ammo);
+            if (field == "automatic")
+                return bool_text(weapon->automatic != 0u);
             return std::nullopt;
         }
 
@@ -1403,6 +2050,8 @@ struct PlayerApp {
             const auto* renderable = registry.get<scene::RenderableComponent>(entity);
             if (!renderable || !scene->materials().valid(renderable->material))
                 return false;
+            if (field == "base_color_texture_name")
+                return update_material_texture_binding(entity, value);
             render::MaterialDesc material = scene->materials().get(renderable->material);
             f32 f = 0.0f;
             u32 u = 0u;
@@ -1490,6 +2139,133 @@ struct PlayerApp {
             return ok;
         }
 
+        if (component == "GameplayTagComponent") {
+            const auto* tag = registry.get<scene::GameplayTagComponent>(entity);
+            if (!tag)
+                return false;
+            scene::GameplayTagComponent updated = *tag;
+            u32 u = 0u;
+            if (field == "role") {
+                if (!parse_u32_value(value, u) || u > static_cast<u32>(scene::GameplayRole::Door))
+                    return false;
+                updated.role = static_cast<scene::GameplayRole>(u);
+            } else if (field == "flags") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                updated.flags = u;
+            } else {
+                return false;
+            }
+            registry.add<scene::GameplayTagComponent>(
+                entity, scene::sanitize_gameplay_tag(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "PlayerControllerComponent") {
+            const auto* controller = registry.get<scene::PlayerControllerComponent>(entity);
+            if (!controller)
+                return false;
+            scene::PlayerControllerComponent updated = *controller;
+            f32 f = 0.0f;
+            if (field == "walk_speed") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.walk_speed = f;
+            } else if (field == "run_speed") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.run_speed = f;
+            } else if (field == "jump_speed") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.jump_speed = f;
+            } else if (field == "mouse_sensitivity") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.mouse_sensitivity = f;
+            } else if (field == "height") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.height = f;
+            } else if (field == "radius") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.radius = f;
+            } else {
+                return false;
+            }
+            registry.add<scene::PlayerControllerComponent>(
+                entity, scene::sanitize_player_controller(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "HealthComponent") {
+            const auto* health = registry.get<scene::HealthComponent>(entity);
+            if (!health)
+                return false;
+            scene::HealthComponent updated = *health;
+            f32 f = 0.0f;
+            u32 u = 0u;
+            if (field == "max_health") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.max_health = f;
+            } else if (field == "current_health") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.current_health = f;
+            } else if (field == "faction") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                updated.faction = u;
+            } else {
+                return false;
+            }
+            registry.add<scene::HealthComponent>(
+                entity, scene::sanitize_health_component(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "WeaponComponent") {
+            const auto* weapon = registry.get<scene::WeaponComponent>(entity);
+            if (!weapon)
+                return false;
+            scene::WeaponComponent updated = *weapon;
+            f32 f = 0.0f;
+            u32 u = 0u;
+            bool b = false;
+            if (field == "damage") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.damage = f;
+            } else if (field == "range") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.range = f;
+            } else if (field == "fire_rate") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.fire_rate = f;
+            } else if (field == "ammo") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                updated.ammo = u;
+            } else if (field == "automatic") {
+                if (!parse_bool_value(value, b))
+                    return false;
+                updated.automatic = b ? 1u : 0u;
+            } else {
+                return false;
+            }
+            registry.add<scene::WeaponComponent>(
+                entity, scene::sanitize_weapon_component(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
         return false;
     }
 
@@ -1532,6 +2308,69 @@ struct PlayerApp {
         return true;
     }
 
+    render::TextureView resolve_authoring_texture(std::string_view texture_name) {
+        if (texture_name.empty() || texture_name == "none" || texture_name == "None" ||
+            texture_name == "clear") {
+            return {};
+        }
+
+        const std::string key{texture_name};
+        if (const auto it = authored_textures.find(key); it != authored_textures.end())
+            return it->second.view();
+
+        render::Texture2D texture{};
+        if (texture_name == "textures.procedural.wooden_crate") {
+            texture = render::texture_generators::wooden_crate();
+        } else if (texture_name == "textures.procedural.checker") {
+            texture = render::texture_generators::checker();
+        } else if (texture_name == "textures.procedural.grid") {
+            texture = render::texture_generators::grid();
+        } else if (texture_name == "textures.procedural.bricks") {
+            texture = render::texture_generators::bricks();
+        } else if (texture_name == "textures.procedural.wood_planks") {
+            texture = render::texture_generators::wood_planks();
+        } else if (texture_name == "textures.procedural.building_facade") {
+            texture = render::texture_generators::building_facade();
+        } else {
+            render::Rgba8Image image{};
+            const asset::Blob blob = asset::Vault::Get().read(texture_name);
+            if (blob.data && render::image_detail::decode_ppm_rgba8(
+                                 std::span<const u8>{blob.data, blob.bytes}, image)) {
+                texture = render::Texture2D{std::move(image)};
+            } else {
+                texture = render::fallback_checker_texture();
+                PSY_LOG_WARN("psynder_arcade: texture '{}' unavailable; using fallback checker",
+                             texture_name);
+            }
+        }
+
+        const auto [it, inserted] = authored_textures.emplace(key, std::move(texture));
+        (void)inserted;
+        return it->second.view();
+    }
+
+    bool update_material_texture_binding(Entity entity, std::string_view texture_name) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !scene->registry().alive(entity))
+            return false;
+        const auto* renderable = scene->registry().get<scene::RenderableComponent>(entity);
+        if (!renderable || !scene->materials().valid(renderable->material))
+            return false;
+
+        render::MaterialDesc material = scene->materials().get(renderable->material);
+        const bool clear = texture_name.empty() || texture_name == "none" ||
+                           texture_name == "None" || texture_name == "clear";
+        material.base_color_texture = 0u;
+        material.base_color = clear ? render::TextureView{} : resolve_authoring_texture(texture_name);
+        material.base_color_asset = nullptr;
+        if (!scene->materials().update(renderable->material, material))
+            return false;
+        editor::set_web_material_texture_name(renderable->material.raw,
+                                              clear ? std::string_view{} : texture_name);
+        editor::publish_web_scene_hierarchy(scene);
+        return true;
+    }
+
     bool apply_material_preset(Entity entity, std::string_view preset) {
         scene::Scene* scene = app ? app->active_scene() : nullptr;
         if (!scene || !scene->registry().alive(entity))
@@ -1546,7 +2385,10 @@ struct PlayerApp {
 
         const render::MaterialId material_id = renderable->material;
         const render::MaterialDesc before = scene->materials().get(material_id);
-        const render::MaterialDesc after = primitive_material_desc(preset, entity.index());
+        render::MaterialDesc after = primitive_material_desc(preset, entity.index());
+        after.base_color_texture = before.base_color_texture;
+        after.base_color = before.base_color;
+        after.base_color_asset = before.base_color_asset;
         const bool ok = scene->materials().update(material_id, after);
         if (!ok)
             return false;
@@ -1578,12 +2420,25 @@ struct PlayerApp {
         return true;
     }
 
+    bool apply_material_texture(Entity entity, std::string_view texture_name) {
+        return set_component_field(entity,
+                                   "MaterialComponent",
+                                   "base_color_texture_name",
+                                   texture_name);
+    }
+
+    bool apply_material_texture_to_selection(std::string_view texture_name) {
+        const Entity selected = editor::selection::selected_scene_entity();
+        return selected.valid() && apply_material_texture(selected, texture_name);
+    }
+
     bool save_scene(std::string_view path, std::string& error) {
         scene::Scene* scene = app ? app->active_scene() : nullptr;
         if (!scene) {
             error = "no active scene";
             return false;
         }
+        sync_web_labels_to_scene_names(scene);
 
         scene::detail::AlignedVector<u8> bytes;
         scene::SceneFileSaveStats stats{};
@@ -1591,7 +2446,7 @@ struct PlayerApp {
             .user = this,
             .mesh_name = &PlayerApp::save_mesh_name,
             .material_name = &PlayerApp::save_material_name,
-            .material_base_color_texture_name = nullptr,
+            .material_base_color_texture_name = &PlayerApp::save_material_texture_name,
             .material_preset_name = nullptr,
             .mesh_instance_group_name = &PlayerApp::save_mesh_group_name,
         };
@@ -1614,6 +2469,8 @@ struct PlayerApp {
                      stats.cameras,
                      stats.mesh_instances,
                      stats.materials);
+        saved_scene_checkpoint = bytes;
+        has_saved_scene_checkpoint = true;
         set_authoring_dirty(false);
         return true;
     }
@@ -1623,7 +2480,7 @@ struct PlayerApp {
         if (!edit_history.undo(command))
             return false;
         label = std::string{command.label()};
-        mark_authoring_dirty();
+        set_authoring_dirty(!active_scene_matches_saved_checkpoint());
         if (app)
             editor::publish_web_scene_hierarchy(app->active_scene());
         return true;
@@ -1634,7 +2491,7 @@ struct PlayerApp {
         if (!edit_history.redo(command))
             return false;
         label = std::string{command.label()};
-        mark_authoring_dirty();
+        set_authoring_dirty(!active_scene_matches_saved_checkpoint());
         if (app)
             editor::publish_web_scene_hierarchy(app->active_scene());
         return true;
@@ -1656,10 +2513,294 @@ struct PlayerApp {
         audio::play_chiptune(audio::boot_chime_song());
     }
 
+    Entity find_fps_controller_entity(scene::Scene& scene) {
+        auto& registry = scene.registry();
+        if (fps_controlled_entity.valid() && registry.alive(fps_controlled_entity) &&
+            registry.get<scene::PlayerControllerComponent>(fps_controlled_entity)) {
+            return fps_controlled_entity;
+        }
+
+        Entity fallback{};
+        const u32 total = registry.snapshot_live_entities(std::span<Entity>{});
+        std::vector<Entity> entities(total);
+        registry.snapshot_live_entities(entities);
+        for (Entity entity : entities) {
+            if (!registry.get<scene::PlayerControllerComponent>(entity))
+                continue;
+            if (!fallback.valid())
+                fallback = entity;
+            const auto* tag = registry.get<scene::GameplayTagComponent>(entity);
+            if (tag && tag->role == scene::GameplayRole::PlayerController)
+                return entity;
+        }
+        return fallback;
+    }
+
+    Entity find_child_camera(scene::Scene& scene, Entity parent) const {
+        if (!parent.valid())
+            return {};
+        const scene::SceneNode parent_node = scene.node(parent);
+        if (!parent_node.valid())
+            return {};
+        auto& registry = scene.registry();
+        const u32 total = registry.snapshot_live_entities(std::span<Entity>{});
+        std::vector<Entity> entities(total);
+        registry.snapshot_live_entities(entities);
+        for (Entity entity : entities) {
+            if (!registry.get<scene::CameraComponent>(entity))
+                continue;
+            const scene::SceneNode node = scene.node(entity);
+            if (node.valid() && scene.graph().parent(node).raw == parent_node.raw)
+                return entity;
+        }
+        return {};
+    }
+
+    void update_fps_player(f32 dt) {
+        if (editor::current_mode() != editor::Mode::Play || editor::overlays_capturing())
+            return;
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        const platform::Input* input = platform::input();
+        if (!scene || !input || dt <= 0.0f)
+            return;
+
+        Entity player = find_fps_controller_entity(*scene);
+        if (!player.valid())
+            return;
+        auto& registry = scene->registry();
+        const auto* controller = registry.get<scene::PlayerControllerComponent>(player);
+        if (!controller)
+            return;
+        const scene::PlayerControllerComponent cfg =
+            scene::sanitize_player_controller(*controller);
+
+        scene::LocalTransform local = scene->transform(player);
+        if (fps_controlled_entity.raw != player.raw) {
+            const math::Vec3 euler = rotation_degrees(local.rotation);
+            fps_yaw = euler.y * math::kDegToRad;
+            fps_pitch = 0.0f;
+            fps_controlled_entity = player;
+        }
+
+        const platform::MouseState& mouse = input->mouse();
+        fps_yaw += mouse.dx * cfg.mouse_sensitivity * 0.01f;
+        fps_pitch = std::clamp(fps_pitch + mouse.dy * cfg.mouse_sensitivity * 0.01f,
+                               -math::kHalfPi + 0.02f,
+                               math::kHalfPi - 0.02f);
+
+        const math::Vec3 forward{std::sin(fps_yaw), 0.0f, -std::cos(fps_yaw)};
+        const math::Vec3 right{std::cos(fps_yaw), 0.0f, std::sin(fps_yaw)};
+        math::Vec3 intent{};
+        if (input->key_down(platform::KeyCode::W))
+            intent = math::add(intent, forward);
+        if (input->key_down(platform::KeyCode::S))
+            intent = math::sub(intent, forward);
+        if (input->key_down(platform::KeyCode::D))
+            intent = math::add(intent, right);
+        if (input->key_down(platform::KeyCode::A))
+            intent = math::sub(intent, right);
+        if (input->key_down(platform::KeyCode::Space))
+            intent.y += 1.0f;
+        if (input->key_down(platform::KeyCode::LeftCtrl) ||
+            input->key_down(platform::KeyCode::RightCtrl)) {
+            intent.y -= 1.0f;
+        }
+
+        const f32 intent_len = std::sqrt(math::dot(intent, intent));
+        if (intent_len > 0.0001f) {
+            const bool running = input->key_down(platform::KeyCode::LeftShift) ||
+                                 input->key_down(platform::KeyCode::RightShift);
+            const f32 speed = running ? cfg.run_speed : cfg.walk_speed;
+            local.translation =
+                math::add(local.translation, math::mul(intent, (speed * dt) / intent_len));
+        }
+        local.rotation = math::quat_normalize(math::quat_from_euler(0.0f, fps_yaw, 0.0f));
+        (void)scene->set_transform(player, local);
+
+        const Entity camera = find_child_camera(*scene, player);
+        if (camera.valid()) {
+            scene::LocalTransform camera_local = scene->transform(camera);
+            camera_local.translation = {0.0f, cfg.height, 0.0f};
+            camera_local.rotation =
+                math::quat_normalize(math::quat_from_euler(fps_pitch, 0.0f, 0.0f));
+            (void)scene->set_transform(camera, camera_local);
+            scene->set_active_camera(camera);
+        }
+    }
+
+    void update_editor_viewport_camera(f32 dt) {
+        if (editor::current_mode() != editor::Mode::Edit || editor::overlays_capturing())
+            return;
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        const platform::Input* input = platform::input();
+        if (!scene || !input || dt <= 0.0f)
+            return;
+
+        const Entity camera = scene->active_camera_entity();
+        if (!camera.valid() || !scene->registry().alive(camera) ||
+            !scene->registry().get<scene::CameraComponent>(camera)) {
+            editor_camera_entity = {};
+            return;
+        }
+
+        scene::LocalTransform local = scene->transform(camera);
+        if (editor_camera_entity.raw != camera.raw) {
+            const math::Vec3 euler = math::quat_to_euler(math::quat_normalize(local.rotation));
+            editor_camera_pitch = euler.x;
+            editor_camera_yaw = euler.y;
+            editor_camera_entity = camera;
+        }
+
+        if (input->key_pressed(platform::KeyCode::F))
+            focus_editor_camera_on_selection(*scene, camera, local);
+
+        const platform::MouseState& mouse = input->mouse();
+        if (!mouse.right)
+            return;
+
+        bool changed = false;
+        constexpr f32 kLookSensitivity = 0.0065f;
+        if (std::fabs(mouse.dx) > 0.0001f || std::fabs(mouse.dy) > 0.0001f) {
+            editor_camera_yaw += mouse.dx * kLookSensitivity;
+            editor_camera_pitch = std::clamp(editor_camera_pitch + mouse.dy * kLookSensitivity,
+                                             -math::kHalfPi + 0.02f,
+                                             math::kHalfPi - 0.02f);
+            changed = true;
+        }
+
+        const math::Quat rotation = math::quat_normalize(
+            math::quat_from_euler(editor_camera_pitch, editor_camera_yaw, 0.0f));
+        const math::Vec3 forward =
+            math::normalize(math::quat_rotate(rotation, math::Vec3{0.0f, 0.0f, -1.0f}));
+        const math::Vec3 right =
+            math::normalize(math::quat_rotate(rotation, math::Vec3{1.0f, 0.0f, 0.0f}));
+        constexpr math::Vec3 kWorldUp{0.0f, 1.0f, 0.0f};
+        math::Vec3 intent{};
+        if (input->key_down(platform::KeyCode::W))
+            intent = math::add(intent, forward);
+        if (input->key_down(platform::KeyCode::S))
+            intent = math::sub(intent, forward);
+        if (input->key_down(platform::KeyCode::D))
+            intent = math::add(intent, right);
+        if (input->key_down(platform::KeyCode::A))
+            intent = math::sub(intent, right);
+        if (input->key_down(platform::KeyCode::E))
+            intent = math::add(intent, kWorldUp);
+        if (input->key_down(platform::KeyCode::Q))
+            intent = math::sub(intent, kWorldUp);
+
+        const f32 intent_len = std::sqrt(math::dot(intent, intent));
+        if (intent_len > 0.0001f) {
+            const bool fast = input->key_down(platform::KeyCode::LeftShift) ||
+                              input->key_down(platform::KeyCode::RightShift);
+            constexpr f32 kBaseSpeed = 5.5f;
+            constexpr f32 kFastSpeed = 16.0f;
+            const f32 speed = fast ? kFastSpeed : kBaseSpeed;
+            local.translation = math::add(local.translation,
+                                          math::mul(intent, (speed * dt) / intent_len));
+            changed = true;
+        }
+
+        if (!changed)
+            return;
+
+        local.rotation = rotation;
+        if (scene->set_transform(camera, local)) {
+            mark_authoring_dirty();
+            editor::publish_web_scene_hierarchy(scene);
+        }
+    }
+
+    void focus_editor_camera_on_selection(scene::Scene& scene,
+                                          Entity camera,
+                                          scene::LocalTransform& camera_local) {
+        const Entity selected = editor::selection::selected_scene_entity();
+        if (!selected.valid() || !scene.registry().alive(selected))
+            return;
+
+        scene.update_transforms();
+
+        math::Vec3 target{};
+        f32 radius = 1.0f;
+        bool found_bounds = false;
+        pick_render_items.clear();
+        scene.gather_render_items(pick_render_items);
+        for (const scene::SceneRenderItem& item : pick_render_items) {
+            if (item.entity.raw != selected.raw || math::is_empty(item.world_bounds))
+                continue;
+            target = math::center(item.world_bounds);
+            radius = std::max(0.35f, math::length(math::extents(item.world_bounds)));
+            found_bounds = true;
+            break;
+        }
+
+        if (!found_bounds) {
+            if (const auto* node = scene.registry().get<scene::SceneNodeComponent>(selected);
+                node && scene.graph().alive(node->node)) {
+                const math::Mat4 world = scene.graph().world_matrix(node->node);
+                target = math::Vec3{world.m[12], world.m[13], world.m[14]};
+            } else {
+                target = scene.transform(selected).translation;
+            }
+        }
+
+        const math::Quat current_rotation = math::quat_normalize(camera_local.rotation);
+        math::Vec3 forward =
+            math::normalize(math::quat_rotate(current_rotation, math::Vec3{0.0f, 0.0f, -1.0f}));
+        if (math::length(forward) <= 0.0f)
+            forward = math::Vec3{0.0f, 0.0f, -1.0f};
+
+        const f32 distance = std::clamp(radius * 3.0f, 2.5f, 40.0f);
+        camera_local.translation = math::sub(target, math::mul(forward, distance));
+        camera_local.rotation = math::quat_normalize(
+            scene::camera_rotation_towards(camera_local.translation, target, {0.0f, 1.0f, 0.0f}));
+
+        const math::Vec3 euler = math::quat_to_euler(camera_local.rotation);
+        editor_camera_pitch = euler.x;
+        editor_camera_yaw = euler.y;
+        editor_camera_entity = camera;
+
+        if (scene.set_transform(camera, camera_local)) {
+            mark_authoring_dirty();
+            editor::publish_web_scene_hierarchy(&scene);
+        }
+    }
+
+    void sync_loaded_material_texture_names(const scene::SceneLoadResult& result) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return;
+        const scene::SceneFileView& view = scene_load.loaded_file().view;
+        for (usize i = 0u; i < view.mesh_instances.size() && i < result.mesh_entities.size();
+             ++i) {
+            const Entity entity = result.mesh_entities[i];
+            if (!entity.valid() || !scene->registry().alive(entity))
+                continue;
+            const auto* renderable = scene->registry().get<scene::RenderableComponent>(entity);
+            if (!renderable)
+                continue;
+            const scene::SceneFileMeshInstance& mesh = view.mesh_instances[i];
+            const std::string_view material_name =
+                scene::scene_file_string(view, mesh.material_name_offset);
+            if (material_name.empty())
+                continue;
+            for (const scene::SceneFileMaterial& material : view.materials) {
+                if (scene::scene_file_string(view, material.name_offset) != material_name)
+                    continue;
+                const std::string_view texture_name =
+                    scene::scene_file_string(view, material.base_color_texture_name_offset);
+                editor::set_web_material_texture_name(renderable->material.raw, texture_name);
+                break;
+            }
+        }
+    }
+
     void started(app::WindowApp& app_ref, const PlayerArgs& args) {
         app = &app_ref;
         g_active_arcade = this;
         editor::ensure_web_panel_commands_registered();
+        editor::ipc::Server::Get().set_selection_component_edit_handler(
+            apply_active_arcade_component_edit);
         register_arcade_console_commands();
         platform::runtime_config::register_console_commands();
         platform::runtime_config::register_console_archive_autosave();
@@ -1670,6 +2811,13 @@ struct PlayerApp {
             .on_ready([this](const scene::SceneLoadResult& result) {
                 if (app && load_target_scene)
                     app->set_scene(*load_target_scene);
+                sync_loaded_material_texture_names(result);
+                sync_scene_names_to_web_labels(app ? app->active_scene() : nullptr);
+                remember_active_scene_as_saved_checkpoint();
+                set_authoring_dirty(false);
+                if (app)
+                    editor::publish_web_scene_hierarchy(app->active_scene());
+                loading_scene_path.clear();
                 show_idle_panel = false;
                 PSY_LOG_INFO("psynder_arcade: scene ready ({} mesh instances)",
                              result.instantiate.mesh_instances);
@@ -1679,6 +2827,12 @@ struct PlayerApp {
                 idle_status.append(error.data(), error.size());
                 show_idle_panel = true;
                 load_target_scene = nullptr;
+                has_saved_scene_checkpoint = false;
+                saved_scene_checkpoint.clear();
+                set_authoring_dirty(false);
+                editor::publish_web_scene_load_failed(loading_scene_path, error);
+                editor::publish_web_scene_hierarchy(app ? app->active_scene() : nullptr);
+                loading_scene_path.clear();
                 PSY_LOG_ERROR("psynder_arcade: {}", error);
             });
 
@@ -1695,7 +2849,11 @@ struct PlayerApp {
     void frame(app::WindowFrameContextT<PlayerArgs>& ctx, app::WindowFrameCacheReady& cr) {
         if (scene_load.pending() && load_target_scene)
             ctx.app.update_scene_load(scene_load, *load_target_scene);
+        update_fps_player(ctx.dt);
         (void)ctx.app.engine_frame_update(ctx.dt);
+        update_editor_viewport_camera(ctx.dt);
+        handle_editor_undo_redo_keys();
+        handle_editor_delete_key();
         if (show_idle_panel)
             draw_attract_mode(ctx.framebuffer, ctx.seconds, idle_status);
         (void)cr;
@@ -1727,6 +2885,187 @@ struct PlayerApp {
         };
         out_depth = clip.w;
         return true;
+    }
+
+    static bool project_to_screen_unclipped(const math::Vec3& world,
+                                            const math::Mat4& view_projection,
+                                            math::Vec2 framebuffer_size,
+                                            math::Vec2& out,
+                                            f32& out_depth) noexcept {
+        const math::Vec4 clip =
+            math::mul(view_projection, math::Vec4{world.x, world.y, world.z, 1.0f});
+        if (clip.w <= 0.0001f)
+            return false;
+        const f32 ndc_x = clip.x / clip.w;
+        const f32 ndc_y = clip.y / clip.w;
+        out = {
+            (ndc_x * 0.5f + 0.5f) * framebuffer_size.x,
+            (1.0f - (ndc_y * 0.5f + 0.5f)) * framebuffer_size.y,
+        };
+        out_depth = clip.w;
+        return true;
+    }
+
+    static bool project_bounds_to_screen_rect(const math::Aabb& bounds,
+                                              const math::Mat4& view_projection,
+                                              math::Vec2 framebuffer_size,
+                                              math::Vec2& out_min,
+                                              math::Vec2& out_max,
+                                              f32& out_depth) noexcept {
+        const std::array<math::Vec3, 8> corners{{
+            {bounds.min.x, bounds.min.y, bounds.min.z},
+            {bounds.max.x, bounds.min.y, bounds.min.z},
+            {bounds.min.x, bounds.max.y, bounds.min.z},
+            {bounds.max.x, bounds.max.y, bounds.min.z},
+            {bounds.min.x, bounds.min.y, bounds.max.z},
+            {bounds.max.x, bounds.min.y, bounds.max.z},
+            {bounds.min.x, bounds.max.y, bounds.max.z},
+            {bounds.max.x, bounds.max.y, bounds.max.z},
+        }};
+
+        math::Vec2 rect_min{std::numeric_limits<f32>::infinity(),
+                            std::numeric_limits<f32>::infinity()};
+        math::Vec2 rect_max{-std::numeric_limits<f32>::infinity(),
+                            -std::numeric_limits<f32>::infinity()};
+        f32 depth_sum = 0.0f;
+        u32 projected = 0u;
+        for (const math::Vec3& corner : corners) {
+            math::Vec2 screen{};
+            f32 depth = 0.0f;
+            if (!project_to_screen_unclipped(corner, view_projection, framebuffer_size, screen, depth))
+                continue;
+            rect_min.x = std::min(rect_min.x, screen.x);
+            rect_min.y = std::min(rect_min.y, screen.y);
+            rect_max.x = std::max(rect_max.x, screen.x);
+            rect_max.y = std::max(rect_max.y, screen.y);
+            depth_sum += depth;
+            ++projected;
+        }
+        if (projected == 0u)
+            return false;
+
+        out_min = rect_min;
+        out_max = rect_max;
+        out_depth = depth_sum / static_cast<f32>(projected);
+        return true;
+    }
+
+    struct ViewportPickRay {
+        math::Vec3 origin{};
+        math::Vec3 dir{0.0f, 0.0f, -1.0f};
+    };
+
+    static bool unproject_ndc(const math::Mat4& inv_view_projection,
+                              f32 ndc_x,
+                              f32 ndc_y,
+                              f32 ndc_z,
+                              math::Vec3& out) noexcept {
+        const math::Vec4 world =
+            math::mul(inv_view_projection, math::Vec4{ndc_x, ndc_y, ndc_z, 1.0f});
+        if (std::fabs(world.w) <= 0.000001f)
+            return false;
+        const f32 inv_w = 1.0f / world.w;
+        out = {world.x * inv_w, world.y * inv_w, world.z * inv_w};
+        return std::isfinite(out.x) && std::isfinite(out.y) && std::isfinite(out.z);
+    }
+
+    static std::optional<ViewportPickRay> viewport_pick_ray(
+        const scene::SceneCameraView& camera,
+        const platform::MouseState& mouse,
+        math::Vec2 framebuffer_size) noexcept {
+        if (framebuffer_size.x <= 0.0f || framebuffer_size.y <= 0.0f)
+            return std::nullopt;
+
+        const f32 ndc_x = (mouse.x / framebuffer_size.x) * 2.0f - 1.0f;
+        const f32 ndc_y = 1.0f - (mouse.y / framebuffer_size.y) * 2.0f;
+        const math::Mat4 view_projection = math::mul(camera.projection, camera.view);
+        const f32 det = math::determinant(view_projection);
+        if (std::fabs(det) <= 0.0000001f || !std::isfinite(det))
+            return std::nullopt;
+        const math::Mat4 inv_view_projection = math::inverse(view_projection);
+
+        math::Vec3 near_world{};
+        math::Vec3 far_world{};
+        if (!unproject_ndc(inv_view_projection, ndc_x, ndc_y, -1.0f, near_world) ||
+            !unproject_ndc(inv_view_projection, ndc_x, ndc_y, 1.0f, far_world)) {
+            return std::nullopt;
+        }
+
+        const math::Vec3 delta = math::sub(far_world, near_world);
+        const f32 len = math::length(delta);
+        if (len <= 0.000001f || !std::isfinite(len))
+            return std::nullopt;
+        return ViewportPickRay{near_world, math::mul(delta, 1.0f / len)};
+    }
+
+    static bool ray_intersects_aabb(const ViewportPickRay& ray,
+                                    const math::Aabb& bounds,
+                                    f32& out_t) noexcept {
+        f32 t_min = 0.0f;
+        f32 t_max = std::numeric_limits<f32>::infinity();
+        const f32 origin[3] = {ray.origin.x, ray.origin.y, ray.origin.z};
+        const f32 dir[3] = {ray.dir.x, ray.dir.y, ray.dir.z};
+        const f32 mins[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
+        const f32 maxs[3] = {bounds.max.x, bounds.max.y, bounds.max.z};
+
+        for (u32 axis = 0u; axis < 3u; ++axis) {
+            if (std::fabs(dir[axis]) <= 0.0000001f) {
+                if (origin[axis] < mins[axis] || origin[axis] > maxs[axis])
+                    return false;
+                continue;
+            }
+
+            f32 t1 = (mins[axis] - origin[axis]) / dir[axis];
+            f32 t2 = (maxs[axis] - origin[axis]) / dir[axis];
+            if (t1 > t2)
+                std::swap(t1, t2);
+            t_min = std::max(t_min, t1);
+            t_max = std::min(t_max, t2);
+            if (t_min > t_max)
+                return false;
+        }
+
+        out_t = t_min;
+        return std::isfinite(out_t);
+    }
+
+    static f32 projected_bounds_pick_score(const math::Aabb& bounds,
+                                           const math::Mat4& view_projection,
+                                           const platform::MouseState& mouse,
+                                           math::Vec2 framebuffer_size) noexcept {
+        math::Vec2 rect_min{};
+        math::Vec2 rect_max{};
+        f32 depth = 0.0f;
+        if (!project_bounds_to_screen_rect(bounds,
+                                           view_projection,
+                                           framebuffer_size,
+                                           rect_min,
+                                           rect_max,
+                                           depth)) {
+            return std::numeric_limits<f32>::infinity();
+        }
+
+        constexpr f32 kMinPickSize = 18.0f;
+        constexpr f32 kPickPad = 8.0f;
+        const f32 width = rect_max.x - rect_min.x;
+        const f32 height = rect_max.y - rect_min.y;
+        const f32 pad_x = std::max(kPickPad, (kMinPickSize - width) * 0.5f);
+        const f32 pad_y = std::max(kPickPad, (kMinPickSize - height) * 0.5f);
+        rect_min.x -= pad_x;
+        rect_min.y -= pad_y;
+        rect_max.x += pad_x;
+        rect_max.y += pad_y;
+
+        if (mouse.x < rect_min.x || mouse.x > rect_max.x || mouse.y < rect_min.y ||
+            mouse.y > rect_max.y) {
+            return std::numeric_limits<f32>::infinity();
+        }
+
+        const math::Vec2 center{(rect_min.x + rect_max.x) * 0.5f,
+                                (rect_min.y + rect_max.y) * 0.5f};
+        const f32 dx = center.x - mouse.x;
+        const f32 dy = center.y - mouse.y;
+        return std::sqrt(dx * dx + dy * dy) + depth * 0.04f;
     }
 
     static f32 framebuffer_aspect(const render::Framebuffer& fb) noexcept {
@@ -1767,47 +3106,157 @@ struct PlayerApp {
         }
     }
 
+    std::optional<Entity> pick_scene_entity_at(scene::Scene& scene,
+                                               const scene::SceneCameraView& camera,
+                                               const platform::MouseState& mouse,
+                                               math::Vec2 framebuffer_size) {
+        const math::Mat4 view_projection = math::mul(camera.projection, camera.view);
+        const std::optional<ViewportPickRay> ray = viewport_pick_ray(camera, mouse, framebuffer_size);
+        pick_render_items.clear();
+        scene.gather_render_items(pick_render_items);
+
+        std::optional<Entity> best_ray_entity;
+        f32 best_ray_t = std::numeric_limits<f32>::infinity();
+        std::optional<Entity> best_projected_entity;
+        f32 best_projected_score = std::numeric_limits<f32>::infinity();
+        for (const scene::SceneRenderItem& item : pick_render_items) {
+            if (!item.entity.valid() || math::is_empty(item.world_bounds))
+                continue;
+
+            if (ray) {
+                f32 t = 0.0f;
+                if (ray_intersects_aabb(*ray, item.world_bounds, t) && t < best_ray_t) {
+                    best_ray_t = t;
+                    best_ray_entity = item.entity;
+                }
+            }
+
+            const f32 projected_score = projected_bounds_pick_score(item.world_bounds,
+                                                                    view_projection,
+                                                                    mouse,
+                                                                    framebuffer_size);
+            if (projected_score < best_projected_score) {
+                best_projected_score = projected_score;
+                best_projected_entity = item.entity;
+            }
+        }
+        return best_ray_entity ? best_ray_entity : best_projected_entity;
+    }
+
+    void handle_viewport_selection_click(scene::Scene& scene,
+                                         const scene::SceneCameraView& camera,
+                                         const platform::MouseState& mouse,
+                                         math::Vec2 framebuffer_size,
+                                         bool gizmo_hot) {
+        const bool left_pressed = mouse.left && !viewport_mouse_left_prev;
+        viewport_mouse_left_prev = mouse.left;
+        if (!left_pressed || gizmo_hot)
+            return;
+
+        if (const std::optional<Entity> picked =
+                pick_scene_entity_at(scene, camera, mouse, framebuffer_size)) {
+            editor::selection::select_scene_entity(&scene, *picked);
+        } else {
+            editor::selection::clear_selection();
+        }
+        editor::publish_web_scene_hierarchy(&scene);
+    }
+
+    void handle_editor_delete_key() {
+        if (editor::current_mode() != editor::Mode::Edit || editor::overlays_capturing())
+            return;
+        const platform::Input* input = platform::input();
+        if (!input || !input->key_pressed(platform::KeyCode::Delete))
+            return;
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        const Entity selected = editor::selection::selected_scene_entity();
+        if (!scene || !selected.valid() || !scene->registry().alive(selected))
+            return;
+        finish_gizmo_drag(false);
+        (void)delete_entity(selected);
+    }
+
+    void handle_editor_undo_redo_keys() {
+        if (editor::current_mode() != editor::Mode::Edit || editor::overlays_capturing())
+            return;
+        const platform::Input* input = platform::input();
+        if (!input)
+            return;
+        const bool command_down = input->key_down(platform::KeyCode::LeftCtrl) ||
+                                  input->key_down(platform::KeyCode::RightCtrl) ||
+                                  input->key_down(platform::KeyCode::LeftSuper) ||
+                                  input->key_down(platform::KeyCode::RightSuper);
+        if (!command_down)
+            return;
+        const bool shift_down = input->key_down(platform::KeyCode::LeftShift) ||
+                                input->key_down(platform::KeyCode::RightShift);
+        std::string label;
+        if (input->key_pressed(platform::KeyCode::Z)) {
+            if (shift_down)
+                (void)redo_editor_command(label);
+            else
+                (void)undo_editor_command(label);
+        } else if (input->key_pressed(platform::KeyCode::Y)) {
+            (void)redo_editor_command(label);
+        }
+    }
+
     void draw_viewport_gizmo_with_undo(app::WindowFrameContextT<PlayerArgs>& ctx) {
         if (editor::current_mode() != editor::Mode::Edit || editor::overlays_capturing()) {
             finish_gizmo_drag(false);
+            viewport_mouse_left_prev = false;
             return;
         }
         scene::Scene* scene = ctx.app.active_scene();
-        const Entity selected = editor::selection::selected_scene_entity();
-        if (!scene || !selected.valid() || !scene->registry().alive(selected)) {
+        if (!scene) {
             finish_gizmo_drag(false);
+            viewport_mouse_left_prev = false;
             return;
         }
 
         scene::SceneCameraView camera{};
         if (!scene->active_camera_view(framebuffer_aspect(ctx.framebuffer), camera)) {
             finish_gizmo_drag(false);
+            viewport_mouse_left_prev = false;
             return;
         }
 
         const platform::Input* input = platform::input();
         if (!input) {
             finish_gizmo_drag(false);
+            viewport_mouse_left_prev = false;
             return;
         }
         const platform::MouseState mouse =
             platform::mouse_to_framebuffer_space(input->mouse(),
                                                  ctx.framebuffer.width,
                                                  ctx.framebuffer.height);
+        const math::Vec2 framebuffer_size{static_cast<f32>(ctx.framebuffer.width),
+                                          static_cast<f32>(ctx.framebuffer.height)};
         const math::Mat4 view_projection = math::mul(camera.projection, camera.view);
+        const Entity selected = editor::selection::selected_scene_entity();
+        const bool selected_alive = selected.valid() && scene->registry().alive(selected);
         ui::imm::begin_frame(ctx.framebuffer);
-        const editor::viewport::GizmoResult result = editor::viewport::draw_apply_gizmo(
-            editor::viewport::GizmoFrame{
-                .scene = scene,
-                .selected_entity = selected,
-                .view_projection = view_projection,
-                .mouse = mouse,
-                .framebuffer_size = {static_cast<f32>(ctx.framebuffer.width),
-                                     static_cast<f32>(ctx.framebuffer.height)},
-                .mode = editor::viewport::GizmoMode::Translate,
-                .apply_transform = true,
-            });
+        ui::imm::set_input({mouse.x, mouse.y}, mouse.left);
+        editor::viewport::GizmoResult result{};
+        if (selected_alive) {
+            result = editor::viewport::draw_apply_gizmo(
+                editor::viewport::GizmoFrame{
+                    .scene = scene,
+                    .selected_entity = selected,
+                    .view_projection = view_projection,
+                    .mouse = mouse,
+                    .framebuffer_size = framebuffer_size,
+                    .mode = editor::viewport::GizmoMode::Translate,
+                    .apply_transform = true,
+                },
+                &gizmo_state);
+        } else {
+            finish_gizmo_drag(false);
+        }
         ui::imm::end_frame();
+
+        handle_viewport_selection_click(*scene, camera, mouse, framebuffer_size, result.hot);
 
         if (result.transform.valid) {
             if (!gizmo_drag.active || gizmo_drag.entity != result.transform.entity) {
@@ -1869,6 +3318,12 @@ struct PlayerApp {
     }
 
     void stopped(app::WindowApp&) {
+        // Tear the editor IPC server down deterministically, while Console /
+        // Scene / the registries it touches are still alive. Relying on the
+        // singleton's static-destruction ~Server() would join worker threads
+        // only after other singletons may already be gone (UAF). Safe no-op if
+        // the server was never started.
+        editor::ipc::Server::Get().stop();
         if (audio_started) {
             audio::stop_chiptune();
             audio::Engine::Get().stop();
@@ -1985,10 +3440,237 @@ struct PlayerApp {
         return name;
     }
 
+    static std::string_view save_material_texture_name(
+        void*,
+        render::MaterialId material,
+        const render::MaterialDesc&) {
+        static thread_local std::string name;
+        name = editor::web_material_texture_name(material.raw);
+        return name;
+    }
+
     static std::string_view save_mesh_group_name(void*, Entity entity, scene::SceneNode) {
         static thread_local std::string name;
         name = editor::web_entity_label(entity);
         return name;
+    }
+
+    static render::MaterialDesc material_desc_from_scene_file(
+        const scene::SceneFileMaterial& material_file) {
+        render::MaterialDesc material{};
+        material.albedo_rgba8 = material_file.albedo_rgba8;
+        material.alpha_cutoff = material_file.alpha_cutoff;
+        material.reflectivity = material_file.reflectivity;
+        material.roughness = material_file.roughness;
+        material.emissive = material_file.emissive;
+        material.winding = material_file.winding;
+        material.blend = material_file.blend;
+        material.raster_shadow_mode = material_file.raster_shadow_mode;
+        material.shadow_alpha = material_file.shadow_alpha;
+        material.shadow_opacity = material_file.shadow_opacity;
+        material.shadow_softness = material_file.shadow_softness;
+        material.flags = material_file.flags;
+        return material;
+    }
+
+    render::MeshId resolve_snapshot_mesh(std::string_view mesh_name) {
+        if (!app)
+            return {};
+        render::RenderingSystem& renderer = app->rendering_system();
+        if (mesh_name == "builtin.unit_cube")
+            return renderer.builtin_mesh(render::BuiltInMesh::UnitCube);
+        if (mesh_name == "builtin.textured_triangle")
+            return renderer.builtin_mesh(render::BuiltInMesh::TexturedTriangle);
+        if (mesh_name == "builtin.pyramid")
+            return renderer.builtin_mesh(render::BuiltInMesh::Pyramid);
+        if (mesh_name == "builtin.cone")
+            return renderer.builtin_mesh(render::BuiltInMesh::Cone);
+        if (mesh_name == "builtin.uv_sphere")
+            return renderer.builtin_mesh(render::BuiltInMesh::UvSphere);
+        if (mesh_name == "builtin.geodesic_sphere")
+            return renderer.builtin_mesh(render::BuiltInMesh::GeodesicSphere);
+        return {};
+    }
+
+    std::optional<SceneSnapshot> capture_scene_snapshot() {
+        SceneSnapshot snapshot{};
+        snapshot.selected_raw = editor::selection::selected_scene_entity_raw();
+        snapshot.primitive_spawn_count = primitive_spawn_count;
+        snapshot.show_idle_panel = show_idle_panel;
+        snapshot.idle_status = idle_status;
+
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return snapshot;
+
+        sync_web_labels_to_scene_names(scene);
+        snapshot.has_scene = true;
+        std::string error;
+        scene::SceneFileSaveStats stats{};
+        const scene::SceneFileSaveHooks hooks{
+            .user = this,
+            .mesh_name = &PlayerApp::save_mesh_name,
+            .material_name = &PlayerApp::save_material_name,
+            .material_base_color_texture_name = &PlayerApp::save_material_texture_name,
+            .material_preset_name = nullptr,
+            .mesh_instance_group_name = &PlayerApp::save_mesh_group_name,
+        };
+        if (!scene::save_scene_file(*scene, hooks, snapshot.bytes, &stats, &error)) {
+            PSY_LOG_WARN("psynder_arcade: could not capture editor undo snapshot: {}", error);
+            return std::nullopt;
+        }
+        return snapshot;
+    }
+
+    bool restore_scene_snapshot(const SceneSnapshot& snapshot) {
+        if (!app)
+            return false;
+
+        finish_gizmo_drag(false);
+        editor::viewport::cancel_gizmo_drag(gizmo_state);
+        app->reset_scenes();
+        scene::EcsRegistry::Get().clear();
+        editor::clear_web_scene_authoring_state();
+        load_target_scene = nullptr;
+        gathered_lights.clear();
+        pick_render_items.clear();
+        authored_textures.clear();
+        primitive_spawn_count = snapshot.primitive_spawn_count;
+        show_idle_panel = snapshot.show_idle_panel;
+        idle_status = snapshot.idle_status;
+
+        if (!snapshot.has_scene) {
+            editor::publish_web_scene_hierarchy(nullptr);
+            return true;
+        }
+
+        scene::SceneFileView view{};
+        std::string error;
+        if (!scene::parse_scene_file(
+                std::span<const u8>{snapshot.bytes.data(), snapshot.bytes.size()},
+                view,
+                &error)) {
+            PSY_LOG_WARN("psynder_arcade: could not parse editor undo snapshot: {}", error);
+            return false;
+        }
+
+        scene::Scene& scene = app->create_active_scene();
+        scene.prewarm_capacity(scene::scene_file_prewarm_config(view));
+        app->reserve_scene_capacity(static_cast<u32>(view.mesh_instances.size()), 1u);
+
+        std::vector<scene::SceneMaterialBinding> material_bindings;
+        material_bindings.reserve(view.materials.size());
+        for (const scene::SceneFileMaterial& material_file : view.materials) {
+            const std::string_view material_name =
+                ::psynder::scene::scene_file_string(view, material_file.name_offset);
+            if (material_name.empty())
+                continue;
+            const std::string_view texture_name =
+                ::psynder::scene::scene_file_string(
+                    view, material_file.base_color_texture_name_offset);
+            render::MaterialDesc material_desc = material_desc_from_scene_file(material_file);
+            material_desc.base_color = resolve_authoring_texture(texture_name);
+            const render::MaterialId material =
+                scene.materials().create(material_desc);
+            editor::set_web_material_texture_name(material.raw, texture_name);
+            material_bindings.push_back(scene::SceneMaterialBinding{
+                .material_name = material_name,
+                .material = material,
+            });
+        }
+
+        std::vector<scene::SceneMeshBinding> mesh_bindings;
+        mesh_bindings.reserve(view.mesh_instances.size());
+        for (const scene::SceneFileMeshInstance& mesh_file : view.mesh_instances) {
+            const std::string_view mesh_name =
+                ::psynder::scene::scene_file_string(view, mesh_file.mesh_name_offset);
+            if (mesh_name.empty())
+                continue;
+            const auto existing = std::find_if(mesh_bindings.begin(),
+                                               mesh_bindings.end(),
+                                               [&](const scene::SceneMeshBinding& binding) {
+                                                   return binding.mesh_name == mesh_name;
+                                               });
+            if (existing != mesh_bindings.end())
+                continue;
+            const render::MeshId mesh = resolve_snapshot_mesh(mesh_name);
+            if (mesh.valid()) {
+                mesh_bindings.push_back(scene::SceneMeshBinding{
+                    .mesh_name = mesh_name,
+                    .mesh = mesh,
+                    .material = {},
+                });
+            }
+        }
+
+        std::vector<Entity> mesh_entities(view.mesh_instances.size());
+        scene::SceneFileInstantiateResult result{};
+        const bool restore_deferred = scene.structural_deferred();
+        scene.set_structural_deferred(false);
+        result = ::psynder::scene::instantiate_scene_file(scene,
+                                                          view,
+                                                          mesh_bindings,
+                                                          material_bindings,
+                                                          mesh_entities);
+        scene.set_structural_deferred(restore_deferred);
+        if (result.missing_mesh_bindings != 0u || result.missing_material_bindings != 0u) {
+            PSY_LOG_WARN("psynder_arcade: restored snapshot with {} missing mesh and {} missing material binding(s)",
+                         result.missing_mesh_bindings,
+                         result.missing_material_bindings);
+        }
+
+        sync_scene_names_to_web_labels(&scene);
+        const Entity selected{snapshot.selected_raw};
+        if (selected.valid() && scene.registry().alive(selected))
+            editor::selection::select_scene_entity(&scene, selected);
+        else
+            editor::selection::clear_selection();
+        editor::publish_web_scene_hierarchy(&scene);
+        return true;
+    }
+
+    void push_snapshot_history_after(std::string label,
+                                     const std::optional<SceneSnapshot>& before) {
+        if (replaying_history || !before)
+            return;
+        std::optional<SceneSnapshot> after = capture_scene_snapshot();
+        if (!after)
+            return;
+        edit_history.push_callback(
+            std::move(label),
+            [this, snapshot = *before]() {
+                replaying_history = true;
+                (void)restore_scene_snapshot(snapshot);
+                replaying_history = false;
+            },
+            [this, snapshot = *after]() {
+                replaying_history = true;
+                (void)restore_scene_snapshot(snapshot);
+                replaying_history = false;
+            });
+    }
+
+    bool active_scene_matches_saved_checkpoint() {
+        if (!has_saved_scene_checkpoint)
+            return false;
+        const std::optional<SceneSnapshot> snapshot = capture_scene_snapshot();
+        if (!snapshot || !snapshot->has_scene)
+            return saved_scene_checkpoint.empty();
+        return snapshot->bytes.size() == saved_scene_checkpoint.size() &&
+               std::equal(snapshot->bytes.begin(),
+                          snapshot->bytes.end(),
+                          saved_scene_checkpoint.begin());
+    }
+
+    void remember_active_scene_as_saved_checkpoint() {
+        const std::optional<SceneSnapshot> snapshot = capture_scene_snapshot();
+        if (!snapshot || !snapshot->has_scene) {
+            saved_scene_checkpoint.clear();
+            has_saved_scene_checkpoint = false;
+            return;
+        }
+        saved_scene_checkpoint = snapshot->bytes;
+        has_saved_scene_checkpoint = true;
     }
 
     void reset_active_authoring_scene() {
@@ -1997,6 +3679,9 @@ struct PlayerApp {
         editor::clear_web_scene_authoring_state();
         load_target_scene = nullptr;
         primitive_spawn_count = 0u;
+        authored_textures.clear();
+        saved_scene_checkpoint.clear();
+        has_saved_scene_checkpoint = false;
         set_authoring_dirty(false);
         edit_history.clear();
     }
@@ -2010,6 +3695,11 @@ void load_active_arcade_scene(std::string_view path) {
 void create_active_arcade_scene() {
     if (g_active_arcade)
         g_active_arcade->create_blank_scene();
+}
+
+void create_active_arcade_fps_template() {
+    if (g_active_arcade)
+        g_active_arcade->create_fps_template_scene();
 }
 
 Entity add_active_arcade_primitive(std::string_view kind, std::string_view material_preset) {
@@ -2034,6 +3724,12 @@ Entity add_active_arcade_light(scene::LightKind kind) {
     if (!g_active_arcade)
         return {};
     return g_active_arcade->add_light_entity(kind);
+}
+
+Entity add_active_arcade_gameplay(std::string_view kind) {
+    if (!g_active_arcade)
+        return {};
+    return g_active_arcade->add_gameplay_entity(kind);
 }
 
 bool rename_active_arcade_entity(Entity entity, std::string_view name) {
@@ -2062,8 +3758,45 @@ bool set_active_arcade_component_field(Entity entity,
            g_active_arcade->set_component_field(entity, component, field, value);
 }
 
+void apply_active_arcade_component_edit(const editor::ipc::SelectionComponentEdit& edit) {
+    const std::string value = component_edit_value_text(edit.value);
+    const Entity entity{edit.entity_id};
+    const bool ok =
+        set_active_arcade_component_field(entity, edit.component, edit.field, value);
+    std::string text;
+    if (ok) {
+        text = "applied ";
+        text += edit.component;
+        text += ".";
+        text += edit.field;
+    } else {
+        text = "component edit failed for ";
+        text += edit.component;
+        text += ".";
+        text += edit.field;
+        PSY_LOG_WARN("psynder_arcade: component edit failed for {}.{} on {}",
+                     edit.component,
+                     edit.field,
+                     edit.entity_id);
+    }
+    editor::publish_web_selection_command_ack("component_edit",
+                                              ok,
+                                              text,
+                                              entity,
+                                              edit.component,
+                                              edit.field);
+}
+
 bool apply_active_arcade_material_preset(Entity entity, std::string_view preset) {
     return g_active_arcade && g_active_arcade->apply_material_preset(entity, preset);
+}
+
+bool apply_active_arcade_material_texture(Entity entity, std::string_view texture_name) {
+    return g_active_arcade && g_active_arcade->apply_material_texture(entity, texture_name);
+}
+
+bool apply_active_arcade_material_texture_to_selection(std::string_view texture_name) {
+    return g_active_arcade && g_active_arcade->apply_material_texture_to_selection(texture_name);
 }
 
 bool undo_active_arcade_editor_command(std::string& label) {

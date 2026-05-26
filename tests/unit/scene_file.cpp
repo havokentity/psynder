@@ -322,6 +322,7 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     parent_transform.translation = {10.0f, 0.0f, 0.0f};
     const Entity parent = authored.create_entity(parent_transform);
     REQUIRE(parent.valid());
+    REQUIRE(authored.set_entity_name(parent, "Parent Group"));
     const scene::SceneNode parent_node = authored.node(parent);
     REQUIRE(parent_node.valid());
 
@@ -401,6 +402,7 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     REQUIRE(stats.parented_mesh_instances == 1u);
     REQUIRE(stats.parented_lights == 1u);
     REQUIRE(stats.baked_world_transforms == 3u);
+    REQUIRE(stats.authoring_nodes == 4u);
 
     scene::SceneFileView view{};
     REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()}, view, &error));
@@ -412,7 +414,15 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     REQUIRE(view.mesh_instances.size() == 1u);
     REQUIRE(view.lights.size() == 1u);
     REQUIRE(view.object_names.size() == 3u);
+    REQUIRE(view.authoring_nodes.size() == 4u);
     REQUIRE(view.materials.size() == 1u);
+    REQUIRE(view.authoring_nodes[0].kind == scene::SceneFileObjectKind::Empty);
+    REQUIRE(view.authoring_nodes[0].parent_index == scene::kSceneFileAuthoringRoot);
+    REQUIRE(std::string_view{scene::scene_file_string(view, view.authoring_nodes[0].name_offset)} ==
+            "Parent Group");
+    REQUIRE(view.authoring_nodes[1].parent_index == 0u);
+    REQUIRE(view.authoring_nodes[2].parent_index == 0u);
+    REQUIRE(view.authoring_nodes[3].parent_index == 0u);
     REQUIRE(view.object_names[0].kind == scene::SceneFileObjectKind::Camera);
     REQUIRE(view.object_names[0].object_index == 0u);
     REQUIRE(std::string_view{scene::scene_file_string(view, view.object_names[0].name_offset)} ==
@@ -485,6 +495,19 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     REQUIRE(!loaded.environment().settings().clear_depth);
     REQUIRE(loaded.entity_name(loaded.active_camera_entity()) == "Editor Camera");
     REQUIRE(loaded.entity_name(loaded_mesh) == "Hero Box Entity");
+    const scene::SceneNode loaded_parent = loaded.graph().parent(loaded.node(loaded_mesh));
+    REQUIRE(loaded_parent.valid());
+    Entity loaded_parent_entity{};
+    const u32 live_count = reload_registry.snapshot_live_entities(std::span<Entity>{});
+    std::vector<Entity> live_entities(live_count);
+    reload_registry.snapshot_live_entities(live_entities);
+    for (Entity entity : live_entities) {
+        if (loaded.node(entity) == loaded_parent)
+            loaded_parent_entity = entity;
+    }
+    REQUIRE(loaded_parent_entity.valid());
+    REQUIRE(loaded.entity_name(loaded_parent_entity) == "Parent Group");
+    REQUIRE(loaded.graph().parent(loaded.node(loaded.active_camera_entity())) == loaded_parent);
 
     const auto* loaded_renderable = loaded.registry().get<scene::RenderableComponent>(loaded_mesh);
     REQUIRE(loaded_renderable != nullptr);

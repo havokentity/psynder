@@ -43,6 +43,16 @@ enum class LightKind : u8 {
     Spot = 2,
 };
 
+enum class GameplayRole : u8 {
+    None = 0,
+    PlayerStart = 1,
+    PlayerController = 2,
+    Enemy = 3,
+    Pickup = 4,
+    Trigger = 5,
+    Door = 6,
+};
+
 [[nodiscard]] constexpr LightKind sanitize_light_kind(LightKind kind) noexcept {
     switch (kind) {
         case LightKind::Point:
@@ -51,6 +61,20 @@ enum class LightKind : u8 {
             return kind;
     }
     return LightKind::Point;
+}
+
+[[nodiscard]] constexpr GameplayRole sanitize_gameplay_role(GameplayRole role) noexcept {
+    switch (role) {
+        case GameplayRole::None:
+        case GameplayRole::PlayerStart:
+        case GameplayRole::PlayerController:
+        case GameplayRole::Enemy:
+        case GameplayRole::Pickup:
+        case GameplayRole::Trigger:
+        case GameplayRole::Door:
+            return role;
+    }
+    return GameplayRole::None;
 }
 
 enum class RenderableFlags : u32 {
@@ -168,6 +192,37 @@ PSYNDER_COMPONENT(LightComponent) {
     u8 _pad[3] = {};
 };
 
+PSYNDER_COMPONENT(GameplayTagComponent) {
+    GameplayRole role = GameplayRole::None;
+    u8 _pad[3] = {};
+    u32 flags = 0u;
+};
+
+PSYNDER_COMPONENT(PlayerControllerComponent) {
+    f32 walk_speed = 4.5f;
+    f32 run_speed = 7.5f;
+    f32 jump_speed = 5.0f;
+    f32 mouse_sensitivity = 0.12f;
+    f32 height = 1.75f;
+    f32 radius = 0.35f;
+};
+
+PSYNDER_COMPONENT(HealthComponent) {
+    f32 max_health = 100.0f;
+    f32 current_health = 100.0f;
+    u32 faction = 0u;
+    u32 _pad = 0u;
+};
+
+PSYNDER_COMPONENT(WeaponComponent) {
+    f32 damage = 20.0f;
+    f32 range = 60.0f;
+    f32 fire_rate = 6.0f;
+    u32 ammo = 30u;
+    u8 automatic = 1u;
+    u8 _pad[3] = {};
+};
+
 [[nodiscard]] inline EntityNameComponent make_entity_name(std::string_view name) noexcept {
     EntityNameComponent out{};
     const usize bytes = std::min(name.size(), EntityNameComponent::kMaxBytes - 1u);
@@ -204,6 +259,57 @@ PSYNDER_COMPONENT(LightComponent) {
     light._pad[1] = 0u;
     light._pad[2] = 0u;
     return light;
+}
+
+[[nodiscard]] inline GameplayTagComponent sanitize_gameplay_tag(
+    GameplayTagComponent tag) noexcept {
+    tag.role = sanitize_gameplay_role(tag.role);
+    tag._pad[0] = 0u;
+    tag._pad[1] = 0u;
+    tag._pad[2] = 0u;
+    return tag;
+}
+
+[[nodiscard]] inline PlayerControllerComponent sanitize_player_controller(
+    PlayerControllerComponent controller) noexcept {
+    controller.walk_speed =
+        std::isfinite(controller.walk_speed) ? std::max(0.0f, controller.walk_speed) : 4.5f;
+    controller.run_speed =
+        std::isfinite(controller.run_speed) ? std::max(controller.walk_speed, controller.run_speed)
+                                            : 7.5f;
+    controller.jump_speed =
+        std::isfinite(controller.jump_speed) ? std::max(0.0f, controller.jump_speed) : 5.0f;
+    controller.mouse_sensitivity =
+        std::isfinite(controller.mouse_sensitivity)
+            ? std::clamp(controller.mouse_sensitivity, 0.001f, 10.0f)
+            : 0.12f;
+    controller.height =
+        std::isfinite(controller.height) ? std::max(0.1f, controller.height) : 1.75f;
+    controller.radius =
+        std::isfinite(controller.radius) ? std::max(0.01f, controller.radius) : 0.35f;
+    return controller;
+}
+
+[[nodiscard]] inline HealthComponent sanitize_health_component(HealthComponent health) noexcept {
+    health.max_health =
+        std::isfinite(health.max_health) ? std::max(0.0f, health.max_health) : 100.0f;
+    health.current_health = std::isfinite(health.current_health)
+                                ? std::clamp(health.current_health, 0.0f, health.max_health)
+                                : health.max_health;
+    health._pad = 0u;
+    return health;
+}
+
+[[nodiscard]] inline WeaponComponent sanitize_weapon_component(WeaponComponent weapon) noexcept {
+    weapon.damage = std::isfinite(weapon.damage) ? std::max(0.0f, weapon.damage) : 20.0f;
+    weapon.range = std::isfinite(weapon.range) ? std::max(0.0f, weapon.range) : 60.0f;
+    weapon.fire_rate =
+        std::isfinite(weapon.fire_rate) ? std::max(0.0f, weapon.fire_rate) : 6.0f;
+    weapon.automatic = weapon.automatic != 0u ? 1u : 0u;
+    weapon._pad[0] = 0u;
+    weapon._pad[1] = 0u;
+    weapon._pad[2] = 0u;
+    return weapon;
 }
 
 PSYNDER_COMPONENT(RenderableComponent) {
@@ -479,11 +585,24 @@ inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, con
     if (config.cameras != 0u) {
         registry.reserve_archetype<CameraComponent, SceneNodeComponent, TransformComponent>(
             config.cameras);
+        registry.reserve_archetype<EntityNameComponent,
+                                   CameraComponent,
+                                   SceneNodeComponent,
+                                   TransformComponent>(config.cameras);
     }
     if (config.lights != 0u) {
         registry.reserve_archetype<LightComponent, SceneNodeComponent, TransformComponent>(
             config.lights);
+        registry.reserve_archetype<EntityNameComponent,
+                                   LightComponent,
+                                   SceneNodeComponent,
+                                   TransformComponent>(config.lights);
         registry.reserve_archetype<LightComponent,
+                                   RenderableComponent,
+                                   SceneNodeComponent,
+                                   TransformComponent>(config.lights);
+        registry.reserve_archetype<EntityNameComponent,
+                                   LightComponent,
                                    RenderableComponent,
                                    SceneNodeComponent,
                                    TransformComponent>(config.lights);
@@ -491,7 +610,22 @@ inline void prewarm_scene_capacity(EcsRegistry& registry, SceneGraph& graph, con
     if (config.renderables != 0u) {
         registry.reserve_archetype<RenderableComponent, SceneNodeComponent, TransformComponent>(
             config.renderables);
+        registry.reserve_archetype<EntityNameComponent,
+                                   RenderableComponent,
+                                   SceneNodeComponent,
+                                   TransformComponent>(config.renderables);
     }
+    registry.reserve_archetype<EntityNameComponent,
+                               GameplayTagComponent,
+                               SceneNodeComponent,
+                               TransformComponent>(scene_entity_count);
+    registry.reserve_archetype<EntityNameComponent,
+                               GameplayTagComponent,
+                               HealthComponent,
+                               PlayerControllerComponent,
+                               SceneNodeComponent,
+                               TransformComponent,
+                               WeaponComponent>(scene_entity_count);
 
     const u32 structural_ops = config.deferred_structural_changes != 0u
                                    ? config.deferred_structural_changes
@@ -585,8 +719,14 @@ inline bool find_active_camera(EcsRegistry& registry,
                                f32 render_target_aspect,
                                SceneCameraView& out) {
     bool found = false;
+    // query fires the body once per chunk across worker threads (parallel_for).
+    // Writing `out`/`found` from multiple chunk bodies unguarded races (and tears
+    // `out` if two camera chunks run at once). Cameras almost always fit one
+    // chunk, but guard for the multi-chunk case — the body is cheap.
+    std::mutex cam_mu;
     registry.query<reads<SceneNodeComponent, CameraComponent>, writes<>>(
         [&](std::span<const SceneNodeComponent> nodes, std::span<const CameraComponent> cameras) {
+            std::lock_guard<std::mutex> cam_lk(cam_mu);
             if (found)
                 return;
             const usize n = std::min(nodes.size(), cameras.size());
@@ -614,8 +754,12 @@ inline bool find_active_camera(EcsRegistry& registry,
 
 inline Entity find_active_camera_entity(EcsRegistry& registry) {
     Entity out{};
+    // See find_active_camera: query bodies run in parallel per chunk, so the
+    // shared `out` read/write must be serialized.
+    std::mutex cam_mu;
     registry.query<reads<SceneNodeComponent, CameraComponent>, writes<>>(
         [&](std::span<const SceneNodeComponent> nodes, std::span<const CameraComponent> cameras) {
+            std::lock_guard<std::mutex> cam_lk(cam_mu);
             if (out.valid())
                 return;
             const usize n = std::min(nodes.size(), cameras.size());

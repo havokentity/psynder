@@ -27,6 +27,9 @@ enum class GizmoAxis : u8 {
     X,
     Y,
     Z,
+    XY,
+    XZ,
+    YZ,
     Uniform,
 };
 
@@ -38,6 +41,8 @@ struct GizmoDragState {
     scene::LocalTransform current{};
     math::Vec2 start_mouse{0.0f, 0.0f};
     math::Vec2 last_mouse{0.0f, 0.0f};
+    math::Vec2 screen_axis{0.0f, 0.0f};
+    math::Vec2 screen_axis_b{0.0f, 0.0f};
     bool active = false;
 };
 
@@ -88,7 +93,9 @@ void cancel_gizmo_drag(GizmoState& state) noexcept;
                                     GizmoMode mode,
                                     scene::LocalTransform origin,
                                     math::Vec2 mouse,
-                                    GizmoAxis axis = GizmoAxis::Uniform) noexcept;
+                                    GizmoAxis axis = GizmoAxis::Uniform,
+                                    math::Vec2 screen_axis = {0.0f, 0.0f},
+                                    math::Vec2 screen_axis_b = {0.0f, 0.0f}) noexcept;
 [[nodiscard]] bool update_gizmo_drag(GizmoState& state,
                                      scene::LocalTransform current,
                                      math::Vec2 mouse) noexcept;
@@ -97,7 +104,10 @@ void cancel_gizmo_drag(GizmoState& state) noexcept;
 [[nodiscard]] scene::LocalTransform preview_transform(scene::LocalTransform before,
                                                       GizmoMode mode,
                                                       const platform::MouseState& mouse,
-                                                      math::Vec2 framebuffer_size) noexcept;
+                                                      math::Vec2 framebuffer_size,
+                                                      GizmoAxis axis = GizmoAxis::Uniform,
+                                                      math::Vec2 screen_axis = {0.0f, 0.0f},
+                                                      math::Vec2 screen_axis_b = {0.0f, 0.0f}) noexcept;
 
 // Draw/apply the current selection's viewport gizmo. ECS callers should pass
 // frame.scene, frame.selected_entity (or selection::select_scene_entity), the

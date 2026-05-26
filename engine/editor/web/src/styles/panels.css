@@ -148,6 +148,7 @@ button {
 .psy-topbar input,
 .psy-topbar select,
 .psy-settings-pop,
+.psy-scene-chrome,
 .psy-status-rail {
     -webkit-app-region: no-drag;
 }
@@ -266,6 +267,126 @@ button.psy-window-control:hover {
 
 .psy-status-tile.is-hot b {
     color: var(--psy-accent);
+}
+
+.psy-scene-chrome {
+    flex: 0 1 760px;
+    min-width: 0;
+    max-width: min(760px, 52vw);
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 5px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: rgba(8, 12, 17, 0.62);
+}
+
+.psy-scene-chrome[data-status="busy"] {
+    border-color: color-mix(in srgb, var(--psy-accent) 55%, var(--psy-border));
+}
+
+.psy-scene-chrome[data-status="error"] {
+    border-color: color-mix(in srgb, var(--psy-bad) 60%, var(--psy-border));
+}
+
+.psy-scene-chrome .psy-dirty-pill {
+    flex: 0 0 auto;
+}
+
+.psy-scene-chrome-message {
+    flex: 0 1 150px;
+    min-width: 62px;
+    overflow: hidden;
+    color: var(--psy-fg-muted);
+    font-family: var(--psy-mono);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.psy-scene-chrome[data-status="busy"] .psy-scene-chrome-message {
+    color: var(--psy-accent);
+}
+
+.psy-scene-chrome[data-status="error"] .psy-scene-chrome-message {
+    color: var(--psy-bad);
+}
+
+.psy-scene-chrome-path {
+    flex: 1 1 170px;
+    min-width: 115px;
+    max-width: 270px;
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-input);
+    color: var(--psy-fg-muted);
+    font-family: var(--psy-mono);
+    font-size: 11px;
+}
+
+.psy-scene-chrome-path:focus {
+    outline: 1px solid var(--psy-accent);
+    outline-offset: -1px;
+    border-color: var(--psy-accent);
+    color: var(--psy-fg);
+}
+
+.psy-scene-tool {
+    flex: 0 0 auto;
+    min-width: 0;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 8px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-elev-1);
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+}
+
+.psy-scene-tool span {
+    width: 14px;
+    display: inline-grid;
+    place-items: center;
+    color: var(--psy-accent);
+    font-family: var(--psy-mono);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.psy-scene-tool b {
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.psy-scene-tool.is-icon-only {
+    width: 30px;
+    padding: 0;
+}
+
+.psy-scene-tool:hover {
+    border-color: var(--psy-accent);
+    color: var(--psy-fg);
+}
+
+.psy-scene-tool:disabled {
+    cursor: not-allowed;
+    color: var(--psy-fg-faint);
+    border-color: transparent;
+    opacity: 0.58;
+}
+
+.psy-scene-tool:disabled span {
+    color: var(--psy-fg-faint);
 }
 
 .psy-topbar-actions {
@@ -492,6 +613,8 @@ button.psy-window-control:hover {
 .psy-app[data-skin="tactical"] .psy-app-nav,
 .psy-app[data-skin="tactical"] .psy-panel,
 .psy-app[data-skin="tactical"] .psy-settings-pop,
+.psy-app[data-skin="tactical"] .psy-scene-chrome,
+.psy-app[data-skin="tactical"] .psy-scene-tool,
 .psy-app[data-skin="tactical"] .psy-status-tile,
 .psy-app[data-skin="tactical"] .psy-toolbar-btn,
 .psy-app[data-skin="tactical"] .psy-nav-btn,
@@ -1198,6 +1321,12 @@ button.psy-window-control:hover {
     padding-inline: 8px;
 }
 
+.psy-add-wide-action {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+}
+
 .psy-material-swatches {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -1285,6 +1414,45 @@ button.psy-window-control:hover {
 .psy-dirty-pill.is-dirty {
     border-color: color-mix(in srgb, var(--psy-warn) 55%, var(--psy-border));
     color: var(--psy-warn);
+}
+
+.psy-dirty-pill.is-pending {
+    border-color: color-mix(in srgb, var(--psy-accent) 55%, var(--psy-border));
+    color: var(--psy-accent);
+}
+
+.psy-edit-ack {
+    min-height: 22px;
+    min-width: 0;
+    max-width: 220px;
+    display: inline-flex;
+    align-items: center;
+    padding-inline: 8px;
+    overflow: hidden;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-input);
+    color: var(--psy-fg-muted);
+    font-family: var(--psy-mono);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.psy-edit-ack.is-pending {
+    border-color: color-mix(in srgb, var(--psy-accent) 55%, var(--psy-border));
+    color: var(--psy-accent);
+}
+
+.psy-edit-ack.is-applied {
+    border-color: color-mix(in srgb, var(--psy-good) 55%, var(--psy-border));
+    color: var(--psy-good);
+}
+
+.psy-edit-ack.is-error {
+    border-color: color-mix(in srgb, var(--psy-bad) 60%, var(--psy-border));
+    color: var(--psy-bad);
 }
 
 .psy-hierarchy-search {
@@ -2396,6 +2564,16 @@ button.psy-window-control:hover {
     text-align: right;
 }
 
+.psy-assets-status {
+    color: var(--psy-fg-muted);
+    font-family: var(--psy-mono);
+    font-size: 11px;
+    min-width: 96px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .psy-assets-body {
     overflow-y: auto;
     padding: var(--psy-pad);
@@ -2491,6 +2669,29 @@ button.psy-window-control:hover {
     font-size: 11px;
     color: var(--psy-fg-muted);
     white-space: nowrap;
+}
+
+.psy-cell-action {
+    width: 74px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.psy-mini-button {
+    min-height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--psy-border);
+    border-radius: 6px;
+    background: var(--psy-bg-elev-2);
+    color: var(--psy-fg);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.psy-mini-button:hover {
+    border-color: var(--psy-accent);
+    background: var(--psy-bg-elev-3);
 }
 
 /* ─── Prop spawn ────────────────────────────────────────────────────── */
@@ -2843,6 +3044,7 @@ button.psy-window-control:hover {
     .psy-topbar {
         gap: 10px;
         padding: 8px 10px;
+        flex-wrap: wrap;
     }
 
     .psy-brand-sub {
@@ -2852,6 +3054,16 @@ button.psy-window-control:hover {
     .psy-status-tile {
         min-width: 66px;
         padding-inline: 10px;
+    }
+
+    .psy-scene-chrome {
+        order: 4;
+        flex: 1 0 100%;
+        max-width: none;
+    }
+
+    .psy-scene-chrome-path {
+        max-width: none;
     }
 
     .psy-workbench {
@@ -2957,6 +3169,35 @@ button.psy-window-control:hover {
     .psy-status-rail {
         order: 3;
         flex-basis: 100%;
+    }
+
+    .psy-scene-chrome {
+        align-items: stretch;
+        flex-wrap: wrap;
+    }
+
+    .psy-scene-chrome .psy-dirty-pill {
+        min-height: 30px;
+    }
+
+    .psy-scene-chrome-message {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .psy-scene-chrome-path {
+        order: -1;
+        flex: 1 0 100%;
+    }
+
+    .psy-scene-tool {
+        flex: 1 1 72px;
+        padding-inline: 6px;
+    }
+
+    .psy-scene-tool.is-icon-only {
+        flex: 0 0 34px;
+        width: 34px;
     }
 
     .psy-panel-header {

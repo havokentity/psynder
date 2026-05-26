@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
 
@@ -137,10 +138,18 @@ struct SceneFileSaveScratch {
     std::vector<SceneFileMaterial> materials;
     std::vector<SceneFileBehaviorSpinOp> behavior_spin_ops;
     std::vector<SceneFileBehaviorTranslateOp> behavior_translate_ops;
+    std::vector<SceneFileAuthoringNode> authoring_nodes;
+    std::vector<SceneFileGameplayEntity> gameplay_entities;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
     std::unordered_map<u32, u32> material_slots;
+    std::unordered_map<u32, SceneFileObjectName> object_refs;
 };
+
+constexpr u32 kSceneFileGameplayTagMask = 1u << 0u;
+constexpr u32 kSceneFilePlayerControllerMask = 1u << 1u;
+constexpr u32 kSceneFileHealthMask = 1u << 2u;
+constexpr u32 kSceneFileWeaponMask = 1u << 3u;
 
 [[nodiscard]] bool fail_save(std::string* error, std::string_view message) {
     if (error)
@@ -234,6 +243,98 @@ struct SceneFileSaveScratch {
             return scene_file_string(scene_file, name.name_offset);
     }
     return {};
+}
+
+[[nodiscard]] bool append_save_authoring_nodes(Scene& scene,
+                                               SceneFileSaveScratch& saved,
+                                               SceneFileSaveStats& stats,
+                                               std::string* error) {
+    EcsRegistry& registry = scene.registry();
+    const u32 total = registry.snapshot_live_entities(std::span<Entity>{});
+    std::vector<Entity> entities(total);
+    const u32 copied = registry.snapshot_live_entities(entities);
+    entities.resize(copied);
+    std::sort(entities.begin(), entities.end(), [&](Entity a, Entity b) {
+        const SceneNode na = scene.node(a);
+        const SceneNode nb = scene.node(b);
+        return na.raw < nb.raw;
+    });
+
+    std::unordered_map<u32, u32> authoring_index_by_node;
+    authoring_index_by_node.reserve(entities.size());
+    saved.authoring_nodes.reserve(entities.size());
+
+    for (Entity entity : entities) {
+        const auto* node_component = registry.get<SceneNodeComponent>(entity);
+        const auto* transform = registry.get<TransformComponent>(entity);
+        if (!node_component || !transform || !scene.graph().alive(node_component->node))
+            continue;
+
+        u32 transform_index = 0u;
+        if (!append_save_transform(saved, transform->local, transform_index, error))
+            return false;
+
+        u32 parent_index = kSceneFileAuthoringRoot;
+        const SceneNode parent_node = scene.graph().parent(node_component->node);
+        if (parent_node.valid()) {
+            const auto parent_it = authoring_index_by_node.find(parent_node.raw);
+            if (parent_it != authoring_index_by_node.end())
+                parent_index = parent_it->second;
+        }
+
+        u32 name_offset = 0u;
+        if (const auto* name = registry.get<EntityNameComponent>(entity);
+            name && !entity_name_empty(*name)) {
+            if (!add_save_string(saved, entity_name_view(*name), name_offset, error))
+                return false;
+        }
+
+        SceneFileObjectKind kind = SceneFileObjectKind::Empty;
+        u32 object_index = 0u;
+        if (const auto ref_it = saved.object_refs.find(entity.raw);
+            ref_it != saved.object_refs.end()) {
+            kind = ref_it->second.kind;
+            object_index = ref_it->second.object_index;
+        }
+
+        const u32 authoring_index = static_cast<u32>(saved.authoring_nodes.size());
+        saved.authoring_nodes.push_back(SceneFileAuthoringNode{
+            .kind = kind,
+            .object_index = object_index,
+            .transform_index = transform_index,
+            .parent_index = parent_index,
+            .name_offset = name_offset,
+        });
+
+        SceneFileGameplayEntity gameplay{};
+        gameplay.authoring_node_index = authoring_index;
+        if (const auto* tag = registry.get<GameplayTagComponent>(entity)) {
+            const GameplayTagComponent sanitized = sanitize_gameplay_tag(*tag);
+            gameplay.component_mask |= kSceneFileGameplayTagMask;
+            gameplay.role = sanitized.role;
+            gameplay.flags = sanitized.flags;
+        }
+        if (const auto* controller = registry.get<PlayerControllerComponent>(entity)) {
+            gameplay.component_mask |= kSceneFilePlayerControllerMask;
+            gameplay.player_controller = sanitize_player_controller(*controller);
+        }
+        if (const auto* health = registry.get<HealthComponent>(entity)) {
+            gameplay.component_mask |= kSceneFileHealthMask;
+            gameplay.health = sanitize_health_component(*health);
+        }
+        if (const auto* weapon = registry.get<WeaponComponent>(entity)) {
+            gameplay.component_mask |= kSceneFileWeaponMask;
+            gameplay.weapon = sanitize_weapon_component(*weapon);
+        }
+        if (gameplay.component_mask != 0u) {
+            saved.gameplay_entities.push_back(gameplay);
+            ++stats.gameplay_entities;
+        }
+
+        authoring_index_by_node[node_component->node.raw] = authoring_index;
+        ++stats.authoring_nodes;
+    }
+    return true;
 }
 
 [[nodiscard]] math::Vec3 camera_forward(const LocalTransform& local) noexcept {
@@ -395,7 +496,7 @@ template <class T>
 [[nodiscard]] bool write_save_blob(const SceneFileSaveScratch& scene,
                                    detail::AlignedVector<u8>& out,
                                    std::string* error) {
-    constexpr usize kSceneFileChunkCount = 12u;
+    constexpr usize kSceneFileChunkCount = 14u;
     out.clear();
     out.resize(sizeof(SceneFileHeader) + kSceneFileChunkCount * sizeof(SceneFileChunk));
 
@@ -479,7 +580,21 @@ template <class T>
             std::span<const SceneFileBehaviorTranslateOp>{scene.behavior_translate_ops.data(),
                                                           scene.behavior_translate_ops.size()},
             sizeof(SceneFileBehaviorTranslateOp),
-            error)) {
+            error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::AuthoringNodes,
+                           std::span<const SceneFileAuthoringNode>{scene.authoring_nodes.data(),
+                                                                   scene.authoring_nodes.size()},
+                           sizeof(SceneFileAuthoringNode),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::GameplayEntities,
+                           std::span<const SceneFileGameplayEntity>{scene.gameplay_entities.data(),
+                                                                    scene.gameplay_entities.size()},
+                           sizeof(SceneFileGameplayEntity),
+                           error)) {
         out.clear();
         return false;
     }
@@ -599,7 +714,15 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
         !load_span(SceneFileChunkType::BehaviorTranslateOps,
                    sizeof(SceneFileBehaviorTranslateOp),
                    out.behavior_translate_ops,
-                   "behavior_translate_ops")) {
+                   "behavior_translate_ops") ||
+        !load_span(SceneFileChunkType::AuthoringNodes,
+                   sizeof(SceneFileAuthoringNode),
+                   out.authoring_nodes,
+                   "authoring_nodes") ||
+        !load_span(SceneFileChunkType::GameplayEntities,
+                   sizeof(SceneFileGameplayEntity),
+                   out.gameplay_entities,
+                   "gameplay_entities")) {
         return false;
     }
 
@@ -645,13 +768,15 @@ ScenePrewarmConfig scene_file_prewarm_config(const SceneFileView& scene_file) no
     const u32 mesh_instances = static_cast<u32>(scene_file.mesh_instances.size());
     const u32 cameras = static_cast<u32>(scene_file.cameras.size());
     const u32 lights = static_cast<u32>(scene_file.lights.size());
-    return {.scene_entities = mesh_instances + cameras + lights,
+    const u32 authoring_nodes = static_cast<u32>(scene_file.authoring_nodes.size());
+    const u32 scene_entities = std::max(authoring_nodes, mesh_instances + cameras + lights);
+    return {.scene_entities = scene_entities,
             .renderables = mesh_instances,
             .cameras = cameras,
             .lights = lights,
             .analytic_spheres = 0u,
             .render_items = mesh_instances,
-            .deferred_structural_changes = (mesh_instances + cameras + lights) * 3u};
+            .deferred_structural_changes = scene_entities * 3u};
 }
 
 SceneFileInstantiateResult instantiate_scene_file(Scene& scene,
@@ -659,6 +784,204 @@ SceneFileInstantiateResult instantiate_scene_file(Scene& scene,
                                                   std::span<const SceneMeshBinding> mesh_bindings,
                                                   std::span<Entity> out_mesh_entities) {
     return instantiate_scene_file(scene, scene_file, mesh_bindings, {}, out_mesh_entities);
+}
+
+[[nodiscard]] bool same_saved_transform(const LocalTransform& a,
+                                        const LocalTransform& b) noexcept {
+    return std::fabs(a.translation.x - b.translation.x) <= 0.0001f &&
+           std::fabs(a.translation.y - b.translation.y) <= 0.0001f &&
+           std::fabs(a.translation.z - b.translation.z) <= 0.0001f &&
+           std::fabs(a.rotation.x - b.rotation.x) <= 0.0001f &&
+           std::fabs(a.rotation.y - b.rotation.y) <= 0.0001f &&
+           std::fabs(a.rotation.z - b.rotation.z) <= 0.0001f &&
+           std::fabs(a.rotation.w - b.rotation.w) <= 0.0001f &&
+           std::fabs(a.scale.x - b.scale.x) <= 0.0001f &&
+           std::fabs(a.scale.y - b.scale.y) <= 0.0001f &&
+           std::fabs(a.scale.z - b.scale.z) <= 0.0001f;
+}
+
+[[nodiscard]] bool find_matching_authored_light(const SceneFileView& scene_file,
+                                                const SceneFileAuthoringNode& authored,
+                                                const LocalTransform& local,
+                                                LightComponent& out) {
+    std::string_view label = scene_file_string(scene_file, authored.name_offset);
+    if (label.empty())
+        label = scene_file_object_name(scene_file, authored.kind, authored.object_index);
+    if (label.empty())
+        return false;
+
+    for (usize i = 0; i < scene_file.lights.size(); ++i) {
+        const std::string_view light_label =
+            scene_file_object_name(scene_file, SceneFileObjectKind::Light, static_cast<u32>(i));
+        if (light_label != label)
+            continue;
+
+        const SceneFileLight& light_file = scene_file.lights[i];
+        if (!same_saved_transform(local, scene_file_transform(scene_file, light_file.transform_index)))
+            continue;
+
+        out = LightComponent{
+            .kind = light_file.kind,
+            .color_rgba8 = light_file.color_rgba8,
+            .intensity = light_file.intensity,
+            .range = light_file.range,
+            .inner_cone_deg = light_file.inner_cone_deg,
+            .outer_cone_deg = light_file.outer_cone_deg,
+            .casts_shadow = static_cast<u8>(light_file.casts_shadow != 0u ? 1u : 0u),
+        };
+        return true;
+    }
+    return false;
+}
+
+void attach_saved_gameplay_components(Scene& scene,
+                                       Entity entity,
+                                       const SceneFileGameplayEntity& saved) {
+    if (!entity.valid())
+        return;
+    EcsRegistry& registry = scene.registry();
+    if ((saved.component_mask & kSceneFileGameplayTagMask) != 0u) {
+        GameplayTagComponent tag{};
+        tag.role = saved.role;
+        tag.flags = saved.flags;
+        registry.add<GameplayTagComponent>(entity, sanitize_gameplay_tag(tag));
+    }
+    if ((saved.component_mask & kSceneFilePlayerControllerMask) != 0u) {
+        registry.add<PlayerControllerComponent>(
+            entity, sanitize_player_controller(saved.player_controller));
+    }
+    if ((saved.component_mask & kSceneFileHealthMask) != 0u) {
+        registry.add<HealthComponent>(entity, sanitize_health_component(saved.health));
+    }
+    if ((saved.component_mask & kSceneFileWeaponMask) != 0u) {
+        registry.add<WeaponComponent>(entity, sanitize_weapon_component(saved.weapon));
+    }
+}
+
+[[nodiscard]] SceneFileInstantiateResult instantiate_authoring_scene_file(
+    Scene& scene,
+    const SceneFileView& scene_file,
+    std::span<const SceneMeshBinding> mesh_bindings,
+    std::span<const SceneMaterialBinding> material_bindings,
+    std::span<Entity> out_mesh_entities) {
+    SceneFileInstantiateResult result{};
+    std::vector<Entity> entities(scene_file.authoring_nodes.size());
+
+    const usize writable_meshes = out_mesh_entities.size();
+    for (usize i = 0; i < scene_file.authoring_nodes.size(); ++i) {
+        const SceneFileAuthoringNode& authored = scene_file.authoring_nodes[i];
+        const LocalTransform local = scene_file_transform(scene_file, authored.transform_index);
+        SceneNode parent_node = kInvalidSceneNode;
+        if (authored.parent_index != kSceneFileAuthoringRoot &&
+            authored.parent_index < entities.size()) {
+            parent_node = scene.node(entities[authored.parent_index]);
+        }
+
+        Entity entity{};
+        switch (authored.kind) {
+            case SceneFileObjectKind::Empty:
+                entity = scene.create_entity(local, parent_node);
+                break;
+            case SceneFileObjectKind::Camera: {
+                if (authored.object_index >= scene_file.cameras.size())
+                    break;
+                const SceneFileCamera& camera_file = scene_file.cameras[authored.object_index];
+                CameraComponent camera{};
+                camera.fov_y_rad = camera_file.fov_y_rad;
+                camera.near_z = camera_file.near_z;
+                camera.far_z = camera_file.far_z;
+                camera.tile_w = camera_file.tile_w;
+                camera.tile_h = camera_file.tile_h;
+                camera.active = camera_file.active != 0u ? 1u : 0u;
+                entity = scene.create_camera(camera, local, parent_node);
+                if (entity.valid())
+                    ++result.cameras;
+                break;
+            }
+            case SceneFileObjectKind::Light: {
+                if (authored.object_index >= scene_file.lights.size())
+                    break;
+                const SceneFileLight& light_file = scene_file.lights[authored.object_index];
+                entity = scene.create_entity(local, parent_node);
+                if (!entity.valid())
+                    break;
+                LightComponent light{};
+                light.kind = light_file.kind;
+                light.color_rgba8 = light_file.color_rgba8;
+                light.intensity = light_file.intensity;
+                light.range = light_file.range;
+                light.inner_cone_deg = light_file.inner_cone_deg;
+                light.outer_cone_deg = light_file.outer_cone_deg;
+                light.casts_shadow = light_file.casts_shadow != 0u ? 1u : 0u;
+                if (scene.attach_light(entity, light))
+                    ++result.lights;
+                break;
+            }
+            case SceneFileObjectKind::MeshInstance: {
+                if (authored.object_index >= scene_file.mesh_instances.size())
+                    break;
+                const SceneFileMeshInstance& mesh_file =
+                    scene_file.mesh_instances[authored.object_index];
+                const std::string_view mesh_name{
+                    scene_file_string(scene_file, mesh_file.mesh_name_offset)};
+                const auto it = std::find_if(mesh_bindings.begin(),
+                                             mesh_bindings.end(),
+                                             [&](const SceneMeshBinding& binding) {
+                                                 return binding.mesh_name == mesh_name;
+                                             });
+                if (it == mesh_bindings.end() || !it->mesh.valid()) {
+                    ++result.missing_mesh_bindings;
+                    break;
+                }
+                bool missing_material = false;
+                const std::string_view material_name{
+                    scene_file_string(scene_file, mesh_file.material_name_offset)};
+                const ::psynder::render::MaterialId material =
+                    resolve_scene_material(material_name, *it, material_bindings, missing_material);
+                if (missing_material)
+                    ++result.missing_material_bindings;
+                entity = scene.spawn_mesh_instance(it->mesh,
+                                                   material,
+                                                   local,
+                                                   parent_node,
+                                                   mesh_file.flags,
+                                                   mesh_file.mobility);
+                if (entity.valid()) {
+                    LightComponent authored_light{};
+                    if (find_matching_authored_light(scene_file, authored, local, authored_light) &&
+                        scene.attach_light(entity, authored_light)) {
+                        ++result.lights;
+                    }
+                    const std::string_view group_name{
+                        scene_file_string(scene_file, mesh_file.group_name_offset)};
+                    scene.add_to_group(group_name, entity, local);
+                    if (authored.object_index < writable_meshes)
+                        out_mesh_entities[authored.object_index] = entity;
+                    ++result.mesh_instances;
+                }
+                break;
+            }
+        }
+
+        if (!entity.valid())
+            continue;
+
+        entities[i] = entity;
+        std::string_view name = scene_file_string(scene_file, authored.name_offset);
+        if (name.empty() && authored.kind != SceneFileObjectKind::Empty) {
+            name = scene_file_object_name(scene_file, authored.kind, authored.object_index);
+        }
+        if (!name.empty())
+            scene.set_entity_name(entity, name);
+    }
+
+    for (const SceneFileGameplayEntity& gameplay : scene_file.gameplay_entities) {
+        if (gameplay.authoring_node_index >= entities.size())
+            continue;
+        attach_saved_gameplay_components(scene, entities[gameplay.authoring_node_index], gameplay);
+    }
+
+    return result;
 }
 
 SceneFileInstantiateResult instantiate_scene_file(
@@ -672,6 +995,14 @@ SceneFileInstantiateResult instantiate_scene_file(
         const SceneFileEnvironment& e = scene_file.environments[0];
         scene.environment().set_clear_color(e.clear_color_rgba8);
         scene.environment().set_clear_enabled(e.clear_color != 0u, e.clear_depth != 0u);
+    }
+
+    if (!scene_file.authoring_nodes.empty()) {
+        return instantiate_authoring_scene_file(scene,
+                                                scene_file,
+                                                mesh_bindings,
+                                                material_bindings,
+                                                out_mesh_entities);
     }
 
     for (usize camera_index = 0; camera_index < scene_file.cameras.size(); ++camera_index) {
@@ -813,10 +1144,19 @@ bool save_scene_file(Scene& scene,
     scene.graph().update_world_transforms();
 
     bool ok = true;
+    // EcsRegistry::query fires the body once PER CHUNK and dispatches chunks
+    // across worker threads (parallel_for, grain=1 — see EcsRegistry_Internal.h).
+    // These save bodies accumulate into shared scratch (saved.* vectors/maps,
+    // local_stats, ok, error) with read-then-append index math, which races and
+    // corrupts the blob once a component spans more than one chunk (large
+    // scenes). Save is a cold path, so serialize each body wholesale under this
+    // mutex — correctness over the lost parallelism.
+    std::mutex save_mu;
     scene.registry().query<reads<SceneNodeComponent, CameraComponent, TransformComponent>, writes<>>(
         [&](std::span<const SceneNodeComponent> nodes,
             std::span<const CameraComponent> cameras,
             std::span<const TransformComponent> transforms) {
+            std::lock_guard<std::mutex> save_lk(save_mu);
             if (!ok)
                 return;
             const usize n = std::min({nodes.size(), cameras.size(), transforms.size()});
@@ -859,6 +1199,10 @@ bool save_scene_file(Scene& scene,
                 camera.active = cameras[i].active != 0u ? 1u : 0u;
                 const u32 camera_index = static_cast<u32>(saved.cameras.size());
                 saved.cameras.push_back(camera);
+                saved.object_refs[nodes[i].entity.raw] = SceneFileObjectName{
+                    .kind = SceneFileObjectKind::Camera,
+                    .object_index = camera_index,
+                };
                 if (!append_save_object_name(saved,
                                              SceneFileObjectKind::Camera,
                                              camera_index,
@@ -881,6 +1225,7 @@ bool save_scene_file(Scene& scene,
         [&](std::span<const SceneNodeComponent> nodes,
             std::span<const LightComponent> lights,
             std::span<const TransformComponent> transforms) {
+            std::lock_guard<std::mutex> save_lk(save_mu);
             if (!ok)
                 return;
             const usize n = std::min({nodes.size(), lights.size(), transforms.size()});
@@ -922,6 +1267,10 @@ bool save_scene_file(Scene& scene,
                 light.casts_shadow = authored_light.casts_shadow != 0u ? 1u : 0u;
                 const u32 light_index = static_cast<u32>(saved.lights.size());
                 saved.lights.push_back(light);
+                saved.object_refs[nodes[i].entity.raw] = SceneFileObjectName{
+                    .kind = SceneFileObjectKind::Light,
+                    .object_index = light_index,
+                };
                 if (!append_save_object_name(saved,
                                              SceneFileObjectKind::Light,
                                              light_index,
@@ -944,6 +1293,7 @@ bool save_scene_file(Scene& scene,
         [&](std::span<const SceneNodeComponent> nodes,
             std::span<const RenderableComponent> renderables,
             std::span<const TransformComponent> transforms) {
+            std::lock_guard<std::mutex> save_lk(save_mu);
             if (!ok)
                 return;
             const usize n = std::min({nodes.size(), renderables.size(), transforms.size()});
@@ -1076,6 +1426,10 @@ bool save_scene_file(Scene& scene,
                 instance.mobility = renderable.mobility;
                 const u32 mesh_instance_index = static_cast<u32>(saved.mesh_instances.size());
                 saved.mesh_instances.push_back(instance);
+                saved.object_refs[nodes[i].entity.raw] = SceneFileObjectName{
+                    .kind = SceneFileObjectKind::MeshInstance,
+                    .object_index = mesh_instance_index,
+                };
                 if (!append_save_object_name(saved,
                                              SceneFileObjectKind::MeshInstance,
                                              mesh_instance_index,
@@ -1090,6 +1444,13 @@ bool save_scene_file(Scene& scene,
         });
 
     if (!ok) {
+        out_bytes.clear();
+        if (stats)
+            *stats = local_stats;
+        return false;
+    }
+
+    if (!append_save_authoring_nodes(scene, saved, local_stats, error)) {
         out_bytes.clear();
         if (stats)
             *stats = local_stats;

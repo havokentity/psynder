@@ -25,6 +25,18 @@ import {
     subscribe_editor_scene_dirty,
     subscribe_recent_scene_paths,
 } from '../state/editorPersistence';
+import {
+    confirm_dirty_scene_navigation,
+    console_command,
+    ENGINE_SCENE_PATH_HELP,
+    EXAMPLE_SCENES,
+    fps_starter_template_command,
+    is_noop_history_result,
+    prompt_save_scene_path,
+    save_scene_command,
+    load_scene_command,
+    scene_load_failure_from_event,
+} from '../state/sceneCommands';
 
 type CommandStatus = 'idle' | 'busy' | 'ok' | 'error';
 type SceneCommandAction =
@@ -36,7 +48,11 @@ type SceneCommandAction =
     | 'new'
     | 'add'
     | 'add-light'
+    | 'add-gameplay'
+    | 'template'
     | 'light-kind'
+    | 'play-mode'
+    | 'edit-mode'
     | 'reparent'
     | 'undo'
     | 'redo';
@@ -79,25 +95,40 @@ interface SceneCommand {
     path?: string;
     light_kind?: LightKindValue;
     quiet?: boolean;
+    acknowledged?: boolean;
 }
 
-interface PsySaveFilePickerOptions {
-    suggestedName?: string;
-    types?: Array<{
-        description?: string;
-        accept: Record<string, string[]>;
-    }>;
-    excludeAcceptAllOption?: boolean;
+function take_pending_command(
+    pending_commands: Map<number, SceneCommand>,
+    actions: readonly SceneCommandAction[],
+    require_acknowledged = true,
+    request_id?: number,
+): SceneCommand | null {
+    if (request_id !== undefined) {
+        const command = pending_commands.get(request_id);
+        if (command?.action && actions.includes(command.action)) {
+            pending_commands.delete(request_id);
+            return command;
+        }
+    }
+    for (const [id, command] of pending_commands) {
+        if (!command.action || !actions.includes(command.action)) continue;
+        if (require_acknowledged && !command.acknowledged) continue;
+        pending_commands.delete(id);
+        return command;
+    }
+    return null;
 }
 
-type PsySavePickerWindow = Window & {
-    showSaveFilePicker?: (options?: PsySaveFilePickerOptions) => Promise<{ name?: string }>;
-};
-
-const EXAMPLE_SCENES = [
-    'assets/main.psyscene',
-    'assets/crate_room.psyscene',
-];
+function has_pending_command(
+    pending_commands: Map<number, SceneCommand>,
+    actions: readonly SceneCommandAction[],
+): boolean {
+    for (const command of pending_commands.values()) {
+        if (command.action && actions.includes(command.action)) return true;
+    }
+    return false;
+}
 
 const LIGHT_KIND_OPTIONS: LightKindOption[] = [
     { value: 0, label: 'Point', command_label: 'point light' },
@@ -143,6 +174,21 @@ function find_node_by_id(nodes: readonly HierarchyNode[], id: number): Hierarchy
     return null;
 }
 
+function node_contains_id(node: HierarchyNode, id: number): boolean {
+    if (node.id === id) return true;
+    return !!node.children?.some((child) => node_contains_id(child, id));
+}
+
+function can_reparent_node(child: HierarchyNode, parent: HierarchyNode): boolean {
+    if (!is_editable_scene_node(child) || is_placeholder_scene_root(parent)) return false;
+    if (child.id === parent.id) return false;
+    if (node_contains_id(child, parent.id)) return false;
+
+    const next_parent = parent.kind === 'root' ? 0 : parent.id;
+    const current_parent = child.parent == null ? 0 : child.parent;
+    return current_parent !== next_parent;
+}
+
 function node_matches_query(node: HierarchyNode, query: string): boolean {
     const haystack = `${node.label} ${node.kind} ${node.id} ${node.id.toString(16)}`.toLowerCase();
     return haystack.includes(query);
@@ -183,42 +229,6 @@ function is_selectable_scene_node(node: HierarchyNode | null): node is Hierarchy
     return !!node && !is_placeholder_scene_root(node);
 }
 
-function console_arg(value: string): string {
-    if (value && /^[A-Za-z0-9_./:@-]+$/.test(value)) return value;
-    const escaped = value
-        .replace(/\\/g, '\\\\')
-        .replace(/"/g, '\\"')
-        .replace(/\n/g, '\\n')
-        .replace(/\t/g, '\\t')
-        .replace(/\r/g, '\\n')
-        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ');
-    return `"${escaped}"`;
-}
-
-function console_command(name: string, ...args: Array<string | number>): string {
-    return [name, ...args.map((arg) => console_arg(String(arg)))].join(' ');
-}
-
-function scene_basename(path: string): string {
-    const normalized = path.replace(/\\/g, '/');
-    const slash = normalized.lastIndexOf('/');
-    return slash >= 0 ? normalized.slice(slash + 1) : normalized;
-}
-
-function scene_dirname(path: string): string {
-    const normalized = path.replace(/\\/g, '/');
-    const slash = normalized.lastIndexOf('/');
-    return slash >= 0 ? normalized.slice(0, slash + 1) : '';
-}
-
-function ensure_scene_extension(name: string): string {
-    return name.toLowerCase().endsWith('.psyscene') ? name : `${name}.psyscene`;
-}
-
-function scene_path_with_basename(current_path: string, basename: string): string {
-    return `${scene_dirname(current_path)}${ensure_scene_extension(basename)}`;
-}
-
 function added_entity_id(text: string): number | null {
     const match = /\badded\s+(\d+)\b/i.exec(text);
     if (!match) return null;
@@ -228,11 +238,6 @@ function added_entity_id(text: string): number | null {
 
 function light_kind_label(value: LightKindValue): LightKindOption {
     return LIGHT_KIND_OPTIONS.find((option) => option.value === value) ?? LIGHT_KIND_OPTIONS[0];
-}
-
-function is_noop_history_result(action: SceneCommandAction | undefined, text: string): boolean {
-    if (action !== 'undo' && action !== 'redo') return false;
-    return text.toLowerCase().includes(`nothing to ${action}`);
 }
 
 function scene_tree_from_payload(payload: SceneHierarchyPayload): HierarchyNode[] {
@@ -307,23 +312,36 @@ export function Hierarchy() {
             const result = env.payload as ConsoleResult;
             const command = pending.current.get(result.id);
             if (!command) return;
-            pending.current.delete(result.id);
-            if (!command.quiet || !result.ok) set_status(result.ok ? 'ok' : 'error');
             const result_text = result.text || command.label;
-            if (result.ok && command.action === 'save') {
-                if (command.path) {
-                    set_recent_paths(remember_scene_path(command.path));
-                    set_editor_scene_dirty(false);
-                }
-                set_message(command.path ? `saved ${command.path}` : result_text);
-            } else if (result.ok && command.action === 'load') {
-                if (command.path) set_recent_paths(remember_scene_path(command.path));
-                set_editor_scene_dirty(false);
-                set_message(command.path ? `loaded ${command.path}` : result_text);
-            } else if (result.ok && command.action === 'new') {
-                set_editor_scene_dirty(false);
-                set_message(result.text || 'blank scene ready');
-            } else if (result.ok && command.action === 'add-light') {
+
+            if (!result.ok) {
+                pending.current.delete(result.id);
+                if (!command.quiet) set_status('error');
+                set_message(result_text);
+                return;
+            }
+
+            if (command.action === 'save') {
+                command.acknowledged = true;
+                set_status('busy');
+                set_message(command.path ? `save accepted; waiting for clean scene ${command.path}` : result_text);
+                return;
+            } else if (command.action === 'load') {
+                command.acknowledged = true;
+                set_status('busy');
+                set_message(command.path ? `load accepted; waiting for scene ${command.path}` : result_text);
+                return;
+            } else if (command.action === 'new') {
+                command.acknowledged = true;
+                set_status('busy');
+                set_message(result.text || 'new scene accepted; waiting for scene');
+                return;
+            }
+
+            pending.current.delete(result.id);
+            if (!command.quiet) set_status('ok');
+
+            if (command.action === 'add-light') {
                 const light_option = light_kind_label(command.light_kind ?? 0);
                 const entity_id = added_entity_id(result_text);
                 if (entity_id !== null && command.light_kind) {
@@ -340,25 +358,26 @@ export function Hierarchy() {
                 } else {
                     set_message(`added ${light_option.command_label}`);
                 }
-            } else if (!command.quiet || !result.ok) {
+            } else if (!command.quiet) {
                 set_message(result_text);
             }
-            if (result.ok && command.action === 'delete' && command.target_id !== undefined) {
+            if (command.action === 'delete' && command.target_id !== undefined) {
                 set_local_selected((current) => current === command.target_id ? null : current);
                 set_selection((current) => current?.entity_id === command.target_id ? null : current);
             }
-            const history_changed = result.ok
-                && (command.action === 'undo' || command.action === 'redo')
+            const history_changed = (command.action === 'undo' || command.action === 'redo')
                 && !is_noop_history_result(command.action, result_text);
-            if (result.ok && (
+            if (
                 command.action === 'add'
                 || command.action === 'add-light'
                 || command.action === 'delete'
                 || command.action === 'duplicate'
+                || command.action === 'add-gameplay'
+                || command.action === 'template'
                 || command.action === 'rename'
                 || command.action === 'reparent'
                 || history_changed
-            )) {
+            ) {
                 mark_editor_scene_dirty();
             }
         });
@@ -373,9 +392,35 @@ export function Hierarchy() {
             }
         });
         const unsub_scene = client.subscribe('scene', (env: Envelope) => {
+            const load_failure = scene_load_failure_from_event(env.type, env.payload);
+            if (load_failure) {
+                const command = take_pending_command(
+                    pending.current,
+                    ['load'],
+                    false,
+                    load_failure.request_id,
+                );
+                if (command || load_failure.request_id === undefined) {
+                    set_status('error');
+                    set_message(load_failure.text);
+                }
+                return;
+            }
             if (env.type === 'dirty_state') {
                 const payload = env.payload as SceneDirtyState;
-                set_editor_scene_dirty(!!payload.dirty);
+                const next_dirty = !!payload.dirty;
+                set_editor_scene_dirty(next_dirty);
+                if (!next_dirty) {
+                    const command = take_pending_command(pending.current, ['save']);
+                    if (command) {
+                        if (command.path) {
+                            set_scene_path(command.path);
+                            set_recent_paths(remember_scene_path(command.path));
+                        }
+                        set_status('ok');
+                        set_message(command.path ? `saved ${command.path}` : 'scene saved');
+                    }
+                }
                 return;
             }
             if (env.type !== 'hierarchy') return;
@@ -389,6 +434,20 @@ export function Hierarchy() {
                 if (is_selectable_scene_node(node)) return current;
                 return null;
             });
+            const command = take_pending_command(pending.current, ['load', 'new']);
+            if (command) {
+                if (command.path) {
+                    set_scene_path(command.path);
+                    set_recent_paths(remember_scene_path(command.path));
+                }
+                set_editor_scene_dirty(false);
+                set_status('ok');
+                set_message(command.action === 'new'
+                    ? 'blank scene ready'
+                    : `loaded ${command.path ?? 'scene'}`);
+                return;
+            }
+            if (has_pending_command(pending.current, ['save'])) return;
             set_status('ok');
             const count = Number(payload.entity_count ?? 0);
             set_message(count === 1 ? '1 entity' : `${count} entities`);
@@ -460,8 +519,7 @@ export function Hierarchy() {
     }, []);
 
     const confirm_dirty_navigation = React.useCallback((verb: string) => {
-        if (!dirty) return true;
-        return window.confirm(`Discard unsaved scene changes and ${verb}?`);
+        return confirm_dirty_scene_navigation(dirty, verb);
     }, [dirty]);
 
     const load_scene = React.useCallback(() => {
@@ -472,7 +530,7 @@ export function Hierarchy() {
             return;
         }
         if (!confirm_dirty_navigation('load another scene')) return;
-        send_command(console_command('arcade_load_scene', path), `loading ${path}`, { action: 'load', path });
+        send_command(load_scene_command(path), `loading ${path}`, { action: 'load', path });
     }, [confirm_dirty_navigation, scene_path, send_command]);
 
     const save_scene_to_path = React.useCallback((next_path: string) => {
@@ -482,8 +540,7 @@ export function Hierarchy() {
             set_message('scene save path required');
             return;
         }
-        set_scene_path(path);
-        send_command(console_command('scene_save', path), `saving ${path}`, { action: 'save', path });
+        send_command(save_scene_command(path), `saving ${path}`, { action: 'save', path });
     }, [send_command]);
 
     const save_scene = React.useCallback(() => {
@@ -491,31 +548,7 @@ export function Hierarchy() {
     }, [save_scene_to_path, scene_path]);
 
     const save_scene_as = React.useCallback(async () => {
-        const current_path = scene_path.trim() || EXAMPLE_SCENES[0];
-        const current_name = ensure_scene_extension(scene_basename(current_path) || 'untitled.psyscene');
-        let suggested_path = current_path;
-        const picker = (window as PsySavePickerWindow).showSaveFilePicker;
-
-        if (picker) {
-            try {
-                const handle = await picker({
-                    suggestedName: current_name,
-                    types: [
-                        {
-                            description: 'Psynder scene',
-                            accept: { 'application/octet-stream': ['.psyscene'] },
-                        },
-                    ],
-                    excludeAcceptAllOption: false,
-                });
-                if (handle.name) suggested_path = scene_path_with_basename(current_path, handle.name);
-                set_message('picked file name; confirm engine path');
-            } catch (err) {
-                if (err instanceof DOMException && err.name === 'AbortError') return;
-            }
-        }
-
-        const next_path = window.prompt('Save scene as engine path', suggested_path);
+        const next_path = await prompt_save_scene_path(scene_path);
         if (next_path === null) return;
         save_scene_to_path(next_path);
     }, [save_scene_to_path, scene_path]);
@@ -545,11 +578,24 @@ export function Hierarchy() {
         });
     }, [light_kind, send_command]);
 
+    const add_gameplay = React.useCallback((kind: string) => {
+        send_command(`gameplay_add ${kind}`, `adding ${kind.replace('_', ' ')}`, {
+            action: 'add-gameplay',
+        });
+    }, [send_command]);
+
+    const create_fps_starter = React.useCallback(() => {
+        send_command(fps_starter_template_command(), 'creating FPS starter', { action: 'template' });
+    }, [send_command]);
+
     const selected_node = React.useMemo(() => {
         return local_selected == null ? null : find_node_by_id(tree, local_selected);
     }, [local_selected, tree]);
     const scene_is_loaded = live_tree !== null && !is_placeholder_scene_root(live_tree[0] ?? null);
     const can_edit_selection = scene_is_loaded && is_editable_scene_node(selected_node);
+    const scene_command_pending = status === 'busy';
+    const scene_dirty_label = scene_command_pending ? 'pending' : dirty ? 'modified' : 'saved';
+    const scene_io_disabled = connection !== 'open' || scene_command_pending;
     const action_title = can_edit_selection
         ? `Selected: ${selected_node.label}`
         : 'Select an entity to enable hierarchy actions';
@@ -594,8 +640,7 @@ export function Hierarchy() {
     }, [can_edit_selection, selected_node, send_command]);
 
     const reparent_entity = React.useCallback((child: HierarchyNode, parent: HierarchyNode) => {
-        if (!is_editable_scene_node(child) || is_placeholder_scene_root(parent)) return;
-        if (child.id === parent.id) return;
+        if (!can_reparent_node(child, parent)) return;
         const parent_id = parent.kind === 'root' ? 0 : parent.id;
         send_command(
             console_command('entity_reparent', child.id, parent_id),
@@ -612,13 +657,21 @@ export function Hierarchy() {
         send_command('editor_redo', 'redoing scene edit', { action: 'redo' });
     }, [send_command]);
 
+    const enter_play_mode = React.useCallback(() => {
+        send_command('arcade_play_mode', 'entering play mode', { action: 'play-mode' });
+    }, [send_command]);
+
+    const enter_edit_mode = React.useCallback(() => {
+        send_command('arcade_edit_mode', 'entering edit mode', { action: 'edit-mode' });
+    }, [send_command]);
+
     return (
         <div className="psy-panel psy-hierarchy">
             <header className="psy-panel-header">
                 <h2>Hierarchy</h2>
                 <ConnectionBadge />
-                <span className={`psy-dirty-pill ${dirty ? 'is-dirty' : ''}`}>
-                    {dirty ? 'modified' : 'saved'}
+                <span className={`psy-dirty-pill ${dirty ? 'is-dirty' : ''} ${scene_command_pending ? 'is-pending' : ''}`}>
+                    {scene_dirty_label}
                 </span>
             </header>
 
@@ -630,21 +683,21 @@ export function Hierarchy() {
                         onChange={(e) => set_scene_path(e.target.value)}
                         spellCheck={false}
                         aria-label="Cooked scene path"
-                        title="Cooked scene path used for load and save"
+                        title={`${ENGINE_SCENE_PATH_HELP}; used for load and save`}
                     />
                 </div>
 
                 <div className="psy-scene-command-row" aria-label="Scene commands">
-                    <button type="button" className="psy-btn psy-btn-primary" onClick={create_new_scene} title="Create a blank scene">
+                    <button type="button" className="psy-btn psy-btn-primary" onClick={create_new_scene} disabled={scene_io_disabled} title="Create a blank scene">
                         new
                     </button>
-                    <button type="button" className="psy-btn" onClick={load_scene} title="Load the scene path above">
+                    <button type="button" className="psy-btn" onClick={load_scene} disabled={scene_io_disabled} title="Load the engine-relative scene path above">
                         load
                     </button>
-                    <button type="button" className="psy-btn" onClick={save_scene} title="Save to the scene path above">
+                    <button type="button" className="psy-btn" onClick={save_scene} disabled={scene_io_disabled} title="Save to the engine-relative scene path above">
                         save
                     </button>
-                    <button type="button" className="psy-btn" onClick={save_scene_as} title="Save scene under another engine path">
+                    <button type="button" className="psy-btn" onClick={save_scene_as} disabled={scene_io_disabled} title={`Save scene as a ${ENGINE_SCENE_PATH_HELP}`}>
                         save as
                     </button>
                     <span className="psy-toolbar-divider" aria-hidden="true" />
@@ -665,6 +718,24 @@ export function Hierarchy() {
                         title="Redo latest editor scene edit"
                     >
                         redo
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-btn psy-btn-ghost"
+                        onClick={enter_play_mode}
+                        disabled={connection !== 'open'}
+                        title="Switch engine to playable runtime mode"
+                    >
+                        play
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-btn psy-btn-ghost"
+                        onClick={enter_edit_mode}
+                        disabled={connection !== 'open'}
+                        title="Switch engine to editor transform mode"
+                    >
+                        edit
                     </button>
                     <button
                         type="button"
@@ -716,6 +787,8 @@ export function Hierarchy() {
                         on_add_empty_entity={add_empty_entity}
                         on_add_camera={add_camera}
                         on_add_light={add_light}
+                        on_add_gameplay={add_gameplay}
+                        on_create_fps_starter={create_fps_starter}
                     />
                 </div>
                 <div className="psy-hierarchy-searchbar">
@@ -760,6 +833,7 @@ export function Hierarchy() {
                 {filtered_tree.map((node) => (
                     <HierarchyRow
                         key={node.id}
+                        all_nodes={tree}
                         node={node}
                         depth={0}
                         selected={local_selected}
@@ -789,6 +863,7 @@ export function Hierarchy() {
 }
 
 function HierarchyRow({
+    all_nodes,
     node,
     depth,
     selected,
@@ -804,6 +879,7 @@ function HierarchyRow({
     on_reparent,
     force_expanded,
 }: {
+    all_nodes: readonly HierarchyNode[];
     node: HierarchyNode;
     depth: number;
     selected: number | null;
@@ -839,6 +915,7 @@ function HierarchyRow({
                 onDragStart={(e) => {
                     if (!draggable) return;
                     e.dataTransfer.setData('application/x-psynder-entity', String(node.id));
+                    e.dataTransfer.setData('text/plain', String(node.id));
                     e.dataTransfer.effectAllowed = 'move';
                 }}
                 onDragOver={(e) => {
@@ -854,15 +931,13 @@ function HierarchyRow({
                     if (!drop_target) return;
                     e.preventDefault();
                     on_drag_over(null);
-                    const raw = e.dataTransfer.getData('application/x-psynder-entity');
+                    const raw = e.dataTransfer.getData('application/x-psynder-entity')
+                        || e.dataTransfer.getData('text/plain');
                     const child_id = Number(raw);
                     if (!Number.isFinite(child_id)) return;
-                    const child = find_node_by_id([node], child_id) ?? null;
-                    if (child) {
-                        on_reparent(child, node);
-                        return;
-                    }
-                    on_reparent({ id: child_id, label: `Entity ${child_id}`, kind: 'entity' }, node);
+                    const child = find_node_by_id(all_nodes, child_id);
+                    if (!child || !can_reparent_node(child, node)) return;
+                    on_reparent(child, node);
                 }}
                 onClick={() => on_select(node)}
                 onDoubleClick={() => on_begin_rename(node)}
@@ -897,6 +972,7 @@ function HierarchyRow({
             {has_children && !is_collapsed && node.children!.map((child) => (
                 <HierarchyRow
                     key={child.id}
+                    all_nodes={all_nodes}
                     node={child}
                     depth={depth + 1}
                     selected={selected}

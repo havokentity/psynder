@@ -190,15 +190,21 @@ usize MathLogicKernel::execute(std::span<MutableVec3SoaView> vec3_streams) noexc
                     const MutableVec3SoaView dst = vec3_streams[instr.stream];
                     const MutableVec3SoaView base_stream = vec3_streams[instr.a];
                     const MutableVec3SoaView mul_stream = vec3_streams[instr.b];
-                    f32* PSY_MATHLOGIC_RESTRICT dx = dst.x + base;
-                    f32* PSY_MATHLOGIC_RESTRICT dy = dst.y + base;
-                    f32* PSY_MATHLOGIC_RESTRICT dz = dst.z + base;
-                    const f32* PSY_MATHLOGIC_RESTRICT bx = base_stream.x + base;
-                    const f32* PSY_MATHLOGIC_RESTRICT by = base_stream.y + base;
-                    const f32* PSY_MATHLOGIC_RESTRICT bz = base_stream.z + base;
-                    const f32* PSY_MATHLOGIC_RESTRICT mx = mul_stream.x + base;
-                    const f32* PSY_MATHLOGIC_RESTRICT my = mul_stream.y + base;
-                    const f32* PSY_MATHLOGIC_RESTRICT mz = mul_stream.z + base;
+                    // NO restrict here: the fusion builder guarantees instr.a ==
+                    // instr.stream (base_stream is matched as `a.slot ==
+                    // store.stream`), so dst and base_stream are the SAME stream
+                    // and dx/bx always alias. A degenerate `x = x + x*s` makes mx
+                    // alias too. Marking these restrict was a lie the optimizer is
+                    // free to miscompile under -O2 (invisible at -O0/ASan).
+                    f32* dx = dst.x + base;
+                    f32* dy = dst.y + base;
+                    f32* dz = dst.z + base;
+                    const f32* bx = base_stream.x + base;
+                    const f32* by = base_stream.y + base;
+                    const f32* bz = base_stream.z + base;
+                    const f32* mx = mul_stream.x + base;
+                    const f32* my = mul_stream.y + base;
+                    const f32* mz = mul_stream.z + base;
                     for (usize i = 0; i < n; ++i) {
                         dx[i] = bx[i] + mx[i] * s;
                         dy[i] = by[i] + my[i] * s;

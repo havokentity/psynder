@@ -4,10 +4,12 @@
 #include "WebPanels.h"
 
 #include "core/console/Console.h"
+#include "editor/core/Editor.h"
 #include "editor/core/Selection.h"
 #include "editor/ipc/Ipc.h"
 #include "editor/ipc/internal/Msgpack.h"
 #include "editor/ipc/proto/Protocol.gen.h"
+#include "asset/Vault.h"
 #include "math/MathExt.h"
 #include "platform/Platform.h"
 #include "scene/SceneEcs.h"
@@ -17,6 +19,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
@@ -53,9 +56,24 @@ std::atomic<u32>& selected_entity_generation() noexcept {
     return generation;
 }
 
+void bump_selected_entity_generation() noexcept {
+    selected_entity_generation().fetch_add(1u, std::memory_order_acq_rel);
+}
+
+void clear_web_selection_mirror() noexcept {
+    selected_entity_raw().store(0u, std::memory_order_release);
+    selection::clear_selection();
+    bump_selected_entity_generation();
+}
+
 std::unordered_map<u32, std::string>& entity_labels() {
     static std::unordered_map<u32, std::string> labels;
     return labels;
+}
+
+std::unordered_map<u32, std::string>& material_texture_names() {
+    static std::unordered_map<u32, std::string> names;
+    return names;
 }
 
 std::atomic<u32>& hierarchy_generation() noexcept {
@@ -76,7 +94,7 @@ std::atomic<u32>& scene_dirty_generation() noexcept {
 void on_web_selection_select(u32 entity_id) {
     selected_entity_raw().store(entity_id, std::memory_order_release);
     selection::mirror_scene_entity_raw(entity_id);
-    selected_entity_generation().fetch_add(1u, std::memory_order_acq_rel);
+    bump_selected_entity_generation();
 }
 
 u64 hierarchy_hash_combine(u64 seed, u64 value) noexcept {
@@ -109,6 +127,8 @@ std::string hierarchy_label_for(scene::Scene& scene, Entity entity) {
     const auto label_it = entity_labels().find(entity.raw);
     if (label_it != entity_labels().end())
         return label_it->second;
+    if (const std::string_view scene_name = scene.entity_name(entity); !scene_name.empty())
+        return std::string{scene_name};
     const bool has_camera = scene.registry().get<scene::CameraComponent>(entity) != nullptr;
     const bool has_renderable = scene.registry().get<scene::RenderableComponent>(entity) != nullptr;
     std::string label = has_camera ? "Camera" : (has_renderable ? "Renderable" : "Entity");
@@ -241,6 +261,74 @@ std::vector<u8> encode_dirty_state_envelope(WebSceneDirtyState state) {
     return w.buffer();
 }
 
+std::vector<u8> encode_scene_load_failed_envelope(std::string_view path, std::string_view error) {
+    ipc::msgpack::Writer w;
+    w.map_header(4);
+    w.str("v");
+    w.u32_(ipc::proto::kProtocolVersion);
+    w.str("ch");
+    w.str(ipc::proto::channels::kscene);
+    w.str("type");
+    w.str("load_failed");
+    w.str("payload");
+    w.map_header(4);
+    w.str("path");
+    w.str(path);
+    w.str("error");
+    w.str(error);
+    w.str("message");
+    w.str(error);
+    w.str("text");
+    w.str(error);
+    return w.buffer();
+}
+
+std::vector<u8> encode_selection_command_ack_envelope(std::string_view command,
+                                                      bool ok,
+                                                      std::string_view text,
+                                                      Entity entity,
+                                                      std::string_view component,
+                                                      std::string_view field) {
+    ipc::msgpack::Writer w;
+    w.map_header(4);
+    w.str("v");
+    w.u32_(ipc::proto::kProtocolVersion);
+    w.str("ch");
+    w.str(ipc::proto::channels::kselection);
+    w.str("type");
+    w.str("command_ack");
+    w.str("payload");
+    w.map_header(9);
+    w.str("command");
+    w.str(command);
+    w.str("ok");
+    w.boolean(ok);
+    w.str("text");
+    w.str(text);
+    w.str("value_kind");
+    w.str("text");
+    w.str("output");
+    w.str(ok ? text : std::string_view{});
+    w.str("error");
+    w.str(ok ? std::string_view{} : text);
+    w.str("entity_id");
+    if (entity.valid() || entity.raw == 0u)
+        w.u32_(entity.raw);
+    else
+        w.nil();
+    w.str("component");
+    if (component.empty())
+        w.nil();
+    else
+        w.str(component);
+    w.str("field");
+    if (field.empty())
+        w.nil();
+    else
+        w.str(field);
+    return w.buffer();
+}
+
 void write_numeric_hint(ipc::msgpack::Writer& w,
                         f32 step,
                         std::string_view unit = {},
@@ -333,7 +421,7 @@ std::vector<u8> encode_schema_catalog_envelope() {
     w.str("payload");
     w.map_header(1);
     w.str("components");
-    w.array_header(7);
+    w.array_header(11);
 
     write_component_schema_header(w, "EnvironmentComponent", "native-environment-v1", 10);
     write_field_schema(w, "clear_color_rgba8", "color", false);
@@ -403,8 +491,9 @@ std::vector<u8> encode_schema_catalog_envelope() {
         {"AlphaTest", static_cast<u32>(render::MaterialBlendMode::AlphaTest)},
         {"AlphaBlend", static_cast<u32>(render::MaterialBlendMode::AlphaBlend)},
     }};
-    write_component_schema_header(w, "MaterialComponent", "native-material-v1", 8);
+    write_component_schema_header(w, "MaterialComponent", "native-material-v2", 9);
     write_field_schema(w, "albedo_rgba8", "color", false);
+    write_field_schema(w, "base_color_texture_name", "string", false);
     write_field_schema(w, "reflectivity", "f32", false, 0.01f);
     write_field_schema(w, "roughness", "f32", false, 0.01f);
     write_field_schema(w, "emissive", "f32", false, 0.01f);
@@ -412,6 +501,39 @@ std::vector<u8> encode_schema_catalog_envelope() {
     write_field_schema(w, "blend", "enum", false, {}, {}, kBlendOptions);
     write_field_schema(w, "shadow_opacity", "f32", false, 0.01f);
     write_field_schema(w, "shadow_softness", "f32", false, 0.01f);
+
+    constexpr std::array<EnumOption, 7> kGameplayRoleOptions{{
+        {"None", static_cast<u32>(scene::GameplayRole::None)},
+        {"PlayerStart", static_cast<u32>(scene::GameplayRole::PlayerStart)},
+        {"PlayerController", static_cast<u32>(scene::GameplayRole::PlayerController)},
+        {"Enemy", static_cast<u32>(scene::GameplayRole::Enemy)},
+        {"Pickup", static_cast<u32>(scene::GameplayRole::Pickup)},
+        {"Trigger", static_cast<u32>(scene::GameplayRole::Trigger)},
+        {"Door", static_cast<u32>(scene::GameplayRole::Door)},
+    }};
+    write_component_schema_header(w, "GameplayTagComponent", "native-gameplay-tag-v1", 2);
+    write_field_schema(w, "role", "enum", false, {}, {}, kGameplayRoleOptions);
+    write_field_schema(w, "flags", "u32");
+
+    write_component_schema_header(w, "PlayerControllerComponent", "native-player-controller-v1", 6);
+    write_field_schema(w, "walk_speed", "f32", false, 0.05f, "m/s");
+    write_field_schema(w, "run_speed", "f32", false, 0.05f, "m/s");
+    write_field_schema(w, "jump_speed", "f32", false, 0.05f, "m/s");
+    write_field_schema(w, "mouse_sensitivity", "f32", false, 0.01f);
+    write_field_schema(w, "height", "f32", false, 0.01f, "m");
+    write_field_schema(w, "radius", "f32", false, 0.01f, "m");
+
+    write_component_schema_header(w, "HealthComponent", "native-health-v1", 3);
+    write_field_schema(w, "max_health", "f32", false, 1.0f);
+    write_field_schema(w, "current_health", "f32", false, 1.0f);
+    write_field_schema(w, "faction", "u32");
+
+    write_component_schema_header(w, "WeaponComponent", "native-weapon-v1", 5);
+    write_field_schema(w, "damage", "f32", false, 1.0f);
+    write_field_schema(w, "range", "f32", false, 0.5f, "m");
+    write_field_schema(w, "fire_rate", "f32", false, 0.1f, "hz");
+    write_field_schema(w, "ammo", "u32");
+    write_field_schema(w, "automatic", "bool", false);
 
     return w.buffer();
 }
@@ -507,6 +629,35 @@ u64 selection_signature(scene::Scene& scene, Entity entity, u32 generation) {
         out = hash_f32(out, material.roughness);
         out = hash_f32(out, material.emissive);
         out = hierarchy_hash_combine(out, static_cast<u32>(material.blend));
+        if (const auto it = material_texture_names().find(renderable->material.raw);
+            it != material_texture_names().end()) {
+            for (const char ch : it->second)
+                out = hierarchy_hash_combine(out, static_cast<u8>(ch));
+        }
+    }
+    if (auto* tag = registry.get<scene::GameplayTagComponent>(entity)) {
+        out = hierarchy_hash_combine(out, static_cast<u32>(tag->role));
+        out = hierarchy_hash_combine(out, tag->flags);
+    }
+    if (auto* controller = registry.get<scene::PlayerControllerComponent>(entity)) {
+        out = hash_f32(out, controller->walk_speed);
+        out = hash_f32(out, controller->run_speed);
+        out = hash_f32(out, controller->jump_speed);
+        out = hash_f32(out, controller->mouse_sensitivity);
+        out = hash_f32(out, controller->height);
+        out = hash_f32(out, controller->radius);
+    }
+    if (auto* health = registry.get<scene::HealthComponent>(entity)) {
+        out = hash_f32(out, health->max_health);
+        out = hash_f32(out, health->current_health);
+        out = hierarchy_hash_combine(out, health->faction);
+    }
+    if (auto* weapon = registry.get<scene::WeaponComponent>(entity)) {
+        out = hash_f32(out, weapon->damage);
+        out = hash_f32(out, weapon->range);
+        out = hash_f32(out, weapon->fire_rate);
+        out = hierarchy_hash_combine(out, weapon->ammo);
+        out = hierarchy_hash_combine(out, weapon->automatic);
     }
     return out;
 }
@@ -568,6 +719,53 @@ std::vector<u8> encode_selection_cleared_envelope() {
     return w.buffer();
 }
 
+struct WebAssetEntry {
+    std::string_view path;
+    std::string_view category;
+    std::string_view pack;
+    u32 size_bytes = 0u;
+    std::string_view hash;
+};
+
+std::vector<u8> encode_asset_catalog_envelope() {
+    constexpr std::array<WebAssetEntry, 7> kBuiltInAssets{{
+        {"textures.procedural.wooden_crate", "texture", "procedural", 128u * 128u * 4u, "procedural-wooden-crate"},
+        {"textures.procedural.checker", "texture", "procedural", 64u * 64u * 4u, "procedural-checker"},
+        {"textures.procedural.grid", "texture", "procedural", 128u * 128u * 4u, "procedural-grid"},
+        {"textures.procedural.bricks", "texture", "procedural", 128u * 128u * 4u, "procedural-bricks"},
+        {"textures.procedural.wood_planks", "texture", "procedural", 128u * 128u * 4u, "procedural-wood-planks"},
+        {"textures.procedural.building_facade", "texture", "procedural", 64u * 64u * 4u, "procedural-building-facade"},
+        {"samples/01_triangle/assets/crate.ppm", "texture", "loose", 32u * 32u * 3u, "loose-crate-ppm"},
+    }};
+
+    ipc::msgpack::Writer w;
+    w.map_header(4);
+    w.str("v");
+    w.u32_(ipc::proto::kProtocolVersion);
+    w.str("ch");
+    w.str("assets");
+    w.str("type");
+    w.str("catalog");
+    w.str("payload");
+    w.map_header(1);
+    w.str("entries");
+    w.array_header(kBuiltInAssets.size());
+    for (const WebAssetEntry& asset : kBuiltInAssets) {
+        w.map_header(5);
+        w.str("path");
+        w.str(asset.path);
+        w.str("category");
+        w.str(asset.category);
+        w.str("pack");
+        w.str(asset.pack);
+        w.str("size_bytes");
+        w.u32_(asset.size_bytes);
+        w.str("content_hash");
+        w.str(asset.hash);
+    }
+    return w.buffer();
+}
+
 std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity entity) {
     auto& registry = scene.registry();
     const auto* transform = registry.get<scene::TransformComponent>(entity);
@@ -575,11 +773,18 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
     const auto* camera = registry.get<scene::CameraComponent>(entity);
     const auto* light = registry.get<scene::LightComponent>(entity);
     const auto* renderable = registry.get<scene::RenderableComponent>(entity);
+    const auto* gameplay_tag = registry.get<scene::GameplayTagComponent>(entity);
+    const auto* player_controller = registry.get<scene::PlayerControllerComponent>(entity);
+    const auto* health = registry.get<scene::HealthComponent>(entity);
+    const auto* weapon = registry.get<scene::WeaponComponent>(entity);
     const bool has_material =
         renderable && scene.materials().valid(renderable->material);
     const usize component_count = (transform ? 1u : 0u) + (node ? 1u : 0u) +
                                   (camera ? 1u : 0u) + (light ? 1u : 0u) +
-                                  (renderable ? 1u : 0u) + (has_material ? 1u : 0u);
+                                  (renderable ? 1u : 0u) + (has_material ? 1u : 0u) +
+                                  (gameplay_tag ? 1u : 0u) +
+                                  (player_controller ? 1u : 0u) + (health ? 1u : 0u) +
+                                  (weapon ? 1u : 0u);
 
     ipc::msgpack::Writer w;
     w.map_header(4);
@@ -680,9 +885,16 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
     if (has_material) {
         const render::MaterialDesc material = scene.materials().get(renderable->material);
         w.str("MaterialComponent");
-        w.map_header(8);
+        w.map_header(9);
         w.str("albedo_rgba8");
         w.u32_(material.albedo_rgba8);
+        w.str("base_color_texture_name");
+        if (const auto it = material_texture_names().find(renderable->material.raw);
+            it != material_texture_names().end()) {
+            w.str(it->second);
+        } else {
+            w.str("");
+        }
         w.str("reflectivity");
         w.f32_(material.reflectivity);
         w.str("roughness");
@@ -697,6 +909,58 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
         w.f32_(material.shadow_opacity);
         w.str("shadow_softness");
         w.f32_(material.shadow_softness);
+    }
+
+    if (gameplay_tag) {
+        w.str("GameplayTagComponent");
+        w.map_header(2);
+        w.str("role");
+        w.u32_(static_cast<u32>(gameplay_tag->role));
+        w.str("flags");
+        w.u32_(gameplay_tag->flags);
+    }
+
+    if (player_controller) {
+        w.str("PlayerControllerComponent");
+        w.map_header(6);
+        w.str("walk_speed");
+        w.f32_(player_controller->walk_speed);
+        w.str("run_speed");
+        w.f32_(player_controller->run_speed);
+        w.str("jump_speed");
+        w.f32_(player_controller->jump_speed);
+        w.str("mouse_sensitivity");
+        w.f32_(player_controller->mouse_sensitivity);
+        w.str("height");
+        w.f32_(player_controller->height);
+        w.str("radius");
+        w.f32_(player_controller->radius);
+    }
+
+    if (health) {
+        w.str("HealthComponent");
+        w.map_header(3);
+        w.str("max_health");
+        w.f32_(health->max_health);
+        w.str("current_health");
+        w.f32_(health->current_health);
+        w.str("faction");
+        w.u32_(health->faction);
+    }
+
+    if (weapon) {
+        w.str("WeaponComponent");
+        w.map_header(5);
+        w.str("damage");
+        w.f32_(weapon->damage);
+        w.str("range");
+        w.f32_(weapon->range);
+        w.str("fire_rate");
+        w.f32_(weapon->fire_rate);
+        w.str("ammo");
+        w.u32_(weapon->ammo);
+        w.str("automatic");
+        w.boolean(weapon->automatic != 0u);
     }
 
     return w.buffer();
@@ -762,8 +1026,32 @@ bool launch_chrome_app_window(std::string_view url) {
 #endif
 }
 
+void close_chrome_editor_windows() {
+#if defined(__APPLE__)
+    char* argv[] = {
+        const_cast<char*>("osascript"),
+        const_cast<char*>("-e"),
+        const_cast<char*>("tell application \"Google Chrome\""),
+        const_cast<char*>("-e"),
+        const_cast<char*>("repeat with w in windows"),
+        const_cast<char*>("-e"),
+        const_cast<char*>(
+            "try\nif (URL of active tab of w contains \"127.0.0.1:7654/panels/\") then close w\nend try"),
+        const_cast<char*>("-e"),
+        const_cast<char*>("end repeat"),
+        const_cast<char*>("-e"),
+        const_cast<char*>("end tell"),
+        nullptr,
+    };
+    pid_t pid = 0;
+    (void)::posix_spawnp(&pid, "osascript", nullptr, nullptr, argv, environ);
+#endif
+}
+
 void open_web_console(console::Output& out) {
     ui::console::set_open(false);
+    if (current_mode() != Mode::Edit)
+        toggle_mode();
     if (!start_editor_ipc(out))
         return;
     const std::string url = editor_panel_url("workbench");
@@ -791,6 +1079,22 @@ void publish_schema_catalog_if_needed() {
     server.broadcast(ipc::proto::channels::kschemas, payload);
 }
 
+void publish_asset_catalog_if_needed() {
+    auto& server = ipc::Server::Get();
+    if (!server.has_subscribers("assets"))
+        return;
+
+    static u32 frames_until_refresh = 0;
+    if (frames_until_refresh > 0u) {
+        --frames_until_refresh;
+        return;
+    }
+    frames_until_refresh = 60u;
+
+    const std::vector<u8> payload = encode_asset_catalog_envelope();
+    server.broadcast("assets", payload);
+}
+
 void publish_selection_if_needed(scene::Scene* scene) {
     auto& server = ipc::Server::Get();
     if (!server.has_subscribers(ipc::proto::channels::kselection))
@@ -800,9 +1104,18 @@ void publish_selection_if_needed(scene::Scene* scene) {
     static u32 unchanged_frames = 0;
     static bool last_was_cleared = false;
 
-    const u32 raw = selected_entity_raw().load(std::memory_order_acquire);
-    const u32 generation = selected_entity_generation().load(std::memory_order_acquire);
+    const u32 selection_raw = selection::selected_scene_entity_raw();
+    u32 raw = selected_entity_raw().load(std::memory_order_acquire);
+    u32 generation = selected_entity_generation().load(std::memory_order_acquire);
+    if (selection_raw != raw) {
+        raw = selection_raw;
+        selected_entity_raw().store(raw, std::memory_order_release);
+        generation = selected_entity_generation().fetch_add(1u, std::memory_order_acq_rel) + 1u;
+    }
     if (!scene) {
+        if (raw != 0u) {
+            clear_web_selection_mirror();
+        }
         if (last_was_cleared && unchanged_frames++ < 20u)
             return;
         last_signature = 0;
@@ -828,6 +1141,7 @@ void publish_selection_if_needed(scene::Scene* scene) {
     }
 
     if (!scene->registry().alive(entity)) {
+        clear_web_selection_mirror();
         if (last_was_cleared && unchanged_frames++ < 20u)
             return;
         last_signature = 0;
@@ -856,6 +1170,7 @@ void ensure_web_panel_commands_registered() {
     if (registered)
         return;
     registered = true;
+    std::atexit(close_chrome_editor_windows);
 
     auto& console_ref = console::Console::Get();
     ipc::Server::Get().set_selection_select_handler(on_web_selection_select);
@@ -883,11 +1198,14 @@ void ensure_web_panel_commands_registered() {
                                 });
 }
 
+void close_web_panel_windows() {
+    close_chrome_editor_windows();
+}
+
 void clear_web_scene_authoring_state() {
     entity_labels().clear();
-    selected_entity_raw().store(0u, std::memory_order_release);
-    selection::clear_selection();
-    selected_entity_generation().fetch_add(1u, std::memory_order_acq_rel);
+    clear_web_material_texture_names();
+    clear_web_selection_mirror();
     hierarchy_generation().fetch_add(1u, std::memory_order_acq_rel);
     set_web_scene_dirty(false);
 }
@@ -902,12 +1220,52 @@ std::string web_entity_label(Entity entity) {
 void set_web_entity_label(Entity entity, std::string_view label) {
     if (!entity.valid())
         return;
+    bool changed = false;
+    auto& labels = entity_labels();
     if (label.empty()) {
-        entity_labels().erase(entity.raw);
+        changed = labels.erase(entity.raw) != 0u;
     } else {
-        entity_labels()[entity.raw] = std::string{label};
+        const auto found = labels.find(entity.raw);
+        if (found == labels.end() || found->second != label) {
+            labels[entity.raw] = std::string{label};
+            changed = true;
+        }
     }
-    hierarchy_generation().fetch_add(1u, std::memory_order_acq_rel);
+    if (changed) {
+        bump_selected_entity_generation();
+        hierarchy_generation().fetch_add(1u, std::memory_order_acq_rel);
+    }
+}
+
+std::string web_material_texture_name(u32 material_raw) {
+    const auto it = material_texture_names().find(material_raw);
+    return it == material_texture_names().end() ? std::string{} : it->second;
+}
+
+void set_web_material_texture_name(u32 material_raw, std::string_view texture_name) {
+    if (material_raw == 0u)
+        return;
+    bool changed = false;
+    auto& names = material_texture_names();
+    if (texture_name.empty()) {
+        changed = names.erase(material_raw) != 0u;
+    } else {
+        const auto found = names.find(material_raw);
+        if (found == names.end() || found->second != texture_name) {
+            names[material_raw] = std::string{texture_name};
+            changed = true;
+        }
+    }
+    if (changed) {
+        bump_selected_entity_generation();
+    }
+}
+
+void clear_web_material_texture_names() {
+    if (material_texture_names().empty())
+        return;
+    material_texture_names().clear();
+    bump_selected_entity_generation();
 }
 
 WebSceneDirtyState web_scene_dirty_state() {
@@ -926,6 +1284,14 @@ void set_web_scene_dirty(bool dirty) {
 void mark_web_scene_dirty() {
     scene_dirty_flag().store(true, std::memory_order_release);
     scene_dirty_generation().fetch_add(1u, std::memory_order_acq_rel);
+}
+
+void publish_web_scene_load_failed(std::string_view path, std::string_view error) {
+    auto& server = ipc::Server::Get();
+    if (!server.has_subscribers(ipc::proto::channels::kscene))
+        return;
+    const std::vector<u8> payload = encode_scene_load_failed_envelope(path, error);
+    server.broadcast(ipc::proto::channels::kscene, payload);
 }
 
 void publish_web_scene_dirty() {
@@ -974,6 +1340,20 @@ void publish_web_scene_hierarchy(scene::Scene* scene) {
     server.broadcast(ipc::proto::channels::kscene, payload);
 }
 
+void publish_web_selection_command_ack(std::string_view command,
+                                       bool ok,
+                                       std::string_view text,
+                                       Entity entity,
+                                       std::string_view component,
+                                       std::string_view field) {
+    auto& server = ipc::Server::Get();
+    if (!server.has_subscribers(ipc::proto::channels::kselection))
+        return;
+    const std::vector<u8> payload =
+        encode_selection_command_ack_envelope(command, ok, text, entity, component, field);
+    server.broadcast(ipc::proto::channels::kselection, payload);
+}
+
 void publish_web_profiler_frame(const WebProfilerFrame& frame) {
     auto& server = ipc::Server::Get();
     const bool has_profiler_subscribers = server.has_subscribers("profiler");
@@ -993,6 +1373,8 @@ void publish_web_profiler_frame(const WebProfilerFrame& frame) {
 }
 
 void pump_web_panels() {
+    publish_schema_catalog_if_needed();
+    publish_asset_catalog_if_needed();
     ipc::Server::Get().pump();
 }
 

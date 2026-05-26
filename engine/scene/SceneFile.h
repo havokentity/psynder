@@ -37,6 +37,8 @@ enum class SceneFileChunkType : u32 {
     Materials = 0x54414D53u,        // SMAT
     BehaviorSpinOps = 0x50534253u,  // SBSP
     BehaviorTranslateOps = 0x4C544253u,  // SBTL
+    AuthoringNodes = 0x54554153u,   // SAUT
+    GameplayEntities = 0x504D4753u,  // SGMP
 };
 
 struct SceneFileHeader {
@@ -103,6 +105,7 @@ struct SceneFileLight {
 };
 
 enum class SceneFileObjectKind : u32 {
+    Empty = 0u,
     Camera = 1u,
     MeshInstance = 2u,
     Light = 3u,
@@ -113,6 +116,17 @@ struct SceneFileObjectName {
     u32 object_index = 0u;
     u32 name_offset = 0u;
     u32 reserved = 0u;
+};
+
+inline constexpr u32 kSceneFileAuthoringRoot = 0xFFFFFFFFu;
+
+struct SceneFileAuthoringNode {
+    SceneFileObjectKind kind = SceneFileObjectKind::Empty;
+    u32 object_index = 0u;
+    u32 transform_index = 0u;
+    u32 parent_index = kSceneFileAuthoringRoot;
+    u32 name_offset = 0u;
+    u32 reserved[3] = {};
 };
 
 struct SceneFileMaterial {
@@ -157,6 +171,17 @@ struct SceneFileBehaviorTranslateOp {
     u8 _pad[32] = {};
 };
 
+struct SceneFileGameplayEntity {
+    u32 authoring_node_index = 0u;
+    u32 component_mask = 0u;
+    GameplayRole role = GameplayRole::None;
+    u8 _pad0[3] = {};
+    u32 flags = 0u;
+    PlayerControllerComponent player_controller{};
+    HealthComponent health{};
+    WeaponComponent weapon{};
+};
+
 struct SceneFileView {
     const SceneFileHeader* header = nullptr;
     std::span<const char> strings;
@@ -171,6 +196,8 @@ struct SceneFileView {
     std::span<const SceneFileMaterial> materials;
     std::span<const SceneFileBehaviorSpinOp> behavior_spin_ops;
     std::span<const SceneFileBehaviorTranslateOp> behavior_translate_ops;
+    std::span<const SceneFileAuthoringNode> authoring_nodes;
+    std::span<const SceneFileGameplayEntity> gameplay_entities;
 };
 
 struct SceneFileLoaded {
@@ -212,9 +239,8 @@ struct SceneFileSaveHooks {
         void* user,
         ::psynder::render::MaterialId material,
         const ::psynder::render::MaterialDesc& material_desc) = nullptr;
-    // Cooked v1 has one mesh-instance group string, but no general label or
-    // hierarchy chunk. Callers may return a label/path here to roundtrip that
-    // value as a group; parent-child links are still flattened on load.
+    // Cooked v1 keeps this mesh group string for behavior targeting and older
+    // content. General editor labels and hierarchy are stored in SAUT.
     std::string_view (*mesh_instance_group_name)(void* user,
                                                 Entity entity,
                                                 SceneNode node) = nullptr;
@@ -237,6 +263,8 @@ struct SceneFileSaveStats {
     u32 flattened_parent_relations = 0u;
     u32 baked_world_transforms = 0u;
     u32 approximate_world_transforms = 0u;
+    u32 authoring_nodes = 0u;
+    u32 gameplay_entities = 0u;
 };
 
 [[nodiscard]] bool parse_scene_file(std::span<const u8> bytes,
@@ -407,5 +435,6 @@ static_assert(sizeof(SceneFileObjectName) == 16u);
 static_assert(sizeof(SceneFileMaterial) == 64u);
 static_assert(sizeof(SceneFileBehaviorSpinOp) == 64u);
 static_assert(sizeof(SceneFileBehaviorTranslateOp) == 64u);
+static_assert(sizeof(SceneFileGameplayEntity) == 76u);
 
 }  // namespace psynder::scene

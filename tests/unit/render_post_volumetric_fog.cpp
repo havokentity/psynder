@@ -200,6 +200,10 @@ bool always_blocked(void* /*user*/, math::Vec3 /*a*/, math::Vec3 /*b*/) {
     return true;
 }
 
+bool never_blocked(void* /*user*/, math::Vec3 /*a*/, math::Vec3 /*b*/) {
+    return false;
+}
+
 }  // namespace
 
 TEST_CASE("render_post: populate honours the occluder callback", "[render_post][fog]") {
@@ -221,4 +225,26 @@ TEST_CASE("render_post: populate honours the occluder callback", "[render_post][
     const auto& cl = g_lit->cells[FroxelGrid::index_of(kFroxelW / 2, kFroxelH / 2, 8)];
     const auto& cu = g_unlit->cells[FroxelGrid::index_of(kFroxelW / 2, kFroxelH / 2, 8)];
     REQUIRE(cl.scatter_r > cu.scatter_r);
+}
+
+TEST_CASE("render_post: populate honours any occluder in the callback array",
+          "[render_post][fog]") {
+    std::vector<FogLight> lights = {FogLight{math::Vec3{0, 0, 4}, math::Vec3{10, 10, 10}, 0.0f}};
+    FogScene lit = make_scene(&lights);
+    FogScene blocked = make_scene(&lights);
+    const OccluderFn occluders[] = {
+        OccluderFn{.fn = never_blocked, .user = nullptr},
+        OccluderFn{.fn = always_blocked, .user = nullptr},
+    };
+    blocked.occluders = occluders;
+    blocked.occluder_count = 2u;
+
+    auto g_lit = std::make_unique<FroxelGrid>();
+    auto g_blocked = std::make_unique<FroxelGrid>();
+    populate_fog_grid(*g_lit, lit);
+    populate_fog_grid(*g_blocked, blocked);
+
+    const auto& cl = g_lit->cells[FroxelGrid::index_of(kFroxelW / 2, kFroxelH / 2, 8)];
+    const auto& cb = g_blocked->cells[FroxelGrid::index_of(kFroxelW / 2, kFroxelH / 2, 8)];
+    REQUIRE(cl.scatter_r > cb.scatter_r);
 }

@@ -100,7 +100,13 @@ struct FogScene {
     const FogLight* lights = nullptr;
     u32 light_count = 0;
 
-    OccluderFn occluder{};  // optional; nullptr → unshadowed
+    // Optional legacy single occluder plus an optional list. A ray is shadowed
+    // if any bound occluder reports a hit, so callers can compose TLAS,
+    // terrain, starfield masks, or editor-preview blockers without wrapping
+    // them in another dispatcher.
+    OccluderFn occluder{};
+    const OccluderFn* occluders = nullptr;
+    u32 occluder_count = 0;
 };
 
 // Populate the grid from the scene. Pure CPU — does not touch the framebuffer.

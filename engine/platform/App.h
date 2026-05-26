@@ -12,6 +12,7 @@
 #include "platform/Platform.h"
 #include "render/FrameStats.h"
 #include "render/Framebuffer.h"
+#include "render/Image.h"
 #include "render/PngWriter.h"
 #include "render/RenderingSystem.h"
 #include "render/TextureGenerators.h"
@@ -636,9 +637,24 @@ class WindowApp {
             texture = render::texture_generators::wooden_crate();
         } else if (texture_name == "textures.procedural.checker") {
             texture = render::texture_generators::checker();
+        } else if (texture_name == "textures.procedural.grid") {
+            texture = render::texture_generators::grid();
+        } else if (texture_name == "textures.procedural.bricks") {
+            texture = render::texture_generators::bricks();
+        } else if (texture_name == "textures.procedural.wood_planks") {
+            texture = render::texture_generators::wood_planks();
+        } else if (texture_name == "textures.procedural.building_facade") {
+            texture = render::texture_generators::building_facade();
         } else {
-            texture = render::fallback_checker_texture();
-            PSY_LOG_WARN("scene: unknown texture '{}'; using fallback checker", texture_name);
+            render::Rgba8Image image{};
+            const asset::Blob blob = asset::Vault::Get().read(texture_name);
+            if (blob.data && render::image_detail::decode_ppm_rgba8(
+                                 std::span<const u8>{blob.data, blob.bytes}, image)) {
+                texture = render::Texture2D{std::move(image)};
+            } else {
+                texture = render::fallback_checker_texture();
+                PSY_LOG_WARN("scene: unknown texture '{}'; using fallback checker", texture_name);
+            }
         }
         scene_textures_.push_back(NamedSceneTexture{std::string{texture_name}, std::move(texture)});
         return scene_textures_.back().texture.view();
