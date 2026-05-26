@@ -3236,6 +3236,20 @@ struct PlayerApp {
         const math::Mat4 view_projection = math::mul(camera.projection, camera.view);
         const Entity selected = editor::selection::selected_scene_entity();
         const bool selected_alive = selected.valid() && scene->registry().alive(selected);
+        // Gizmo mode switching: Tab cycles translate -> rotate -> scale; G/R/Y
+        // bind directly. Only while not mid-drag so a live drag keeps its mode.
+        if (!gizmo_state.drag.active) {
+            using editor::viewport::GizmoMode;
+            if (input->key_pressed(platform::KeyCode::Tab))
+                editor::viewport::set_gizmo_mode(
+                    gizmo_state, editor::viewport::next_gizmo_mode(gizmo_state.mode));
+            else if (input->key_pressed(platform::KeyCode::G))
+                editor::viewport::set_gizmo_mode(gizmo_state, GizmoMode::Translate);
+            else if (input->key_pressed(platform::KeyCode::R))
+                editor::viewport::set_gizmo_mode(gizmo_state, GizmoMode::Rotate);
+            else if (input->key_pressed(platform::KeyCode::Y))
+                editor::viewport::set_gizmo_mode(gizmo_state, GizmoMode::Scale);
+        }
         ui::imm::begin_frame(ctx.framebuffer);
         ui::imm::set_input({mouse.x, mouse.y}, mouse.left);
         editor::viewport::GizmoResult result{};
@@ -3247,7 +3261,7 @@ struct PlayerApp {
                     .view_projection = view_projection,
                     .mouse = mouse,
                     .framebuffer_size = framebuffer_size,
-                    .mode = editor::viewport::GizmoMode::Translate,
+                    .mode = gizmo_state.mode,
                     .apply_transform = true,
                 },
                 &gizmo_state);
