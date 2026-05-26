@@ -29,14 +29,15 @@ std::string build_console_archive_path() {
 
 }  // namespace
 
-const std::string& directory() {
-    static const std::string dir = build_directory();
-    return dir;
+// By value, no cached static — see RuntimeConfig.h: the atexit autosave
+// handler must not depend on a static string that could already be destroyed
+// at exit (static-destruction-order use-after-free).
+std::string directory() {
+    return build_directory();
 }
 
-const std::string& console_archive_path() {
-    static const std::string path = build_console_archive_path();
-    return path;
+std::string console_archive_path() {
+    return build_console_archive_path();
 }
 
 bool ensure_directory() {
@@ -65,8 +66,18 @@ int save_console_archive() {
 }
 
 void register_console_archive_autosave() {
-    std::call_once(g_autosave_once,
-                   [] { std::atexit([] { (void)runtime_config::save_console_archive(); }); });
+    std::call_once(g_autosave_once, [] {
+        // Force the Console singleton to be constructed BEFORE we register the
+        // atexit handler. [basic.start.term]: an atexit-registered function is
+        // sequenced before the destructor of any static-storage object whose
+        // construction completed before the std::atexit call. So touching
+        // Console::Get() here guarantees the autosave handler runs while the
+        // Console (and its internal mutex) is still alive at exit — otherwise
+        // SaveArchivedCvars would lock a destroyed mutex (use-after-free /
+        // "mutex lock failed: Invalid argument" abort under sanitizers).
+        (void)console::Console::Get();
+        std::atexit([] { (void)runtime_config::save_console_archive(); });
+    });
 }
 
 void register_console_commands() {

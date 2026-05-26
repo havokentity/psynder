@@ -7,8 +7,13 @@
 
 namespace psynder::platform::runtime_config {
 
-[[nodiscard]] const std::string& directory();
-[[nodiscard]] const std::string& console_archive_path();
+// Returned BY VALUE (not a cached static reference) on purpose: the
+// console-archive autosave runs from a std::atexit handler, and a cached
+// static std::string here could be destroyed before that handler fires —
+// a static-destruction-order use-after-free (caught by ASan at exit). These
+// are rare config-path queries, so recomputing is cheap and lifetime-safe.
+[[nodiscard]] std::string directory();
+[[nodiscard]] std::string console_archive_path();
 
 bool ensure_directory();
 bool open_directory();
