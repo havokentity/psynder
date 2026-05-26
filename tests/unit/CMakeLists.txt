@@ -32,6 +32,10 @@ if(TARGET Catch2::Catch2WithMain)
     if(TARGET psynder_editor_ipc)
         target_link_libraries(psynder_unit PRIVATE psynder_editor_ipc)
     endif()
+    # Lane-18 (editor-world) level-source loader tests.
+    if(TARGET psynder_editor_world)
+        target_link_libraries(psynder_unit PRIVATE psynder_editor_world)
+    endif()
     # Platform lanes (21/22/23) export internal symbols for host-specific
     # tests; link the host's platform lib directly so those tests resolve.
     if(TARGET psynder_platform_macos)

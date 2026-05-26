@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
-# Editor aggregator — adds ipc + core; the web/ TypeScript app is built separately by Vite.
+# Editor aggregator — adds ipc + core + world; the web/ TypeScript app is built separately by Vite.
 add_subdirectory(ipc)
 add_subdirectory(core)
+add_subdirectory(world)
 
 add_library(psynder_editor INTERFACE)
-target_link_libraries(psynder_editor INTERFACE psynder_editor_core psynder_editor_ipc)
+target_link_libraries(psynder_editor INTERFACE psynder_editor_core psynder_editor_ipc psynder_editor_world)
 add_library(psynder::editor ALIAS psynder_editor)
