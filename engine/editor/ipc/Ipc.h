@@ -69,6 +69,17 @@ struct SelectionComponentEdit {
 
 using SelectionComponentEditHandler = void (*)(const SelectionComponentEdit& edit);
 
+// Add a component to an entity from the Inspector "Add Component" control.
+// `variant` is an optional sub-kind discriminator (e.g. "static" for a
+// static RigidBody); empty means the component's default flavor.
+struct SelectionComponentAdd {
+    u32 entity_id = 0;
+    std::string component;
+    std::string variant;
+};
+
+using SelectionComponentAddHandler = void (*)(const SelectionComponentAdd& add);
+
 class Server {
    public:
     static Server& Get();
@@ -81,6 +92,7 @@ class Server {
     void broadcast_stats_tick(const StatsTick& tick);
     void set_selection_select_handler(SelectionSelectHandler handler);
     void set_selection_component_edit_handler(SelectionComponentEditHandler handler);
+    void set_selection_component_add_handler(SelectionComponentAddHandler handler);
 
     [[nodiscard]] bool has_subscribers(std::string_view channel) const;
 

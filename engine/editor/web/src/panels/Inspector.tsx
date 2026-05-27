@@ -17,6 +17,7 @@ import type {
     SchemaCatalog,
     SchemaDelta,
     SceneDirtyState,
+    SelectionComponentAdd,
     SelectionPatch,
     SelectionState,
 } from '../ipc/protocol';
@@ -71,6 +72,7 @@ export function Inspector() {
     const [selection, set_selection] = React.useState<SelectionState | null>(null);
     const [dirty, set_dirty] = React.useState(() => editor_scene_dirty());
     const [edit_ack, set_edit_ack] = React.useState<InspectorEditAck | null>(null);
+    const [add_status, set_add_status] = React.useState<InspectorEditAck | null>(null);
     const pending_edit = React.useRef<PendingEdit | null>(null);
     const fallback_timer = React.useRef<number | null>(null);
 
@@ -180,6 +182,12 @@ export function Inspector() {
                         ack.ok ? 'applied' : 'error',
                         ack.text || (ack.ok ? 'edit applied' : 'edit failed'),
                     );
+                } else if (ack.command === 'add_component') {
+                    set_add_status({
+                        status: ack.ok ? 'applied' : 'error',
+                        text: ack.text || (ack.ok ? 'component added' : 'add component failed'),
+                        sent_at: Date.now(),
+                    });
                 }
             } else if (env.type === 'cleared') {
                 set_selection(null);
@@ -311,6 +319,18 @@ export function Inspector() {
         mark_editor_scene_dirty();
     }, [client, selection]);
 
+    const add_component = React.useCallback((component: string, variant?: string) => {
+        if (!selection) return;
+        const label = variant ? `${component} (${variant})` : component;
+        set_add_status({ status: 'pending', text: `adding ${label}...`, sent_at: Date.now() });
+        client.send<SelectionComponentAdd>('selection', 'add_component', {
+            entity_id: selection.entity_id,
+            component,
+            ...(variant ? { variant } : {}),
+        });
+        mark_editor_scene_dirty();
+    }, [client, selection]);
+
     return (
         <div className="psy-panel psy-inspector">
             <header className="psy-panel-header">
@@ -364,6 +384,35 @@ export function Inspector() {
                             No component schemas received yet.
                         </div>
                     )}
+
+                    <section className="psy-add-component">
+                        <div className="psy-add-component-title">Add component</div>
+                        <div className="psy-add-component-row">
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'RigidBodyComponent' in selection.components}
+                                onClick={() => add_component('RigidBody')}
+                                title="Add a dynamic RigidBody so this object simulates in Play mode"
+                            >
+                                RigidBody (dynamic)
+                            </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'RigidBodyComponent' in selection.components}
+                                onClick={() => add_component('RigidBody', 'static')}
+                                title="Add a static (zero-mass) RigidBody - floors, walls, fixed props"
+                            >
+                                RigidBody (static)
+                            </button>
+                        </div>
+                        {add_status && (
+                            <span className={`psy-edit-ack is-${add_status.status}`} aria-live="polite">
+                                {add_status.text}
+                            </span>
+                        )}
+                    </section>
                 </div>
             )}
         </div>

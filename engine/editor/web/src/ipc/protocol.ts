@@ -150,6 +150,17 @@ export interface SceneDirtyState {
     generation?: number;
 }
 
+// Inspector "Add Component" intent: panel -> engine on the `selection` channel.
+// `variant` is an optional sub-kind discriminator (e.g. "static" for a static
+// RigidBody); omit for the component's default flavor. The engine replies on
+// the `selection` channel with a `command_ack` whose command is
+// "add_component".
+export interface SelectionComponentAdd {
+    entity_id: number;
+    component: string;
+    variant?: string;
+}
+
 // ─── Console channel ─────────────────────────────────────────────────────
 //
 // `eval`        : panel → engine. Pushes either an engine-console command/cvar

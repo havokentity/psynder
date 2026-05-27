@@ -389,6 +389,74 @@ button.psy-window-control:hover {
     color: var(--psy-fg-faint);
 }
 
+.psy-scene-tool.is-active {
+    border-color: var(--psy-accent);
+    color: var(--psy-fg);
+    background: color-mix(in srgb, var(--psy-accent) 22%, var(--psy-bg-elev-1));
+}
+
+.psy-world-chrome {
+    flex: 0 0 auto;
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 5px;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: rgba(8, 12, 17, 0.62);
+}
+
+.psy-add-component {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--psy-border-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.psy-add-component-title {
+    color: var(--psy-fg-muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.psy-add-component-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.psy-button {
+    height: 28px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--psy-border-soft);
+    border-radius: var(--psy-radius-sm);
+    background: var(--psy-bg-elev-1);
+    color: var(--psy-fg-muted);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.psy-button:hover {
+    border-color: var(--psy-accent);
+    color: var(--psy-fg);
+}
+
+.psy-button:disabled {
+    cursor: not-allowed;
+    color: var(--psy-fg-faint);
+    border-color: transparent;
+    opacity: 0.58;
+}
+
 .psy-topbar-actions {
     display: flex;
     align-items: center;

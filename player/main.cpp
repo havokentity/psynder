@@ -85,6 +85,7 @@ bool undo_active_arcade_editor_command(std::string& label);
 bool redo_active_arcade_editor_command(std::string& label);
 bool save_active_arcade_scene(std::string_view path, std::string& error);
 void apply_active_arcade_component_edit(const editor::ipc::SelectionComponentEdit& edit);
+void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd& add);
 std::optional<Entity> parse_entity_arg(std::string_view text);
 std::string joined_name_args(std::span<const std::string_view> args, usize first);
 std::string_view material_preset_arg(std::span<const std::string_view> args);
@@ -2984,6 +2985,8 @@ struct PlayerApp {
         editor::ensure_web_panel_commands_registered();
         editor::ipc::Server::Get().set_selection_component_edit_handler(
             apply_active_arcade_component_edit);
+        editor::ipc::Server::Get().set_selection_component_add_handler(
+            apply_active_arcade_component_add);
         register_arcade_console_commands();
         platform::runtime_config::register_console_commands();
         platform::runtime_config::register_console_archive_autosave();
@@ -4026,6 +4029,40 @@ void apply_active_arcade_component_edit(const editor::ipc::SelectionComponentEdi
                                               entity,
                                               edit.component,
                                               edit.field);
+}
+
+// Inspector "Add Component" intent. Routes the requested component (with an
+// optional variant) to the matching host entry point. RigidBody is the only
+// component wired today; the static flavor maps to a zero-mass body. The op
+// itself targets the active selection, mirroring the phys_rigidbody console
+// command; the message entity_id is used only for the reply ack.
+void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd& add) {
+    const Entity entity{add.entity_id};
+    bool ok = false;
+    std::string text;
+    const bool is_rigid_body =
+        add.component == "RigidBody" || add.component == "RigidBodyComponent" ||
+        add.component == "RigidBodyStatic";
+    if (is_rigid_body) {
+        const bool make_static =
+            add.component == "RigidBodyStatic" || add.variant == "static";
+        ok = add_active_arcade_rigid_body(make_static);
+        if (ok) {
+            text = make_static ? "added static RigidBody" : "added dynamic RigidBody";
+        } else {
+            text = "add RigidBody failed (no valid selection / no active scene)";
+            PSY_LOG_WARN("psynder_arcade: add RigidBody failed on {}", add.entity_id);
+        }
+    } else {
+        text = "add component not supported: ";
+        text += add.component;
+        PSY_LOG_WARN("psynder_arcade: unsupported add_component '{}'", add.component);
+    }
+    editor::publish_web_selection_command_ack("add_component",
+                                              ok,
+                                              text,
+                                              entity,
+                                              add.component);
 }
 
 bool apply_active_arcade_material_preset(Entity entity, std::string_view preset) {

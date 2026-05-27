@@ -370,6 +370,7 @@ struct LegacyEnvelope {
     std::string component;
     std::string field;
     std::string field_kind;
+    std::string variant;
     ::psynder::editor::ipc::SelectionComponentEditValue value;
     bool has_value = false;
 };
@@ -377,6 +378,8 @@ struct LegacyEnvelope {
 std::atomic<::psynder::editor::ipc::SelectionSelectHandler> g_selection_select_handler{nullptr};
 std::atomic<::psynder::editor::ipc::SelectionComponentEditHandler>
     g_selection_component_edit_handler{nullptr};
+std::atomic<::psynder::editor::ipc::SelectionComponentAddHandler>
+    g_selection_component_add_handler{nullptr};
 
 bool msgpack_tag_is_signed_integer(::psynder::u8 tag) noexcept {
     return (tag & 0xE0) == 0xE0 || tag == 0xD0 || tag == 0xD1 || tag == 0xD2 || tag == 0xD3;
@@ -540,6 +543,9 @@ bool decode_legacy_payload(msgpack::Reader& r, LegacyEnvelope& out) {
                 return false;
         } else if (key == "field_kind") {
             if (!r.str(out.field_kind))
+                return false;
+        } else if (key == "variant") {
+            if (!r.str(out.variant))
                 return false;
         } else if (key == "value") {
             if (!decode_legacy_component_value(r, out.value))
@@ -1251,6 +1257,18 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                         handler(edit);
                     }
                 } else if (env.channel == proto::channels::kselection &&
+                           env.type == "add_component" &&
+                           env.has_entity_id &&
+                           !env.component.empty()) {
+                    if (auto* handler =
+                            g_selection_component_add_handler.load(std::memory_order_acquire)) {
+                        ::psynder::editor::ipc::SelectionComponentAdd add;
+                        add.entity_id = env.entity_id;
+                        add.component = std::move(env.component);
+                        add.variant = std::move(env.variant);
+                        handler(add);
+                    }
+                } else if (env.channel == proto::channels::kselection &&
                     env.type == "spawn_prop" &&
                     !env.prop_id.empty()) {
                     std::string text = "editor_spawn_prop ";
@@ -1644,6 +1662,10 @@ void Server::set_selection_select_handler(SelectionSelectHandler handler) {
 
 void Server::set_selection_component_edit_handler(SelectionComponentEditHandler handler) {
     internal::g_selection_component_edit_handler.store(handler, std::memory_order_release);
+}
+
+void Server::set_selection_component_add_handler(SelectionComponentAddHandler handler) {
+    internal::g_selection_component_add_handler.store(handler, std::memory_order_release);
 }
 
 bool Server::has_subscribers(std::string_view channel) const {

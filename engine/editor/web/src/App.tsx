@@ -458,6 +458,8 @@ export function App() {
     const [scene_path, set_scene_path] = React.useState(() => last_scene_path() ?? DEFAULT_SCENE_PATH);
     const [scene_status, set_scene_status] = React.useState<SceneToolbarStatus>('idle');
     const [scene_message, set_scene_message] = React.useState('scene ready');
+    const [rt_mode_on, set_rt_mode_on] = React.useState(false);
+    const [world_message, set_world_message] = React.useState('world ready');
     const [settings_open, set_settings_open] = React.useState(false);
     const [theme, set_theme] = React.useState<ThemeName>(() => (
         (window.localStorage.getItem('psy_theme') as ThemeName | null) ?? 'forge'
@@ -783,6 +785,38 @@ export function App() {
         }
     }, [connection, ipc_client]);
 
+    const send_world_command = React.useCallback((source: string, label: string) => {
+        if (connection !== 'open') {
+            set_world_message(`connection is ${connection}`);
+            return;
+        }
+        set_world_message(label);
+        ipc_client.send<ConsoleEval>('console', 'eval', {
+            id: ++command_seq.current,
+            source,
+            mode: 'console',
+            quiet: true,
+        });
+    }, [connection, ipc_client]);
+
+    const request_new_indoor = React.useCallback(() => {
+        send_world_command('world_new_indoor', 'adding indoor map');
+    }, [send_world_command]);
+
+    const request_new_terrain = React.useCallback(() => {
+        send_world_command('world_new_terrain', 'adding terrain');
+    }, [send_world_command]);
+
+    const request_bake_lightmaps = React.useCallback(() => {
+        send_world_command('bake_lightmaps', 'baking lightmaps');
+    }, [send_world_command]);
+
+    const toggle_rt_mode = React.useCallback(() => {
+        const next = !rt_mode_on;
+        set_rt_mode_on(next);
+        send_world_command(`rt_mode ${next ? '1' : '0'}`, next ? 'raytracer on' : 'raytracer off');
+    }, [rt_mode_on, send_world_command]);
+
     const request_new_scene = React.useCallback(() => {
         if (!confirm_dirty_scene_navigation(scene_dirty, 'create a new scene')) return;
         send_scene_command('arcade_new_scene', 'creating blank scene', 'new');
@@ -964,6 +998,51 @@ export function App() {
                         title="Redo scene edit"
                     >
                         <span aria-hidden="true">R</span>
+                    </button>
+                </div>
+
+                <div
+                    className="psy-world-chrome"
+                    aria-label="world and render toolbar"
+                    title={world_message}
+                >
+                    <button
+                        type="button"
+                        className="psy-scene-tool"
+                        onClick={request_new_indoor}
+                        disabled={connection !== 'open'}
+                        title="Add an indoor BSP level to the scene"
+                    >
+                        <b>Indoor</b>
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-scene-tool"
+                        onClick={request_new_terrain}
+                        disabled={connection !== 'open'}
+                        title="Add a terrain to the scene"
+                    >
+                        <b>Terrain</b>
+                    </button>
+                    <span className="psy-toolbar-divider" aria-hidden="true" />
+                    <button
+                        type="button"
+                        className={`psy-scene-tool ${rt_mode_on ? 'is-active' : ''}`}
+                        onClick={toggle_rt_mode}
+                        disabled={connection !== 'open'}
+                        aria-pressed={rt_mode_on}
+                        title="Toggle the viewport raytracer"
+                    >
+                        <b>{rt_mode_on ? 'RT on' : 'RT off'}</b>
+                    </button>
+                    <button
+                        type="button"
+                        className="psy-scene-tool"
+                        onClick={request_bake_lightmaps}
+                        disabled={connection !== 'open'}
+                        title="Bake static lightmaps for the active scene"
+                    >
+                        <b>Bake</b>
                     </button>
                 </div>
 
