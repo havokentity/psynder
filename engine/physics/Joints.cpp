@@ -16,13 +16,17 @@
 #include "physics/WorldImpl.h"
 
 #include <span>
+#include <vector>
 
 namespace psynder::physics {
 
 u32 body_index_of(BodyId id) noexcept {
     auto& w = detail::world_state();
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    const u32 idx = detail::handle_index(id.raw);
+    // Validate the FULL generation: a stale handle whose slot was recycled
+    // must NOT silently resolve to the new occupant (UAF-class aliasing).
+    if (idx >= w.bodies.size() || w.bodies[idx].alive == 0 ||
+        w.bodies[idx].gen != detail::handle_gen(id.raw))
         return 0xFFFFFFFFu;
     return idx;
 }
@@ -39,8 +43,33 @@ void solve_joints(World& world,
     auto& w = detail::world_state();
     detail::FpGuard fp_guard;  // pin round-to-nearest for the pass, like step()
 
+    // Resolve gen-checked handles to live indices each solve. A joint that
+    // carries valid BodyIds (joint_with_handles) is re-bound to the slot its
+    // handle currently names — and SKIPPED entirely if either handle is stale,
+    // so a destroyed-and-recycled body never gets pulled by a dangling joint.
+    // Joints authored with raw indices (body_id_* invalid) pass through as-is.
+    std::vector<Joint> resolved;
+    resolved.reserve(joints.joints.size());
+    for (const Joint& j : joints.joints) {
+        const bool has_handles = j.body_id_a.valid() || j.body_id_b.valid();
+        if (!has_handles) {
+            resolved.push_back(j);
+            continue;
+        }
+        const u32 ia = body_index_of(j.body_id_a);
+        const u32 ib = body_index_of(j.body_id_b);
+        if (ia == 0xFFFFFFFFu || ib == 0xFFFFFFFFu)
+            continue;  // stale handle on either end — drop this joint
+        Joint r = j;
+        r.body_a = ia;
+        r.body_b = ib;
+        resolved.push_back(r);
+    }
+    if (resolved.empty())
+        return;
+
     std::span<detail::Body> bodies{w.bodies.data(), w.bodies.size()};
-    std::span<const Joint> js{joints.joints.data(), joints.joints.size()};
+    std::span<const Joint> js{resolved.data(), resolved.size()};
     detail::joints::solve(bodies, js, params, dt, iterations);
 }
 

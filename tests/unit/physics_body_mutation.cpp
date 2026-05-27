@@ -157,3 +157,71 @@ TEST_CASE("body mutation writers ignore static bodies and stale handles", "[phys
 
     world.destroy_body(stat);
 }
+
+// ─── Generation-safe handles (Fix 1) ─────────────────────────────────────
+
+TEST_CASE("stale BodyId is rejected after destroy + recreate (no slot aliasing)",
+          "[physics][handles]") {
+    auto& world = physics::World::Get();
+    world.set_gravity({0.0f, 0.0f, 0.0f});  // isolate from gravity
+
+    // Create a body, remember its handle, then destroy it. The freed slot is
+    // first on the free-list, so the very next create reuses it — but with a
+    // bumped generation. The OLD handle must therefore NOT alias the new body.
+    const physics::BodyId old_id = make_dynamic_sphere(world, {11.0f, 0.0f, 0.0f}, 1.0f);
+    world.destroy_body(old_id);
+
+    const physics::BodyId new_id = make_dynamic_sphere(world, {99.0f, 0.0f, 0.0f}, 1.0f);
+
+    // The reused slot keeps the same low-24-bit index, but the generation in
+    // the high bits differs, so the raw handle values must not be equal.
+    REQUIRE(new_id.raw != old_id.raw);
+
+    // The new body is live and reports its own position.
+    const math::Vec3 np = world.get_position(new_id);
+    REQUIRE(np.x == Approx(99.0f).margin(1e-5f));
+
+    // The stale handle is rejected: query returns the zero sentinel (NOT the
+    // new body's position — proving no aliasing).
+    const math::Vec3 op = world.get_position(old_id);
+    REQUIRE(op.x == Approx(0.0f).margin(1e-6f));
+    REQUIRE(op.y == Approx(0.0f).margin(1e-6f));
+    REQUIRE(op.z == Approx(0.0f).margin(1e-6f));
+
+    // A mutator on the stale handle must NOT touch the new body either.
+    world.set_body_position(old_id, {-50.0f, -50.0f, -50.0f});  // no-op
+    world.apply_impulse(old_id, {1000.0f, 0.0f, 0.0f});         // no-op
+    const math::Vec3 np2 = world.get_position(new_id);
+    REQUIRE(np2.x == Approx(99.0f).margin(1e-5f));  // unchanged
+
+    world.destroy_body(new_id);
+}
+
+TEST_CASE("double-destroy of a BodyId is a no-op and does not corrupt the free-list",
+          "[physics][handles]") {
+    auto& world = physics::World::Get();
+    world.set_gravity({0.0f, 0.0f, 0.0f});
+
+    const physics::BodyId a = make_dynamic_sphere(world, {1.0f, 0.0f, 0.0f}, 1.0f);
+    world.destroy_body(a);
+    world.destroy_body(a);  // second destroy must be a silent no-op
+
+    // If the double-destroy had pushed the slot onto the free-list twice, the
+    // next TWO creates would hand out the SAME slot index for two live bodies
+    // (a UAF-class aliasing bug). Create two bodies and confirm they are
+    // independent: moving one must not move the other.
+    const physics::BodyId b = make_dynamic_sphere(world, {2.0f, 0.0f, 0.0f}, 1.0f);
+    const physics::BodyId c = make_dynamic_sphere(world, {3.0f, 0.0f, 0.0f}, 1.0f);
+
+    REQUIRE(b.raw != c.raw);
+    REQUIRE((b.raw & 0x00FFFFFFu) != (c.raw & 0x00FFFFFFu));  // distinct slots
+
+    world.set_body_position(b, {20.0f, 0.0f, 0.0f});
+    const math::Vec3 bp = world.get_position(b);
+    const math::Vec3 cp = world.get_position(c);
+    REQUIRE(bp.x == Approx(20.0f).margin(1e-5f));
+    REQUIRE(cp.x == Approx(3.0f).margin(1e-5f));  // c untouched
+
+    world.destroy_body(b);
+    world.destroy_body(c);
+}

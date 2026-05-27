@@ -37,11 +37,29 @@ WorldState& world_state() {
     return s;
 }
 
+// Resolve a BodyId to its live slot index, validating the FULL generation
+// (not just gen != 0). Returns a pointer to the Body on success, nullptr for
+// a stale / out-of-range / freed handle. This is the single decode gate the
+// public mutators + queries share so a stale handle can never alias a freshly
+// recreated body (UAF-class fix).
+static Body* resolve_body(WorldState& w, BodyId id) noexcept {
+    const u32 idx = handle_index(id.raw);
+    if (idx >= w.bodies.size())
+        return nullptr;
+    Body& b = w.bodies[idx];
+    // A destroyed slot keeps its generation (so reuse can bump it), so the
+    // `alive` flag — not the generation — distinguishes a live body from a
+    // freed hole. Validate BOTH: alive AND exact generation match.
+    if (b.alive == 0 || b.gen != handle_gen(id.raw))
+        return nullptr;  // freed slot or stale generation
+    return &b;
+}
+
 // Internal integration helpers (kept in this TU; no point in their own .cpp
 // because they share the body buffer with the orchestrator).
 static void integrate_forces(WorldState& w, f32 dt) noexcept {
     for (Body& b : w.bodies) {
-        if (b.inv_mass == 0.0f || (b.flags & BodyFlags::Sleeping) != 0u)
+        if (b.alive == 0 || b.inv_mass == 0.0f || (b.flags & BodyFlags::Sleeping) != 0u)
             continue;
         b.linear_velocity = math::add(b.linear_velocity, math::mul(w.gravity, dt));
         // External forces accumulated via the public API in Wave B (apply_force).
@@ -63,7 +81,7 @@ static void integrate_forces(WorldState& w, f32 dt) noexcept {
 
 static void integrate_positions(WorldState& w, f32 dt) noexcept {
     for (Body& b : w.bodies) {
-        if (b.inv_mass == 0.0f || (b.flags & BodyFlags::Sleeping) != 0u)
+        if (b.alive == 0 || b.inv_mass == 0.0f || (b.flags & BodyFlags::Sleeping) != 0u)
             continue;
         b.position = math::add(b.position, math::mul(b.linear_velocity, dt));
 
@@ -87,14 +105,18 @@ static void integrate_positions(WorldState& w, f32 dt) noexcept {
 static void step_vehicles(WorldState& w, f32 dt) noexcept {
     VehicleWorld& vw = vehicle_world();
     for (Vehicle& v : vw.vehicles) {
-        if (v.gen == 0)
+        if (v.alive == 0)
             continue;  // freed slot
-        const u32 bidx = v.chassis_body & 0x00FFFFFFu;
+        // Resolve the stored chassis BodyId with a FULL generation check so a
+        // vehicle whose chassis was destroyed (and whose slot may have been
+        // reused) is skipped rather than driving a different body.
+        const u32 bidx = handle_index(v.chassis_body);
         if (bidx >= w.bodies.size())
             continue;
         Body& chassis = w.bodies[bidx];
-        if (chassis.gen == 0 || chassis.inv_mass == 0.0f)
-            continue;  // stale or static chassis
+        if (chassis.alive == 0 || chassis.gen != handle_gen(v.chassis_body) ||
+            chassis.inv_mass == 0.0f)
+            continue;  // stale, recycled, or static chassis
         vehicle_step(v, chassis, dt);
     }
 }
@@ -104,7 +126,7 @@ static void rebuild_aabbs(WorldState& w) {
     w.aabb_scratch.reserve(w.bodies.size());
     for (u32 i = 0; i < w.bodies.size(); ++i) {
         const Body& b = w.bodies[i];
-        if (b.gen == 0)
+        if (b.alive == 0)
             continue;  // hole
         math::Aabb box = aabb_world(b.shape, b.half_extent, b.position, b.rotation);
         w.aabb_scratch.push_back({box.min, box.max, i});
@@ -130,16 +152,9 @@ static void run_island_solve(WorldState& w, f32 dt) {
     // Each island is independent — dispatch one job per island. Lane 04's
     // Phase-0 stub runs jobs synchronously, but the data layout is correct
     // for the real Chase-Lev pool: contacts and body-index slices are
-    // contiguous and disjoint per island.
-    struct IslandJobCtx {
-        const Island* island;
-        Contact* contacts_base;
-        const u32* body_index_base;
-        Body* bodies_base;
-        usize bodies_count;
-        const SolverParams* params;
-        f32 dt;
-    };
+    // contiguous and disjoint per island. IslandJobCtx is a WorldState member
+    // type so its scratch vector can be reused across steps (Fix 2).
+    using IslandJobCtx = WorldState::IslandJobCtx;
 
     static auto solve_one = [](void* user) noexcept {
         auto* ctx = static_cast<IslandJobCtx*>(user);
@@ -151,9 +166,12 @@ static void run_island_solve(WorldState& w, f32 dt) {
                      ctx->dt);
     };
 
-    std::vector<IslandJobCtx> ctxs(w.islands.size());
+    // Reuse the per-step scratch: clear (retain capacity) instead of freeing
+    // and re-allocating every 120 Hz sub-tick.
+    w.island_ctx_scratch.clear();
+    w.island_ctx_scratch.reserve(w.islands.size());
     for (usize i = 0; i < w.islands.size(); ++i) {
-        ctxs[i] = IslandJobCtx{
+        w.island_ctx_scratch.push_back(IslandJobCtx{
             &w.islands[i],
             w.contact_scratch.data(),
             w.island_body_indices.data(),
@@ -161,16 +179,17 @@ static void run_island_solve(WorldState& w, f32 dt) {
             w.bodies.size(),
             &w.solver,
             dt,
-        };
+        });
     }
 
     auto& js = jobs::JobSystem::Get();
-    std::vector<jobs::JobHandle> handles;
-    handles.reserve(ctxs.size());
-    for (auto& c : ctxs) {
-        handles.push_back(js.submit(jobs::JobDesc{solve_one, &c, "phys-island", 0}));
+    w.island_handle_scratch.clear();
+    w.island_handle_scratch.reserve(w.island_ctx_scratch.size());
+    for (auto& c : w.island_ctx_scratch) {
+        w.island_handle_scratch.push_back(
+            js.submit(jobs::JobDesc{solve_one, &c, "phys-island", 0}));
     }
-    for (auto h : handles)
+    for (auto h : w.island_handle_scratch)
         js.wait(h);
 }
 
@@ -188,12 +207,18 @@ BodyId World::create_body(const BodyDesc& desc) {
     std::lock_guard<std::mutex> lock(w.mutate);
 
     u32 idx;
+    u32 reuse_gen = 1;  // generation to stamp on the (re)used slot
     if (!w.free_slots.empty()) {
         idx = w.free_slots.back();
         w.free_slots.pop_back();
+        // The freed slot's prior generation was preserved in `gen` (we only
+        // zero a transient marker on destroy); bump it so a stale handle that
+        // still references this slot fails the decode equality check.
+        reuse_gen = detail::handle_next_gen(w.bodies[idx].gen);
     } else {
         idx = static_cast<u32>(w.bodies.size());
         w.bodies.emplace_back();
+        reuse_gen = w.bodies[idx].gen;  // fresh slot starts at gen == 1
     }
     detail::Body& b = w.bodies[idx];
 
@@ -237,18 +262,24 @@ BodyId World::create_body(const BodyDesc& desc) {
             In.z > 0.0f ? 1.0f / In.z : 0.0f,
         };
     }
-    if (b.gen == 0)
-        b.gen = 1;  // re-used slot
-    return BodyId{(b.gen << 24) | (idx & 0x00FFFFFFu)};
+    b.gen = reuse_gen;  // bumped on reuse, fresh slots start at 1
+    b.alive = 1;
+    return BodyId{detail::handle_encode(b.gen, idx)};
 }
 
 void World::destroy_body(BodyId id) {
     auto& w = detail::world_state();
     std::lock_guard<std::mutex> lock(w.mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
+    const u32 idx = detail::handle_index(id.raw);
     if (idx >= w.bodies.size())
         return;
-    w.bodies[idx].gen = 0;
+    detail::Body& b = w.bodies[idx];
+    // Reject a stale or already-freed handle: validate the FULL generation and
+    // the alive flag. This guards against double-destroy (which would push the
+    // same slot onto the free-list twice and hand it out for two live bodies).
+    if (b.alive == 0 || b.gen != detail::handle_gen(id.raw))
+        return;
+    b.alive = 0;            // mark hole; KEEP gen so reuse can bump it
     w.free_slots.push_back(idx);
 }
 
@@ -269,7 +300,7 @@ void World::step(f32 dt_seconds) {
 
         // Snapshot previous transform for render interpolation.
         for (detail::Body& b : w.bodies) {
-            if (b.gen == 0)
+            if (b.alive == 0)
                 continue;
             b.prev_position = b.position;
             b.prev_rotation = b.rotation;
@@ -297,10 +328,10 @@ void World::set_gravity(math::Vec3 g) {
 void World::set_body_position(BodyId id, math::Vec3 p) {
     auto& w = detail::world_state();
     std::lock_guard<std::mutex> lock(w.mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
         return;
-    detail::Body& b = w.bodies[idx];
+    detail::Body& b = *bp;
     if (b.inv_mass == 0.0f)
         return;  // static — leave it pinned
     b.position = p;
@@ -312,10 +343,10 @@ void World::set_body_position(BodyId id, math::Vec3 p) {
 void World::set_body_velocity(BodyId id, math::Vec3 v) {
     auto& w = detail::world_state();
     std::lock_guard<std::mutex> lock(w.mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
         return;
-    detail::Body& b = w.bodies[idx];
+    detail::Body& b = *bp;
     if (b.inv_mass == 0.0f)
         return;
     b.linear_velocity = v;
@@ -324,10 +355,10 @@ void World::set_body_velocity(BodyId id, math::Vec3 v) {
 void World::apply_impulse(BodyId id, math::Vec3 impulse) {
     auto& w = detail::world_state();
     std::lock_guard<std::mutex> lock(w.mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
         return;
-    detail::Body& b = w.bodies[idx];
+    detail::Body& b = *bp;
     if (b.inv_mass == 0.0f)
         return;
     b.linear_velocity = math::add(b.linear_velocity, math::mul(impulse, b.inv_mass));
@@ -336,10 +367,10 @@ void World::apply_impulse(BodyId id, math::Vec3 impulse) {
 void World::apply_torque(BodyId id, math::Vec3 torque) {
     auto& w = detail::world_state();
     std::lock_guard<std::mutex> lock(w.mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
         return;
-    detail::Body& b = w.bodies[idx];
+    detail::Body& b = *bp;
     if (b.inv_mass == 0.0f)
         return;
     // Accumulate into the torque the integrator consumes on the next step
@@ -350,10 +381,10 @@ void World::apply_torque(BodyId id, math::Vec3 torque) {
 void World::apply_angular_impulse(BodyId id, math::Vec3 impulse) {
     auto& w = detail::world_state();
     std::lock_guard<std::mutex> lock(w.mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
         return;
-    detail::Body& b = w.bodies[idx];
+    detail::Body& b = *bp;
     if (b.inv_mass == 0.0f)
         return;
     // w += I^-1 * J. Mirror the integrator's world-space diagonal convention
@@ -367,10 +398,10 @@ void World::apply_angular_impulse(BodyId id, math::Vec3 impulse) {
 void World::set_angular_velocity(BodyId id, math::Vec3 angular) {
     auto& w = detail::world_state();
     std::lock_guard<std::mutex> lock(w.mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
         return;
-    detail::Body& b = w.bodies[idx];
+    detail::Body& b = *bp;
     if (b.inv_mass == 0.0f)
         return;
     b.angular_velocity = angular;
@@ -378,11 +409,11 @@ void World::set_angular_velocity(BodyId id, math::Vec3 angular) {
 
 math::Vec3 World::get_position(BodyId id) const {
     auto& w = detail::world_state();
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    const detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
         return {0, 0, 0};
     // Render lerp between prev and current using accumulator alpha.
-    const detail::Body& b = w.bodies[idx];
+    const detail::Body& b = *bp;
     f32 a = w.alpha;
     return {
         b.prev_position.x + (b.position.x - b.prev_position.x) * a,
@@ -393,12 +424,12 @@ math::Vec3 World::get_position(BodyId id) const {
 
 math::Quat World::get_rotation(BodyId id) const {
     auto& w = detail::world_state();
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+    const detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
         return {0, 0, 0, 1};
     // Quaternion lerp + normalise (cheap nlerp; for sub-step alpha the error
     // is sub-degree). Render side renormalises again before matrix conversion.
-    const detail::Body& b = w.bodies[idx];
+    const detail::Body& b = *bp;
     f32 a = w.alpha;
     math::Quat q{
         b.prev_rotation.x + (b.rotation.x - b.prev_rotation.x) * a,

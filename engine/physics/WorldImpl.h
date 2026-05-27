@@ -14,6 +14,8 @@
 #include "Broadphase.h"
 #include "Solver.h"
 
+#include "jobs/JobSystem.h"
+
 #include <mutex>
 #include <vector>
 
@@ -30,6 +32,23 @@ struct WorldState {
     std::vector<Contact> contact_scratch;
     std::vector<u32> island_body_indices;
     std::vector<Island> islands;
+
+    // Island-solve dispatch scratch (Fix 2: zero-garbage). One job per island
+    // is submitted every sub-tick at 120 Hz; these two vectors used to be
+    // allocated fresh inside run_island_solve each tick. They now live here so
+    // the loop only clears (never frees) them — capacity is retained, no
+    // behaviour change. IslandJobCtx is defined where run_island_solve lives.
+    struct IslandJobCtx {
+        const Island* island;
+        Contact* contacts_base;
+        const u32* body_index_base;
+        Body* bodies_base;
+        usize bodies_count;
+        const SolverParams* params;
+        f32 dt;
+    };
+    std::vector<IslandJobCtx> island_ctx_scratch;
+    std::vector<jobs::JobHandle> island_handle_scratch;
 
     SolverParams solver{};
 

@@ -51,9 +51,18 @@ enum class JointKind : u8 {
     Elastic = 5,     // soft spring toward rest_length (stiffness/damping)
 };
 
-// One joint, body indices reference the physics body array directly (NOT
-// BodyId). The World-facing overload resolves BodyId -> index for you. Anchors
-// are body-LOCAL offsets from each body's centre of mass.
+// One joint. `body_a` / `body_b` are indices into the body span the kernel
+// solver runs over (the header-only detail::joints::solve path used by tests
+// against a locally-staged Body array). Anchors are body-LOCAL offsets from
+// each body's centre of mass.
+//
+// Generation safety (Fix 1d): a raw array index aliases a destroyed-and-
+// recreated body. The World-facing solve_joints() therefore prefers the full
+// `body_id_a` / `body_id_b` BodyIds when they are valid: it resolves each to
+// the live slot via a gen-checked lookup every solve, skipping the joint if
+// either handle is stale. They default invalid so existing index-authored
+// joints (and the kernel-level tests) are unaffected — set them via
+// joint_with_handles() to opt into the safe path.
 struct Joint {
     JointKind kind = JointKind::Weld;
     u32 body_a = 0;            // index into the body span
@@ -66,6 +75,11 @@ struct Joint {
     f32 damping = 0.0f;            // elastic only (N*s/m)
     f32 min_limit = 0.0f;          // slider lower bound (m)
     f32 max_limit = 0.0f;          // slider upper bound (m)
+
+    // Optional full handles for the gen-checked World-facing path. Invalid
+    // (raw == 0) means "use the raw body_a/body_b indices as-is".
+    BodyId body_id_a{};
+    BodyId body_id_b{};
 };
 
 // A flat list of joints. POD-ish; copy/convert freely.
@@ -99,7 +113,7 @@ struct JointSolverParams {
 namespace detail::joints {
 
 PSY_FORCEINLINE math::Vec3 world_anchor(const Body& b, math::Vec3 local) noexcept {
-    return math::add(b.position, quat_rotate(b.rotation, local));
+    return math::add(b.position, detail::quat_rotate(b.rotation, local));
 }
 
 PSY_FORCEINLINE math::Vec3 inv_inertia_mul(const Body& b, math::Vec3 v) noexcept {
@@ -197,7 +211,7 @@ inline void solve_joint_velocity(const Joint& j,
             // Allowed motion is along `axis` (rotated into world by A). Lock the
             // two perpendicular axes (anchors coincident off-axis), and clamp
             // the along-axis separation into [min_limit, max_limit].
-            math::Vec3 ax = math::normalize(quat_rotate(A.rotation, j.axis));
+            math::Vec3 ax = math::normalize(detail::quat_rotate(A.rotation, j.axis));
             // Perpendicular basis.
             math::Vec3 t1, t2;
             if (std::fabs(ax.x) >= 0.57735f)
@@ -393,6 +407,26 @@ void solve_joints(World& world,
 // Convert a BodyId to the body-array index this engine uses internally. Lets a
 // caller that authored joints against BodyId fix up Joint::body_a/body_b to the
 // index space solve_joints() expects. Returns 0xFFFFFFFF for an invalid id.
+//
+// NOTE (Fix 1d): this validates the FULL generation of `id` (not just gen != 0),
+// so a stale handle whose slot was recycled now returns 0xFFFFFFFF rather than
+// silently resolving to whatever body currently occupies that slot. Prefer the
+// gen-safe handle path (Joint::body_id_a/b + joint_with_handles) for joints that
+// must survive body churn — body_index_of() snapshots the index at call time.
 u32 body_index_of(BodyId id) noexcept;
+
+// Build a Joint that carries full BodyIds for the gen-checked World-facing
+// path. The raw body_a/body_b indices are seeded from the handles' index bits
+// for the kernel/test path and for the visualiser, but solve_joints() re-
+// resolves them against the live world (and skips the joint on a stale handle).
+inline Joint joint_with_handles(JointKind kind, BodyId a, BodyId b) noexcept {
+    Joint j{};
+    j.kind = kind;
+    j.body_a = detail::handle_index(a.raw);
+    j.body_b = detail::handle_index(b.raw);
+    j.body_id_a = a;
+    j.body_id_b = b;
+    return j;
+}
 
 }  // namespace psynder::physics

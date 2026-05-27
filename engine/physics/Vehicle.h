@@ -34,6 +34,9 @@ struct VehicleWheel {
 };
 
 struct Vehicle {
+    // Full chassis BodyId.raw (index + generation). step_vehicles resolves it
+    // with a gen check each tick so a destroyed/recycled chassis is skipped
+    // rather than driving a different body.
     u32 chassis_body = 0;
     std::vector<VehicleWheel> wheels;
 
@@ -71,7 +74,11 @@ struct Vehicle {
     // `engine_max_torque`. Wave B reads from the curve.
     f32 engine_max_torque = 400.0f;
 
+    // `gen` is the slot's current generation (1..255, never 0), preserved
+    // across destroy and bumped on reuse so a stale VehicleId fails the decode
+    // equality check. `alive` marks a live slot vs a hole.
     u32 gen = 1;
+    bool alive = false;
 };
 
 struct VehicleWorld {

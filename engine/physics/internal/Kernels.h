@@ -95,7 +95,7 @@ inline void closest_pts_segments(
 
 inline void capsule_endpoints(
     math::Vec3 center, math::Quat q, f32 half_h, math::Vec3& a, math::Vec3& b) noexcept {
-    math::Vec3 axis = quat_rotate(q, {0, half_h, 0});
+    math::Vec3 axis = detail::quat_rotate(q, {0, half_h, 0});
     a = math::sub(center, axis);
     b = math::add(center, axis);
 }
@@ -176,7 +176,7 @@ inline bool kernel_aabb_aabb(math::Aabb a, math::Aabb b, Contact& out) noexcept 
 
 inline math::Vec3 kernel_support(const GjkSupport& s, math::Vec3 d) noexcept {
     math::Quat qinv{-s.rotation.x, -s.rotation.y, -s.rotation.z, s.rotation.w};
-    math::Vec3 dl = quat_rotate(qinv, d);
+    math::Vec3 dl = detail::quat_rotate(qinv, d);
     math::Vec3 local;
     switch (s.shape) {
         case 0: {
@@ -210,7 +210,7 @@ inline math::Vec3 kernel_support(const GjkSupport& s, math::Vec3 d) noexcept {
             break;
         }
     }
-    return math::add(s.position, quat_rotate(s.rotation, local));
+    return math::add(s.position, detail::quat_rotate(s.rotation, local));
 }
 
 struct MinkowskiPt {

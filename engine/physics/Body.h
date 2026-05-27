@@ -14,6 +14,38 @@
 
 namespace psynder::physics::detail {
 
+// ─── Generation-safe handle codec ─────────────────────────────────────────
+// Every physics handle (BodyId / CharacterId / VehicleId / joint body ref)
+// packs a 24-bit slot index in the low bits and an 8-bit generation counter
+// in the high bits, mirroring the scene-lane scheme (EcsRegistry.cpp,
+// SceneGraph.cpp). A live slot always carries gen >= 1, so the top byte is
+// non-zero and raw == 0 is therefore an unambiguous "invalid" sentinel.
+//
+// On slot reuse the generation is bumped; the OLD handle's stale generation
+// then fails the per-decode equality check, so a freed-then-recreated slot
+// never aliases the previous owner's handle (UAF-class bug). Generation wraps
+// 255 -> 1 (skipping 0 so a live slot's gen never reads as "freed"). A slot's
+// gen is preserved across destroy (the `alive` flag marks the hole) so the
+// next reuse advances from the last value.
+inline constexpr u32 kHandleIndexMask = 0x00FFFFFFu;
+inline constexpr u32 kHandleGenShift = 24u;
+inline constexpr u32 kHandleMaxGen = 0xFFu;
+
+[[nodiscard]] constexpr u32 handle_index(u32 raw) noexcept {
+    return raw & kHandleIndexMask;
+}
+[[nodiscard]] constexpr u32 handle_gen(u32 raw) noexcept {
+    return (raw >> kHandleGenShift) & 0xFFu;
+}
+[[nodiscard]] constexpr u32 handle_encode(u32 gen, u32 index) noexcept {
+    return ((gen & 0xFFu) << kHandleGenShift) | (index & kHandleIndexMask);
+}
+// Advance a slot generation on reuse: 1..255 then wrap to 1 (never 0).
+[[nodiscard]] constexpr u32 handle_next_gen(u32 gen) noexcept {
+    u32 g = (gen + 1u) & 0xFFu;
+    return (g == 0u) ? 1u : g;
+}
+
 enum class BodyFlags : u8 {
     None = 0,
     Kinematic = 1u << 0,
@@ -77,9 +109,16 @@ struct Body {
     math::Vec3 half_extent{0.5f, 0.5f, 0.5f};
 
     // ─── Bookkeeping ──────────────────────────────────────────────────
-    u32 gen = 1;   // for stale-handle detection
+    // `gen` is the slot's CURRENT generation (1..255, never 0). It is bumped
+    // on slot REUSE and is preserved across destroy so the next reuse can
+    // advance it; a BodyId decodes successfully only when its packed gen
+    // equals this. `alive` marks whether the slot currently holds a live body
+    // (a destroyed slot keeps its gen for the bump but sets alive = 0). Hole
+    // checks throughout the world iterate on `alive`, not on gen.
+    u32 gen = 1;   // current slot generation, for stale-handle detection
     BodyFlags flags = BodyFlags::None;
-    u8 _pad[3] = {};
+    u8 alive = 0;  // 1 while the slot holds a live body, 0 for a hole
+    u8 _pad[2] = {};
 };
 
 }  // namespace psynder::physics::detail

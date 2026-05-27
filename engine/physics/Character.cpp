@@ -54,7 +54,7 @@ static bool capsule_overlaps_world(const Character& c, math::Vec3 pos) noexcept 
     Body cap = make_capsule(c, pos);
     for (u32 i = 0; i < w.bodies.size(); ++i) {
         const Body& b = w.bodies[i];
-        if (b.gen == 0)
+        if (b.alive == 0)
             continue;
         Contact ct;
         if (collide_pair(cap, b, ct))
@@ -77,7 +77,7 @@ static bool sweep_and_resolve(Character& c, math::Vec3& position, math::Vec3 del
 
     for (u32 i = 0; i < w.bodies.size(); ++i) {
         Body& b = w.bodies[i];
-        if (b.gen == 0)
+        if (b.alive == 0)
             continue;
         Body cap = make_capsule(c, position);
         Contact ct;
@@ -148,16 +148,34 @@ void character_move(Character& c, math::Vec3 delta, f32 dt) {
 
 namespace psynder::physics::character {
 
+namespace {
+// Decode a CharacterId to its live slot, validating the FULL generation (not
+// just gen != 0) so a stale handle never aliases a recycled slot.
+detail::Character* resolve_char(detail::CharacterWorld& w, CharacterId id) noexcept {
+    const u32 idx = detail::handle_index(id.raw);
+    if (idx >= w.chars.size())
+        return nullptr;
+    detail::Character& c = w.chars[idx];
+    if (!c.alive || c.gen != detail::handle_gen(id.raw))
+        return nullptr;
+    return &c;
+}
+}  // namespace
+
 CharacterId create(const CharacterDesc& d) {
     auto& w = detail::character_world();
     std::lock_guard<std::mutex> lock(g_mutate);
     u32 idx;
+    u32 reuse_gen;
     if (!w.free_slots.empty()) {
         idx = w.free_slots.back();
         w.free_slots.pop_back();
+        // Bump the preserved generation so a stale handle to this slot fails.
+        reuse_gen = detail::handle_next_gen(w.chars[idx].gen);
     } else {
         idx = static_cast<u32>(w.chars.size());
         w.chars.emplace_back();
+        reuse_gen = w.chars[idx].gen;  // fresh slot starts at gen == 1
     }
     detail::Character& c = w.chars[idx];
     c.position = d.position;
@@ -168,27 +186,44 @@ CharacterId create(const CharacterDesc& d) {
     c.on_floor = false;
     c.stance = detail::CharStance::Stand;
     c.intent_crouch = c.intent_prone = c.env_ladder = c.env_water = false;
-    if (c.gen == 0)
-        c.gen = 1;
-    return CharacterId{(c.gen << 24) | (idx & 0x00FFFFFFu)};
+    c.gen = reuse_gen;
+    c.alive = true;
+    return CharacterId{detail::handle_encode(c.gen, idx)};
 }
 
 void destroy(CharacterId id) {
     auto& w = detail::character_world();
     std::lock_guard<std::mutex> lock(g_mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
+    const u32 idx = detail::handle_index(id.raw);
     if (idx >= w.chars.size())
         return;
-    w.chars[idx].gen = 0;
+    detail::Character& c = w.chars[idx];
+    // Reject stale / already-freed handles so a double-destroy never pushes
+    // the same slot onto the free-list twice.
+    if (!c.alive || c.gen != detail::handle_gen(id.raw))
+        return;
+    c.alive = false;  // KEEP gen for the next reuse to bump
     w.free_slots.push_back(idx);
 }
 
 void move(CharacterId id, math::Vec3 delta, f32 dt) {
     auto& w = detail::character_world();
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx >= w.chars.size() || w.chars[idx].gen == 0)
+    detail::Character* c = resolve_char(w, id);
+    if (c == nullptr)
         return;
-    detail::character_move(w.chars[idx], delta, dt);
+    detail::character_move(*c, delta, dt);
+}
+
+math::Vec3 get_position(CharacterId id) {
+    auto& w = detail::character_world();
+    const detail::Character* c = resolve_char(w, id);
+    if (c == nullptr)
+        return {0.0f, 0.0f, 0.0f};
+    // The resolved capsule centre — the same field the editor previously read
+    // through the internal character_world() peek. The controller writes
+    // c.position directly each move() (no sub-tick interpolation for the
+    // kinematic capsule), so this is the authoritative current centre.
+    return c->position;
 }
 
 }  // namespace psynder::physics::character

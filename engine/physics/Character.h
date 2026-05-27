@@ -41,7 +41,11 @@ struct Character {
     bool env_ladder = false;
     bool env_water = false;
 
+    // `gen` is the slot's current generation (1..255, never 0), preserved
+    // across destroy and bumped on reuse so a stale CharacterId fails the
+    // decode equality check. `alive` marks a live slot vs a hole.
     u32 gen = 1;
+    bool alive = false;
 };
 
 struct CharacterWorld {

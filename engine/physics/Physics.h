@@ -117,6 +117,12 @@ using CharacterId = Handle<CharacterTag>;
 CharacterId create(const CharacterDesc& d);
 void destroy(CharacterId c);
 void move(CharacterId c, math::Vec3 delta, f32 dt);
+// Resolved capsule centre (world space) for a live character. Generation-
+// checked: returns {0,0,0} for a stale / destroyed / invalid handle. Lets
+// gameplay + the editor read a character's position without reaching into the
+// internal character store (and without dragging the math/physics quat_rotate
+// ADL ambiguity into their TU). Additive — the rest of the surface is frozen.
+math::Vec3 get_position(CharacterId c);
 }  // namespace character
 
 }  // namespace psynder::physics

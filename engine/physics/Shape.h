@@ -46,9 +46,12 @@ inline math::Aabb aabb_world(u8 shape,
             break;  // Capsule
         case 2: {   // Box
             math::Vec3 ex = half_extent;
-            math::Vec3 ax = quat_rotate(rotation, {ex.x, 0, 0});
-            math::Vec3 ay = quat_rotate(rotation, {0, ex.y, 0});
-            math::Vec3 az = quat_rotate(rotation, {0, 0, ex.z});
+            // Qualified to suppress ADL: a TU that also includes
+            // math/MathExt.h would otherwise see math::quat_rotate via
+            // argument-dependent lookup and the call would be ambiguous.
+            math::Vec3 ax = detail::quat_rotate(rotation, {ex.x, 0, 0});
+            math::Vec3 ay = detail::quat_rotate(rotation, {0, ex.y, 0});
+            math::Vec3 az = detail::quat_rotate(rotation, {0, 0, ex.z});
             math::Vec3 e{std::fabs(ax.x) + std::fabs(ay.x) + std::fabs(az.x),
                          std::fabs(ax.y) + std::fabs(ay.y) + std::fabs(az.y),
                          std::fabs(ax.z) + std::fabs(ay.z) + std::fabs(az.z)};
