@@ -17,7 +17,6 @@
 
 #include "editor/play/PlayRuntime.h"
 
-#include "editor/play/CharacterPeek.h"  // peek_character_position (isolated TU)
 #include "math/MathExt.h"               // inverse_affine (parenting writeback)
 
 #include <algorithm>
@@ -619,7 +618,7 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         auto* tc = reg.get<scene::TransformComponent>(e);
         if (tc == nullptr)
             continue;
-        const math::Vec3 wp = peek_character_position(cc->character);
+        const math::Vec3 wp = physics::character::get_position(cc->character);
         const scene::SceneNode parent = graph.parent(scene.node(e));
         if (parent.valid()) {
             const WorldPose lp =
@@ -811,7 +810,7 @@ math::Vec3 PlayRuntime::character_position(scene::Scene& scene, Entity entity) c
     auto* cc = scene.registry().get<CharacterControllerComponent>(entity);
     if (cc == nullptr)
         return math::Vec3{0.0f, 0.0f, 0.0f};
-    return peek_character_position(cc->character);
+    return physics::character::get_position(cc->character);
 }
 
 }  // namespace psynder::editor::play
