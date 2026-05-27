@@ -8,9 +8,14 @@
 #include "core/Types.h"
 #include "math/Math.h"
 
+#include <memory>
 #include <span>
 
 namespace psynder::physics {
+
+namespace detail {
+struct WorldImpl;
+}  // namespace detail
 
 struct BodyTag {};
 using BodyId = Handle<BodyTag>;
@@ -29,7 +34,29 @@ struct BodyDesc {
 
 class World {
    public:
+    // A `World` now OWNS all its physics state (PIMPL). Constructing one makes
+    // an independent, empty world; multiple instances never share state. The
+    // default ctor + out-of-line dtor (defined in World.cpp where WorldImpl is
+    // complete) let the unique_ptr hold an incomplete type here. Movable so a
+    // world can be relocated; non-copyable (the state is large + unique).
+    World();
+    ~World();
+    World(World&&) noexcept;
+    World& operator=(World&&) noexcept;
+    World(const World&) = delete;
+    World& operator=(const World&) = delete;
+
+    // Legacy default-world accessor. Returns a lazily-constructed process-wide
+    // default `World` so the reference samples (04/07/08/09/10) and the physics
+    // tests/bench keep compiling and running UNCHANGED. New code (PlayRuntime,
+    // per-scene sim) owns its OWN `World` instance instead of calling this.
     static World& Get();
+
+    // Lane-internal: the owned state block. Declared here so the free vehicle/
+    // character functions and the default-world accessors can reach a World's
+    // sub-state; the type is opaque to public callers (forward-declared).
+    [[nodiscard]] detail::WorldImpl& internal() noexcept { return *impl_; }
+    [[nodiscard]] const detail::WorldImpl& internal() const noexcept { return *impl_; }
 
     BodyId create_body(const BodyDesc& desc);
     void destroy_body(BodyId id);
@@ -74,6 +101,9 @@ class World {
     void apply_angular_impulse(BodyId id, math::Vec3 impulse);
     // Overwrite angular velocity (rad/s) about the world axes.
     void set_angular_velocity(BodyId id, math::Vec3 w);
+
+   private:
+    std::unique_ptr<detail::WorldImpl> impl_;
 };
 
 // Vehicle module (DESIGN.md §10.1 vehicle specialization)
@@ -94,15 +124,19 @@ struct VehicleDesc {
 };
 struct VehicleTag {};
 using VehicleId = Handle<VehicleTag>;
-VehicleId create(const VehicleDesc& d);
-void destroy(VehicleId v);
-void set_throttle(VehicleId v, f32 t);   // 0..1
-void set_brake(VehicleId v, f32 b);      // 0..1
-void set_steer(VehicleId v, f32 angle);  // radians
+// Every vehicle function takes a trailing `World& world` that defaults to the
+// legacy default world, so existing call sites compile unchanged while new
+// callers (PlayRuntime) pass their OWN world. The vehicle's state lives in
+// THAT world's vehicle sub-world — no shared global.
+VehicleId create(const VehicleDesc& d, World& world = World::Get());
+void destroy(VehicleId v, World& world = World::Get());
+void set_throttle(VehicleId v, f32 t, World& world = World::Get());   // 0..1
+void set_brake(VehicleId v, f32 b, World& world = World::Get());      // 0..1
+void set_steer(VehicleId v, f32 angle, World& world = World::Get());  // radians
 // Flat ground-plane height (world Y) the suspension rays contact against.
 // Default 0. The oval test track in sample 04 is flat, so a single plane is
 // sufficient; elevated terrain would need a per-wheel height probe instead.
-void set_ground_plane(VehicleId v, f32 ground_y);
+void set_ground_plane(VehicleId v, f32 ground_y, World& world = World::Get());
 }  // namespace vehicle
 
 // Character controller (DESIGN.md §10.1 character specialization)
@@ -114,15 +148,18 @@ struct CharacterDesc {
 };
 struct CharacterTag {};
 using CharacterId = Handle<CharacterTag>;
-CharacterId create(const CharacterDesc& d);
-void destroy(CharacterId c);
-void move(CharacterId c, math::Vec3 delta, f32 dt);
+// Same trailing-defaulted `World&` pattern as the vehicle functions: existing
+// callers compile unchanged against the default world; new callers pass their
+// own. The character's state + its collision queries operate on THAT world.
+CharacterId create(const CharacterDesc& d, World& world = World::Get());
+void destroy(CharacterId c, World& world = World::Get());
+void move(CharacterId c, math::Vec3 delta, f32 dt, World& world = World::Get());
 // Resolved capsule centre (world space) for a live character. Generation-
 // checked: returns {0,0,0} for a stale / destroyed / invalid handle. Lets
 // gameplay + the editor read a character's position without reaching into the
 // internal character store (and without dragging the math/physics quat_rotate
 // ADL ambiguity into their TU). Additive — the rest of the surface is frozen.
-math::Vec3 get_position(CharacterId c);
+math::Vec3 get_position(CharacterId c, World& world = World::Get());
 }  // namespace character
 
 }  // namespace psynder::physics

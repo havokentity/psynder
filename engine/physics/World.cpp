@@ -32,11 +32,6 @@ namespace psynder::physics {
 
 namespace detail {
 
-WorldState& world_state() {
-    static WorldState s;
-    return s;
-}
-
 // Resolve a BodyId to its live slot index, validating the FULL generation
 // (not just gen != 0). Returns a pointer to the Body on success, nullptr for
 // a stale / out-of-range / freed handle. This is the single decode gate the
@@ -102,8 +97,7 @@ static void integrate_positions(WorldState& w, f32 dt) noexcept {
 // integrator consumes (and clears) them this sub-tick. Maps a vehicle's
 // stored chassis handle back to its Body slot via the low 24 bits, skipping
 // stale handles. Single-threaded with the rest of the tick — no allocation.
-static void step_vehicles(WorldState& w, f32 dt) noexcept {
-    VehicleWorld& vw = vehicle_world();
+static void step_vehicles(WorldState& w, VehicleWorld& vw, f32 dt) noexcept {
     for (Vehicle& v : vw.vehicles) {
         if (v.alive == 0)
             continue;  // freed slot
@@ -195,6 +189,37 @@ static void run_island_solve(WorldState& w, f32 dt) {
 
 }  // namespace detail
 
+// ─── Lifetime ─────────────────────────────────────────────────────────────
+//
+// Each World owns one WorldImpl (rigid-body state + vehicle + character
+// sub-worlds). The ctor/dtor/move are defined HERE — not inline in the
+// header — because WorldImpl is incomplete at the header (PIMPL): the
+// unique_ptr's deleter needs the full type, which only this TU sees.
+
+World::World() : impl_(std::make_unique<detail::WorldImpl>()) {}
+World::~World() = default;
+World::World(World&&) noexcept = default;
+World& World::operator=(World&&) noexcept = default;
+
+namespace detail {
+
+// Legacy default-world sub-state accessors. They forward into the ONE default
+// World instance (World::Get()), so callers that historically reached for the
+// "global" (the bench's world_state(), sample 09's character_world()) keep
+// observing the same world the public default-world API mutates. New code owns
+// its own World and never routes through here.
+WorldState& world_state() {
+    return World::Get().internal().state;
+}
+VehicleWorld& vehicle_world() {
+    return World::Get().internal().vehicles;
+}
+CharacterWorld& character_world() {
+    return World::Get().internal().characters;
+}
+
+}  // namespace detail
+
 // ─── Public API ─────────────────────────────────────────────────────────
 
 World& World::Get() {
@@ -203,7 +228,7 @@ World& World::Get() {
 }
 
 BodyId World::create_body(const BodyDesc& desc) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     std::lock_guard<std::mutex> lock(w.mutate);
 
     u32 idx;
@@ -268,7 +293,7 @@ BodyId World::create_body(const BodyDesc& desc) {
 }
 
 void World::destroy_body(BodyId id) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     std::lock_guard<std::mutex> lock(w.mutate);
     const u32 idx = detail::handle_index(id.raw);
     if (idx >= w.bodies.size())
@@ -284,7 +309,7 @@ void World::destroy_body(BodyId id) {
 }
 
 void World::step(f32 dt_seconds) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     detail::FpGuard fp_guard;  // round-to-nearest + denormals on, scope-bound
 
     w.accumulator += dt_seconds;
@@ -308,7 +333,7 @@ void World::step(f32 dt_seconds) {
 
         // Vehicle solver runs first so its tire/suspension/aero forces are
         // in the chassis accumulators when integrate_forces consumes them.
-        detail::step_vehicles(w, dt);
+        detail::step_vehicles(w, impl_->vehicles, dt);
         detail::integrate_forces(w, dt);
         detail::rebuild_aabbs(w);
         detail::broadphase_sap(w.aabb_scratch, w.pair_scratch);
@@ -322,11 +347,11 @@ void World::step(f32 dt_seconds) {
 }
 
 void World::set_gravity(math::Vec3 g) {
-    detail::world_state().gravity = g;
+    impl_->state.gravity = g;
 }
 
 void World::set_body_position(BodyId id, math::Vec3 p) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     std::lock_guard<std::mutex> lock(w.mutate);
     detail::Body* bp = detail::resolve_body(w, id);
     if (bp == nullptr)
@@ -341,7 +366,7 @@ void World::set_body_position(BodyId id, math::Vec3 p) {
 }
 
 void World::set_body_velocity(BodyId id, math::Vec3 v) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     std::lock_guard<std::mutex> lock(w.mutate);
     detail::Body* bp = detail::resolve_body(w, id);
     if (bp == nullptr)
@@ -353,7 +378,7 @@ void World::set_body_velocity(BodyId id, math::Vec3 v) {
 }
 
 void World::apply_impulse(BodyId id, math::Vec3 impulse) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     std::lock_guard<std::mutex> lock(w.mutate);
     detail::Body* bp = detail::resolve_body(w, id);
     if (bp == nullptr)
@@ -365,7 +390,7 @@ void World::apply_impulse(BodyId id, math::Vec3 impulse) {
 }
 
 void World::apply_torque(BodyId id, math::Vec3 torque) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     std::lock_guard<std::mutex> lock(w.mutate);
     detail::Body* bp = detail::resolve_body(w, id);
     if (bp == nullptr)
@@ -379,7 +404,7 @@ void World::apply_torque(BodyId id, math::Vec3 torque) {
 }
 
 void World::apply_angular_impulse(BodyId id, math::Vec3 impulse) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     std::lock_guard<std::mutex> lock(w.mutate);
     detail::Body* bp = detail::resolve_body(w, id);
     if (bp == nullptr)
@@ -396,7 +421,7 @@ void World::apply_angular_impulse(BodyId id, math::Vec3 impulse) {
 }
 
 void World::set_angular_velocity(BodyId id, math::Vec3 angular) {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     std::lock_guard<std::mutex> lock(w.mutate);
     detail::Body* bp = detail::resolve_body(w, id);
     if (bp == nullptr)
@@ -408,7 +433,7 @@ void World::set_angular_velocity(BodyId id, math::Vec3 angular) {
 }
 
 math::Vec3 World::get_position(BodyId id) const {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     const detail::Body* bp = detail::resolve_body(w, id);
     if (bp == nullptr)
         return {0, 0, 0};
@@ -423,7 +448,7 @@ math::Vec3 World::get_position(BodyId id) const {
 }
 
 math::Quat World::get_rotation(BodyId id) const {
-    auto& w = detail::world_state();
+    auto& w = impl_->state;
     const detail::Body* bp = detail::resolve_body(w, id);
     if (bp == nullptr)
         return {0, 0, 0, 1};

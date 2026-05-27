@@ -6,14 +6,19 @@
 // pooled scratch vectors (entity scan lists) + the authored-transform
 // snapshot, all reserved once and reused.
 //
+// This runtime owns its OWN physics::World (the world_ member), so each Play
+// session is isolated from the editor's default world and from any other
+// session. begin() resets it to empty; the create_*/destroy_* calls and
+// world_.step() all operate on world_ explicitly.
+//
 // Writeback parallelism: World::get_position / get_rotation are pure const
-// reads (engine/physics/World.cpp:336/351) -- they read the function-local
-// static world_state() and interpolate prev/current; they NEVER mutate a body
-// or lazily allocate. step() (the only writer) completes BEFORE the writeback
-// query runs, and the query writes only its own TransformComponent column
-// (per-row safe). So the writeback runs in parallel safely. The character
-// writeback is a short serial pass (few characters; physics::character::move
-// mutates the shared character store and must not run concurrently).
+// reads -- they read this world's body state and interpolate prev/current;
+// they NEVER mutate a body or lazily allocate. step() (the only writer)
+// completes BEFORE the writeback query runs, and the query writes only its own
+// TransformComponent column (per-row safe). So the writeback runs in parallel
+// safely. The character writeback is a short serial pass (few characters;
+// physics::character::move mutates this world's character store and must not
+// run concurrently).
 
 #include "editor/play/PlayRuntime.h"
 
@@ -148,11 +153,12 @@ struct WorldPose {
 }  // namespace
 
 PlayRuntime::~PlayRuntime() {
-    // The handles needed to free bodies live in the ECS components, which we
-    // cannot reach without a Scene&. The host contract is to always call end()
-    // on Stop / teardown, which frees the bodies and restores transforms; the
-    // destructor only marks state. (The shared World is a process singleton and
-    // is reclaimed at process exit regardless.)
+    // The handles needed to clear the ECS component columns + restore authored
+    // transforms live in the Scene, which we cannot reach without a Scene&. The
+    // host contract is to always call end() on Stop / teardown, which does that
+    // restore; the destructor only marks state. The owned `world_` member frees
+    // ALL its bodies/vehicles/characters automatically when it is destroyed
+    // right after this — no leak even if end() was skipped.
     playing_ = false;
 }
 
@@ -172,8 +178,15 @@ void PlayRuntime::begin(scene::Scene& scene) {
 
     clear_pools();
 
+    // Start this session from a clean, empty world. Move-assigning a freshly
+    // constructed World drops every body/vehicle/character from any prior
+    // session (the old WorldImpl is destroyed) — isolated sessions, a key win
+    // of the instance-owned world. All handles stored on components are about
+    // to be overwritten by the create_* calls below.
+    world_ = physics::World{};
+
     scene::EcsRegistry& reg = scene.registry();
-    physics::World& world = physics::World::Get();
+    physics::World& world = world_;
     world.set_gravity(config_.gravity);
 
     // --- Phase 1: scan (parallel, mutex-merged) ---------------------------
@@ -309,7 +322,7 @@ void PlayRuntime::begin(scene::Scene& scene) {
         d.position = world_spawn(local, e).translation;
         d.height = cc->height;
         d.radius = cc->radius;
-        cc->character = physics::character::create(d);
+        cc->character = physics::character::create(d, world);
         cc->walk_dir = math::Vec3{0.0f, 0.0f, 0.0f};
     }
 
@@ -363,9 +376,9 @@ void PlayRuntime::begin(scene::Scene& scene) {
         vd.engine_max_torque = vc->engine_max_torque;
         vd.drag_coefficient = vc->drag;
         vd.downforce_coefficient = 0.0f;
-        vc->vehicle = physics::vehicle::create(vd);
+        vc->vehicle = physics::vehicle::create(vd, world);
         // Flat ground plane at y=0 (no terrain yet; KNOWN follow-up).
-        physics::vehicle::set_ground_plane(vc->vehicle, 0.0f);
+        physics::vehicle::set_ground_plane(vc->vehicle, 0.0f, world);
     }
 
     // Helicopters (serial; create_body mutates the shared World). The chassis is
@@ -409,7 +422,7 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         return;
 
     scene::EcsRegistry& reg = scene.registry();
-    physics::World& world = physics::World::Get();
+    physics::World& world = world_;
 
     // --- Drive characters first (serial) ----------------------------------
     // physics::character::move mutates the shared character store, so this is a
@@ -423,7 +436,7 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         if (wlen2 > 1e-8f) {
             const f32 wlen = std::sqrt(wlen2);
             const math::Vec3 dir = math::mul(walk, 1.0f / wlen);
-            physics::character::move(cc->character, math::mul(dir, cc->move_speed * dt), dt);
+            physics::character::move(cc->character, math::mul(dir, cc->move_speed * dt), dt, world);
         }
     }
 
@@ -435,9 +448,9 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         VehicleComponent* vc = reg.get<VehicleComponent>(e);
         if (vc == nullptr || !vc->vehicle.valid() || !vc->is_player)
             continue;
-        physics::vehicle::set_throttle(vc->vehicle, vehicle_throttle_);
-        physics::vehicle::set_brake(vc->vehicle, vehicle_brake_);
-        physics::vehicle::set_steer(vc->vehicle, vehicle_steer_);
+        physics::vehicle::set_throttle(vc->vehicle, vehicle_throttle_, world);
+        physics::vehicle::set_brake(vc->vehicle, vehicle_brake_, world);
+        physics::vehicle::set_steer(vc->vehicle, vehicle_steer_, world);
     }
 
     // --- Apply helicopter flight intent (serial) --------------------------
@@ -618,7 +631,7 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         auto* tc = reg.get<scene::TransformComponent>(e);
         if (tc == nullptr)
             continue;
-        const math::Vec3 wp = physics::character::get_position(cc->character);
+        const math::Vec3 wp = physics::character::get_position(cc->character, world);
         const scene::SceneNode parent = graph.parent(scene.node(e));
         if (parent.valid()) {
             const WorldPose lp =
@@ -666,7 +679,7 @@ void PlayRuntime::end(scene::Scene& scene) {
         return;
 
     scene::EcsRegistry& reg = scene.registry();
-    physics::World& world = physics::World::Get();
+    physics::World& world = world_;
 
     // Destroy bodies and clear the runtime handle column.
     for (const Entity e : rigid_entities_) {
@@ -684,7 +697,7 @@ void PlayRuntime::end(scene::Scene& scene) {
         if (cc == nullptr)
             continue;
         if (cc->character.valid())
-            physics::character::destroy(cc->character);
+            physics::character::destroy(cc->character, world);
         cc->character = physics::character::CharacterId{};
         cc->walk_dir = math::Vec3{0.0f, 0.0f, 0.0f};
     }
@@ -695,7 +708,7 @@ void PlayRuntime::end(scene::Scene& scene) {
         if (vc == nullptr)
             continue;
         if (vc->vehicle.valid())
-            physics::vehicle::destroy(vc->vehicle);
+            physics::vehicle::destroy(vc->vehicle, world);
         if (vc->chassis.valid())
             world.destroy_body(vc->chassis);
         vc->vehicle = physics::vehicle::VehicleId{};
@@ -736,7 +749,7 @@ void PlayRuntime::update_chase_camera(scene::Scene& scene) noexcept {
         return;
 
     scene::EcsRegistry& reg = scene.registry();
-    physics::World& world = physics::World::Get();
+    physics::World& world = world_;
 
     // Find the first live player vehicle's chassis (serial; few vehicles). If
     // none, fall back to the first live player helicopter's chassis so the
@@ -810,7 +823,11 @@ math::Vec3 PlayRuntime::character_position(scene::Scene& scene, Entity entity) c
     auto* cc = scene.registry().get<CharacterControllerComponent>(entity);
     if (cc == nullptr)
         return math::Vec3{0.0f, 0.0f, 0.0f};
-    return physics::character::get_position(cc->character);
+    // get_position reads this session's world; the read is logically const but
+    // the free function takes World& (uniform with the mutating character ops),
+    // so cast away const on our own member to call it. No state is mutated.
+    return physics::character::get_position(cc->character,
+                                            const_cast<physics::World&>(world_));
 }
 
 }  // namespace psynder::editor::play

@@ -32,11 +32,6 @@ std::mutex g_mutate;
 
 namespace psynder::physics::detail {
 
-CharacterWorld& character_world() {
-    static CharacterWorld w;
-    return w;
-}
-
 // Build the capsule body we use as the character's collider for narrowphase.
 static Body make_capsule(const Character& c, math::Vec3 pos) noexcept {
     Body cap{};
@@ -48,9 +43,8 @@ static Body make_capsule(const Character& c, math::Vec3 pos) noexcept {
     return cap;
 }
 
-// True if the capsule at `pos` overlaps any non-self body in the world.
-static bool capsule_overlaps_world(const Character& c, math::Vec3 pos) noexcept {
-    auto& w = world_state();
+// True if the capsule at `pos` overlaps any non-self body in the given world.
+static bool capsule_overlaps_world(WorldState& w, const Character& c, math::Vec3 pos) noexcept {
     Body cap = make_capsule(c, pos);
     for (u32 i = 0; i < w.bodies.size(); ++i) {
         const Body& b = w.bodies[i];
@@ -67,9 +61,7 @@ static bool capsule_overlaps_world(const Character& c, math::Vec3 pos) noexcept 
 // push the capsule out along the contact normal. Returns true if a wall-like
 // (steep-normal) collision blocked horizontal progress — the caller uses this
 // signal to try a stair-step climb-up.
-static bool sweep_and_resolve(Character& c, math::Vec3& position, math::Vec3 delta) {
-    auto& w = world_state();
-
+static bool sweep_and_resolve(WorldState& w, Character& c, math::Vec3& position, math::Vec3 delta) {
     math::Vec3 target = math::add(position, delta);
     position = target;
 
@@ -97,7 +89,7 @@ static bool sweep_and_resolve(Character& c, math::Vec3& position, math::Vec3 del
     return blocked_horizontally;
 }
 
-void character_move(Character& c, math::Vec3 delta, f32 dt) {
+void character_move(WorldState& w, Character& c, math::Vec3 delta, f32 dt) {
     (void)dt;
     c.on_floor = false;
 
@@ -112,7 +104,7 @@ void character_move(Character& c, math::Vec3 delta, f32 dt) {
     if (c.stance == CharStance::Water) {
         // In water we still collide but motion is unsubdivided plus damped
         // by buoyancy. Caller supplies a pre-damped delta.
-        sweep_and_resolve(c, c.position, delta);
+        sweep_and_resolve(w, c, c.position, delta);
         return;
     }
 
@@ -123,7 +115,7 @@ void character_move(Character& c, math::Vec3 delta, f32 dt) {
         // Snapshot the pre-move position so stair-step has a clean rollback
         // point if the elevated re-sweep also fails.
         math::Vec3 pre = c.position;
-        bool blocked = sweep_and_resolve(c, c.position, step);
+        bool blocked = sweep_and_resolve(w, c, c.position, step);
 
         // If we were blocked horizontally on this sub-step, attempt the
         // climb-up: lift by step_height, replay the horizontal motion, then
@@ -131,7 +123,7 @@ void character_move(Character& c, math::Vec3 delta, f32 dt) {
         if (blocked) {
             math::Vec3 horiz = step;
             horiz.y = 0.0f;
-            auto overlap = [&](math::Vec3 p) -> bool { return capsule_overlaps_world(c, p); };
+            auto overlap = [&](math::Vec3 p) -> bool { return capsule_overlaps_world(w, c, p); };
             math::Vec3 stepped = kernels::kernel_stair_step_climb(pre, horiz, c.step_height, overlap);
             // Commit the climb only if it actually moved us further along
             // the requested horizontal motion (avoids infinitesimal jitter).
@@ -162,8 +154,8 @@ detail::Character* resolve_char(detail::CharacterWorld& w, CharacterId id) noexc
 }
 }  // namespace
 
-CharacterId create(const CharacterDesc& d) {
-    auto& w = detail::character_world();
+CharacterId create(const CharacterDesc& d, World& world) {
+    auto& w = world.internal().characters;
     std::lock_guard<std::mutex> lock(g_mutate);
     u32 idx;
     u32 reuse_gen;
@@ -191,8 +183,8 @@ CharacterId create(const CharacterDesc& d) {
     return CharacterId{detail::handle_encode(c.gen, idx)};
 }
 
-void destroy(CharacterId id) {
-    auto& w = detail::character_world();
+void destroy(CharacterId id, World& world) {
+    auto& w = world.internal().characters;
     std::lock_guard<std::mutex> lock(g_mutate);
     const u32 idx = detail::handle_index(id.raw);
     if (idx >= w.chars.size())
@@ -206,16 +198,17 @@ void destroy(CharacterId id) {
     w.free_slots.push_back(idx);
 }
 
-void move(CharacterId id, math::Vec3 delta, f32 dt) {
-    auto& w = detail::character_world();
-    detail::Character* c = resolve_char(w, id);
+void move(CharacterId id, math::Vec3 delta, f32 dt, World& world) {
+    auto& impl = world.internal();
+    detail::Character* c = resolve_char(impl.characters, id);
     if (c == nullptr)
         return;
-    detail::character_move(*c, delta, dt);
+    // Sweep against THIS world's rigid bodies (impl.state), not a global.
+    detail::character_move(impl.state, *c, delta, dt);
 }
 
-math::Vec3 get_position(CharacterId id) {
-    auto& w = detail::character_world();
+math::Vec3 get_position(CharacterId id, World& world) {
+    auto& w = world.internal().characters;
     const detail::Character* c = resolve_char(w, id);
     if (c == nullptr)
         return {0.0f, 0.0f, 0.0f};

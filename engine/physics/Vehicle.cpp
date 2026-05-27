@@ -27,11 +27,6 @@ std::mutex g_mutate;
 
 namespace psynder::physics::detail {
 
-VehicleWorld& vehicle_world() {
-    static VehicleWorld w;
-    return w;
-}
-
 // ─── Per-vehicle solver step (Wave B) ────────────────────────────────────
 //
 // Runs once per fixed sub-tick after the integrator has applied gravity but
@@ -288,8 +283,8 @@ detail::Vehicle* resolve_vehicle(detail::VehicleWorld& w, VehicleId id) noexcept
 }
 }  // namespace
 
-VehicleId create(const VehicleDesc& d) {
-    auto& w = detail::vehicle_world();
+VehicleId create(const VehicleDesc& d, World& world) {
+    auto& w = world.internal().vehicles;
     std::lock_guard<std::mutex> lock(g_mutate);
     u32 idx;
     u32 reuse_gen;
@@ -336,8 +331,8 @@ VehicleId create(const VehicleDesc& d) {
     return VehicleId{detail::handle_encode(v.gen, idx)};
 }
 
-void destroy(VehicleId id) {
-    auto& w = detail::vehicle_world();
+void destroy(VehicleId id, World& world) {
+    auto& w = world.internal().vehicles;
     std::lock_guard<std::mutex> lock(g_mutate);
     const u32 idx = detail::handle_index(id.raw);
     if (idx >= w.vehicles.size())
@@ -351,26 +346,26 @@ void destroy(VehicleId id) {
     w.free_slots.push_back(idx);
 }
 
-void set_throttle(VehicleId id, f32 t) {
-    auto& w = detail::vehicle_world();
+void set_throttle(VehicleId id, f32 t, World& world) {
+    auto& w = world.internal().vehicles;
     if (detail::Vehicle* v = resolve_vehicle(w, id))
         v->throttle = t;
 }
 
-void set_brake(VehicleId id, f32 b) {
-    auto& w = detail::vehicle_world();
+void set_brake(VehicleId id, f32 b, World& world) {
+    auto& w = world.internal().vehicles;
     if (detail::Vehicle* v = resolve_vehicle(w, id))
         v->brake = b;
 }
 
-void set_steer(VehicleId id, f32 angle) {
-    auto& w = detail::vehicle_world();
+void set_steer(VehicleId id, f32 angle, World& world) {
+    auto& w = world.internal().vehicles;
     if (detail::Vehicle* v = resolve_vehicle(w, id))
         v->steer = angle;
 }
 
-void set_ground_plane(VehicleId id, f32 ground_y) {
-    auto& w = detail::vehicle_world();
+void set_ground_plane(VehicleId id, f32 ground_y, World& world) {
+    auto& w = world.internal().vehicles;
     if (detail::Vehicle* v = resolve_vehicle(w, id))
         v->ground_y = ground_y;
 }

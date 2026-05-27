@@ -133,6 +133,16 @@ class PlayRuntime {
     bool playing_ = false;
     usize body_count_ = 0u;
 
+    // This Play session's OWN physics world. Instance-owned (not the process
+    // global physics::World::Get()), so each Play session is isolated: bodies,
+    // vehicles, and characters created here never leak into another session or
+    // into editor-side code that still uses the default world. begin() clears
+    // it so a new session always starts from an empty world; end() destroys the
+    // handles it created. The owner is swappable later (a per-scene sim
+    // resource) by changing only who holds this member. Declared after the
+    // pools so it tears down before them is irrelevant (independent state).
+    physics::World world_;
+
     // Scan scratch: entities carrying a RigidBodyComponent, gathered (parallel,
     // mutex-merged) in begin() then consumed serially. Reserved once.
     std::vector<Entity> rigid_entities_;

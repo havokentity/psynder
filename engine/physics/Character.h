@@ -53,11 +53,22 @@ struct CharacterWorld {
     std::vector<u32> free_slots;
 };
 
+// The per-world character sub-state now lives inside WorldImpl (one per World
+// instance) — there is no longer a character_world() file-static singleton.
+// detail::character_world() is the LEGACY default-world accessor: it returns
+// World::Get()'s character sub-world (defined in World.cpp). Re-declared here
+// — in addition to WorldImpl.h — so callers that include only this header
+// (sample 09's resolved-pose read-back) keep compiling UNCHANGED.
 CharacterWorld& character_world();
 
+// Forward-declare WorldState so character_move can take it by reference (it
+// sweeps the character capsule against that world's rigid bodies). The full
+// definition lives in WorldImpl.h, which the .cpp includes.
+struct WorldState;
+
 // Sweep-step-slide kernel — runs N collide-and-slide iterations against the
-// current physics world. Public character::move() forwards into this.
-void character_move(Character& c, math::Vec3 delta, f32 dt);
+// given world's rigid bodies. Public character::move() forwards into this.
+void character_move(WorldState& w, Character& c, math::Vec3 delta, f32 dt);
 
 // Wave-B: update the character's intent flags before the next `move()` call.
 // Internal API only — lane 15 (gameplay) wires it. Stays out of the public

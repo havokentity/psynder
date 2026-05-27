@@ -86,6 +86,12 @@ struct VehicleWorld {
     std::vector<u32> free_slots;
 };
 
+// The per-world vehicle sub-state now lives inside WorldImpl (one per World
+// instance) — there is no longer a vehicle_world() file-static singleton.
+// detail::vehicle_world() is the LEGACY default-world accessor: it returns
+// World::Get()'s vehicle sub-world (defined in World.cpp). Re-declared here —
+// in addition to WorldImpl.h — so callers that include only this header keep
+// compiling UNCHANGED.
 VehicleWorld& vehicle_world();
 
 // Per-vehicle solver step (defined in Vehicle.cpp). Runs once per fixed
