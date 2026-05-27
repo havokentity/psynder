@@ -3,7 +3,8 @@
 add_subdirectory(ipc)
 add_subdirectory(core)
 add_subdirectory(world)
+add_subdirectory(play)
 
 add_library(psynder_editor INTERFACE)
-target_link_libraries(psynder_editor INTERFACE psynder_editor_core psynder_editor_ipc psynder_editor_world)
+target_link_libraries(psynder_editor INTERFACE psynder_editor_core psynder_editor_ipc psynder_editor_world psynder_editor_play)
 add_library(psynder::editor ALIAS psynder_editor)

@@ -36,6 +36,10 @@ if(TARGET Catch2::Catch2WithMain)
     if(TARGET psynder_editor_world)
         target_link_libraries(psynder_unit PRIVATE psynder_editor_world)
     endif()
+    # Editor PLAY MODE physics runtime tests (editor/play).
+    if(TARGET psynder_editor_play)
+        target_link_libraries(psynder_unit PRIVATE psynder_editor_play)
+    endif()
     # Platform lanes (21/22/23) export internal symbols for host-specific
     # tests; link the host's platform lib directly so those tests resolve.
     if(TARGET psynder_platform_macos)
