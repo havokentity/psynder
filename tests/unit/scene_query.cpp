@@ -6,7 +6,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "scene/EcsRegistry.h"
+#include "scene/EcsRegistry_Internal.h"
 
+#include <atomic>
 #include <span>
 #include <vector>
 
@@ -22,6 +24,16 @@ PSYNDER_COMPONENT(Tag) {
     psynder::u32 group = 0;
 };
 
+// EcsRegistry::Get() is a process-global singleton; Catch2 runs test cases in a
+// randomized order, so cases that create Pos/Vel entities here would otherwise
+// leak rows into a later case's counts (e.g. the deferred case's pre_count==0).
+// Fully clear the registry at the start of each case so every case is isolated
+// regardless of order (mirrors the RegistryReset guard in editor_play_runtime).
+struct RegistryReset {
+    RegistryReset() { psynder::scene::detail::EcsRegistryImpl::Get().shutdown(); }
+    ~RegistryReset() { psynder::scene::detail::EcsRegistryImpl::Get().shutdown(); }
+};
+
 }  // namespace lane06_query
 
 using namespace psynder;
@@ -31,6 +43,7 @@ using lane06_query::Tag;
 using lane06_query::Vel;
 
 TEST_CASE("scene: query iterates every entity matching the components", "[scene][query]") {
+    lane06_query::RegistryReset reset;
     auto& w = EcsRegistry::Get();
     w.set_structural_deferred(false);
 
@@ -63,20 +76,22 @@ TEST_CASE("scene: query iterates every entity matching the components", "[scene]
 
     // Integrate motion over one step. The lambda receives one span<const Pos>
     // and one span<Vel> per chunk — i.e. column-at-a-time iteration.
-    u32 rows_seen = 0;
-    bool sizes_match = true;
+    // query() fires the body once per chunk ACROSS WORKER THREADS, so any
+    // accumulation the body does must be synchronized (atomics here).
+    std::atomic<u32> rows_seen{0};
+    std::atomic<bool> sizes_match{true};
     w.query<reads<Pos>, writes<Vel>>(
         [&rows_seen, &sizes_match](std::span<const Pos> pos, std::span<Vel> vel) {
             if (pos.size() != vel.size())
-                sizes_match = false;
+                sizes_match.store(false, std::memory_order_relaxed);
             for (usize i = 0; i < pos.size(); ++i) {
                 vel[i].dz = pos[i].x + pos[i].y;
             }
-            rows_seen += static_cast<u32>(pos.size());
+            rows_seen.fetch_add(static_cast<u32>(pos.size()), std::memory_order_relaxed);
         });
-    REQUIRE(sizes_match);
+    REQUIRE(sizes_match.load());
 
-    REQUIRE(rows_seen == kAlpha + kBeta);
+    REQUIRE(rows_seen.load() == kAlpha + kBeta);
 
     // Verify the write landed for both archetypes. We aggregate the
     // pass-counts into a single REQUIRE rather than asserting per-entity —
@@ -107,6 +122,7 @@ TEST_CASE("scene: query iterates every entity matching the components", "[scene]
 
 TEST_CASE("scene: query with extra required components filters out other archetypes",
           "[scene][query]") {
+    lane06_query::RegistryReset reset;
     auto& w = EcsRegistry::Get();
     w.set_structural_deferred(false);
 
@@ -126,18 +142,18 @@ TEST_CASE("scene: query with extra required components filters out other archety
         beta.push_back(e);
     }
 
-    u32 rows = 0;
-    bool all_beta = true;
+    std::atomic<u32> rows{0};
+    std::atomic<bool> all_beta{true};
     w.query<reads<Pos>, writes<Vel>>([&rows, &all_beta](std::span<const Pos> p, std::span<Vel> v) {
         for (usize i = 0; i < p.size(); ++i) {
             if (p[i].x != 2.0f)
-                all_beta = false;  // only beta archetype
+                all_beta.store(false, std::memory_order_relaxed);  // only beta archetype
             v[i].dx = -1.0f;
         }
-        rows += static_cast<u32>(p.size());
+        rows.fetch_add(static_cast<u32>(p.size()), std::memory_order_relaxed);
     });
-    REQUIRE(all_beta);
-    REQUIRE(rows == kBeta);
+    REQUIRE(all_beta.load());
+    REQUIRE(rows.load() == kBeta);
 
     for (auto e : alpha)
         w.destroy(e);
@@ -147,6 +163,7 @@ TEST_CASE("scene: query with extra required components filters out other archety
 
 TEST_CASE("scene: structural changes batched via deferred mode apply at boundary",
           "[scene][query][deferred]") {
+    lane06_query::RegistryReset reset;
     auto& w = EcsRegistry::Get();
 
     // Pre-create one entity in non-deferred mode so it exists when we flip
@@ -165,12 +182,12 @@ TEST_CASE("scene: structural changes batched via deferred mode apply at boundary
     }
 
     // Before apply, the query sees only the stable entity.
-    u32 pre_count = 0;
+    std::atomic<u32> pre_count{0};
     w.query<reads<Pos>, writes<Vel>>([&pre_count](std::span<const Pos> p, std::span<Vel>) {
-        pre_count += static_cast<u32>(p.size());
+        pre_count.fetch_add(static_cast<u32>(p.size()), std::memory_order_relaxed);
     });
     // The stable entity has no Vel so the query sees zero rows.
-    REQUIRE(pre_count == 0);
+    REQUIRE(pre_count.load() == 0);
 
     // Apply structural changes — the 50 entities now show up with Pos.
     w.apply_structural_changes();
@@ -180,13 +197,13 @@ TEST_CASE("scene: structural changes batched via deferred mode apply at boundary
     for (auto e : deferred_es)
         w.add<Vel>(e, Vel{0, 0, 0});
 
-    u32 post_count = 0;
+    std::atomic<u32> post_count{0};
     w.query<reads<Pos>, writes<Vel>>([&post_count](std::span<const Pos> p, std::span<Vel> v) {
         for (usize i = 0; i < p.size(); ++i)
             v[i].dx = p[i].x;
-        post_count += static_cast<u32>(p.size());
+        post_count.fetch_add(static_cast<u32>(p.size()), std::memory_order_relaxed);
     });
-    REQUIRE(post_count == 50);
+    REQUIRE(post_count.load() == 50);
 
     for (auto e : deferred_es)
         w.destroy(e);
