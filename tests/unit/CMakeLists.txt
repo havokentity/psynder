@@ -40,6 +40,10 @@ if(TARGET Catch2::Catch2WithMain)
     if(TARGET psynder_editor_play)
         target_link_libraries(psynder_unit PRIVATE psynder_editor_play)
     endif()
+    # Editor render glue (RT scene render + lightmap bake entry points).
+    if(TARGET psynder_editor_render)
+        target_link_libraries(psynder_unit PRIVATE psynder_editor_render)
+    endif()
     # Platform lanes (21/22/23) export internal symbols for host-specific
     # tests; link the host's platform lib directly so those tests resolve.
     if(TARGET psynder_platform_macos)
