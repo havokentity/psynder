@@ -15,6 +15,8 @@
 #include "editor/ipc/Ipc.h"
 #include "editor/play/PlayComponents.h"
 #include "editor/play/PlayRuntime.h"
+#include "editor/render/EditorRender.h"
+#include "editor/world/LevelSource.h"
 #include "math/MathExt.h"
 #include "platform/App.h"
 #include "platform/RuntimeConfig.h"
@@ -63,6 +65,11 @@ Entity add_active_arcade_camera();
 Entity add_active_arcade_light(scene::LightKind kind = scene::LightKind::Point);
 Entity add_active_arcade_gameplay(std::string_view kind);
 bool add_active_arcade_rigid_body(bool make_static);
+void set_active_arcade_rt_mode(bool on);
+bool active_arcade_rt_mode();
+bool bake_active_arcade_lightmaps();
+bool world_new_active_arcade_indoor();
+bool world_new_active_arcade_terrain();
 bool rename_active_arcade_entity(Entity entity, std::string_view name);
 bool delete_active_arcade_entity(Entity entity);
 Entity duplicate_active_arcade_entity(Entity entity);
@@ -293,6 +300,41 @@ void register_arcade_console_commands() {
                                make_static ? "static" : "dynamic");
             else
                 out.PrintLine("phys_rigidbody: no valid selection / no active scene");
+        });
+    console_ref.RegisterCommand(
+        "rt_mode",
+        "Toggle the viewport raytracer: rt_mode <0|1> (no arg = enable).",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            const bool on = args.empty() || !(args[0] == "0" || args[0] == "off");
+            set_active_arcade_rt_mode(on);
+            out.FormatLine("rt_mode: viewport renderer = {}", on ? "raytracer" : "raster");
+        });
+    console_ref.RegisterCommand(
+        "bake_lightmaps",
+        "Bake static lightmaps for the active scene (offline lm_bake).",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (bake_active_arcade_lightmaps())
+                out.PrintLine("bake_lightmaps: baked (stored for baked/flat toggle)");
+            else
+                out.PrintLine("bake_lightmaps: nothing bakeable / no active scene");
+        });
+    console_ref.RegisterCommand(
+        "world_new_indoor",
+        "Spawn the demo indoor BSP level (two rooms + doorway) into the active scene.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (world_new_active_arcade_indoor())
+                out.PrintLine("world_new_indoor: indoor map added");
+            else
+                out.PrintLine("world_new_indoor: failed / no active scene");
+        });
+    console_ref.RegisterCommand(
+        "world_new_terrain",
+        "Spawn the demo heightfield terrain mesh into the active scene.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (world_new_active_arcade_terrain())
+                out.PrintLine("world_new_terrain: terrain added");
+            else
+                out.PrintLine("world_new_terrain: failed / no active scene");
         });
     console_ref.RegisterCommand(
         "primitive_add",
@@ -1005,6 +1047,14 @@ struct PlayerApp {
     // authored transforms. tick() steps + writes poses back each play frame.
     editor::play::PlayRuntime play_runtime_{};
     editor::Mode play_prev_mode_ = editor::Mode::Edit;
+    // Viewport render mode: false = software raster (default), true = software
+    // raytracer (editor::render::render_scene_rt). Toggled via `rt_mode`.
+    bool rt_mode_ = false;
+    // Level-source geometry must outlive the scene: MeshDesc holds non-owning
+    // pointers into these pools, registered into the RenderingSystem MeshLibrary.
+    std::vector<std::unique_ptr<editor::world::LevelGeometry>> level_geometries_{};
+    // Last lightmap bake (stored for a future baked/flat toggle).
+    editor::render::BakeResult last_bake_{};
     Entity fps_controlled_entity{};
     f32 fps_yaw = 0.0f;
     f32 fps_pitch = 0.0f;
@@ -2620,6 +2670,75 @@ struct PlayerApp {
         return true;
     }
 
+    void set_rt_mode(bool on) noexcept { rt_mode_ = on; }
+    [[nodiscard]] bool rt_mode() const noexcept { return rt_mode_; }
+
+    // Bake static lightmaps for the active scene; store for a later baked/flat
+    // toggle. Returns true when something bakeable was found.
+    bool bake_scene_lightmaps() {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return false;
+        last_bake_ = editor::render::bake_lightmaps(*scene, app->rendering_system());
+        return last_bake_.ok;
+    }
+
+    // After a level-source load, upload each LevelMesh into the RenderingSystem
+    // MeshLibrary (which assigns real MeshIds) and remap the spawned entities'
+    // RenderableComponent.geometry_id from the loader's provisional ids to the
+    // real MeshId.raw, so the standard renderer resolves them.
+    void register_level_meshes(scene::Scene& scene,
+                               editor::world::LevelGeometry& geom,
+                               const std::vector<Entity>& entities) {
+        std::unordered_map<u32, u32> remap;
+        for (const editor::world::LevelMesh& m : geom.meshes()) {
+            const render::MeshId id = app->rendering_system().meshes().create_mesh(m.desc);
+            remap[m.geometry_id] = id.raw;
+        }
+        auto& reg = scene.registry();
+        for (Entity e : entities) {
+            if (auto* r = reg.get<scene::RenderableComponent>(e)) {
+                const auto it = remap.find(r->geometry_id);
+                if (it != remap.end())
+                    r->geometry_id = it->second;
+            }
+        }
+    }
+
+    bool world_new_indoor() {
+        scene::Scene* scene = ensure_active_scene();
+        if (!scene)
+            return false;
+        auto geom = std::make_unique<editor::world::LevelGeometry>(0x40000000u);
+        editor::world::BspLevelSource src{};
+        editor::world::build_demo_bsp_level(src);
+        std::vector<Entity> ents;
+        const editor::world::LoadResult res =
+            editor::world::load_bsp_into_scene(*scene, src, *geom, {}, &ents);
+        register_level_meshes(*scene, *geom, ents);
+        level_geometries_.push_back(std::move(geom));
+        mark_authoring_dirty();
+        editor::publish_web_scene_hierarchy(scene);
+        return res.entities_created > 0u;
+    }
+
+    bool world_new_terrain() {
+        scene::Scene* scene = ensure_active_scene();
+        if (!scene)
+            return false;
+        auto geom = std::make_unique<editor::world::LevelGeometry>(0x50000000u);
+        world::outdoor::HeightmapDesc desc{};
+        const std::vector<u16> heights = editor::world::build_demo_heightmap(desc);
+        std::vector<Entity> ents;
+        const editor::world::LoadResult res =
+            editor::world::load_terrain_into_scene(*scene, desc, *geom, {}, &ents);
+        register_level_meshes(*scene, *geom, ents);
+        level_geometries_.push_back(std::move(geom));
+        mark_authoring_dirty();
+        editor::publish_web_scene_hierarchy(scene);
+        return res.entities_created > 0u;
+    }
+
     void update_fps_player(f32 dt) {
         if (editor::current_mode() != editor::Mode::Play || editor::overlays_capturing())
             return;
@@ -2925,10 +3044,28 @@ struct PlayerApp {
     }
 
     void frame_post(app::WindowFrameContextT<PlayerArgs>& ctx, app::WindowFrameCacheReady&) {
-        ctx.app.engine_frame_render();
+        if (!render_scene_raytraced(ctx))
+            ctx.app.engine_frame_render();
         draw_scene_light_post(ctx);
         draw_viewport_gizmo_with_undo(ctx);
         ctx.app.engine_frame_post();
+    }
+
+    // Raytraced viewport path (rt_mode). Returns true if it rendered into the
+    // framebuffer (so the caller skips the raster pass). Falls back to raster
+    // when off, no scene, or no active camera.
+    bool render_scene_raytraced(app::WindowFrameContextT<PlayerArgs>& ctx) {
+        if (!rt_mode_)
+            return false;
+        scene::Scene* scene = ctx.app.active_scene();
+        if (!scene)
+            return false;
+        scene::SceneCameraView view{};
+        if (!scene->active_camera_view(framebuffer_aspect(ctx.framebuffer), view))
+            return false;
+        const editor::render::SceneRtStats stats = editor::render::render_scene_rt(
+            *scene, view, ctx.app.rendering_system(), ctx.framebuffer);
+        return stats.rendered;
     }
 
     static bool project_to_screen(const math::Vec3& world,
@@ -3813,6 +3950,27 @@ Entity add_active_arcade_gameplay(std::string_view kind) {
 
 bool add_active_arcade_rigid_body(bool make_static) {
     return g_active_arcade && g_active_arcade->add_rigid_body_to_selected(make_static);
+}
+
+void set_active_arcade_rt_mode(bool on) {
+    if (g_active_arcade)
+        g_active_arcade->set_rt_mode(on);
+}
+
+bool active_arcade_rt_mode() {
+    return g_active_arcade && g_active_arcade->rt_mode();
+}
+
+bool bake_active_arcade_lightmaps() {
+    return g_active_arcade && g_active_arcade->bake_scene_lightmaps();
+}
+
+bool world_new_active_arcade_indoor() {
+    return g_active_arcade && g_active_arcade->world_new_indoor();
+}
+
+bool world_new_active_arcade_terrain() {
+    return g_active_arcade && g_active_arcade->world_new_terrain();
 }
 
 bool rename_active_arcade_entity(Entity entity, std::string_view name) {
