@@ -84,9 +84,24 @@ class PlayRuntime {
         vehicle_steer_ = steer;
     }
 
+    // --- Helicopter intent -------------------------------------------------
+    // Per-frame flight intent the host writes before tick(): collective in
+    // -1..1 (ascend positive, descend negative), pitch/roll/yaw cyclic+pedal in
+    // -1..1. Applied to every player helicopter (HelicopterComponent::is_player)
+    // at the top of tick(), BEFORE the single World::step(). Stored on the
+    // runtime (a single shared player input, not per-entity sim state); it
+    // allocates nothing.
+    void set_helicopter_input(f32 collective, f32 pitch, f32 roll, f32 yaw) noexcept {
+        heli_collective_ = collective;
+        heli_pitch_ = pitch;
+        heli_roll_ = roll;
+        heli_yaw_ = yaw;
+    }
+
     // Position the active scene camera in a chase pose behind/above the player
-    // vehicle's chassis, looking at it. Alloc-free; no-op when not playing or no
-    // player vehicle exists. Called from tick(); also exposed for the host.
+    // vehicle's chassis (or, if none, the player helicopter's chassis), looking
+    // at it. Alloc-free; no-op when not playing or no player craft exists.
+    // Called from tick(); also exposed for the host.
     void update_chase_camera(scene::Scene& scene) noexcept;
 
     // --- Character intent --------------------------------------------------
@@ -121,6 +136,8 @@ class PlayRuntime {
     std::vector<Entity> character_entities_;
     // Same for vehicle entities.
     std::vector<Entity> vehicle_entities_;
+    // Same for helicopter entities.
+    std::vector<Entity> helicopter_entities_;
     // Authored transforms captured in begin(), restored in end(). Reserved once.
     std::vector<AuthoredTransform> authored_;
 
@@ -128,6 +145,12 @@ class PlayRuntime {
     f32 vehicle_throttle_ = 0.0f;
     f32 vehicle_brake_ = 0.0f;
     f32 vehicle_steer_ = 0.0f;
+
+    // Shared player flight intent (host-set per frame; see set_helicopter_input).
+    f32 heli_collective_ = 0.0f;
+    f32 heli_pitch_ = 0.0f;
+    f32 heli_roll_ = 0.0f;
+    f32 heli_yaw_ = 0.0f;
 };
 
 }  // namespace psynder::editor::play

@@ -39,6 +39,7 @@ void PlayRuntime::clear_pools() noexcept {
     rigid_entities_.clear();
     character_entities_.clear();
     vehicle_entities_.clear();
+    helicopter_entities_.clear();
     authored_.clear();
     body_count_ = 0u;
 }
@@ -135,8 +136,33 @@ void PlayRuntime::begin(scene::Scene& scene) {
             });
     }
 
+    // Same scan for helicopter entities.
+    {
+        std::mutex append_mutex;
+        reg.query<scene::reads<scene::SceneNodeComponent, HelicopterComponent>, scene::writes<>>(
+            [&](std::span<const scene::SceneNodeComponent> nodes,
+                std::span<const HelicopterComponent> helis) {
+                const usize n = std::min(nodes.size(), helis.size());
+                constexpr usize kMaxChunkRows = 256u;
+                std::array<Entity, kMaxChunkRows> chunk_entities{};
+                usize chunk_count = 0u;
+                for (usize i = 0; i < n; ++i) {
+                    if (chunk_count >= kMaxChunkRows)
+                        break;
+                    chunk_entities[chunk_count++] = nodes[i].entity;
+                }
+                if (chunk_count != 0u) {
+                    std::scoped_lock lock{append_mutex};
+                    helicopter_entities_.reserve(helicopter_entities_.size() + chunk_count);
+                    helicopter_entities_.insert(helicopter_entities_.end(),
+                                                chunk_entities.begin(),
+                                                chunk_entities.begin() + chunk_count);
+                }
+            });
+    }
+
     authored_.reserve(rigid_entities_.size() + character_entities_.size() +
-                      vehicle_entities_.size());
+                      vehicle_entities_.size() + helicopter_entities_.size());
 
     // --- Phase 2: build bodies (serial, main thread) ----------------------
     // create_body mutates the shared World, so this MUST be serial. We read the
@@ -234,9 +260,37 @@ void PlayRuntime::begin(scene::Scene& scene) {
         physics::vehicle::set_ground_plane(vc->vehicle, 0.0f);
     }
 
+    // Helicopters (serial; create_body mutates the shared World). The chassis is
+    // a dynamic box body at the authored pose. The angular-velocity estimate is
+    // zeroed so the craft starts at rest.
+    for (const Entity e : helicopter_entities_) {
+        HelicopterComponent* hc = reg.get<HelicopterComponent>(e);
+        if (hc == nullptr)
+            continue;
+        const scene::LocalTransform local = scene.transform(e);
+        authored_.push_back(AuthoredTransform{e, local});
+
+        physics::BodyDesc hd{};
+        hd.shape = physics::Shape::Box;
+        hd.mass = hc->mass;
+        hd.position = local.translation;
+        hd.rotation = math::quat_normalize(local.rotation);
+        hd.half_extent = hc->half_extent;
+        hd.friction = 0.5f;
+        hd.restitution = 0.0f;
+        hc->body = world.create_body(hd);
+        hc->ang_vel_est = math::Vec3{0.0f, 0.0f, 0.0f};
+        if (hc->body.valid())
+            ++body_count_;
+    }
+
     vehicle_throttle_ = 0.0f;
     vehicle_brake_ = 0.0f;
     vehicle_steer_ = 0.0f;
+    heli_collective_ = 0.0f;
+    heli_pitch_ = 0.0f;
+    heli_roll_ = 0.0f;
+    heli_yaw_ = 0.0f;
 
     playing_ = true;
 }
@@ -277,6 +331,63 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         physics::vehicle::set_steer(vc->vehicle, vehicle_steer_);
     }
 
+    // --- Apply helicopter flight intent (serial) --------------------------
+    // Body-relative arcade flight model, applied BEFORE the single step:
+    //   * Collective -> thrust magnitude in [0, max_thrust] along the body-up
+    //     axis (hover_assist centres neutral collective at m*g so it hovers).
+    //     Continuous thrust is modelled as a per-tick linear impulse J=force*dt
+    //     (there is no public linear apply_force).
+    //   * Cyclic pitch/roll + pedal yaw -> body-axis torques, integrated into a
+    //     component-carried angular-velocity estimate (the engine has no public
+    //     angular reader). The estimate is exponentially damped each tick and
+    //     written authoritatively via set_angular_velocity, so the craft stays
+    //     controllable and never tumbles out of control. We are the only torque
+    //     source while airborne (gravity adds no torque at the COM), so the
+    //     estimate tracks the body. An inertia proxy I = m * (hx^2+hz^2)/3 maps
+    //     torque -> angular acceleration (solid-box about a horizontal axis).
+    for (const Entity e : helicopter_entities_) {
+        HelicopterComponent* hc = reg.get<HelicopterComponent>(e);
+        if (hc == nullptr || !hc->body.valid() || !hc->is_player)
+            continue;
+
+        const math::Quat rot = math::quat_normalize(world.get_rotation(hc->body));
+        const math::Vec3 up = math::quat_rotate(rot, math::Vec3{0.0f, 1.0f, 0.0f});
+        const math::Vec3 right = math::quat_rotate(rot, math::Vec3{1.0f, 0.0f, 0.0f});
+        const math::Vec3 fwd = math::quat_rotate(rot, math::Vec3{0.0f, 0.0f, -1.0f});
+
+        // Collective -> thrust along body-up.
+        const f32 hover = hc->hover_assist ? hc->mass * (-config_.gravity.y) : 0.0f;
+        f32 thrust = hover + heli_collective_ * hc->max_thrust_n;
+        if (thrust < 0.0f)
+            thrust = 0.0f;
+        if (thrust > hc->max_thrust_n)
+            thrust = hc->max_thrust_n;
+        world.apply_impulse(hc->body, math::mul(up, thrust * dt));
+
+        // Cyclic + pedals -> torque about body axes. Pitch nose-down (positive
+        // input) tilts the nose forward (negative torque about body-right);
+        // roll-right (positive) rolls right; yaw-left/right about body-up.
+        const math::Vec3 torque =
+            math::add(math::add(math::mul(right, -hc->pitch_torque * heli_pitch_),
+                                math::mul(fwd, hc->roll_torque * heli_roll_)),
+                      math::mul(up, hc->yaw_torque * heli_yaw_));
+
+        // Inertia proxy (solid box about a horizontal axis) maps torque to an
+        // angular acceleration. A single scalar keeps the estimate stable.
+        const f32 hx = hc->half_extent.x;
+        const f32 hz = hc->half_extent.z;
+        const f32 inertia = std::max(1e-3f, hc->mass * (hx * hx + hz * hz) / 3.0f);
+        const f32 inv_inertia = 1.0f / inertia;
+
+        math::Vec3 w = hc->ang_vel_est;
+        w = math::add(w, math::mul(torque, inv_inertia * dt));  // integrate torque
+        // Exponential angular damping so it doesn't spin forever.
+        const f32 decay = std::max(0.0f, 1.0f - hc->angular_damping * dt);
+        w = math::mul(w, decay);
+        hc->ang_vel_est = w;
+        world.set_angular_velocity(hc->body, w);
+    }
+
     // --- Step the world ONCE (serial, single writer) ----------------------
     // The single step advances rigid bodies, characters' resolution, AND the
     // vehicle solver (which writes each chassis body's pose). Both the rigid
@@ -313,6 +424,24 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
             const usize n = std::min(vehicles.size(), transforms.size());
             for (usize i = 0; i < n; ++i) {
                 const physics::BodyId id = vehicles[i].chassis;
+                if (!id.valid())
+                    continue;
+                scene::LocalTransform& lt = transforms[i].local;
+                lt.translation = world.get_position(id);
+                lt.rotation = math::quat_normalize(world.get_rotation(id));
+            }
+        });
+
+    // --- Writeback helicopter chassis poses (parallel) --------------------
+    // Same safety as the rigid body / vehicle writebacks: get_position /
+    // get_rotation are pure const reads and step() has completed. Each row
+    // writes only its own TransformComponent column.
+    reg.query<scene::reads<HelicopterComponent>, scene::writes<scene::TransformComponent>>(
+        [&](std::span<const HelicopterComponent> helis,
+            std::span<scene::TransformComponent> transforms) {
+            const usize n = std::min(helis.size(), transforms.size());
+            for (usize i = 0; i < n; ++i) {
+                const physics::BodyId id = helis[i].body;
                 if (!id.valid())
                     continue;
                 scene::LocalTransform& lt = transforms[i].local;
@@ -383,9 +512,24 @@ void PlayRuntime::end(scene::Scene& scene) {
         vc->chassis = physics::BodyId{};
     }
 
+    // Destroy helicopter chassis bodies and clear the handle column.
+    for (const Entity e : helicopter_entities_) {
+        HelicopterComponent* hc = reg.get<HelicopterComponent>(e);
+        if (hc == nullptr)
+            continue;
+        if (hc->body.valid())
+            world.destroy_body(hc->body);
+        hc->body = physics::BodyId{};
+        hc->ang_vel_est = math::Vec3{0.0f, 0.0f, 0.0f};
+    }
+
     vehicle_throttle_ = 0.0f;
     vehicle_brake_ = 0.0f;
     vehicle_steer_ = 0.0f;
+    heli_collective_ = 0.0f;
+    heli_pitch_ = 0.0f;
+    heli_roll_ = 0.0f;
+    heli_yaw_ = 0.0f;
 
     // Restore authored transforms (serial).
     for (const AuthoredTransform& a : authored_)
@@ -404,13 +548,24 @@ void PlayRuntime::update_chase_camera(scene::Scene& scene) noexcept {
     scene::EcsRegistry& reg = scene.registry();
     physics::World& world = physics::World::Get();
 
-    // Find the first live player vehicle's chassis (serial; few vehicles).
+    // Find the first live player vehicle's chassis (serial; few vehicles). If
+    // none, fall back to the first live player helicopter's chassis so the
+    // chase camera follows the craft the flight input drives.
     physics::BodyId chassis{};
     for (const Entity e : vehicle_entities_) {
         const VehicleComponent* vc = reg.get<VehicleComponent>(e);
         if (vc != nullptr && vc->is_player && vc->chassis.valid()) {
             chassis = vc->chassis;
             break;
+        }
+    }
+    if (!chassis.valid()) {
+        for (const Entity e : helicopter_entities_) {
+            const HelicopterComponent* hc = reg.get<HelicopterComponent>(e);
+            if (hc != nullptr && hc->is_player && hc->body.valid()) {
+                chassis = hc->body;
+                break;
+            }
         }
     }
     if (!chassis.valid())

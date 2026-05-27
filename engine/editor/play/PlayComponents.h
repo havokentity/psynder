@@ -65,6 +65,35 @@ PSYNDER_COMPONENT(VehicleComponent) {
     physics::BodyId chassis{};              // runtime chassis body; 0 when not playing
 };
 
+// A flyable arcade helicopter attached to an entity. The chassis is an ordinary
+// dynamic box body; PlayRuntime applies a simple body-relative flight model each
+// tick BEFORE the single World::step(): collective thrust along the body-up
+// axis, cyclic pitch/roll + pedal yaw torque, and angular damping. Authored
+// fields (half_extent / mass / thrust / torques / damping / hover_assist /
+// is_player) persist with the scene. is_player marks the heli the flight input
+// drives and the chase camera follows.
+//
+// Stability: there is no public angular-velocity reader on the World, so the
+// component carries `ang_vel_est` -- an estimate PlayRuntime integrates itself
+// from the torques it applies (the heli is the only torque source while
+// airborne; gravity adds none at the COM). Each tick it damps the estimate and
+// writes it authoritatively via World::set_angular_velocity, which keeps the
+// craft controllable and prevents runaway tumbling.
+PSYNDER_COMPONENT(HelicopterComponent) {
+    math::Vec3 half_extent{1.2f, 0.6f, 2.0f};  // chassis box half-extent (m)
+    f32 mass = 900.0f;                          // kg
+    f32 max_thrust_n = 14000.0f;                // N (must exceed m*g ~= 8829)
+    f32 pitch_torque = 8000.0f;                 // N.m about body-right (cyclic)
+    f32 roll_torque = 8000.0f;                  // N.m about body-forward (cyclic)
+    f32 yaw_torque = 4000.0f;                   // N.m about body-up (pedals)
+    f32 angular_damping = 2.0f;                 // 1/s exponential spin decay
+    bool hover_assist = true;                   // neutral collective holds m*g
+    bool is_player = true;                       // flight-input + chase-cam target
+    u8 _pad[2] = {};
+    math::Vec3 ang_vel_est{0.0f, 0.0f, 0.0f};  // runtime body angular vel estimate
+    physics::BodyId body{};                     // runtime chassis body; 0 when idle
+};
+
 // A kinematic capsule character. move_speed scales walk_dir each tick. The
 // character handle is filled in begin() and driven in tick().
 PSYNDER_COMPONENT(CharacterControllerComponent) {

@@ -66,6 +66,7 @@ Entity add_active_arcade_light(scene::LightKind kind = scene::LightKind::Point);
 Entity add_active_arcade_gameplay(std::string_view kind);
 bool add_active_arcade_rigid_body(bool make_static);
 bool add_active_arcade_vehicle();
+bool add_active_arcade_helicopter();
 void set_active_arcade_rt_mode(bool on);
 bool active_arcade_rt_mode();
 bool bake_active_arcade_lightmaps();
@@ -311,6 +312,15 @@ void register_arcade_console_commands() {
                 out.PrintLine("phys_vehicle: selected object is now a drivable vehicle");
             else
                 out.PrintLine("phys_vehicle: no valid selection / no active scene");
+        });
+    console_ref.RegisterCommand(
+        "phys_helicopter",
+        "Tag the selected object as a flyable helicopter for Play mode: phys_helicopter.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (add_active_arcade_helicopter())
+                out.PrintLine("phys_helicopter: selected object is now a flyable helicopter");
+            else
+                out.PrintLine("phys_helicopter: no valid selection / no active scene");
         });
     console_ref.RegisterCommand(
         "rt_mode",
@@ -2665,6 +2675,33 @@ struct PlayerApp {
                 if (input->key_down(platform::KeyCode::D))
                     steer -= 0.5f;
                 play_runtime_.set_vehicle_input(throttle, brake, steer);
+
+                // Helicopter flight intent (only a player heli reacts):
+                // Space = ascend, LeftCtrl/LeftShift = descend (collective);
+                // W/S = pitch fwd/back, A/D = roll left/right, Q/E = yaw
+                // left/right. All cyclic/pedal channels are +/-1.
+                f32 collective = 0.0f;
+                if (input->key_down(platform::KeyCode::Space))
+                    collective += 1.0f;
+                if (input->key_down(platform::KeyCode::LeftCtrl) ||
+                    input->key_down(platform::KeyCode::LeftShift))
+                    collective -= 1.0f;
+                f32 pitch = 0.0f;
+                if (input->key_down(platform::KeyCode::W))
+                    pitch += 1.0f;  // nose down -> fly forward
+                if (input->key_down(platform::KeyCode::S))
+                    pitch -= 1.0f;
+                f32 roll = 0.0f;
+                if (input->key_down(platform::KeyCode::A))
+                    roll -= 1.0f;  // roll left
+                if (input->key_down(platform::KeyCode::D))
+                    roll += 1.0f;  // roll right
+                f32 yaw = 0.0f;
+                if (input->key_down(platform::KeyCode::Q))
+                    yaw += 1.0f;  // yaw left
+                if (input->key_down(platform::KeyCode::E))
+                    yaw -= 1.0f;  // yaw right
+                play_runtime_.set_helicopter_input(collective, pitch, roll, yaw);
             }
             play_runtime_.tick(*scene, dt);
         }
@@ -2717,6 +2754,30 @@ struct PlayerApp {
                                         std::max(0.1f, ext.z)};
         }
         reg.add<editor::play::VehicleComponent>(sel, vc);
+        return true;
+    }
+
+    // Tag the selected entity as a flyable player helicopter so it simulates +
+    // accepts flight input in Play mode. Chassis box sized from the renderable's
+    // local bounds (half-extent), falling back to the component default.
+    bool add_helicopter_to_selected() {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return false;
+        const Entity sel = editor::selection::selected_scene_entity();
+        if (!sel.valid() || !scene->registry().alive(sel))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<editor::play::HelicopterComponent>(sel) != nullptr)
+            return true;  // already a helicopter
+        editor::play::HelicopterComponent hc{};
+        hc.is_player = true;
+        if (const auto* r = reg.get<scene::RenderableComponent>(sel)) {
+            const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
+            hc.half_extent = math::Vec3{std::max(0.1f, ext.x), std::max(0.1f, ext.y),
+                                        std::max(0.1f, ext.z)};
+        }
+        reg.add<editor::play::HelicopterComponent>(sel, hc);
         return true;
     }
 
@@ -4008,6 +4069,10 @@ bool add_active_arcade_vehicle() {
     return g_active_arcade && g_active_arcade->add_vehicle_to_selected();
 }
 
+bool add_active_arcade_helicopter() {
+    return g_active_arcade && g_active_arcade->add_helicopter_to_selected();
+}
+
 void set_active_arcade_rt_mode(bool on) {
     if (g_active_arcade)
         g_active_arcade->set_rt_mode(on);
@@ -4098,6 +4163,8 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
         add.component == "RigidBodyStatic";
     const bool is_vehicle =
         add.component == "Vehicle" || add.component == "VehicleComponent";
+    const bool is_helicopter =
+        add.component == "Helicopter" || add.component == "HelicopterComponent";
     if (is_rigid_body) {
         const bool make_static =
             add.component == "RigidBodyStatic" || add.variant == "static";
@@ -4115,6 +4182,14 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
         } else {
             text = "add Vehicle failed (no valid selection / no active scene)";
             PSY_LOG_WARN("psynder_arcade: add Vehicle failed on {}", add.entity_id);
+        }
+    } else if (is_helicopter) {
+        ok = add_active_arcade_helicopter();
+        if (ok) {
+            text = "added Helicopter";
+        } else {
+            text = "add Helicopter failed (no valid selection / no active scene)";
+            PSY_LOG_WARN("psynder_arcade: add Helicopter failed on {}", add.entity_id);
         }
     } else {
         text = "add component not supported: ";

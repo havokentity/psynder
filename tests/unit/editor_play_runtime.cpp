@@ -221,3 +221,60 @@ TEST_CASE("PlayRuntime drives a player vehicle forward and restores on stop",
     REQUIRE(scene.transform(car).translation.y == Approx(authored_pos.y).margin(1e-4f));
     REQUIRE(scene.transform(car).translation.z == Approx(authored_pos.z).margin(1e-4f));
 }
+
+TEST_CASE("PlayRuntime flies a player helicopter up and yaws it, restores on stop",
+          "[play][editor]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    const math::Vec3 authored_pos{0.0f, 5.0f, 0.0f};
+    const Entity heli = scene.create_entity(at(authored_pos));
+    {
+        editor::play::HelicopterComponent hc{};
+        hc.is_player = true;
+        registry.add<editor::play::HelicopterComponent>(heli, hc);
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+
+    auto* comp = registry.get<editor::play::HelicopterComponent>(heli);
+    REQUIRE(comp->body.valid());
+
+    const f32 start_y = scene.transform(heli).translation.y;
+    const math::Quat start_rot = scene.transform(heli).rotation;
+
+    // Full ascend collective for a couple seconds: it should climb (max_thrust
+    // exceeds m*g, so net upward force lifts it).
+    runtime.set_helicopter_input(/*collective*/ 1.0f, 0.0f, 0.0f, 0.0f);
+    for (int step = 0; step < 240; ++step)
+        runtime.tick(scene, 1.0f / 120.0f);
+
+    const f32 climbed_y = scene.transform(heli).translation.y;
+    INFO("heli climbed from y=" << start_y << " to y=" << climbed_y);
+    REQUIRE(climbed_y > start_y + 0.5f);
+    REQUIRE(std::isfinite(climbed_y));
+
+    // Now feed yaw with neutral collective (hover_assist holds altitude): the
+    // orientation must change away from the authored identity rotation.
+    runtime.set_helicopter_input(/*collective*/ 0.0f, 0.0f, 0.0f, /*yaw*/ 1.0f);
+    for (int step = 0; step < 120; ++step)
+        runtime.tick(scene, 1.0f / 120.0f);
+
+    const math::Quat yawed = scene.transform(heli).rotation;
+    // Quaternion dot near +/-1 means "same orientation"; require it to diverge.
+    const f32 align = std::fabs(yawed.x * start_rot.x + yawed.y * start_rot.y +
+                                yawed.z * start_rot.z + yawed.w * start_rot.w);
+    INFO("orientation alignment with authored = " << align);
+    REQUIRE(align < 0.999f);  // it rotated
+
+    runtime.end(scene);
+    REQUIRE_FALSE(runtime.playing());
+    REQUIRE_FALSE(comp->body.valid());
+    // Authored transform restored.
+    REQUIRE(scene.transform(heli).translation.x == Approx(authored_pos.x).margin(1e-4f));
+    REQUIRE(scene.transform(heli).translation.y == Approx(authored_pos.y).margin(1e-4f));
+    REQUIRE(scene.transform(heli).translation.z == Approx(authored_pos.z).margin(1e-4f));
+}
