@@ -333,6 +333,49 @@ void World::apply_impulse(BodyId id, math::Vec3 impulse) {
     b.linear_velocity = math::add(b.linear_velocity, math::mul(impulse, b.inv_mass));
 }
 
+void World::apply_torque(BodyId id, math::Vec3 torque) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;
+    // Accumulate into the torque the integrator consumes on the next step
+    // (same lifecycle as Body::force). Inertia is applied there.
+    b.torque = math::add(b.torque, torque);
+}
+
+void World::apply_angular_impulse(BodyId id, math::Vec3 impulse) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;
+    // w += I^-1 * J. Mirror the integrator's world-space diagonal convention
+    // (integrate_forces) so impulse response matches accumulated-torque response.
+    b.angular_velocity = math::add(b.angular_velocity,
+                                   math::Vec3{impulse.x * b.inertia.inv_local.x,
+                                              impulse.y * b.inertia.inv_local.y,
+                                              impulse.z * b.inertia.inv_local.z});
+}
+
+void World::set_angular_velocity(BodyId id, math::Vec3 angular) {
+    auto& w = detail::world_state();
+    std::lock_guard<std::mutex> lock(w.mutate);
+    u32 idx = id.raw & 0x00FFFFFFu;
+    if (idx >= w.bodies.size() || w.bodies[idx].gen == 0)
+        return;
+    detail::Body& b = w.bodies[idx];
+    if (b.inv_mass == 0.0f)
+        return;
+    b.angular_velocity = angular;
+}
+
 math::Vec3 World::get_position(BodyId id) const {
     auto& w = detail::world_state();
     u32 idx = id.raw & 0x00FFFFFFu;

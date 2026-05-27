@@ -62,6 +62,18 @@ class World {
     // Apply an instantaneous linear impulse J (kg·m/s): v += J * inv_mass.
     // Alternative throw path that scales the resulting speed by 1/mass.
     void apply_impulse(BodyId id, math::Vec3 impulse);
+
+    // ─── Angular writers (flight controllers, custom vehicles; DESIGN.md §10.1) ─
+    // The integrator already carries per-body torque + a (world-space diagonal)
+    // inertia tensor; these expose it so gameplay code can rotate a body without
+    // owning the internal Body. All no-op on a stale handle or static body.
+    //
+    // Accumulate torque (N·m) consumed on the next step: w += I^-1 * torque * dt.
+    void apply_torque(BodyId id, math::Vec3 torque);
+    // Instantaneous angular impulse (N·m·s): w += I^-1 * impulse.
+    void apply_angular_impulse(BodyId id, math::Vec3 impulse);
+    // Overwrite angular velocity (rad/s) about the world axes.
+    void set_angular_velocity(BodyId id, math::Vec3 w);
 };
 
 // Vehicle module (DESIGN.md §10.1 vehicle specialization)
