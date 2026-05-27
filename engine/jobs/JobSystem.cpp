@@ -154,6 +154,29 @@ struct SchedulerState {
     u32 latency_workers = 0;     // count of cls==Latency
     u32 throughput_workers = 0;  // count of cls==Throughput
     detail::HeteroTopology topology{};
+
+    // Join any still-running workers BEFORE the mutex / condition_variable
+    // members below are destroyed. A process that used the job system but never
+    // called stop() (e.g. the unit-test binary, which drives parallel_for via
+    // ECS queries / physics) otherwise tears down g_sched with workers still
+    // parked on sleep_cv/sleep_mu; on exit those workers lock an already-
+    // destroyed mutex -> "mutex lock failed: Invalid argument" abort (SIGABRT,
+    // flaky on timing). stop() zeroes worker_count, so this is a no-op after a
+    // clean stop(). We only join here (no deinit/free) — the OS reclaims the
+    // rest at process exit, and skipping it avoids double-free vs. stop().
+    ~SchedulerState() {
+        if (worker_count == 0u || workers == nullptr)
+            return;
+        running.store(0, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lk(sleep_mu);
+            sleep_cv.notify_all();
+        }
+        for (u32 i = 0; i < worker_count; ++i) {
+            if (workers[i].thread.joinable())
+                workers[i].thread.join();
+        }
+    }
 };
 
 SchedulerState g_sched;
