@@ -222,6 +222,178 @@ TEST_CASE("PlayRuntime drives a player vehicle forward and restores on stop",
     REQUIRE(scene.transform(car).translation.z == Approx(authored_pos.z).margin(1e-4f));
 }
 
+TEST_CASE("PlayRuntime writes a parented dynamic body back in parent-local space",
+          "[play][editor]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // Static ground at y = 0 (top surface y = 0.5), top-level.
+    const Entity ground = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
+    {
+        editor::play::RigidBodyComponent rb{};
+        rb.mass = 0.0f;
+        rb.half_extent = math::Vec3{20.0f, 0.5f, 20.0f};
+        registry.add<editor::play::RigidBodyComponent>(ground, rb);
+    }
+
+    // A parent node MOVED far from the origin and YAWED 90 degrees, so its world
+    // matrix is a non-trivial rigid transform. The parent itself is inert.
+    const math::Vec3 parent_pos{10.0f, 0.0f, -7.0f};
+    scene::LocalTransform parent_local{};
+    parent_local.translation = parent_pos;
+    // Yaw 90 degrees about the world up (Y) axis: a non-trivial rotation that
+    // leaves the Y axis fixed, so a local +Y offset stays +Y in world space.
+    parent_local.rotation = math::quat_from_axis_angle(math::Vec3{0.0f, 1.0f, 0.0f}, math::kHalfPi);
+    const Entity parent = scene.create_entity(parent_local);
+    scene.graph().update_world_transforms();  // parent world matrix ready
+
+    // A dynamic box parented under the moved/rotated parent. Its authored LOCAL
+    // places it 4 m above the parent; its authored WORLD point is therefore
+    // parent_world * (0,4,0).
+    const math::Mat4 parent_world = scene.graph().world_matrix(scene.node(parent));
+    const math::Vec4 box_world4 =
+        math::mul(parent_world, math::Vec4{0.0f, 4.0f, 0.0f, 1.0f});
+    const math::Vec3 box_world0{box_world4.x, box_world4.y, box_world4.z};
+
+    const Entity box = scene.create_entity(at({0.0f, 4.0f, 0.0f}), scene.node(parent));
+    {
+        editor::play::RigidBodyComponent rb{};
+        rb.mass = 1.0f;
+        rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};
+        rb.friction = 0.6f;
+        registry.add<editor::play::RigidBodyComponent>(box, rb);
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+    REQUIRE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+
+    // The body was created from the WORLD pose (scene.transform composes through
+    // the parent), so it starts at box_world0 -- confirm the authored world.
+    {
+        const math::Mat4 w0 = scene.graph().world_matrix(scene.node(box));
+        INFO("authored world start = (" << w0.m[12] << "," << w0.m[13] << "," << w0.m[14]
+                                        << ") expected (" << box_world0.x << "," << box_world0.y
+                                        << "," << box_world0.z << ")");
+        REQUIRE(w0.m[12] == Approx(box_world0.x).margin(1e-3f));
+        REQUIRE(w0.m[13] == Approx(box_world0.y).margin(1e-3f));
+        REQUIRE(w0.m[14] == Approx(box_world0.z).margin(1e-3f));
+    }
+
+    // Settle.
+    for (int step = 0; step < 600; ++step)
+        runtime.tick(scene, 1.0f / 120.0f);
+
+    // The writeback stores the body's WORLD pose folded into the parent's local
+    // space directly into TransformComponent.local. Recompose the WORLD pose the
+    // way the renderer does (parent_world * local) and confirm it matches a free
+    // body: same world X/Z, resting just above the ground top. (If the writeback
+    // wrongly stored the world pose AS the local -- the old top-level-only path
+    // -- recomposing through the moved/rotated parent would fling it far away;
+    // this is the discriminating assertion.)
+    const scene::LocalTransform lf = scene.transform(box);
+    const math::Mat4 wf =
+        math::mul(parent_world, scene::local_transform_matrix(lf));
+    const math::Vec3 world_final{wf.m[12], wf.m[13], wf.m[14]};
+    INFO("box LOCAL after settle = (" << lf.translation.x << "," << lf.translation.y << ","
+                                      << lf.translation.z << ")");
+    INFO("box WORLD (parent_world * local) = (" << world_final.x << "," << world_final.y << ","
+                                                << world_final.z << ")");
+    REQUIRE(std::isfinite(world_final.x));
+    REQUIRE(std::isfinite(world_final.y));
+    REQUIRE(std::isfinite(world_final.z));
+    // Stayed near the authored world X/Z (minor physics drift while settling);
+    // the buggy world-as-local path would land >10 units away through the
+    // moved/rotated parent, so this margin is still strongly discriminating.
+    REQUIRE(world_final.x == Approx(box_world0.x).margin(0.75f));
+    REQUIRE(world_final.z == Approx(box_world0.z).margin(0.75f));
+    REQUIRE(world_final.y < box_world0.y - 1.0f);  // it fell
+    REQUIRE(world_final.y > 0.5f);                 // rests above the ground top
+    REQUIRE(world_final.y < 1.5f);                 // ground_top(0.5)+half(0.5), settled
+
+    runtime.end(scene);
+    REQUIRE_FALSE(runtime.playing());
+    // Authored local transform restored exactly (it never moved in parent space
+    // because end() restores the snapshot, regardless of the parent).
+    const scene::LocalTransform restored = scene.transform(box);
+    REQUIRE(restored.translation.x == Approx(0.0f).margin(1e-4f));
+    REQUIRE(restored.translation.y == Approx(4.0f).margin(1e-4f));
+    REQUIRE(restored.translation.z == Approx(0.0f).margin(1e-4f));
+    REQUIRE_FALSE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+}
+
+TEST_CASE("PlayRuntime creates and simulates more than 256 bodies in one archetype",
+          "[play][editor]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // Static ground.
+    const Entity ground = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
+    {
+        editor::play::RigidBodyComponent rb{};
+        rb.mass = 0.0f;
+        rb.half_extent = math::Vec3{200.0f, 0.5f, 200.0f};
+        registry.add<editor::play::RigidBodyComponent>(ground, rb);
+    }
+
+    // 300 dynamic boxes -- one ECS chunk holds at most 256 rows (16 KiB / cache
+    // line ceiling), so this archetype spans multiple chunks. The old fixed
+    // std::array<,256> + break would silently skip every row past 256 in a
+    // chunk; with the fix every body must be created and must fall.
+    constexpr usize kBoxes = 300u;
+    std::vector<Entity> boxes;
+    std::vector<f32> authored_y;
+    boxes.reserve(kBoxes);
+    authored_y.reserve(kBoxes);
+    for (usize i = 0; i < kBoxes; ++i) {
+        // Spread out on a grid so they don't all collide into one stack.
+        const f32 x = static_cast<f32>(i % 30u) * 2.0f - 30.0f;
+        const f32 z = static_cast<f32>(i / 30u) * 2.0f - 10.0f;
+        const f32 y = 6.0f;
+        const Entity box = scene.create_entity(at({x, y, z}));
+        editor::play::RigidBodyComponent rb{};
+        rb.mass = 1.0f;
+        rb.half_extent = math::Vec3{0.4f, 0.4f, 0.4f};
+        rb.friction = 0.6f;
+        registry.add<editor::play::RigidBodyComponent>(box, rb);
+        boxes.push_back(box);
+        authored_y.push_back(y);
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+    // ground + every one of the 300 boxes got a live body.
+    REQUIRE(runtime.body_count() == kBoxes + 1u);
+    for (const Entity box : boxes)
+        REQUIRE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+
+    for (int step = 0; step < 360; ++step)
+        runtime.tick(scene, 1.0f / 120.0f);
+
+    // EVERY box simulated: each fell below its authored height and rests above
+    // the ground top. A dropped (uncreated) body would still sit at its authored
+    // y = 6.0, so this catches the silent-truncation regression for all rows.
+    usize fell = 0u;
+    for (usize i = 0; i < kBoxes; ++i) {
+        const f32 y = entity_y(scene, boxes[i]);
+        REQUIRE(std::isfinite(y));
+        REQUIRE(y > 0.5f);  // never below the ground top
+        if (y < authored_y[i] - 1.0f)
+            ++fell;
+    }
+    INFO("boxes that fell = " << fell << " / " << kBoxes);
+    REQUIRE(fell == kBoxes);
+
+    runtime.end(scene);
+    REQUIRE_FALSE(runtime.playing());
+    for (const Entity box : boxes)
+        REQUIRE_FALSE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+}
+
 TEST_CASE("PlayRuntime flies a player helicopter up and yaws it, restores on stop",
           "[play][editor]") {
     RegistryReset reset;

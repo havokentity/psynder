@@ -18,6 +18,7 @@
 #include "editor/play/PlayRuntime.h"
 
 #include "editor/play/CharacterPeek.h"  // peek_character_position (isolated TU)
+#include "math/MathExt.h"               // inverse_affine (parenting writeback)
 
 #include <algorithm>
 #include <array>
@@ -25,6 +26,127 @@
 #include <mutex>
 
 namespace psynder::editor::play {
+
+namespace {
+
+// Extract a (translation, rotation) world pose from a rigid 4x4 world matrix.
+// Reused for the parenting-aware writeback: a simulated body's WORLD pose must
+// be re-expressed in its parent's local space before it can be stored into
+// TransformComponent.local. Decomposition mirrors the scene save path
+// (SceneFile.cpp decompose_world_transform / quat_from_basis): normalize the
+// three basis columns, fix handedness, and build a quaternion from the basis.
+// Authored (non-uniform) scale on the body is never produced by physics, so
+// only translation + rotation are written; the caller preserves lt.scale.
+struct WorldPose {
+    math::Vec3 translation{};
+    math::Quat rotation{0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+[[nodiscard]] math::Vec3 matrix_column(const math::Mat4& m, u32 column) noexcept {
+    const u32 base = column * 4u;
+    return {m.m[base + 0u], m.m[base + 1u], m.m[base + 2u]};
+}
+
+[[nodiscard]] math::Quat quat_from_basis(math::Vec3 x, math::Vec3 y, math::Vec3 z) noexcept {
+    const f32 m00 = x.x, m01 = y.x, m02 = z.x;
+    const f32 m10 = x.y, m11 = y.y, m12 = z.y;
+    const f32 m20 = x.z, m21 = y.z, m22 = z.z;
+    const f32 trace = m00 + m11 + m22;
+
+    math::Quat q{};
+    if (trace > 0.0f) {
+        const f32 s = std::sqrt(trace + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (m21 - m12) / s;
+        q.y = (m02 - m20) / s;
+        q.z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const f32 s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q.w = (m21 - m12) / s;
+        q.x = 0.25f * s;
+        q.y = (m01 + m10) / s;
+        q.z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const f32 s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q.w = (m02 - m20) / s;
+        q.x = (m01 + m10) / s;
+        q.y = 0.25f * s;
+        q.z = (m12 + m21) / s;
+    } else {
+        const f32 s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q.w = (m10 - m01) / s;
+        q.x = (m02 + m20) / s;
+        q.y = (m12 + m21) / s;
+        q.z = 0.25f * s;
+    }
+    return math::quat_normalize(q);
+}
+
+// Decompose a node's WORLD matrix into a rigid (translation, rotation) pose,
+// dropping any scale. Used to SPAWN the physics body at the entity's true world
+// pose (scene.transform() returns the parent-LOCAL transform, which is the
+// world pose only for top-level entities). Mirrors the basis normalization in
+// world_pose_in_parent below.
+[[nodiscard]] WorldPose world_pose_from_matrix(const math::Mat4& world) noexcept {
+    WorldPose out{};
+    out.translation = {world.m[12], world.m[13], world.m[14]};
+
+    constexpr f32 kMinScale = 1.0e-6f;
+    math::Vec3 cx = matrix_column(world, 0u);
+    math::Vec3 cy = matrix_column(world, 1u);
+    math::Vec3 cz = matrix_column(world, 2u);
+    const f32 sx = math::length(cx);
+    const f32 sy = math::length(cy);
+    const f32 sz = math::length(cz);
+    if (sx <= kMinScale || sy <= kMinScale || sz <= kMinScale)
+        return out;  // degenerate basis: identity rotation
+    cx = math::mul(cx, 1.0f / sx);
+    cy = math::mul(cy, 1.0f / sy);
+    cz = math::mul(cz, 1.0f / sz);
+    if (math::dot(math::cross(cx, cy), cz) < 0.0f)
+        cz = math::mul(cz, -1.0f);
+    out.rotation = quat_from_basis(cx, cy, cz);
+    return out;
+}
+
+// Convert a simulated body's WORLD pose (world_pos, world_rot) into the local
+// pose under `parent_world`: local = inverse(parent_world) * body_world. Pure,
+// alloc-free. The parent world matrix may carry scale; we strip it from the
+// rotation basis (normalized columns) so the result is a clean rigid pose.
+[[nodiscard]] WorldPose world_pose_in_parent(const math::Mat4& parent_world,
+                                             math::Vec3 world_pos,
+                                             math::Quat world_rot) noexcept {
+    const math::Mat4 inv_parent = math::inverse_affine(parent_world);
+    const math::Mat4 body_world = math::mul_affine(math::translate(world_pos),
+                                                   math::rotate_quat(world_rot));
+    const math::Mat4 local = math::mul_affine(inv_parent, body_world);
+
+    WorldPose out{};
+    out.translation = {local.m[12], local.m[13], local.m[14]};
+
+    constexpr f32 kMinScale = 1.0e-6f;
+    math::Vec3 cx = matrix_column(local, 0u);
+    math::Vec3 cy = matrix_column(local, 1u);
+    math::Vec3 cz = matrix_column(local, 2u);
+    const f32 sx = math::length(cx);
+    const f32 sy = math::length(cy);
+    const f32 sz = math::length(cz);
+    if (sx <= kMinScale || sy <= kMinScale || sz <= kMinScale) {
+        // Degenerate parent basis: keep the body's own world rotation rather
+        // than emitting NaNs.
+        out.rotation = math::quat_normalize(world_rot);
+        return out;
+    }
+    cx = math::mul(cx, 1.0f / sx);
+    cy = math::mul(cy, 1.0f / sy);
+    cz = math::mul(cz, 1.0f / sz);
+    if (math::dot(math::cross(cx, cy), cz) < 0.0f)
+        cz = math::mul(cz, -1.0f);
+    out.rotation = quat_from_basis(cx, cy, cz);
+    return out;
+}
+
+}  // namespace
 
 PlayRuntime::~PlayRuntime() {
     // The handles needed to free bodies live in the ECS components, which we
@@ -61,27 +183,23 @@ void PlayRuntime::begin(scene::Scene& scene) {
     // query body fires once per chunk across worker threads, so the shared
     // append is serialized by a mutex and each chunk builds a local buffer
     // first (the gather_scene_render_items pattern).
+    // Each chunk's `nodes` span is exactly its live-row count, so we drive the
+    // append straight off nodes.size() -- there is NO fixed per-chunk cap that
+    // could silently drop rows beyond N (the previous std::array<,256> + break
+    // would have dropped any row past 256 in a chunk). Each chunk's entities are
+    // appended under the mutex; reserve-then-push keeps it amortized alloc-free.
     {
         std::mutex append_mutex;
         reg.query<scene::reads<scene::SceneNodeComponent, RigidBodyComponent>, scene::writes<>>(
             [&](std::span<const scene::SceneNodeComponent> nodes,
                 std::span<const RigidBodyComponent> bodies) {
                 const usize n = std::min(nodes.size(), bodies.size());
-                constexpr usize kMaxChunkRows = 256u;
-                std::array<Entity, kMaxChunkRows> chunk_entities{};
-                usize chunk_count = 0u;
-                for (usize i = 0; i < n; ++i) {
-                    if (chunk_count >= kMaxChunkRows)
-                        break;  // chunks never exceed this; guard anyway
-                    chunk_entities[chunk_count++] = nodes[i].entity;
-                }
-                if (chunk_count != 0u) {
-                    std::scoped_lock lock{append_mutex};
-                    rigid_entities_.reserve(rigid_entities_.size() + chunk_count);
-                    rigid_entities_.insert(rigid_entities_.end(),
-                                           chunk_entities.begin(),
-                                           chunk_entities.begin() + chunk_count);
-                }
+                if (n == 0u)
+                    return;
+                std::scoped_lock lock{append_mutex};
+                rigid_entities_.reserve(rigid_entities_.size() + n);
+                for (usize i = 0; i < n; ++i)
+                    rigid_entities_.push_back(nodes[i].entity);
             });
     }
 
@@ -93,21 +211,12 @@ void PlayRuntime::begin(scene::Scene& scene) {
             [&](std::span<const scene::SceneNodeComponent> nodes,
                 std::span<const CharacterControllerComponent> chars) {
                 const usize n = std::min(nodes.size(), chars.size());
-                constexpr usize kMaxChunkRows = 256u;
-                std::array<Entity, kMaxChunkRows> chunk_entities{};
-                usize chunk_count = 0u;
-                for (usize i = 0; i < n; ++i) {
-                    if (chunk_count >= kMaxChunkRows)
-                        break;
-                    chunk_entities[chunk_count++] = nodes[i].entity;
-                }
-                if (chunk_count != 0u) {
-                    std::scoped_lock lock{append_mutex};
-                    character_entities_.reserve(character_entities_.size() + chunk_count);
-                    character_entities_.insert(character_entities_.end(),
-                                               chunk_entities.begin(),
-                                               chunk_entities.begin() + chunk_count);
-                }
+                if (n == 0u)
+                    return;
+                std::scoped_lock lock{append_mutex};
+                character_entities_.reserve(character_entities_.size() + n);
+                for (usize i = 0; i < n; ++i)
+                    character_entities_.push_back(nodes[i].entity);
             });
     }
 
@@ -118,21 +227,12 @@ void PlayRuntime::begin(scene::Scene& scene) {
             [&](std::span<const scene::SceneNodeComponent> nodes,
                 std::span<const VehicleComponent> vehicles) {
                 const usize n = std::min(nodes.size(), vehicles.size());
-                constexpr usize kMaxChunkRows = 256u;
-                std::array<Entity, kMaxChunkRows> chunk_entities{};
-                usize chunk_count = 0u;
-                for (usize i = 0; i < n; ++i) {
-                    if (chunk_count >= kMaxChunkRows)
-                        break;
-                    chunk_entities[chunk_count++] = nodes[i].entity;
-                }
-                if (chunk_count != 0u) {
-                    std::scoped_lock lock{append_mutex};
-                    vehicle_entities_.reserve(vehicle_entities_.size() + chunk_count);
-                    vehicle_entities_.insert(vehicle_entities_.end(),
-                                             chunk_entities.begin(),
-                                             chunk_entities.begin() + chunk_count);
-                }
+                if (n == 0u)
+                    return;
+                std::scoped_lock lock{append_mutex};
+                vehicle_entities_.reserve(vehicle_entities_.size() + n);
+                for (usize i = 0; i < n; ++i)
+                    vehicle_entities_.push_back(nodes[i].entity);
             });
     }
 
@@ -143,21 +243,12 @@ void PlayRuntime::begin(scene::Scene& scene) {
             [&](std::span<const scene::SceneNodeComponent> nodes,
                 std::span<const HelicopterComponent> helis) {
                 const usize n = std::min(nodes.size(), helis.size());
-                constexpr usize kMaxChunkRows = 256u;
-                std::array<Entity, kMaxChunkRows> chunk_entities{};
-                usize chunk_count = 0u;
-                for (usize i = 0; i < n; ++i) {
-                    if (chunk_count >= kMaxChunkRows)
-                        break;
-                    chunk_entities[chunk_count++] = nodes[i].entity;
-                }
-                if (chunk_count != 0u) {
-                    std::scoped_lock lock{append_mutex};
-                    helicopter_entities_.reserve(helicopter_entities_.size() + chunk_count);
-                    helicopter_entities_.insert(helicopter_entities_.end(),
-                                                chunk_entities.begin(),
-                                                chunk_entities.begin() + chunk_count);
-                }
+                if (n == 0u)
+                    return;
+                std::scoped_lock lock{append_mutex};
+                helicopter_entities_.reserve(helicopter_entities_.size() + n);
+                for (usize i = 0; i < n; ++i)
+                    helicopter_entities_.push_back(nodes[i].entity);
             });
     }
 
@@ -165,22 +256,39 @@ void PlayRuntime::begin(scene::Scene& scene) {
                       vehicle_entities_.size() + helicopter_entities_.size());
 
     // --- Phase 2: build bodies (serial, main thread) ----------------------
-    // create_body mutates the shared World, so this MUST be serial. We read the
-    // authored transform per entity, snapshot it, create the body from the
-    // authored pose + component params, and write the handle back into the
-    // component column.
+    // create_body mutates the shared World, so this MUST be serial. We snapshot
+    // the entity's authored (parent-LOCAL) transform for restore, create the
+    // body at the entity's WORLD pose, and write the handle back. Physics
+    // operates entirely in world space, so a parented body must SPAWN at its
+    // world pose (scene.transform() returns the parent-LOCAL transform, which is
+    // the world pose only for top-level entities). Refresh world matrices once
+    // so a parented entity's world pose is current.
+    scene::SceneGraph& graph = scene.graph();
+    graph.update_world_transforms();
+
+    // World spawn pose for an entity: its decomposed world matrix when parented,
+    // else its authored local (local == world for a top-level entity). Alloc-free.
+    const auto world_spawn = [&](const scene::LocalTransform& local,
+                                 Entity e) noexcept -> WorldPose {
+        const scene::SceneNode node = scene.node(e);
+        if (node.valid() && graph.parent(node).valid())
+            return world_pose_from_matrix(graph.world_matrix(node));
+        return WorldPose{local.translation, math::quat_normalize(local.rotation)};
+    };
+
     for (const Entity e : rigid_entities_) {
         RigidBodyComponent* rb = reg.get<RigidBodyComponent>(e);
         if (rb == nullptr)
             continue;
         const scene::LocalTransform local = scene.transform(e);
         authored_.push_back(AuthoredTransform{e, local});
+        const WorldPose spawn = world_spawn(local, e);
 
         physics::BodyDesc d{};
         d.shape = rb->shape;
         d.mass = rb->mass;  // 0 => static
-        d.position = local.translation;
-        d.rotation = math::quat_normalize(local.rotation);
+        d.position = spawn.translation;
+        d.rotation = spawn.rotation;
         d.half_extent = rb->half_extent;
         d.friction = rb->friction;
         d.restitution = rb->restitution;
@@ -199,7 +307,7 @@ void PlayRuntime::begin(scene::Scene& scene) {
         authored_.push_back(AuthoredTransform{e, local});
 
         physics::character::CharacterDesc d{};
-        d.position = local.translation;
+        d.position = world_spawn(local, e).translation;
         d.height = cc->height;
         d.radius = cc->radius;
         cc->character = physics::character::create(d);
@@ -217,12 +325,13 @@ void PlayRuntime::begin(scene::Scene& scene) {
             continue;
         const scene::LocalTransform local = scene.transform(e);
         authored_.push_back(AuthoredTransform{e, local});
+        const WorldPose spawn = world_spawn(local, e);
 
         physics::BodyDesc cd{};
         cd.shape = physics::Shape::Box;
         cd.mass = vc->mass;
-        cd.position = local.translation;
-        cd.rotation = math::quat_normalize(local.rotation);
+        cd.position = spawn.translation;
+        cd.rotation = spawn.rotation;
         cd.half_extent = vc->half_extent;
         cd.friction = 0.5f;
         cd.restitution = 0.0f;
@@ -269,12 +378,13 @@ void PlayRuntime::begin(scene::Scene& scene) {
             continue;
         const scene::LocalTransform local = scene.transform(e);
         authored_.push_back(AuthoredTransform{e, local});
+        const WorldPose spawn = world_spawn(local, e);
 
         physics::BodyDesc hd{};
         hd.shape = physics::Shape::Box;
         hd.mass = hc->mass;
-        hd.position = local.translation;
-        hd.rotation = math::quat_normalize(local.rotation);
+        hd.position = spawn.translation;
+        hd.rotation = spawn.rotation;
         hd.half_extent = hc->half_extent;
         hd.friction = 0.5f;
         hd.restitution = 0.0f;
@@ -399,17 +509,39 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // get_position / get_rotation are pure const reads (no mutation, no lazy
     // alloc) and step() has completed, so reading the World concurrently is
     // safe. Each row writes only its own TransformComponent column.
-    reg.query<scene::reads<RigidBodyComponent>, scene::writes<scene::TransformComponent>>(
-        [&](std::span<const RigidBodyComponent> bodies,
+    // SceneNodeComponent is read row-aligned (read-only, parallel-safe) so each
+    // row can find its parent: a parented body's WORLD pose must be folded into
+    // the parent's local space (local = inverse(parent_world) * body_world)
+    // before storing into TransformComponent.local. graph().parent() and
+    // graph().world_matrix() are pure const reads. The parent's world matrix is
+    // from the previous tick's update_world_transforms() (this tick's runs
+    // after every writeback) -- exact for a static parent, one-frame-lagged for
+    // a moving one, which is the best achievable in a single graph pass.
+    const scene::SceneGraph& graph = scene.graph();
+    reg.query<scene::reads<scene::SceneNodeComponent, RigidBodyComponent>,
+              scene::writes<scene::TransformComponent>>(
+        [&](std::span<const scene::SceneNodeComponent> nodes,
+            std::span<const RigidBodyComponent> bodies,
             std::span<scene::TransformComponent> transforms) {
-            const usize n = std::min(bodies.size(), transforms.size());
+            const usize n =
+                std::min(std::min(nodes.size(), bodies.size()), transforms.size());
             for (usize i = 0; i < n; ++i) {
                 const physics::BodyId id = bodies[i].body;
                 if (!id.valid())
                     continue;
+                const math::Vec3 wp = world.get_position(id);
+                const math::Quat wr = math::quat_normalize(world.get_rotation(id));
                 scene::LocalTransform& lt = transforms[i].local;
-                lt.translation = world.get_position(id);
-                lt.rotation = math::quat_normalize(world.get_rotation(id));
+                const scene::SceneNode parent = graph.parent(nodes[i].node);
+                if (parent.valid()) {
+                    const WorldPose lp =
+                        world_pose_in_parent(graph.world_matrix(parent), wp, wr);
+                    lt.translation = lp.translation;
+                    lt.rotation = lp.rotation;
+                } else {
+                    lt.translation = wp;
+                    lt.rotation = wr;
+                }
                 // physics never changes scale; lt.scale is left as authored.
             }
         });
@@ -418,17 +550,30 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // Same safety as the rigid body writeback: get_position/get_rotation are
     // pure const reads and step() has completed. Each row writes only its own
     // TransformComponent column.
-    reg.query<scene::reads<VehicleComponent>, scene::writes<scene::TransformComponent>>(
-        [&](std::span<const VehicleComponent> vehicles,
+    reg.query<scene::reads<scene::SceneNodeComponent, VehicleComponent>,
+              scene::writes<scene::TransformComponent>>(
+        [&](std::span<const scene::SceneNodeComponent> nodes,
+            std::span<const VehicleComponent> vehicles,
             std::span<scene::TransformComponent> transforms) {
-            const usize n = std::min(vehicles.size(), transforms.size());
+            const usize n =
+                std::min(std::min(nodes.size(), vehicles.size()), transforms.size());
             for (usize i = 0; i < n; ++i) {
                 const physics::BodyId id = vehicles[i].chassis;
                 if (!id.valid())
                     continue;
+                const math::Vec3 wp = world.get_position(id);
+                const math::Quat wr = math::quat_normalize(world.get_rotation(id));
                 scene::LocalTransform& lt = transforms[i].local;
-                lt.translation = world.get_position(id);
-                lt.rotation = math::quat_normalize(world.get_rotation(id));
+                const scene::SceneNode parent = graph.parent(nodes[i].node);
+                if (parent.valid()) {
+                    const WorldPose lp =
+                        world_pose_in_parent(graph.world_matrix(parent), wp, wr);
+                    lt.translation = lp.translation;
+                    lt.rotation = lp.rotation;
+                } else {
+                    lt.translation = wp;
+                    lt.rotation = wr;
+                }
             }
         });
 
@@ -436,21 +581,37 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // Same safety as the rigid body / vehicle writebacks: get_position /
     // get_rotation are pure const reads and step() has completed. Each row
     // writes only its own TransformComponent column.
-    reg.query<scene::reads<HelicopterComponent>, scene::writes<scene::TransformComponent>>(
-        [&](std::span<const HelicopterComponent> helis,
+    reg.query<scene::reads<scene::SceneNodeComponent, HelicopterComponent>,
+              scene::writes<scene::TransformComponent>>(
+        [&](std::span<const scene::SceneNodeComponent> nodes,
+            std::span<const HelicopterComponent> helis,
             std::span<scene::TransformComponent> transforms) {
-            const usize n = std::min(helis.size(), transforms.size());
+            const usize n =
+                std::min(std::min(nodes.size(), helis.size()), transforms.size());
             for (usize i = 0; i < n; ++i) {
                 const physics::BodyId id = helis[i].body;
                 if (!id.valid())
                     continue;
+                const math::Vec3 wp = world.get_position(id);
+                const math::Quat wr = math::quat_normalize(world.get_rotation(id));
                 scene::LocalTransform& lt = transforms[i].local;
-                lt.translation = world.get_position(id);
-                lt.rotation = math::quat_normalize(world.get_rotation(id));
+                const scene::SceneNode parent = graph.parent(nodes[i].node);
+                if (parent.valid()) {
+                    const WorldPose lp =
+                        world_pose_in_parent(graph.world_matrix(parent), wp, wr);
+                    lt.translation = lp.translation;
+                    lt.rotation = lp.rotation;
+                } else {
+                    lt.translation = wp;
+                    lt.rotation = wr;
+                }
             }
         });
 
     // --- Writeback characters (serial) ------------------------------------
+    // The character has no body rotation; only its capsule-centre WORLD
+    // position is resolved. Parented characters fold that world point into the
+    // parent's local space (rotation kept as authored).
     for (const Entity e : character_entities_) {
         CharacterControllerComponent* cc = reg.get<CharacterControllerComponent>(e);
         if (cc == nullptr || !cc->character.valid())
@@ -458,7 +619,15 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         auto* tc = reg.get<scene::TransformComponent>(e);
         if (tc == nullptr)
             continue;
-        tc->local.translation = peek_character_position(cc->character);
+        const math::Vec3 wp = peek_character_position(cc->character);
+        const scene::SceneNode parent = graph.parent(scene.node(e));
+        if (parent.valid()) {
+            const WorldPose lp =
+                world_pose_in_parent(graph.world_matrix(parent), wp, tc->local.rotation);
+            tc->local.translation = lp.translation;
+        } else {
+            tc->local.translation = wp;
+        }
     }
 
     // --- Chase camera (serial) --------------------------------------------

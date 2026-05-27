@@ -9,12 +9,13 @@
 // registry().query<reads,writes>(). There is NO Entity->BodyId
 // std::unordered_map side-table.
 //
-// The only PlayRuntime-owned heap is two pooled std::vectors:
-//   * a per-begin scan list of entities that carry a RigidBodyComponent /
-//     CharacterControllerComponent, and
+// The only PlayRuntime-owned heap is a small set of pooled std::vectors:
+//   * one per-begin scan list per simulated kind -- the entities carrying a
+//     RigidBodyComponent, CharacterControllerComponent, VehicleComponent, or
+//     HelicopterComponent (gathered in begin(), consumed serially), and
 //   * an authored-transform snapshot ({Entity, LocalTransform}) captured in
 //     begin() and restored in end().
-// Both are reserved once and only ever cleared (capacity kept) between
+// All are reserved once and only ever cleared (capacity kept) between
 // sessions, so tick() allocates nothing.
 //
 // Lifecycle (host call sites):
@@ -30,10 +31,13 @@
 //   end(scene)          - on "Stop": destroy all bodies/characters, clear the
 //                         handle fields, restore the authored snapshot.
 //
-// Parent/world caveat: the writeback writes a WORLD pose into
-// TransformComponent.local. That is exact only for top-level (unparented)
-// entities; a parented body would need its parent's inverse world matrix
-// folded in. This first pass targets top-level simulated entities.
+// Parenting: the writeback resolves each simulated body's WORLD pose, then
+// stores it into TransformComponent.local correctly for BOTH top-level and
+// parented entities. For a parented body the world pose is folded into the
+// parent's local space (local = inverse(parent_world) * body_world) using the
+// SceneGraph world matrix from the previous tick's update -- exact for a static
+// parent, one-frame-lagged for a moving one. Top-level entities take the world
+// pose directly. The chase camera still only follows a top-level camera.
 
 #pragma once
 
