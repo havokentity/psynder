@@ -87,7 +87,7 @@ inline bool overlays_capturing() noexcept {
 // Draw a small "PLAY" / "EDIT" badge in the bottom-right corner of `fb`,
 // sized for the lane-16 6×8 fixed font (4 chars + 2-px padding + border).
 // Low-alpha panel so it stays unobtrusive over gameplay.
-inline void draw_mode_badge(render::Framebuffer& fb, Mode mode) noexcept {
+inline void draw_mode_badge(::psynder::render::Framebuffer& fb, Mode mode) noexcept {
     constexpr u32 kBadgeW = 6 * 4 + 2 * 2;  // 28 px
     constexpr u32 kBadgeH = 8 + 2 * 2;      // 12 px
     constexpr u32 kMargin = 4;
@@ -157,7 +157,7 @@ inline Mode sample_update(const platform::Input& input, f32 dt) noexcept {
     return current_mode();
 }
 
-inline void sample_draw(render::Framebuffer& fb) noexcept {
+inline void sample_draw(::psynder::render::Framebuffer& fb) noexcept {
     if (!overlays_enabled())
         return;
     draw_mode_badge(fb, current_mode());
@@ -168,7 +168,7 @@ inline void sample_draw(render::Framebuffer& fb) noexcept {
 // and draws the PLAY/EDIT badge. Returns the resolved mode. `dt` paces the
 // console slide / caret blink / key auto-repeat. Most hosts call the
 // higher-level `frame_overlays` instead of this directly.
-inline Mode sample_step(const platform::Input& input, render::Framebuffer& fb, f32 dt) noexcept {
+inline Mode sample_step(const platform::Input& input, ::psynder::render::Framebuffer& fb, f32 dt) noexcept {
     const Mode mode = sample_update(input, dt);
     draw_mode_badge(fb, mode);
     return mode;
@@ -237,7 +237,7 @@ inline void publish_frame_profile(f32 frame_ms,
     });
 }
 
-inline void draw_frame_overlays(render::Framebuffer& fb, const ui::imm::DebugHudStats& hud) noexcept {
+inline void draw_frame_overlays(::psynder::render::Framebuffer& fb, const ui::imm::DebugHudStats& hud) noexcept {
     if (!overlays_enabled())
         return;
     draw_mode_badge(fb, current_mode());
@@ -252,7 +252,7 @@ inline void draw_frame_overlays(render::Framebuffer& fb, const ui::imm::DebugHud
 // (so hosts can freeze physics / AI in Edit mode). No-op returning
 // current_mode() when `set_overlays_enabled(false)`.
 inline Mode frame_overlays(const platform::Input& input,
-                           render::Framebuffer& fb,
+                           ::psynder::render::Framebuffer& fb,
                            const FrameOverlayStats& stats = {}) noexcept {
     auto& st = detail::overlay_state();
     if (!st.enabled)
