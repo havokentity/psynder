@@ -162,34 +162,62 @@ TEST_CASE("editor render: render_scene_rt lights a scene into an offscreen frame
     opts.trace_downscale = 2;
     opts.use_console_config = false;  // deterministic defaults, no console state
 
+    // Asserts the framebuffer was non-trivially written: pixels differ from the
+    // clear color, the image is not a single flat color, and something is lit.
+    // Returns the brightest summed-channel value so successive frames can be
+    // compared for stability.
+    const auto check_lit = [&](const FbStorage& fb) -> u32 {
+        usize changed = 0;
+        u32 first = fb.pixels[0];
+        bool any_different_from_first = false;
+        u32 brightest = 0;
+        for (u32 p : fb.pixels) {
+            if (p != kClear)
+                ++changed;
+            if (p != first)
+                any_different_from_first = true;
+            const u32 r = p & 0xFFu, g = (p >> 8) & 0xFFu, b2 = (p >> 16) & 0xFFu;
+            brightest = std::max(brightest, r + g + b2);
+        }
+        REQUIRE(changed > 0u);
+        REQUIRE(any_different_from_first);  // not a uniform fill -- geometry shows
+        REQUIRE(brightest > 0u);            // something is lit
+        return brightest;
+    };
+
+    // Frame 1: cold cache. Geometry is new, so the cube BLAS is built once
+    // (blas_built == 1) and shared by both instances (blas_count == 1).
     const editor::render::SceneRtStats stats =
         editor::render::render_scene_rt(scene, view, renderer, target.fb, opts);
 
     REQUIRE(stats.rendered);
     REQUIRE(stats.instance_count == 2u);
     REQUIRE(stats.blas_count == 1u);  // both instances reuse the one cube BLAS
+    REQUIRE(stats.blas_built == 1u);  // cold cache: the one cube BLAS was built
     REQUIRE(stats.light_count == 1u);  // gathered from the LightComponent entity
     REQUIRE(stats.frame.hit_pixels > 0u);
+    const u32 brightest1 = check_lit(target);
 
-    // The framebuffer must be non-trivially written: pixels differ from the
-    // clear color, and the image is not a single flat color (the lit cubes
-    // create variation distinct from the background). Count changed pixels and
-    // the brightest pixel as proxies for "geometry was lit".
-    usize changed = 0;
-    u32 first = target.pixels[0];
-    bool any_different_from_first = false;
-    u32 brightest = 0;
-    for (u32 p : target.pixels) {
-        if (p != kClear)
-            ++changed;
-        if (p != first)
-            any_different_from_first = true;
-        const u32 r = p & 0xFFu, g = (p >> 8) & 0xFFu, b2 = (p >> 16) & 0xFFu;
-        brightest = std::max(brightest, r + g + b2);
-    }
-    REQUIRE(changed > 0u);
-    REQUIRE(any_different_from_first);  // not a uniform fill -- geometry shows
-    REQUIRE(brightest > 0u);            // something is lit
+    // Frame 2: geometry unchanged, so the module-owned cache must fully hit --
+    // the BLAS is reused (blas_built == 0) and the output is identical, while
+    // the TLAS / instance / light buffers are refilled (no realloc) and the
+    // image still renders correctly.
+    FbStorage target2(kW, kH, kClear);
+    const editor::render::SceneRtStats stats2 =
+        editor::render::render_scene_rt(scene, view, renderer, target2.fb, opts);
+
+    REQUIRE(stats2.rendered);
+    REQUIRE(stats2.instance_count == 2u);
+    REQUIRE(stats2.blas_count == 1u);
+    REQUIRE(stats2.blas_built == 0u);  // cache hit: no BLAS rebuilt on frame 2
+    REQUIRE(stats2.light_count == 1u);
+    REQUIRE(stats2.frame.hit_pixels > 0u);
+    const u32 brightest2 = check_lit(target2);
+
+    // Cache reuse must not change the render: identical inputs -> the same lit
+    // result across the two frames (brightest summed channel is a stable proxy;
+    // exact per-pixel equality is avoided as RT tiles are traced in parallel).
+    REQUIRE(brightest1 == brightest2);
 
     REQUIRE(scene.destroy_entity(a));
     REQUIRE(scene.destroy_entity(b));

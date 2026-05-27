@@ -28,14 +28,86 @@ math::Vec3 transform_point(const math::Mat4& m, math::Vec3 p) noexcept {
 // keeping them here is harmless and keeps the BLAS rebuildable for refit).
 //
 // IMPORTANT: render::rt::Bvh8 keys its internal state on its own object
-// address. The BVH must therefore be built only after the Bvh8 lives at its
-// final, stable address, and the storage must never relocate its elements. We
-// hold MeshBlas in a std::deque (stable element addresses across growth) and
-// build in place.
+// address (the engine stores BVH state in a singleton registry keyed by `this`,
+// and that registry does NOT erase an entry when a Bvh8 is destroyed). The BVH
+// must therefore (a) be built only after the Bvh8 lives at its final, stable
+// address, (b) live in storage that never relocates its elements, and (c) never
+// be destroyed-then-reallocated at a possibly-reused address. We hold MeshBlas
+// in a std::deque held alive for the whole module lifetime (stable element
+// addresses across growth, never popped) and build in place.
+//
+// `fingerprint` captures the mesh's source geometry identity so we only rebuild
+// a cached BLAS when its mesh actually changed. MeshLibrary recycles slots and
+// rewrites them in place (MeshLibrary::update / create_mesh after destroy), but
+// both paths change the source vertex/index pointers and/or counts, so a
+// fingerprint over (generation-bearing pointers + counts) detects a real
+// content change without the engine exposing a per-slot version.
 struct MeshBlas {
     rrt::Bvh8 bvh{};
     std::vector<rrt::Triangle> tris{};
 };
+
+// Identity of the geometry a cached BLAS was built from.
+struct MeshFingerprint {
+    const ::psynder::render::raster::Vertex* vertices = nullptr;
+    const u32* indices = nullptr;
+    u32 vertex_count = 0;
+    u32 index_count = 0;
+
+    bool operator==(const MeshFingerprint& o) const noexcept {
+        return vertices == o.vertices && indices == o.indices &&
+               vertex_count == o.vertex_count && index_count == o.index_count;
+    }
+    bool operator!=(const MeshFingerprint& o) const noexcept { return !(*this == o); }
+};
+
+MeshFingerprint mesh_fingerprint(const ::psynder::render::MeshView& mesh_view,
+                                 u32 mesh_slot) noexcept {
+    return {mesh_view.vertices[mesh_slot], mesh_view.indices[mesh_slot],
+            mesh_view.vertex_count[mesh_slot], mesh_view.index_count[mesh_slot]};
+}
+
+// A cache entry: the address-stable BLAS plus the fingerprint it was built from.
+struct CachedBlas {
+    MeshBlas* blas = nullptr;      // points into the persistent deque (stable address)
+    MeshFingerprint fingerprint{};
+};
+
+// Module-owned cache reused across render_scene_rt calls (the host calls every
+// frame). All members keep address-stable / reusable storage so a steady scene
+// allocates nothing after the first frame:
+//   - blas_storage: address-stable BLAS objects, never relocated or popped
+//     (see the Bvh8 address-keying note above).
+//   - slot_to_blas: mesh slot -> cache entry (fingerprint + BLAS pointer).
+//   - tlas: a single persistent Tlas; its registry state is keyed by its stable
+//     address and reused across frames. Tlas::build re-assigns all internal
+//     state, so rebuilding it each frame is correct (instance transforms change
+//     per frame; the cheap-to-rebuild TLAS is rebuilt, the expensive BLAS are
+//     cached). InstanceDesc entries are NOT self-address-keyed, so `instances`
+//     is a plain reused vector (clear + refill).
+//   - instances / instance_materials / lights: reused vectors (clear + refill).
+struct RtCache {
+    std::deque<MeshBlas> blas_storage;                 // stable element addresses, never popped
+    std::unordered_map<u32, CachedBlas> slot_to_blas;  // mesh slot -> cached BLAS
+    rrt::Tlas tlas{};                                  // persistent (address-keyed) TLAS
+    std::vector<rrt::Tlas::InstanceDesc> instances;
+    std::vector<::psynder::render::MaterialId> instance_materials;
+    std::vector<rrt::FrameLight> lights;
+    std::vector<u32> referenced_slots;  // distinct mesh slots that backed an instance this frame
+};
+
+// One process-wide cache, guarded by a mutex (the host drives one viewport from
+// the frame thread, but render_scene_rt is a free function with no instance to
+// hang state off, so the cache is a function-local static; the mutex keeps it
+// safe if the entry point is ever called from more than one thread).
+RtCache& rt_cache() {
+    static RtCache cache;
+    return cache;
+}
+std::mutex& rt_cache_mutex() {
+    static std::mutex m;
+    return m;
+}
 
 // Pull a mesh's local-space triangles out of the MeshLibrary view by slot.
 void gather_mesh_triangles(const ::psynder::render::MeshView& mesh_view,
@@ -151,12 +223,18 @@ rrt::FrameCamera frame_camera_from_view(const ::psynder::scene::SceneCameraView&
     return rrt::make_frame_camera(eye, forward, aspect, fov_y, up);
 }
 
-SceneRtStats render_scene_rt_impl(::psynder::scene::Scene& scene,
-                                  const ::psynder::scene::SceneCameraView& view,
-                                  ::psynder::render::RenderingSystem& renderer,
-                                  std::span<const rrt::FrameLight> lights,
-                                  ::psynder::render::Framebuffer& target,
-                                  const SceneRtOptions& options) {
+// Refresh the module-owned BLAS cache + persistent TLAS/instance buffers from
+// the scene's RT-visible renderables and (re)render. `cache` is locked by the
+// caller. `lights` is the already-gathered light list (a span over either a
+// host buffer or cache.lights). Returns stats including blas_built (0 when the
+// BLAS cache fully hit, i.e. no geometry changed this frame).
+SceneRtStats render_scene_rt_locked(RtCache& cache,
+                                    ::psynder::scene::Scene& scene,
+                                    const ::psynder::scene::SceneCameraView& view,
+                                    ::psynder::render::RenderingSystem& renderer,
+                                    std::span<const rrt::FrameLight> lights,
+                                    ::psynder::render::Framebuffer& target,
+                                    const SceneRtOptions& options) {
     SceneRtStats stats{};
 
     if (target.pixels == nullptr || target.width == 0u || target.height == 0u ||
@@ -174,14 +252,15 @@ SceneRtStats render_scene_rt_impl(::psynder::scene::Scene& scene,
     const ::psynder::render::MeshLibrary& meshes = renderer.meshes();
     const ::psynder::render::MeshView mesh_view = meshes.view();
 
-    // One BLAS per unique mesh slot; instances reference the shared BLAS by
-    // per-entity world transform.
-    std::unordered_map<u32, MeshBlas*> slot_to_blas;  // mesh slot -> stable BLAS
-    std::deque<MeshBlas> blas_storage;                 // stable element addresses
-    std::vector<rrt::Tlas::InstanceDesc> instances;
-    std::vector<::psynder::render::MaterialId> instance_materials;
-    instances.reserve(queues.rt_visible.size());
-    instance_materials.reserve(queues.rt_visible.size());
+    // Reuse the persistent instance buffers: clear + refill, never reallocate
+    // (steady state allocates nothing after the first frame).
+    cache.instances.clear();
+    cache.instance_materials.clear();
+    cache.referenced_slots.clear();
+    cache.instances.reserve(queues.rt_visible.size());
+    cache.instance_materials.reserve(queues.rt_visible.size());
+
+    u32 blas_built = 0;  // BLAS actually (re)built this frame
 
     for (const u32 item_index : queues.rt_visible) {
         const ::psynder::scene::SceneRenderItem& item = queues.item(item_index);
@@ -191,44 +270,80 @@ SceneRtStats render_scene_rt_impl(::psynder::scene::Scene& scene,
         if (!meshes.slot(::psynder::render::mesh_id_from_raw(item.geometry_id), mesh_slot))
             continue;
 
-        auto found = slot_to_blas.find(mesh_slot);
-        if (found == slot_to_blas.end()) {
-            // Construct in place first (stable address), then build the BVH so
-            // its address-keyed state stays valid for the lifetime here.
-            MeshBlas& blas = blas_storage.emplace_back();
-            gather_mesh_triangles(mesh_view, mesh_slot, blas.tris);
-            if (blas.tris.empty()) {
-                blas_storage.pop_back();
-                continue;  // degenerate / empty mesh; skip the instance entirely
+        const MeshFingerprint fp = mesh_fingerprint(mesh_view, mesh_slot);
+
+        CachedBlas* entry = nullptr;
+        auto found = cache.slot_to_blas.find(mesh_slot);
+        if (found != cache.slot_to_blas.end())
+            entry = &found->second;
+
+        const bool needs_build =
+            entry == nullptr || entry->blas == nullptr || entry->fingerprint != fp;
+
+        if (needs_build) {
+            // Allocate a persistent, address-stable BLAS the FIRST time a slot
+            // is seen; thereafter rebuild the SAME Bvh8 object in place when its
+            // mesh changed (Bvh8 is address-keyed and its registry entry is
+            // never erased -- so we must never destroy/reallocate it; rebuilding
+            // in place reuses the existing registry state).
+            if (entry == nullptr || entry->blas == nullptr) {
+                MeshBlas& blas = cache.blas_storage.emplace_back();
+                CachedBlas slot_entry{};
+                slot_entry.blas = &blas;
+                entry = &cache.slot_to_blas.insert_or_assign(mesh_slot, slot_entry).first->second;
             }
-            blas.bvh.build(blas.tris.data(), static_cast<u32>(blas.tris.size()));
-            found = slot_to_blas.emplace(mesh_slot, &blas).first;
+
+            gather_mesh_triangles(mesh_view, mesh_slot, entry->blas->tris);
+            // Record the fingerprint we just gathered from regardless of result,
+            // so an unchanged (even degenerate) mesh is not re-gathered every
+            // frame. tris.empty() below marks the entry as a skip; the Bvh8
+            // object stays address-stable in the deque either way.
+            entry->fingerprint = fp;
+            if (entry->blas->tris.empty()) {
+                continue;  // degenerate / empty mesh: no instance, no BVH build
+            }
+            entry->blas->bvh.build(entry->blas->tris.data(),
+                                   static_cast<u32>(entry->blas->tris.size()));
+            ++blas_built;
+        } else if (entry->blas->tris.empty()) {
+            continue;  // cached as degenerate; still skip
+        }
+
+        // Track distinct mesh slots that backed an instance this frame (for the
+        // blas_count stat). N is the number of unique meshes in an editor view,
+        // so the linear scan is cheap; referenced_slots is a reused buffer.
+        if (std::find(cache.referenced_slots.begin(), cache.referenced_slots.end(), mesh_slot) ==
+            cache.referenced_slots.end()) {
+            cache.referenced_slots.push_back(mesh_slot);
         }
 
         rrt::Tlas::InstanceDesc desc{};
-        desc.blas = &found->second->bvh;
+        desc.blas = &entry->blas->bvh;
         desc.transform = item.world;
-        instances.push_back(desc);
-        instance_materials.push_back(item.material);
+        cache.instances.push_back(desc);
+        cache.instance_materials.push_back(item.material);
     }
 
-    if (instances.empty())
+    if (cache.instances.empty())
         return stats;
 
-    rrt::Tlas tlas;
-    tlas.build(instances.data(), static_cast<u32>(instances.size()));
+    // Rebuild the persistent (address-stable) TLAS from this frame's instances.
+    // Tlas::build re-assigns all internal state, so reusing the same object is
+    // correct; the expensive per-mesh BLAS were cached above.
+    cache.tlas.build(cache.instances.data(), static_cast<u32>(cache.instances.size()));
 
     const f32 aspect = static_cast<f32>(target.width) / static_cast<f32>(target.height);
     rrt::FrameCamera camera = frame_camera_from_view(view, aspect);
 
     rrt::FrameRenderInput input{};
-    input.tlas = &tlas;
+    input.tlas = &cache.tlas;
     input.camera = camera;
     input.lights = lights.data();
     input.light_count = static_cast<u32>(lights.size());
     input.materials.library = &scene.materials();
-    input.materials.instance_materials = instance_materials.data();
-    input.materials.instance_material_count = static_cast<u32>(instance_materials.size());
+    input.materials.instance_materials = cache.instance_materials.data();
+    input.materials.instance_material_count =
+        static_cast<u32>(cache.instance_materials.size());
 
     const u32 downscale = std::max<u32>(1u, options.trace_downscale);
     const u32 tile_size = std::max<u32>(1u, options.tile_size);
@@ -250,8 +365,9 @@ SceneRtStats render_scene_rt_impl(::psynder::scene::Scene& scene,
 
     renderer.render_rt(input, config, reinterpret_cast<u32*>(target.pixels), &stats.frame);
 
-    stats.instance_count = static_cast<u32>(instances.size());
-    stats.blas_count = static_cast<u32>(blas_storage.size());
+    stats.instance_count = static_cast<u32>(cache.instances.size());
+    stats.blas_count = static_cast<u32>(cache.referenced_slots.size());
+    stats.blas_built = blas_built;
     stats.light_count = static_cast<u32>(lights.size());
     stats.rendered = true;
     return stats;
@@ -370,29 +486,28 @@ BakeResult bake_lightmaps_impl(::psynder::scene::Scene& scene,
 
 }  // namespace
 
-SceneRtStats render_scene_rt(const ::psynder::scene::Scene& scene,
+SceneRtStats render_scene_rt(::psynder::scene::Scene& scene,
                              const ::psynder::scene::SceneCameraView& view,
                              ::psynder::render::RenderingSystem& renderer,
                              ::psynder::render::Framebuffer& target,
                              const SceneRtOptions& options) {
-    // The gather/query path mutates ECS-internal bookkeeping (and refreshes
-    // world transforms), so it needs a mutable Scene even though it does not
-    // alter scene topology. The frozen entry point takes a const Scene&; the
-    // host owns it mutably, so recovering the mutable reference here is safe.
-    ::psynder::scene::Scene& mutable_scene = const_cast<::psynder::scene::Scene&>(scene);
-    std::vector<rrt::FrameLight> lights;
-    gather_scene_frame_lights(mutable_scene, lights);
-    return render_scene_rt_impl(mutable_scene, view, renderer, lights, target, options);
+    // `scene` is mutable (the host owns it so), so no const_cast: the gather
+    // path refreshes world transforms and runs ECS queries directly.
+    std::lock_guard<std::mutex> lock(rt_cache_mutex());
+    RtCache& cache = rt_cache();
+    gather_scene_frame_lights(scene, cache.lights);  // fills the reused light buffer
+    return render_scene_rt_locked(cache, scene, view, renderer, cache.lights, target, options);
 }
 
-SceneRtStats render_scene_rt(const ::psynder::scene::Scene& scene,
+SceneRtStats render_scene_rt(::psynder::scene::Scene& scene,
                              const ::psynder::scene::SceneCameraView& view,
                              ::psynder::render::RenderingSystem& renderer,
                              std::span<const rrt::FrameLight> lights,
                              ::psynder::render::Framebuffer& target,
                              const SceneRtOptions& options) {
-    ::psynder::scene::Scene& mutable_scene = const_cast<::psynder::scene::Scene&>(scene);
-    return render_scene_rt_impl(mutable_scene, view, renderer, lights, target, options);
+    std::lock_guard<std::mutex> lock(rt_cache_mutex());
+    RtCache& cache = rt_cache();
+    return render_scene_rt_locked(cache, scene, view, renderer, lights, target, options);
 }
 
 BakeResult bake_lightmaps(::psynder::scene::Scene& scene,

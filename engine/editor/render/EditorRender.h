@@ -42,7 +42,8 @@ struct SceneRtOptions {
 
 struct SceneRtStats {
     u32 instance_count = 0;  // TLAS instances built (one per visible mesh renderable)
-    u32 blas_count = 0;      // unique meshes turned into a BLAS
+    u32 blas_count = 0;      // unique meshes referenced this frame (cached + freshly built)
+    u32 blas_built = 0;      // BLAS actually (re)built this frame; 0 when the cache fully hit
     u32 light_count = 0;     // scene lights gathered from the ECS
     bool rendered = false;   // false when nothing renderable was found / inputs invalid
     ::psynder::render::rt::FrameRenderStats frame{};
@@ -56,7 +57,14 @@ struct SceneRtStats {
 // derived from `view` (a scene::SceneCameraView -- its `view`/`projection`
 // matrices). Returns stats; on an empty/invalid scene the target is left
 // untouched and rendered == false.
-SceneRtStats render_scene_rt(const ::psynder::scene::Scene& scene,
+//
+// `scene` is taken by NON-const reference because the gather path mutates ECS
+// bookkeeping and refreshes cached world transforms (scene.update_transforms /
+// scene.gather_lights). The host owns the scene mutably and calls this every
+// frame, so a module-owned cache (BLAS per mesh, persistent TLAS / instance /
+// light buffers) is reused across calls; only meshes whose geometry changed are
+// rebuilt. See SceneRtStats::blas_built.
+SceneRtStats render_scene_rt(::psynder::scene::Scene& scene,
                              const ::psynder::scene::SceneCameraView& view,
                              ::psynder::render::RenderingSystem& renderer,
                              ::psynder::render::Framebuffer& target,
@@ -64,8 +72,8 @@ SceneRtStats render_scene_rt(const ::psynder::scene::Scene& scene,
 
 // Host-span overload: render with a caller-supplied light list instead of
 // gathering from the ECS. Kept for tooling that drives lights directly; the
-// ECS-gather path above is the primary one.
-SceneRtStats render_scene_rt(const ::psynder::scene::Scene& scene,
+// ECS-gather path above is the primary one. Same module-owned cache reuse.
+SceneRtStats render_scene_rt(::psynder::scene::Scene& scene,
                              const ::psynder::scene::SceneCameraView& view,
                              ::psynder::render::RenderingSystem& renderer,
                              std::span<const ::psynder::render::rt::FrameLight> lights,
