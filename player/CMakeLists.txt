@@ -13,5 +13,5 @@ target_compile_definitions(psynder_player PRIVATE
     PSYNDER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 if(PSYNDER_EDITOR)
-    target_link_libraries(psynder_player PRIVATE psynder_editor_core)
+    target_link_libraries(psynder_player PRIVATE psynder_editor_core psynder_editor_play)
 endif()

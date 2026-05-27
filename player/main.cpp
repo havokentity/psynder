@@ -13,6 +13,8 @@
 #include "editor/core/ViewportGizmo.h"
 #include "editor/core/WebPanels.h"
 #include "editor/ipc/Ipc.h"
+#include "editor/play/PlayComponents.h"
+#include "editor/play/PlayRuntime.h"
 #include "math/MathExt.h"
 #include "platform/App.h"
 #include "platform/RuntimeConfig.h"
@@ -60,6 +62,7 @@ Entity add_active_arcade_empty_entity();
 Entity add_active_arcade_camera();
 Entity add_active_arcade_light(scene::LightKind kind = scene::LightKind::Point);
 Entity add_active_arcade_gameplay(std::string_view kind);
+bool add_active_arcade_rigid_body(bool make_static);
 bool rename_active_arcade_entity(Entity entity, std::string_view name);
 bool delete_active_arcade_entity(Entity entity);
 Entity duplicate_active_arcade_entity(Entity entity);
@@ -279,6 +282,17 @@ void register_arcade_console_commands() {
                 return;
             }
             out.FormatLine("gameplay_add: added {} as entity {}", args[0], entity.raw);
+        });
+    console_ref.RegisterCommand(
+        "phys_rigidbody",
+        "Tag the selected object as a rigid body for Play mode: phys_rigidbody [static].",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            const bool make_static = !args.empty() && args[0] == "static";
+            if (add_active_arcade_rigid_body(make_static))
+                out.FormatLine("phys_rigidbody: selected object is now a {} rigid body",
+                               make_static ? "static" : "dynamic");
+            else
+                out.PrintLine("phys_rigidbody: no valid selection / no active scene");
         });
     console_ref.RegisterCommand(
         "primitive_add",
@@ -986,6 +1000,11 @@ struct PlayerApp {
     bool has_saved_scene_checkpoint = false;
     editor::viewport::GizmoState gizmo_state{};
     bool viewport_mouse_left_prev = false;
+    // Play-mode physics runtime (DOTS: bodies live in RigidBodyComponent). On
+    // the Edit->Play edge begin() builds the world; Play->Edit end() restores
+    // authored transforms. tick() steps + writes poses back each play frame.
+    editor::play::PlayRuntime play_runtime_{};
+    editor::Mode play_prev_mode_ = editor::Mode::Edit;
     Entity fps_controlled_entity{};
     f32 fps_yaw = 0.0f;
     f32 fps_pitch = 0.0f;
@@ -2556,6 +2575,51 @@ struct PlayerApp {
         return {};
     }
 
+    // Drive the play-mode physics runtime. begin/end fire on the Edit<->Play
+    // edge; tick steps the world while playing. Sim pauses when a console/web
+    // overlay is capturing input (same gate as the FPS controller).
+    void update_play_runtime(f32 dt) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return;
+        const editor::Mode mode = editor::current_mode();
+        if (mode != play_prev_mode_) {
+            if (mode == editor::Mode::Play)
+                play_runtime_.begin(*scene);
+            else
+                play_runtime_.end(*scene);
+            play_prev_mode_ = mode;
+        }
+        if (mode == editor::Mode::Play && dt > 0.0f && !editor::overlays_capturing())
+            play_runtime_.tick(*scene, dt);
+    }
+
+    // Tag the selected entity as a dynamic rigid body so it simulates in Play
+    // mode. Box collider sized from the renderable's local bounds (half-extent).
+    bool add_rigid_body_to_selected(bool make_static) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return false;
+        const Entity sel = editor::selection::selected_scene_entity();
+        if (!sel.valid() || !scene->registry().alive(sel))
+            return false;
+        auto& reg = scene->registry();
+        if (auto* existing = reg.get<editor::play::RigidBodyComponent>(sel)) {
+            existing->mass = make_static ? 0.0f : 1.0f;  // retag in place
+            return true;
+        }
+        editor::play::RigidBodyComponent rb{};
+        rb.shape = physics::Shape::Box;
+        rb.mass = make_static ? 0.0f : 1.0f;  // 0 = static floor/wall
+        if (const auto* r = reg.get<scene::RenderableComponent>(sel)) {
+            const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
+            rb.half_extent = math::Vec3{std::max(0.05f, ext.x), std::max(0.05f, ext.y),
+                                        std::max(0.05f, ext.z)};
+        }
+        reg.add<editor::play::RigidBodyComponent>(sel, rb);
+        return true;
+    }
+
     void update_fps_player(f32 dt) {
         if (editor::current_mode() != editor::Mode::Play || editor::overlays_capturing())
             return;
@@ -2849,6 +2913,7 @@ struct PlayerApp {
     void frame(app::WindowFrameContextT<PlayerArgs>& ctx, app::WindowFrameCacheReady& cr) {
         if (scene_load.pending() && load_target_scene)
             ctx.app.update_scene_load(scene_load, *load_target_scene);
+        update_play_runtime(ctx.dt);
         update_fps_player(ctx.dt);
         (void)ctx.app.engine_frame_update(ctx.dt);
         update_editor_viewport_camera(ctx.dt);
@@ -3744,6 +3809,10 @@ Entity add_active_arcade_gameplay(std::string_view kind) {
     if (!g_active_arcade)
         return {};
     return g_active_arcade->add_gameplay_entity(kind);
+}
+
+bool add_active_arcade_rigid_body(bool make_static) {
+    return g_active_arcade && g_active_arcade->add_rigid_body_to_selected(make_static);
 }
 
 bool rename_active_arcade_entity(Entity entity, std::string_view name) {
