@@ -42,6 +42,29 @@ PSYNDER_COMPONENT(RigidBodyComponent) {
     physics::BodyId body{};  // runtime handle; 0 when not playing
 };
 
+// A drivable vehicle attached to an entity. The chassis is an ordinary rigid
+// box body; the vehicle solver runs inside World::step() and writes the chassis
+// pose. Authored fields (half_extent / mass / engine torque / drag / wheel
+// params / is_player) persist with the scene; the four wheels are auto-placed
+// at the corners of half_extent in begin() (front pair = steer/non-drive, rear
+// pair = drive, RWD). The vehicle + chassis handles are runtime fields filled
+// by PlayRuntime::begin() and cleared by PlayRuntime::end(). is_player marks the
+// car the WASD input drives and the chase camera follows.
+PSYNDER_COMPONENT(VehicleComponent) {
+    math::Vec3 half_extent{1.0f, 0.4f, 2.0f};  // chassis box half-extent (m)
+    f32 mass = 1200.0f;                         // kg
+    f32 engine_max_torque = 400.0f;             // N.m
+    f32 drag = 0.30f;                           // aero drag coefficient
+    f32 wheel_radius = 0.34f;                   // m
+    f32 suspension = 0.35f;                     // rest length (m)
+    f32 stiffness = 35000.0f;                   // N/m
+    f32 damping = 4500.0f;                      // N.s/m
+    bool is_player = true;                       // WASD-driven + chase-cam target
+    u8 _pad[3] = {};
+    physics::vehicle::VehicleId vehicle{};  // runtime handle; 0 when not playing
+    physics::BodyId chassis{};              // runtime chassis body; 0 when not playing
+};
+
 // A kinematic capsule character. move_speed scales walk_dir each tick. The
 // character handle is filled in begin() and driven in tick().
 PSYNDER_COMPONENT(CharacterControllerComponent) {

@@ -72,6 +72,23 @@ class PlayRuntime {
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     [[nodiscard]] usize body_count() const noexcept { return body_count_; }
 
+    // --- Vehicle intent ----------------------------------------------------
+    // Per-frame driving intent the host writes before tick(): throttle/brake in
+    // 0..1, steer in radians (left positive). Applied to every player vehicle
+    // (VehicleComponent::is_player) at the top of tick(). Stored on the runtime
+    // (not a component) because it is a single shared player input, not
+    // per-entity sim state; it allocates nothing.
+    void set_vehicle_input(f32 throttle, f32 brake, f32 steer) noexcept {
+        vehicle_throttle_ = throttle;
+        vehicle_brake_ = brake;
+        vehicle_steer_ = steer;
+    }
+
+    // Position the active scene camera in a chase pose behind/above the player
+    // vehicle's chassis, looking at it. Alloc-free; no-op when not playing or no
+    // player vehicle exists. Called from tick(); also exposed for the host.
+    void update_chase_camera(scene::Scene& scene) noexcept;
+
     // --- Character intent --------------------------------------------------
     // Set the planar walk direction (world XZ; normalized internally, then
     // scaled by the component move_speed * dt) for a character entity. Stored
@@ -102,8 +119,15 @@ class PlayRuntime {
     std::vector<Entity> rigid_entities_;
     // Same for character entities.
     std::vector<Entity> character_entities_;
+    // Same for vehicle entities.
+    std::vector<Entity> vehicle_entities_;
     // Authored transforms captured in begin(), restored in end(). Reserved once.
     std::vector<AuthoredTransform> authored_;
+
+    // Shared player driving intent (host-set per frame; see set_vehicle_input).
+    f32 vehicle_throttle_ = 0.0f;
+    f32 vehicle_brake_ = 0.0f;
+    f32 vehicle_steer_ = 0.0f;
 };
 
 }  // namespace psynder::editor::play

@@ -38,6 +38,7 @@ PlayRuntime::~PlayRuntime() {
 void PlayRuntime::clear_pools() noexcept {
     rigid_entities_.clear();
     character_entities_.clear();
+    vehicle_entities_.clear();
     authored_.clear();
     body_count_ = 0u;
 }
@@ -109,7 +110,33 @@ void PlayRuntime::begin(scene::Scene& scene) {
             });
     }
 
-    authored_.reserve(rigid_entities_.size() + character_entities_.size());
+    // Same scan for vehicle entities.
+    {
+        std::mutex append_mutex;
+        reg.query<scene::reads<scene::SceneNodeComponent, VehicleComponent>, scene::writes<>>(
+            [&](std::span<const scene::SceneNodeComponent> nodes,
+                std::span<const VehicleComponent> vehicles) {
+                const usize n = std::min(nodes.size(), vehicles.size());
+                constexpr usize kMaxChunkRows = 256u;
+                std::array<Entity, kMaxChunkRows> chunk_entities{};
+                usize chunk_count = 0u;
+                for (usize i = 0; i < n; ++i) {
+                    if (chunk_count >= kMaxChunkRows)
+                        break;
+                    chunk_entities[chunk_count++] = nodes[i].entity;
+                }
+                if (chunk_count != 0u) {
+                    std::scoped_lock lock{append_mutex};
+                    vehicle_entities_.reserve(vehicle_entities_.size() + chunk_count);
+                    vehicle_entities_.insert(vehicle_entities_.end(),
+                                             chunk_entities.begin(),
+                                             chunk_entities.begin() + chunk_count);
+                }
+            });
+    }
+
+    authored_.reserve(rigid_entities_.size() + character_entities_.size() +
+                      vehicle_entities_.size());
 
     // --- Phase 2: build bodies (serial, main thread) ----------------------
     // create_body mutates the shared World, so this MUST be serial. We read the
@@ -153,6 +180,64 @@ void PlayRuntime::begin(scene::Scene& scene) {
         cc->walk_dir = math::Vec3{0.0f, 0.0f, 0.0f};
     }
 
+    // Vehicles (serial; create_body + vehicle::create mutate the shared World).
+    // The chassis is a dynamic box body at the authored pose; the four wheels
+    // are auto-placed at the corners of half_extent. Front pair (-Z, the car's
+    // forward is -Z to match the camera convention) = steer/non-drive, rear pair
+    // (+Z) = drive (RWD: the solver treats wheels[2],[3] as the drive axle).
+    for (const Entity e : vehicle_entities_) {
+        VehicleComponent* vc = reg.get<VehicleComponent>(e);
+        if (vc == nullptr)
+            continue;
+        const scene::LocalTransform local = scene.transform(e);
+        authored_.push_back(AuthoredTransform{e, local});
+
+        physics::BodyDesc cd{};
+        cd.shape = physics::Shape::Box;
+        cd.mass = vc->mass;
+        cd.position = local.translation;
+        cd.rotation = math::quat_normalize(local.rotation);
+        cd.half_extent = vc->half_extent;
+        cd.friction = 0.5f;
+        cd.restitution = 0.0f;
+        vc->chassis = world.create_body(cd);
+        if (!vc->chassis.valid())
+            continue;
+        ++body_count_;
+
+        // Four wheels at the half-extent corners, dropped to the chassis bottom.
+        const f32 hx = vc->half_extent.x;
+        const f32 hy = vc->half_extent.y;
+        const f32 hz = vc->half_extent.z;
+        std::array<physics::vehicle::WheelDesc, 4> wheels{};
+        // Order: [0]=front-left, [1]=front-right (steer); [2]=rear-left,
+        // [3]=rear-right (drive). Forward is -Z.
+        const std::array<math::Vec3, 4> corners{
+            math::Vec3{-hx, -hy, -hz}, math::Vec3{hx, -hy, -hz},
+            math::Vec3{-hx, -hy, hz},  math::Vec3{hx, -hy, hz}};
+        for (usize w = 0; w < 4; ++w) {
+            wheels[w].local_position = corners[w];
+            wheels[w].radius = vc->wheel_radius;
+            wheels[w].suspension = vc->suspension;
+            wheels[w].stiffness = vc->stiffness;
+            wheels[w].damping = vc->damping;
+        }
+
+        physics::vehicle::VehicleDesc vd{};
+        vd.chassis = vc->chassis;
+        vd.wheels = std::span<const physics::vehicle::WheelDesc>{wheels.data(), wheels.size()};
+        vd.engine_max_torque = vc->engine_max_torque;
+        vd.drag_coefficient = vc->drag;
+        vd.downforce_coefficient = 0.0f;
+        vc->vehicle = physics::vehicle::create(vd);
+        // Flat ground plane at y=0 (no terrain yet; KNOWN follow-up).
+        physics::vehicle::set_ground_plane(vc->vehicle, 0.0f);
+    }
+
+    vehicle_throttle_ = 0.0f;
+    vehicle_brake_ = 0.0f;
+    vehicle_steer_ = 0.0f;
+
     playing_ = true;
 }
 
@@ -179,7 +264,24 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         }
     }
 
-    // --- Step the world (serial, single writer) ---------------------------
+    // --- Apply vehicle driving intent (serial) ----------------------------
+    // The shared player input drives every is_player vehicle. set_* only stash
+    // controller values on the engine vehicle; the solver consumes them inside
+    // world.step() below, so no per-vehicle stepping happens here.
+    for (const Entity e : vehicle_entities_) {
+        VehicleComponent* vc = reg.get<VehicleComponent>(e);
+        if (vc == nullptr || !vc->vehicle.valid() || !vc->is_player)
+            continue;
+        physics::vehicle::set_throttle(vc->vehicle, vehicle_throttle_);
+        physics::vehicle::set_brake(vc->vehicle, vehicle_brake_);
+        physics::vehicle::set_steer(vc->vehicle, vehicle_steer_);
+    }
+
+    // --- Step the world ONCE (serial, single writer) ----------------------
+    // The single step advances rigid bodies, characters' resolution, AND the
+    // vehicle solver (which writes each chassis body's pose). Both the rigid
+    // body and vehicle writebacks below read from this one step -- the world is
+    // never stepped twice per tick.
     world.step(dt);
 
     // --- Writeback rigid bodies (parallel) --------------------------------
@@ -201,6 +303,24 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
             }
         });
 
+    // --- Writeback vehicle chassis poses (parallel) -----------------------
+    // Same safety as the rigid body writeback: get_position/get_rotation are
+    // pure const reads and step() has completed. Each row writes only its own
+    // TransformComponent column.
+    reg.query<scene::reads<VehicleComponent>, scene::writes<scene::TransformComponent>>(
+        [&](std::span<const VehicleComponent> vehicles,
+            std::span<scene::TransformComponent> transforms) {
+            const usize n = std::min(vehicles.size(), transforms.size());
+            for (usize i = 0; i < n; ++i) {
+                const physics::BodyId id = vehicles[i].chassis;
+                if (!id.valid())
+                    continue;
+                scene::LocalTransform& lt = transforms[i].local;
+                lt.translation = world.get_position(id);
+                lt.rotation = math::quat_normalize(world.get_rotation(id));
+            }
+        });
+
     // --- Writeback characters (serial) ------------------------------------
     for (const Entity e : character_entities_) {
         CharacterControllerComponent* cc = reg.get<CharacterControllerComponent>(e);
@@ -211,6 +331,12 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
             continue;
         tc->local.translation = peek_character_position(cc->character);
     }
+
+    // --- Chase camera (serial) --------------------------------------------
+    // Position the active scene camera behind/above the player chassis. Done
+    // before update_world_transforms so the camera's world matrix refreshes in
+    // the single pass below.
+    update_chase_camera(scene);
 
     // --- Recompute world matrices ONCE ------------------------------------
     scene.graph().update_world_transforms();
@@ -244,6 +370,23 @@ void PlayRuntime::end(scene::Scene& scene) {
         cc->walk_dir = math::Vec3{0.0f, 0.0f, 0.0f};
     }
 
+    // Destroy vehicles + their chassis bodies and clear the handle columns.
+    for (const Entity e : vehicle_entities_) {
+        VehicleComponent* vc = reg.get<VehicleComponent>(e);
+        if (vc == nullptr)
+            continue;
+        if (vc->vehicle.valid())
+            physics::vehicle::destroy(vc->vehicle);
+        if (vc->chassis.valid())
+            world.destroy_body(vc->chassis);
+        vc->vehicle = physics::vehicle::VehicleId{};
+        vc->chassis = physics::BodyId{};
+    }
+
+    vehicle_throttle_ = 0.0f;
+    vehicle_brake_ = 0.0f;
+    vehicle_steer_ = 0.0f;
+
     // Restore authored transforms (serial).
     for (const AuthoredTransform& a : authored_)
         scene.set_transform(a.entity, a.local);
@@ -252,6 +395,62 @@ void PlayRuntime::end(scene::Scene& scene) {
 
     playing_ = false;
     clear_pools();  // keeps vector capacity
+}
+
+void PlayRuntime::update_chase_camera(scene::Scene& scene) noexcept {
+    if (!playing_)
+        return;
+
+    scene::EcsRegistry& reg = scene.registry();
+    physics::World& world = physics::World::Get();
+
+    // Find the first live player vehicle's chassis (serial; few vehicles).
+    physics::BodyId chassis{};
+    for (const Entity e : vehicle_entities_) {
+        const VehicleComponent* vc = reg.get<VehicleComponent>(e);
+        if (vc != nullptr && vc->is_player && vc->chassis.valid()) {
+            chassis = vc->chassis;
+            break;
+        }
+    }
+    if (!chassis.valid())
+        return;
+
+    const Entity camera = scene.active_camera_entity();
+    if (!camera.valid() || !reg.alive(camera) || reg.get<scene::CameraComponent>(camera) == nullptr)
+        return;
+    // Chase only a TOP-LEVEL camera: the writeback puts a WORLD pose into
+    // TransformComponent.local, which is only exact for an unparented entity.
+    const scene::SceneNode cam_node = scene.node(camera);
+    if (cam_node.valid() && scene.graph().parent(cam_node).valid())
+        return;
+
+    const math::Vec3 target = world.get_position(chassis);
+    const math::Quat chassis_rot = math::quat_normalize(world.get_rotation(chassis));
+    // Chassis forward is -Z (matches the editor/FPS camera convention). The
+    // camera sits BEHIND (-forward) and ABOVE the chassis, looking at it.
+    const math::Vec3 forward =
+        math::normalize(math::quat_rotate(chassis_rot, math::Vec3{0.0f, 0.0f, -1.0f}));
+    constexpr f32 kBack = 6.0f;
+    constexpr f32 kUp = 2.5f;
+    const math::Vec3 eye{target.x - forward.x * kBack,
+                         target.y - forward.y * kBack + kUp,
+                         target.z - forward.z * kBack};
+
+    // Build a look-at rotation in the editor camera convention:
+    // quat_from_euler(pitch, yaw, 0) with view direction = rotate * (0,0,-1).
+    const math::Vec3 dir = math::normalize(math::Vec3{target.x - eye.x,
+                                                      target.y - eye.y,
+                                                      target.z - eye.z});
+    const f32 yaw = std::atan2(dir.x, -dir.z);
+    const f32 horiz = std::sqrt(dir.x * dir.x + dir.z * dir.z);
+    const f32 pitch = std::atan2(dir.y, horiz);
+    const math::Quat rot = math::quat_normalize(math::quat_from_euler(pitch, yaw, 0.0f));
+
+    scene::LocalTransform cam_local = scene.transform(camera);
+    cam_local.translation = eye;
+    cam_local.rotation = rot;
+    (void)scene.set_transform(camera, cam_local);
 }
 
 void PlayRuntime::set_character_input(scene::Scene& scene,

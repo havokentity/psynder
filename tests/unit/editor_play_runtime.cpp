@@ -2,12 +2,14 @@
 // Psynder - editor PLAY MODE physics runtime tests (editor/play).
 //
 // Builds an in-memory scene::Scene, attaches RigidBodyComponent /
-// CharacterControllerComponent to entities, and drives PlayRuntime through
-// begin -> tick*N -> end. Verifies that:
+// CharacterControllerComponent / VehicleComponent to entities, and drives
+// PlayRuntime through begin -> tick*N -> end. Verifies that:
 //   * dynamic boxes fall under gravity and settle on a static ground body,
 //   * the resolved poses land in each entity's TransformComponent column,
 //   * end() restores the authored transforms and clears the runtime handles,
-//   * a kinematic character walks horizontally when driven.
+//   * a kinematic character walks horizontally when driven,
+//   * a player vehicle drives forward under throttle, stays near the ground,
+//     and restores its authored transform + clears its handles on stop.
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -166,4 +168,56 @@ TEST_CASE("PlayRuntime drives a kinematic character horizontally", "[play][edito
     REQUIRE_FALSE(registry.get<editor::play::CharacterControllerComponent>(actor)->character.valid());
     // Authored transform restored.
     REQUIRE(scene.transform(actor).translation.x == Approx(start_x).margin(1e-4f));
+}
+
+TEST_CASE("PlayRuntime drives a player vehicle forward and restores on stop",
+          "[play][editor]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // Player car sitting just above the flat ground plane (y=0). The chassis
+    // half-extent is 0.4 in Y, so its centre rests around y ~= 0.4 + wheel/susp.
+    const math::Vec3 authored_pos{0.0f, 1.0f, 0.0f};
+    const Entity car = scene.create_entity(at(authored_pos));
+    {
+        editor::play::VehicleComponent vc{};
+        vc.is_player = true;
+        registry.add<editor::play::VehicleComponent>(car, vc);
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+
+    auto* comp = registry.get<editor::play::VehicleComponent>(car);
+    REQUIRE(comp->vehicle.valid());
+    REQUIRE(comp->chassis.valid());
+
+    const math::Vec3 start = scene.transform(car).translation;
+    // Forward is -Z in the authored (identity) frame.
+    const f32 start_z = start.z;
+
+    // Full throttle, no steer, for a couple seconds of fixed steps.
+    runtime.set_vehicle_input(/*throttle*/ 1.0f, /*brake*/ 0.0f, /*steer*/ 0.0f);
+    for (int step = 0; step < 480; ++step)
+        runtime.tick(scene, 1.0f / 120.0f);
+
+    const math::Vec3 end = scene.transform(car).translation;
+    INFO("car moved z " << start_z << " -> " << end.z << ", y=" << end.y);
+    // Drove forward along -Z (z decreased).
+    REQUIRE(end.z < start_z - 0.5f);
+    // Stayed near the ground (did not fly off or sink through the plane).
+    REQUIRE(std::isfinite(end.y));
+    REQUIRE(end.y > -0.5f);
+    REQUIRE(end.y < 3.0f);
+
+    runtime.end(scene);
+    REQUIRE_FALSE(runtime.playing());
+    // Handles cleared and authored transform restored.
+    REQUIRE_FALSE(comp->vehicle.valid());
+    REQUIRE_FALSE(comp->chassis.valid());
+    REQUIRE(scene.transform(car).translation.x == Approx(authored_pos.x).margin(1e-4f));
+    REQUIRE(scene.transform(car).translation.y == Approx(authored_pos.y).margin(1e-4f));
+    REQUIRE(scene.transform(car).translation.z == Approx(authored_pos.z).margin(1e-4f));
 }

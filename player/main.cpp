@@ -65,6 +65,7 @@ Entity add_active_arcade_camera();
 Entity add_active_arcade_light(scene::LightKind kind = scene::LightKind::Point);
 Entity add_active_arcade_gameplay(std::string_view kind);
 bool add_active_arcade_rigid_body(bool make_static);
+bool add_active_arcade_vehicle();
 void set_active_arcade_rt_mode(bool on);
 bool active_arcade_rt_mode();
 bool bake_active_arcade_lightmaps();
@@ -301,6 +302,15 @@ void register_arcade_console_commands() {
                                make_static ? "static" : "dynamic");
             else
                 out.PrintLine("phys_rigidbody: no valid selection / no active scene");
+        });
+    console_ref.RegisterCommand(
+        "phys_vehicle",
+        "Tag the selected object as a drivable vehicle for Play mode: phys_vehicle.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            if (add_active_arcade_vehicle())
+                out.PrintLine("phys_vehicle: selected object is now a drivable vehicle");
+            else
+                out.PrintLine("phys_vehicle: no valid selection / no active scene");
         });
     console_ref.RegisterCommand(
         "rt_mode",
@@ -2641,8 +2651,23 @@ struct PlayerApp {
                 play_runtime_.end(*scene);
             play_prev_mode_ = mode;
         }
-        if (mode == editor::Mode::Play && dt > 0.0f && !editor::overlays_capturing())
+        if (mode == editor::Mode::Play && dt > 0.0f && !editor::overlays_capturing()) {
+            // Feed WASD driving intent to any player vehicle before the tick:
+            // W = throttle, S = brake/reverse, A/D = steer +/-0.5 rad. The
+            // runtime applies it to every is_player VehicleComponent and drives
+            // the chase camera inside tick().
+            if (const platform::Input* input = platform::input()) {
+                const f32 throttle = input->key_down(platform::KeyCode::W) ? 1.0f : 0.0f;
+                const f32 brake = input->key_down(platform::KeyCode::S) ? 1.0f : 0.0f;
+                f32 steer = 0.0f;
+                if (input->key_down(platform::KeyCode::A))
+                    steer += 0.5f;
+                if (input->key_down(platform::KeyCode::D))
+                    steer -= 0.5f;
+                play_runtime_.set_vehicle_input(throttle, brake, steer);
+            }
             play_runtime_.tick(*scene, dt);
+        }
     }
 
     // Tag the selected entity as a dynamic rigid body so it simulates in Play
@@ -2668,6 +2693,30 @@ struct PlayerApp {
                                         std::max(0.05f, ext.z)};
         }
         reg.add<editor::play::RigidBodyComponent>(sel, rb);
+        return true;
+    }
+
+    // Tag the selected entity as a drivable player vehicle so it simulates +
+    // accepts WASD in Play mode. Chassis box sized from the renderable's local
+    // bounds (half-extent), falling back to the component default.
+    bool add_vehicle_to_selected() {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return false;
+        const Entity sel = editor::selection::selected_scene_entity();
+        if (!sel.valid() || !scene->registry().alive(sel))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<editor::play::VehicleComponent>(sel) != nullptr)
+            return true;  // already a vehicle
+        editor::play::VehicleComponent vc{};
+        vc.is_player = true;
+        if (const auto* r = reg.get<scene::RenderableComponent>(sel)) {
+            const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
+            vc.half_extent = math::Vec3{std::max(0.1f, ext.x), std::max(0.1f, ext.y),
+                                        std::max(0.1f, ext.z)};
+        }
+        reg.add<editor::play::VehicleComponent>(sel, vc);
         return true;
     }
 
@@ -3955,6 +4004,10 @@ bool add_active_arcade_rigid_body(bool make_static) {
     return g_active_arcade && g_active_arcade->add_rigid_body_to_selected(make_static);
 }
 
+bool add_active_arcade_vehicle() {
+    return g_active_arcade && g_active_arcade->add_vehicle_to_selected();
+}
+
 void set_active_arcade_rt_mode(bool on) {
     if (g_active_arcade)
         g_active_arcade->set_rt_mode(on);
@@ -4043,6 +4096,8 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
     const bool is_rigid_body =
         add.component == "RigidBody" || add.component == "RigidBodyComponent" ||
         add.component == "RigidBodyStatic";
+    const bool is_vehicle =
+        add.component == "Vehicle" || add.component == "VehicleComponent";
     if (is_rigid_body) {
         const bool make_static =
             add.component == "RigidBodyStatic" || add.variant == "static";
@@ -4052,6 +4107,14 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
         } else {
             text = "add RigidBody failed (no valid selection / no active scene)";
             PSY_LOG_WARN("psynder_arcade: add RigidBody failed on {}", add.entity_id);
+        }
+    } else if (is_vehicle) {
+        ok = add_active_arcade_vehicle();
+        if (ok) {
+            text = "added Vehicle";
+        } else {
+            text = "add Vehicle failed (no valid selection / no active scene)";
+            PSY_LOG_WARN("psynder_arcade: add Vehicle failed on {}", add.entity_id);
         }
     } else {
         text = "add component not supported: ";
