@@ -636,6 +636,28 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // the single pass below.
     update_chase_camera(scene);
 
+    // --- Sync the simulated poses into the SceneGraph (serial) ------------
+    // The writebacks above store into TransformComponent.local, but the
+    // renderer reads SceneGraph world matrices, and update_world_transforms()
+    // recomputes those from the graph's OWN local store (local_translation_/
+    // rotation_/scale_) -- NOT from TransformComponent. Without this push the
+    // graph never sees the simulated motion and bodies render at their authored
+    // pose. set_local_transform() mutates shared dirty bookkeeping (dirty_roots_)
+    // so it CANNOT run inside the parallel writeback queries above; we apply it
+    // serially over the (pooled) simulated-entity lists. Reads the local just
+    // written by the writeback, so the parenting conversion is preserved.
+    scene::SceneGraph& graph_mut = scene.graph();
+    auto sync_graph_locals = [&](const std::vector<Entity>& ents) {
+        for (const Entity e : ents) {
+            if (const auto* tc = reg.get<scene::TransformComponent>(e))
+                graph_mut.set_local_transform(scene.node(e), tc->local);
+        }
+    };
+    sync_graph_locals(rigid_entities_);
+    sync_graph_locals(vehicle_entities_);
+    sync_graph_locals(helicopter_entities_);
+    sync_graph_locals(character_entities_);
+
     // --- Recompute world matrices ONCE ------------------------------------
     scene.graph().update_world_transforms();
 }

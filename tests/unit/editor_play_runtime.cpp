@@ -122,6 +122,50 @@ TEST_CASE("PlayRuntime drops dynamic boxes onto a static ground and restores on 
     REQUIRE_FALSE(registry.get<editor::play::RigidBodyComponent>(ground)->body.valid());
 }
 
+TEST_CASE("PlayRuntime syncs simulated poses into the SceneGraph (renderer source)",
+          "[play][editor]") {
+    // Regression: the writeback updated only TransformComponent, but the
+    // renderer reads SceneGraph world matrices (recomputed from the graph's own
+    // local store, NOT TransformComponent), so simulated bodies rendered at
+    // their authored pose. tick() must push the simulated local into the graph.
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    const Entity ground = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
+    {
+        editor::play::RigidBodyComponent rb{};
+        rb.shape = physics::Shape::Box;
+        rb.mass = 0.0f;
+        rb.half_extent = math::Vec3{20.0f, 0.5f, 20.0f};
+        registry.add<editor::play::RigidBodyComponent>(ground, rb);
+    }
+    const f32 authored_y = 6.0f;
+    const Entity box = scene.create_entity(at({0.0f, authored_y, 0.0f}));
+    {
+        editor::play::RigidBodyComponent rb{};
+        rb.shape = physics::Shape::Box;
+        rb.mass = 1.0f;
+        rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};
+        registry.add<editor::play::RigidBodyComponent>(box, rb);
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    for (int s = 0; s < 300; ++s)
+        runtime.tick(scene, 1.0f / 120.0f);
+
+    // The graph world matrix (what the renderer reads) must reflect the fall.
+    const math::Mat4 w = scene.graph().world_matrix(scene.node(box));
+    const f32 graph_y = w.m[13];  // column-major translation.y
+    INFO("graph world y = " << graph_y << " authored " << authored_y);
+    REQUIRE(graph_y < authored_y - 0.5f);  // fell, per the graph
+    REQUIRE(graph_y > 0.5f);               // rests above the ground top
+    // ...and the graph agrees with the TransformComponent the body wrote.
+    REQUIRE(graph_y == Approx(entity_y(scene, box)).margin(1e-3f));
+    runtime.end(scene);
+}
+
 TEST_CASE("PlayRuntime drives a kinematic character horizontally", "[play][editor]") {
     RegistryReset reset;
     auto& registry = scene::EcsRegistry::Get();
