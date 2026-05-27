@@ -59,15 +59,14 @@ static void integrate_forces(WorldState& w, f32 dt) noexcept {
         b.linear_velocity = math::add(b.linear_velocity, math::mul(w.gravity, dt));
         // External forces accumulated via the public API in Wave B (apply_force).
         b.linear_velocity = math::add(b.linear_velocity, math::mul(b.force, b.inv_mass * dt));
-        // Angular: I^-1 * torque * dt — diagonal inertia in local space, so
-        // rotate torque into local, scale by inv_inertia, rotate back. For
-        // Wave A we approximate with world-space diagonal — sufficient for
-        // sphere/box at rest and good enough until a vehicle stresses it.
-        math::Vec3 ang_accel{
-            b.torque.x * b.inertia.inv_local.x,
-            b.torque.y * b.inertia.inv_local.y,
-            b.torque.z * b.inertia.inv_local.z,
-        };
+        // Angular: alpha = R * I_local^-1 * R^T * torque. Diagonal inertia is
+        // stored in the body's LOCAL principal frame, so rotate world torque
+        // into local, scale by the inverse diagonal, then rotate the result
+        // back to world (apply_inv_inertia_world). This is the properly
+        // rotated tensor — a tumbling asymmetric body now precesses correctly
+        // instead of the old world-space-diagonal approximation.
+        math::Vec3 ang_accel =
+            detail::apply_inv_inertia_world(b.rotation, b.inertia.inv_local, b.torque);
         b.angular_velocity = math::add(b.angular_velocity, math::mul(ang_accel, dt));
         b.force = {0, 0, 0};
         b.torque = {0, 0, 0};
@@ -412,12 +411,12 @@ void World::apply_angular_impulse(BodyId id, math::Vec3 impulse) {
     detail::Body& b = *bp;
     if (b.inv_mass == 0.0f)
         return;
-    // w += I^-1 * J. Mirror the integrator's world-space diagonal convention
-    // (integrate_forces) so impulse response matches accumulated-torque response.
-    b.angular_velocity = math::add(b.angular_velocity,
-                                   math::Vec3{impulse.x * b.inertia.inv_local.x,
-                                              impulse.y * b.inertia.inv_local.y,
-                                              impulse.z * b.inertia.inv_local.z});
+    // w += I^-1 * J with the properly rotated tensor: dw = R*(I_local^-1 (.)
+    // (R^T*J)). Mirrors integrate_forces so impulse response matches the
+    // accumulated-torque response on a rotated asymmetric body.
+    b.angular_velocity = math::add(
+        b.angular_velocity,
+        detail::apply_inv_inertia_world(b.rotation, b.inertia.inv_local, impulse));
 }
 
 void World::set_angular_velocity(BodyId id, math::Vec3 angular) {

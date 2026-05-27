@@ -8,12 +8,16 @@
 // mutex + global lifetime not meant for the bare test harness). The World
 // methods are thin field writes over exactly this machinery:
 //   apply_torque(t)            -> b.torque += t           (consumed below)
-//   apply_angular_impulse(J)   -> b.angular_velocity += I^-1 (.) J
+//   apply_angular_impulse(J)   -> b.angular_velocity += R*(I^-1 (.) (R^T*J))
 //   set_angular_velocity(w)    -> b.angular_velocity  = w
 // and all three early-return on inv_mass == 0 (static). We verify the math the
-// writers rely on matches the integrator's world-space diagonal convention.
+// writers rely on matches the integrator's PROPERLY ROTATED inverse-inertia
+// convention (R * I_local^-1 * R^T). These cases use identity rotation, where
+// that reduces to the local diagonal; the rotated-body behaviour is covered by
+// physics_rotated_inertia.cpp.
 
 #include "physics/internal/Kernels.h"
+#include "physics/Shape.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -24,16 +28,14 @@ using Catch::Approx;
 
 namespace {
 
-// Mirror of World.cpp::integrate_forces' angular path (world-space diagonal
-// inertia): w += (I^-1 (.) torque) * dt, then clear the accumulator.
+// Mirror of World.cpp::integrate_forces' angular path (properly rotated
+// inverse-inertia): w += R*(I_local^-1 (.) (R^T*torque)) * dt, then clear the
+// accumulator. Identity rotation here reduces to the local diagonal.
 void integrate_angular(Body& b, f32 dt) {
     if (b.inv_mass == 0.0f)
         return;
-    const math::Vec3 ang_accel{
-        b.torque.x * b.inertia.inv_local.x,
-        b.torque.y * b.inertia.inv_local.y,
-        b.torque.z * b.inertia.inv_local.z,
-    };
+    const math::Vec3 ang_accel =
+        apply_inv_inertia_world(b.rotation, b.inertia.inv_local, b.torque);
     b.angular_velocity = math::add(b.angular_velocity, math::mul(ang_accel, dt));
     b.torque = {0, 0, 0};
 }
@@ -66,12 +68,12 @@ TEST_CASE("apply_torque accumulator integrates to I^-1 * torque * dt", "[physics
 
 TEST_CASE("apply_angular_impulse adds I^-1 * J instantaneously", "[physics][angular]") {
     Body b = make_box();
-    // apply_angular_impulse(J): w += I^-1 (.) J (no dt).
+    // apply_angular_impulse(J): w += R*(I^-1 (.) (R^T*J)) (no dt). Identity
+    // rotation here reduces to the local diagonal.
     const math::Vec3 J{8.0f, 8.0f, 4.0f};
-    b.angular_velocity = math::add(b.angular_velocity,
-                                   math::Vec3{J.x * b.inertia.inv_local.x,
-                                              J.y * b.inertia.inv_local.y,
-                                              J.z * b.inertia.inv_local.z});
+    b.angular_velocity = math::add(
+        b.angular_velocity,
+        apply_inv_inertia_world(b.rotation, b.inertia.inv_local, J));
     REQUIRE(b.angular_velocity.x == Approx(8.0f * 0.25f));   // 2.0
     REQUIRE(b.angular_velocity.y == Approx(8.0f * 0.125f));  // 1.0
     REQUIRE(b.angular_velocity.z == Approx(4.0f * 0.25f));   // 1.0

@@ -28,6 +28,32 @@ PSY_FORCEINLINE math::Vec3 quat_rotate(math::Quat q, math::Vec3 v) noexcept {
     return math::add(math::add(v, math::mul(t, s)), math::cross(u, t));
 }
 
+// Conjugate (== inverse for a unit quaternion). Physics-internal so callers
+// qualify `detail::quat_conjugate` and never trip the math/physics ADL
+// ambiguity the qualified quat_rotate path documents above.
+PSY_FORCEINLINE math::Quat quat_conjugate(math::Quat q) noexcept {
+    return {-q.x, -q.y, -q.z, q.w};
+}
+
+// Apply a body's inverse-inertia tensor to a WORLD-space angular quantity
+// (torque or angular impulse). Body inertia is a diagonal in the body's LOCAL
+// principal frame; the world tensor is R * I_local^-1 * R^T. We never form the
+// 3x3 — instead rotate `v` into local with R^T, scale by the diagonal, rotate
+// the result back to world with R:
+//     out_world = R * ( inv_local (.) ( R^T * v_world ) )
+// Exact for a rotated asymmetric body (produces physical precession), and
+// reduces to the old `inv_local (.) v` when rotation is identity. Alloc-free
+// and -fno-fast-math friendly (no reciprocals beyond the precomputed diagonal).
+PSY_FORCEINLINE math::Vec3 apply_inv_inertia_world(math::Quat rotation,
+                                                   math::Vec3 inv_local,
+                                                   math::Vec3 v_world) noexcept {
+    const math::Vec3 v_local = quat_rotate(quat_conjugate(rotation), v_world);
+    const math::Vec3 a_local{v_local.x * inv_local.x,
+                             v_local.y * inv_local.y,
+                             v_local.z * inv_local.z};
+    return quat_rotate(rotation, a_local);
+}
+
 inline math::Aabb aabb_world(u8 shape,
                              math::Vec3 half_extent,
                              math::Vec3 position,

@@ -116,8 +116,14 @@ PSY_FORCEINLINE math::Vec3 world_anchor(const Body& b, math::Vec3 local) noexcep
     return math::add(b.position, detail::quat_rotate(b.rotation, local));
 }
 
+// Apply the body's WORLD-space inverse-inertia to a world-space angular
+// quantity `v` (a torque-like r x P or r x dir). The diagonal inertia lives in
+// the body's local principal frame, so use the properly rotated tensor
+// R * I_local^-1 * R^T (detail::apply_inv_inertia_world) rather than the old
+// world-space-diagonal approximation — joints on a rotated asymmetric body now
+// see a consistent effective mass and impulse split.
 PSY_FORCEINLINE math::Vec3 inv_inertia_mul(const Body& b, math::Vec3 v) noexcept {
-    return {v.x * b.inertia.inv_local.x, v.y * b.inertia.inv_local.y, v.z * b.inertia.inv_local.z};
+    return detail::apply_inv_inertia_world(b.rotation, b.inertia.inv_local, v);
 }
 
 // Velocity of the material point at world offset r from body b's centre.
