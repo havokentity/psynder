@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <span>
@@ -239,15 +240,34 @@ class QueryBuilder<reads<R...>, writes<W...>> {
         const auto reads_ids = detail::component_ids_array<R...>();
         const auto writes_ids = detail::component_ids_array<W...>();
 
-        std::vector<ComponentId> required;
-        required.reserve(reads_ids.size() + writes_ids.size());
+        // `required` is the sorted/deduped set of component ids the query
+        // needs. Its upper bound is a COMPILE-TIME constant — the number of
+        // reads plus writes template arguments — so we build it in a fixed
+        // on-stack array (SBO) instead of a per-call std::vector. This removes
+        // the allocation entirely with zero race risk: the array is a private
+        // automatic on this call's stack frame, so nested / concurrent queries
+        // each own their own copy. We pass a std::span view to resolve_query,
+        // matching its frozen signature (owned by EcsRegistry.cpp).
+        constexpr usize kRequiredMax = sizeof...(R) + sizeof...(W);
+        std::array<ComponentId, kRequiredMax> required_buf{};
+        usize required_n = 0;
         for (auto id : reads_ids)
-            required.push_back(id);
+            required_buf[required_n++] = id;
         for (auto id : writes_ids)
-            required.push_back(id);
-        std::sort(required.begin(), required.end());
-        required.erase(std::unique(required.begin(), required.end()), required.end());
+            required_buf[required_n++] = id;
+        std::sort(required_buf.begin(), required_buf.begin() + required_n);
+        required_n = static_cast<usize>(
+            std::unique(required_buf.begin(), required_buf.begin() + required_n) -
+            required_buf.begin());
+        std::span<const ComponentId> required(required_buf.data(), required_n);
 
+        // `matched` (the list of matching archetype indices) is intentionally
+        // LEFT as a per-call std::vector: resolve_query's signature is owned by
+        // EcsRegistry.cpp (out of this lane's scope) and writes into it via
+        // .clear()/.push_back(), so its element count cannot be bounded here.
+        // It is a fresh per-call local, so it is re-entrancy/thread safe; only
+        // the heap allocation remains, and it is the cold path (archetype
+        // count, not chunk/entity count).
         std::vector<u32> matched;
         detail::EcsRegistryImpl::Get().resolve_query(required, matched);
 
@@ -259,19 +279,48 @@ class QueryBuilder<reads<R...>, writes<W...>> {
         // synchronously, which the body must already tolerate (queries
         // do not mutate the archetype topology — structural changes
         // require defer + apply).
+        //
+        // The work-list previously allocated a std::vector on EVERY multi-chunk
+        // query (render gather, physics writeback, save) — the hot per-frame
+        // allocation flagged by review. We replace it with small-buffer
+        // optimization: a fixed on-stack array for the common small case, with
+        // a C-heap fallback only when the chunk count overflows kWorkSbo.
+        //
+        // Re-entrancy / concurrency: a query body can issue another query
+        // (nested), and queries run from many worker threads concurrently. The
+        // SBO array `work_sbo` is a plain automatic on this call's stack frame,
+        // so each (possibly nested, possibly cross-thread) invocation owns a
+        // private copy. No shared mutable scratch is touched — identical
+        // thread-safety to the old per-call vector, minus the allocation.
         struct Job {
             u32 arche;
             u32 chunk;
         };
-        std::vector<Job> work;
-        work.reserve(matched.size());
+        constexpr usize kWorkSbo = 64;
+        Job work_sbo[kWorkSbo];
+        Job* work_heap = nullptr;  // owns the spill allocation, if any
+        usize work_cap = kWorkSbo;
+        usize work_n = 0;
+        Job* work = work_sbo;
         for (u32 archetype_idx : matched) {
             auto& arche = detail::EcsRegistryImpl::Get().archetype(archetype_idx);
             for (u32 ci = 0; ci < arche.chunk_count(); ++ci) {
                 detail::Chunk* c = arche.chunk(ci);
                 if (!c || c->header.row_count == 0)
                     continue;
-                work.push_back({archetype_idx, ci});
+                if (work_n == work_cap) {
+                    // Grow onto the heap (cold path). Double the capacity and
+                    // copy the existing entries over.
+                    usize new_cap = work_cap * 2;
+                    Job* grown = static_cast<Job*>(std::malloc(sizeof(Job) * new_cap));
+                    std::memcpy(grown, work, sizeof(Job) * work_n);
+                    if (work_heap)
+                        std::free(work_heap);
+                    work_heap = grown;
+                    work = grown;
+                    work_cap = new_cap;
+                }
+                work[work_n++] = Job{archetype_idx, ci};
             }
         }
 
@@ -304,9 +353,14 @@ class QueryBuilder<reads<R...>, writes<W...>> {
             }
         };
 
-        if (work.empty())
+        if (work_n == 0) {
+            // No work-list spill could have happened (work_n == 0), so there
+            // is nothing to free here.
             return;
-        jobs::JobSystem::Get().parallel_for(usize{0}, work.size(), /*grain*/ usize{1}, walk_one);
+        }
+        jobs::JobSystem::Get().parallel_for(usize{0}, work_n, /*grain*/ usize{1}, walk_one);
+        if (work_heap)
+            std::free(work_heap);
     }
 };
 

@@ -753,17 +753,41 @@ void JobSystem::parallel_for(usize begin,
         return;
     }
 
-    // Allocate a small task descriptor per chunk on the stack via a heap
-    // alloc — Wave A does not have a guaranteed frame arena from lane 01,
-    // so we use the C heap. This is allocated outside the hot frame loop
-    // typically; raster/etc. will sub their own grain.
+    // Small task descriptor per chunk, plus a handle per chunk. The DESIGN's
+    // zero-per-frame-heap-garbage rule (DESIGN 3.4) forbids the previous
+    // unconditional std::malloc/free pair here. We use small-buffer
+    // optimization: the storage lives on THIS call's stack frame for the
+    // overwhelmingly common small case (<= kSboChunks) and only falls back to
+    // the C heap when the chunk count exceeds the SBO threshold.
+    //
+    // Re-entrancy / concurrency: parallel_for can be issued from inside a
+    // running job (nested) and from any worker thread concurrently. The SBO
+    // storage is a plain automatic array, so every (possibly nested, possibly
+    // cross-thread) call owns a distinct, private copy on its own stack frame.
+    // No shared mutable scratch is touched, so there is no data race and no
+    // corruption under nesting — identical thread-safety to the old per-call
+    // malloc, minus the allocation.
     struct Chunk {
         usize lo;
         usize hi;
         const std::function<void(usize, usize)>* body;
     };
-    auto* tasks = static_cast<Chunk*>(std::malloc(sizeof(Chunk) * chunks));
-    auto* handles = static_cast<JobHandle*>(std::malloc(sizeof(JobHandle) * chunks));
+
+    // Inline capacity. 64 chunks covers virtually every parallel_for in the
+    // engine (raster tiles, ECS query work-lists, physics writeback all sit
+    // well under this on typical scenes). 64 * (sizeof(Chunk) + sizeof(JobHandle))
+    // is a few KiB of stack — safe for a worker stack.
+    constexpr usize kSboChunks = 64;
+    Chunk sbo_tasks[kSboChunks];
+    JobHandle sbo_handles[kSboChunks];
+
+    Chunk* tasks = sbo_tasks;
+    JobHandle* handles = sbo_handles;
+    const bool spilled = chunks > kSboChunks;
+    if (spilled) {
+        tasks = static_cast<Chunk*>(std::malloc(sizeof(Chunk) * chunks));
+        handles = static_cast<JobHandle*>(std::malloc(sizeof(JobHandle) * chunks));
+    }
 
     auto runner = +[](void* u) noexcept {
         auto* c = static_cast<Chunk*>(u);
@@ -785,8 +809,10 @@ void JobSystem::parallel_for(usize begin,
         wait(handles[i]);
     }
 
-    std::free(tasks);
-    std::free(handles);
+    if (spilled) {
+        std::free(tasks);
+        std::free(handles);
+    }
 }
 
 u32 JobSystem::worker_count() const noexcept {
