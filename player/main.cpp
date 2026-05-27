@@ -67,6 +67,9 @@ Entity add_active_arcade_gameplay(std::string_view kind);
 bool add_active_arcade_rigid_body(bool make_static);
 bool add_active_arcade_vehicle();
 bool add_active_arcade_helicopter();
+bool add_active_arcade_rigid_body_to(Entity entity, bool make_static);
+bool add_active_arcade_vehicle_to(Entity entity);
+bool add_active_arcade_helicopter_to(Entity entity);
 void set_active_arcade_rt_mode(bool on);
 bool active_arcade_rt_mode();
 bool bake_active_arcade_lightmaps();
@@ -2707,78 +2710,89 @@ struct PlayerApp {
         }
     }
 
-    // Tag the selected entity as a dynamic rigid body so it simulates in Play
+    // Tag a specific entity as a dynamic rigid body so it simulates in Play
     // mode. Box collider sized from the renderable's local bounds (half-extent).
-    bool add_rigid_body_to_selected(bool make_static) {
+    // `entity` is validated alive here so an IPC add_component that was queued
+    // on a socket thread and drained a frame later still targets a live entity.
+    bool add_rigid_body_to_entity(Entity entity, bool make_static) {
         scene::Scene* scene = app ? app->active_scene() : nullptr;
         if (!scene)
             return false;
-        const Entity sel = editor::selection::selected_scene_entity();
-        if (!sel.valid() || !scene->registry().alive(sel))
+        if (!entity.valid() || !scene->registry().alive(entity))
             return false;
         auto& reg = scene->registry();
-        if (auto* existing = reg.get<editor::play::RigidBodyComponent>(sel)) {
+        if (auto* existing = reg.get<editor::play::RigidBodyComponent>(entity)) {
             existing->mass = make_static ? 0.0f : 1.0f;  // retag in place
             return true;
         }
         editor::play::RigidBodyComponent rb{};
         rb.shape = physics::Shape::Box;
         rb.mass = make_static ? 0.0f : 1.0f;  // 0 = static floor/wall
-        if (const auto* r = reg.get<scene::RenderableComponent>(sel)) {
+        if (const auto* r = reg.get<scene::RenderableComponent>(entity)) {
             const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
             rb.half_extent = math::Vec3{std::max(0.05f, ext.x), std::max(0.05f, ext.y),
                                         std::max(0.05f, ext.z)};
         }
-        reg.add<editor::play::RigidBodyComponent>(sel, rb);
+        reg.add<editor::play::RigidBodyComponent>(entity, rb);
         return true;
     }
 
-    // Tag the selected entity as a drivable player vehicle so it simulates +
+    bool add_rigid_body_to_selected(bool make_static) {
+        return add_rigid_body_to_entity(editor::selection::selected_scene_entity(), make_static);
+    }
+
+    // Tag a specific entity as a drivable player vehicle so it simulates +
     // accepts WASD in Play mode. Chassis box sized from the renderable's local
     // bounds (half-extent), falling back to the component default.
-    bool add_vehicle_to_selected() {
+    bool add_vehicle_to_entity(Entity entity) {
         scene::Scene* scene = app ? app->active_scene() : nullptr;
         if (!scene)
             return false;
-        const Entity sel = editor::selection::selected_scene_entity();
-        if (!sel.valid() || !scene->registry().alive(sel))
+        if (!entity.valid() || !scene->registry().alive(entity))
             return false;
         auto& reg = scene->registry();
-        if (reg.get<editor::play::VehicleComponent>(sel) != nullptr)
+        if (reg.get<editor::play::VehicleComponent>(entity) != nullptr)
             return true;  // already a vehicle
         editor::play::VehicleComponent vc{};
         vc.is_player = true;
-        if (const auto* r = reg.get<scene::RenderableComponent>(sel)) {
+        if (const auto* r = reg.get<scene::RenderableComponent>(entity)) {
             const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
             vc.half_extent = math::Vec3{std::max(0.1f, ext.x), std::max(0.1f, ext.y),
                                         std::max(0.1f, ext.z)};
         }
-        reg.add<editor::play::VehicleComponent>(sel, vc);
+        reg.add<editor::play::VehicleComponent>(entity, vc);
         return true;
     }
 
-    // Tag the selected entity as a flyable player helicopter so it simulates +
+    bool add_vehicle_to_selected() {
+        return add_vehicle_to_entity(editor::selection::selected_scene_entity());
+    }
+
+    // Tag a specific entity as a flyable player helicopter so it simulates +
     // accepts flight input in Play mode. Chassis box sized from the renderable's
     // local bounds (half-extent), falling back to the component default.
-    bool add_helicopter_to_selected() {
+    bool add_helicopter_to_entity(Entity entity) {
         scene::Scene* scene = app ? app->active_scene() : nullptr;
         if (!scene)
             return false;
-        const Entity sel = editor::selection::selected_scene_entity();
-        if (!sel.valid() || !scene->registry().alive(sel))
+        if (!entity.valid() || !scene->registry().alive(entity))
             return false;
         auto& reg = scene->registry();
-        if (reg.get<editor::play::HelicopterComponent>(sel) != nullptr)
+        if (reg.get<editor::play::HelicopterComponent>(entity) != nullptr)
             return true;  // already a helicopter
         editor::play::HelicopterComponent hc{};
         hc.is_player = true;
-        if (const auto* r = reg.get<scene::RenderableComponent>(sel)) {
+        if (const auto* r = reg.get<scene::RenderableComponent>(entity)) {
             const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
             hc.half_extent = math::Vec3{std::max(0.1f, ext.x), std::max(0.1f, ext.y),
                                         std::max(0.1f, ext.z)};
         }
-        reg.add<editor::play::HelicopterComponent>(sel, hc);
+        reg.add<editor::play::HelicopterComponent>(entity, hc);
         return true;
+    }
+
+    bool add_helicopter_to_selected() {
+        return add_helicopter_to_entity(editor::selection::selected_scene_entity());
     }
 
     void set_rt_mode(bool on) noexcept { rt_mode_ = on; }
@@ -4073,6 +4087,18 @@ bool add_active_arcade_helicopter() {
     return g_active_arcade && g_active_arcade->add_helicopter_to_selected();
 }
 
+bool add_active_arcade_rigid_body_to(Entity entity, bool make_static) {
+    return g_active_arcade && g_active_arcade->add_rigid_body_to_entity(entity, make_static);
+}
+
+bool add_active_arcade_vehicle_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_vehicle_to_entity(entity);
+}
+
+bool add_active_arcade_helicopter_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_helicopter_to_entity(entity);
+}
+
 void set_active_arcade_rt_mode(bool on) {
     if (g_active_arcade)
         g_active_arcade->set_rt_mode(on);
@@ -4150,10 +4176,13 @@ void apply_active_arcade_component_edit(const editor::ipc::SelectionComponentEdi
 }
 
 // Inspector "Add Component" intent. Routes the requested component (with an
-// optional variant) to the matching host entry point. RigidBody is the only
-// component wired today; the static flavor maps to a zero-mass body. The op
-// itself targets the active selection, mirroring the phys_rigidbody console
-// command; the message entity_id is used only for the reply ack.
+// optional variant) to the matching host entry point, targeting the entity the
+// client picked (carried as `add.entity_id` over the wire). This runs on the
+// engine main thread via Server::pump(), so the structural ECS mutation is safe
+// against the per-frame registry iteration. The target entity is validated
+// alive at apply time inside the host add_*_to_entity functions; if it died
+// between the client click and this dispatch the op no-ops and the ack reports
+// the actual (now-dead) target so the panel can resync.
 void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd& add) {
     const Entity entity{add.entity_id};
     bool ok = false;
@@ -4168,27 +4197,27 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
     if (is_rigid_body) {
         const bool make_static =
             add.component == "RigidBodyStatic" || add.variant == "static";
-        ok = add_active_arcade_rigid_body(make_static);
+        ok = add_active_arcade_rigid_body_to(entity, make_static);
         if (ok) {
             text = make_static ? "added static RigidBody" : "added dynamic RigidBody";
         } else {
-            text = "add RigidBody failed (no valid selection / no active scene)";
+            text = "add RigidBody failed (entity not alive / no active scene)";
             PSY_LOG_WARN("psynder_arcade: add RigidBody failed on {}", add.entity_id);
         }
     } else if (is_vehicle) {
-        ok = add_active_arcade_vehicle();
+        ok = add_active_arcade_vehicle_to(entity);
         if (ok) {
             text = "added Vehicle";
         } else {
-            text = "add Vehicle failed (no valid selection / no active scene)";
+            text = "add Vehicle failed (entity not alive / no active scene)";
             PSY_LOG_WARN("psynder_arcade: add Vehicle failed on {}", add.entity_id);
         }
     } else if (is_helicopter) {
-        ok = add_active_arcade_helicopter();
+        ok = add_active_arcade_helicopter_to(entity);
         if (ok) {
             text = "added Helicopter";
         } else {
-            text = "add Helicopter failed (no valid selection / no active scene)";
+            text = "add Helicopter failed (entity not alive / no active scene)";
             PSY_LOG_WARN("psynder_arcade: add Helicopter failed on {}", add.entity_id);
         }
     } else {

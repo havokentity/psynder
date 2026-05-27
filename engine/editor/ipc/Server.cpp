@@ -1237,8 +1237,16 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                 if (env.channel == proto::channels::kselection &&
                     env.type == "select" &&
                     env.has_entity_id) {
-                    if (auto* handler = g_selection_select_handler.load(std::memory_order_acquire))
-                        handler(env.entity_id);
+                    // ECS-mutating selection ops must run on the main thread.
+                    // Enqueue rather than invoking the handler inline on this
+                    // socket worker thread (the registry is iterated every
+                    // frame; an off-thread structural mutation is a data race).
+                    InboundCmd ic;
+                    ic.conn = conn;
+                    ic.selection_op = InboundCmd::SelectionOp::Select;
+                    ic.selection_entity_id = env.entity_id;
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
                 } else if (env.channel == proto::channels::kselection &&
                            env.type == "component_edit" &&
                            env.has_entity_id &&
@@ -1246,28 +1254,30 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                            !env.field.empty() &&
                            !env.field_kind.empty() &&
                            env.has_value) {
-                    if (auto* handler =
-                            g_selection_component_edit_handler.load(std::memory_order_acquire)) {
-                        ::psynder::editor::ipc::SelectionComponentEdit edit;
-                        edit.entity_id = env.entity_id;
-                        edit.component = std::move(env.component);
-                        edit.field = std::move(env.field);
-                        edit.field_kind = std::move(env.field_kind);
-                        edit.value = std::move(env.value);
-                        handler(edit);
-                    }
+                    InboundCmd ic;
+                    ic.conn = conn;
+                    ic.selection_op = InboundCmd::SelectionOp::ComponentEdit;
+                    ic.selection_entity_id = env.entity_id;
+                    ic.selection_edit.entity_id = env.entity_id;
+                    ic.selection_edit.component = std::move(env.component);
+                    ic.selection_edit.field = std::move(env.field);
+                    ic.selection_edit.field_kind = std::move(env.field_kind);
+                    ic.selection_edit.value = std::move(env.value);
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
                 } else if (env.channel == proto::channels::kselection &&
                            env.type == "add_component" &&
                            env.has_entity_id &&
                            !env.component.empty()) {
-                    if (auto* handler =
-                            g_selection_component_add_handler.load(std::memory_order_acquire)) {
-                        ::psynder::editor::ipc::SelectionComponentAdd add;
-                        add.entity_id = env.entity_id;
-                        add.component = std::move(env.component);
-                        add.variant = std::move(env.variant);
-                        handler(add);
-                    }
+                    InboundCmd ic;
+                    ic.conn = conn;
+                    ic.selection_op = InboundCmd::SelectionOp::ComponentAdd;
+                    ic.selection_entity_id = env.entity_id;
+                    ic.selection_add.entity_id = env.entity_id;
+                    ic.selection_add.component = std::move(env.component);
+                    ic.selection_add.variant = std::move(env.variant);
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
                 } else if (env.channel == proto::channels::kselection &&
                     env.type == "spawn_prop" &&
                     !env.prop_id.empty()) {
@@ -1538,6 +1548,36 @@ void Server::pump() {
 
     const bool repl_live = repl_installed_.load(std::memory_order_acquire);
     for (auto& cmd : local) {
+        // Selection ops mutate the ECS - dispatch them here on the main thread
+        // (pump() runs from the engine frame loop). The registered host handler
+        // targets the entity carried in the typed payload and validates that it
+        // is still alive at apply time.
+        if (cmd.selection_op != InboundCmd::SelectionOp::None) {
+            switch (cmd.selection_op) {
+                case InboundCmd::SelectionOp::Select: {
+                    if (auto* handler =
+                            g_selection_select_handler.load(std::memory_order_acquire))
+                        handler(cmd.selection_entity_id);
+                    break;
+                }
+                case InboundCmd::SelectionOp::ComponentEdit: {
+                    if (auto* handler =
+                            g_selection_component_edit_handler.load(std::memory_order_acquire))
+                        handler(cmd.selection_edit);
+                    break;
+                }
+                case InboundCmd::SelectionOp::ComponentAdd: {
+                    if (auto* handler =
+                            g_selection_component_add_handler.load(std::memory_order_acquire))
+                        handler(cmd.selection_add);
+                    break;
+                }
+                case InboundCmd::SelectionOp::None:
+                    break;
+            }
+            continue;
+        }
+
         std::string text(reinterpret_cast<const char*>(cmd.payload.data()), cmd.payload.size());
         if (!cmd.quiet)
             PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);

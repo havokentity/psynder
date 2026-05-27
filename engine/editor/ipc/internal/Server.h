@@ -7,6 +7,7 @@
 #pragma once
 
 #include "core/Types.h"
+#include "editor/ipc/Ipc.h"
 #include "editor/ipc/internal/WsFrame.h"
 
 #include <atomic>
@@ -90,6 +91,20 @@ class Server {
     // originating client without keeping a dead Connection alive after the
     // socket has closed.
     struct InboundCmd {
+        // Selection-channel operations that mutate the ECS / scene. These are
+        // received on a per-connection socket worker thread but MUST be applied
+        // on the engine main thread (the registry is iterated every frame by
+        // render gather + update_play_runtime; a structural mutation off-thread
+        // is a data race / chunk UAF). They ride the same `inbound_` queue the
+        // console-eval path uses and are dispatched by pump() on the main
+        // thread.
+        enum class SelectionOp : ::psynder::u8 {
+            None = 0,
+            Select,
+            ComponentEdit,
+            ComponentAdd,
+        };
+
         std::string channel;
         std::vector<::psynder::u8> payload;
         std::weak_ptr<Connection> conn;
@@ -100,6 +115,16 @@ class Server {
         bool has_request_id = false;
         bool quiet = false;
         bool legacy_console_result = false;
+
+        // Selection op carried for main-thread dispatch. When `selection_op`
+        // is not None, the console fields above are ignored and pump() invokes
+        // the registered selection handler instead. The typed payloads carry
+        // their own `entity_id` so the op targets the entity the client picked
+        // at send time, not the host's live selection.
+        SelectionOp selection_op = SelectionOp::None;
+        ::psynder::u32 selection_entity_id = 0;
+        ::psynder::editor::ipc::SelectionComponentEdit selection_edit;
+        ::psynder::editor::ipc::SelectionComponentAdd selection_add;
     };
     struct InboundCompletion {
         ::psynder::u32 id = 0;
