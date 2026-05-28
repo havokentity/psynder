@@ -4,6 +4,7 @@
 #include "EcsEditorSnapshot_Internal.h"
 
 #include "Registry.h"
+#include "scene/PhysicsComponents.h"
 #include "scene/SceneEcs.h"
 
 #include <algorithm>
@@ -31,6 +32,14 @@ constexpr u32 entity_index_of(Entity e) noexcept {
         return EcsEditorWellKnownComponentKind::Light;
     if (id == component_id<RenderableComponent>())
         return EcsEditorWellKnownComponentKind::Renderable;
+    if (id == component_id<RigidBodyComponent>())
+        return EcsEditorWellKnownComponentKind::RigidBody;
+    if (id == component_id<VehicleComponent>())
+        return EcsEditorWellKnownComponentKind::Vehicle;
+    if (id == component_id<HelicopterComponent>())
+        return EcsEditorWellKnownComponentKind::Helicopter;
+    if (id == component_id<CharacterControllerComponent>())
+        return EcsEditorWellKnownComponentKind::CharacterController;
     return EcsEditorWellKnownComponentKind::Unknown;
 }
 

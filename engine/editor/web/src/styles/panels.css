@@ -1489,38 +1489,52 @@ button.psy-window-control:hover {
     color: var(--psy-accent);
 }
 
-.psy-edit-ack {
-    min-height: 22px;
-    min-width: 0;
-    max-width: 220px;
-    display: inline-flex;
-    align-items: center;
-    padding-inline: 8px;
-    overflow: hidden;
+/* Transient edit/add confirmation toast (#62b). Lives in its own inline slot
+   directly under the Inspector header instead of floating over it, and the
+   panel auto-clears it a couple seconds after the edit settles. */
+.psy-edit-toast {
+    flex: 0 0 auto;
+    margin: 0 9px;
+    padding: 5px 9px;
     border: 1px solid var(--psy-border-soft);
+    border-left-width: 3px;
     border-radius: var(--psy-radius-sm);
     background: var(--psy-bg-input);
     color: var(--psy-fg-muted);
     font-family: var(--psy-mono);
-    font-size: 10px;
-    text-overflow: ellipsis;
+    font-size: 11px;
     text-transform: uppercase;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: psy-edit-toast-in 120ms ease-out;
 }
 
-.psy-edit-ack.is-pending {
+.psy-edit-toast.is-pending {
     border-color: color-mix(in srgb, var(--psy-accent) 55%, var(--psy-border));
+    border-left-color: var(--psy-accent);
     color: var(--psy-accent);
 }
 
-.psy-edit-ack.is-applied {
+.psy-edit-toast.is-applied {
     border-color: color-mix(in srgb, var(--psy-good) 55%, var(--psy-border));
+    border-left-color: var(--psy-good);
     color: var(--psy-good);
 }
 
-.psy-edit-ack.is-error {
+.psy-edit-toast.is-error {
     border-color: color-mix(in srgb, var(--psy-bad) 60%, var(--psy-border));
+    border-left-color: var(--psy-bad);
     color: var(--psy-bad);
+}
+
+.psy-add-component .psy-edit-toast {
+    margin: 0;
+}
+
+@keyframes psy-edit-toast-in {
+    from { opacity: 0; transform: translateY(-3px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
 .psy-hierarchy-search {

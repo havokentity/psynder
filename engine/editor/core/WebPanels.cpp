@@ -12,6 +12,7 @@
 #include "asset/Vault.h"
 #include "math/MathExt.h"
 #include "platform/Platform.h"
+#include "scene/PhysicsComponents.h"
 #include "scene/SceneEcs.h"
 #include "ui/console/ConsoleOverlay.h"
 
@@ -421,7 +422,7 @@ std::vector<u8> encode_schema_catalog_envelope() {
     w.str("payload");
     w.map_header(1);
     w.str("components");
-    w.array_header(11);
+    w.array_header(15);
 
     write_component_schema_header(w, "EnvironmentComponent", "native-environment-v1", 10);
     write_field_schema(w, "clear_color_rgba8", "color", false);
@@ -534,6 +535,57 @@ std::vector<u8> encode_schema_catalog_envelope() {
     write_field_schema(w, "fire_rate", "f32", false, 0.1f, "hz");
     write_field_schema(w, "ammo", "u32");
     write_field_schema(w, "automatic", "bool", false);
+
+    // ── Physics authoring components (#60a). Editable AUTHORING fields only;
+    // every runtime_* opaque physics handle is published RUNTIME-only/read-only
+    // and is never user-editable (apply_component_field rejects it).
+    constexpr std::array<EnumOption, 7> kColliderShapeOptions{{
+        {"Sphere", static_cast<u32>(scene::ColliderShape::Sphere)},
+        {"Capsule", static_cast<u32>(scene::ColliderShape::Capsule)},
+        {"Box", static_cast<u32>(scene::ColliderShape::Box)},
+        {"ConvexHull", static_cast<u32>(scene::ColliderShape::ConvexHull)},
+        {"Compound", static_cast<u32>(scene::ColliderShape::Compound)},
+        {"Heightfield", static_cast<u32>(scene::ColliderShape::Heightfield)},
+        {"TriangleMesh", static_cast<u32>(scene::ColliderShape::TriangleMesh)},
+    }};
+    write_component_schema_header(w, "RigidBodyComponent", "native-rigid-body-v1", 6);
+    write_field_schema(w, "shape", "enum", false, {}, {}, kColliderShapeOptions);
+    write_field_schema(w, "mass", "f32", false, 0.1f, "kg");
+    write_field_schema(w, "half_extent", "vec3", false, 0.01f, "m");
+    write_field_schema(w, "friction", "f32", false, 0.01f);
+    write_field_schema(w, "restitution", "f32", false, 0.01f);
+    write_field_schema(w, "runtime_body", "u32");
+
+    write_component_schema_header(w, "VehicleComponent", "native-vehicle-v1", 11);
+    write_field_schema(w, "half_extent", "vec3", false, 0.01f, "m");
+    write_field_schema(w, "mass", "f32", false, 1.0f, "kg");
+    write_field_schema(w, "engine_max_torque", "f32", false, 1.0f, "N.m");
+    write_field_schema(w, "drag", "f32", false, 0.01f);
+    write_field_schema(w, "wheel_radius", "f32", false, 0.01f, "m");
+    write_field_schema(w, "suspension", "f32", false, 0.01f, "m");
+    write_field_schema(w, "stiffness", "f32", false, 100.0f, "N/m");
+    write_field_schema(w, "damping", "f32", false, 10.0f, "N.s/m");
+    write_field_schema(w, "is_player", "bool", false);
+    write_field_schema(w, "runtime_vehicle", "u32");
+    write_field_schema(w, "runtime_chassis", "u32");
+
+    write_component_schema_header(w, "HelicopterComponent", "native-helicopter-v1", 10);
+    write_field_schema(w, "half_extent", "vec3", false, 0.01f, "m");
+    write_field_schema(w, "mass", "f32", false, 1.0f, "kg");
+    write_field_schema(w, "max_thrust_n", "f32", false, 10.0f, "N");
+    write_field_schema(w, "pitch_torque", "f32", false, 10.0f, "N.m");
+    write_field_schema(w, "roll_torque", "f32", false, 10.0f, "N.m");
+    write_field_schema(w, "yaw_torque", "f32", false, 10.0f, "N.m");
+    write_field_schema(w, "angular_damping", "f32", false, 0.05f);
+    write_field_schema(w, "hover_assist", "bool", false);
+    write_field_schema(w, "is_player", "bool", false);
+    write_field_schema(w, "runtime_body", "u32");
+
+    write_component_schema_header(w, "CharacterControllerComponent", "native-character-controller-v1", 4);
+    write_field_schema(w, "height", "f32", false, 0.01f, "m");
+    write_field_schema(w, "radius", "f32", false, 0.01f, "m");
+    write_field_schema(w, "move_speed", "f32", false, 0.05f, "m/s");
+    write_field_schema(w, "runtime_character", "u32");
 
     return w.buffer();
 }
@@ -659,6 +711,51 @@ u64 selection_signature(scene::Scene& scene, Entity entity, u32 generation) {
         out = hierarchy_hash_combine(out, weapon->ammo);
         out = hierarchy_hash_combine(out, weapon->automatic);
     }
+    if (auto* rigid_body = registry.get<scene::RigidBodyComponent>(entity)) {
+        out = hierarchy_hash_combine(out, static_cast<u32>(rigid_body->shape));
+        out = hash_f32(out, rigid_body->mass);
+        out = hash_f32(out, rigid_body->half_extent.x);
+        out = hash_f32(out, rigid_body->half_extent.y);
+        out = hash_f32(out, rigid_body->half_extent.z);
+        out = hash_f32(out, rigid_body->friction);
+        out = hash_f32(out, rigid_body->restitution);
+        out = hierarchy_hash_combine(out, rigid_body->runtime_body);
+    }
+    if (auto* vehicle = registry.get<scene::VehicleComponent>(entity)) {
+        out = hash_f32(out, vehicle->half_extent.x);
+        out = hash_f32(out, vehicle->half_extent.y);
+        out = hash_f32(out, vehicle->half_extent.z);
+        out = hash_f32(out, vehicle->mass);
+        out = hash_f32(out, vehicle->engine_max_torque);
+        out = hash_f32(out, vehicle->drag);
+        out = hash_f32(out, vehicle->wheel_radius);
+        out = hash_f32(out, vehicle->suspension);
+        out = hash_f32(out, vehicle->stiffness);
+        out = hash_f32(out, vehicle->damping);
+        out = hierarchy_hash_combine(out, vehicle->is_player);
+        out = hierarchy_hash_combine(out, vehicle->runtime_vehicle);
+        out = hierarchy_hash_combine(out, vehicle->runtime_chassis);
+    }
+    if (auto* helicopter = registry.get<scene::HelicopterComponent>(entity)) {
+        out = hash_f32(out, helicopter->half_extent.x);
+        out = hash_f32(out, helicopter->half_extent.y);
+        out = hash_f32(out, helicopter->half_extent.z);
+        out = hash_f32(out, helicopter->mass);
+        out = hash_f32(out, helicopter->max_thrust_n);
+        out = hash_f32(out, helicopter->pitch_torque);
+        out = hash_f32(out, helicopter->roll_torque);
+        out = hash_f32(out, helicopter->yaw_torque);
+        out = hash_f32(out, helicopter->angular_damping);
+        out = hierarchy_hash_combine(out, helicopter->hover_assist);
+        out = hierarchy_hash_combine(out, helicopter->is_player);
+        out = hierarchy_hash_combine(out, helicopter->runtime_body);
+    }
+    if (auto* character = registry.get<scene::CharacterControllerComponent>(entity)) {
+        out = hash_f32(out, character->height);
+        out = hash_f32(out, character->radius);
+        out = hash_f32(out, character->move_speed);
+        out = hierarchy_hash_combine(out, character->runtime_character);
+    }
     return out;
 }
 
@@ -777,6 +874,10 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
     const auto* player_controller = registry.get<scene::PlayerControllerComponent>(entity);
     const auto* health = registry.get<scene::HealthComponent>(entity);
     const auto* weapon = registry.get<scene::WeaponComponent>(entity);
+    const auto* rigid_body = registry.get<scene::RigidBodyComponent>(entity);
+    const auto* vehicle = registry.get<scene::VehicleComponent>(entity);
+    const auto* helicopter = registry.get<scene::HelicopterComponent>(entity);
+    const auto* character = registry.get<scene::CharacterControllerComponent>(entity);
     const bool has_material =
         renderable && scene.materials().valid(renderable->material);
     const usize component_count = (transform ? 1u : 0u) + (node ? 1u : 0u) +
@@ -784,7 +885,9 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
                                   (renderable ? 1u : 0u) + (has_material ? 1u : 0u) +
                                   (gameplay_tag ? 1u : 0u) +
                                   (player_controller ? 1u : 0u) + (health ? 1u : 0u) +
-                                  (weapon ? 1u : 0u);
+                                  (weapon ? 1u : 0u) + (rigid_body ? 1u : 0u) +
+                                  (vehicle ? 1u : 0u) + (helicopter ? 1u : 0u) +
+                                  (character ? 1u : 0u);
 
     ipc::msgpack::Writer w;
     w.map_header(4);
@@ -961,6 +1064,88 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
         w.u32_(weapon->ammo);
         w.str("automatic");
         w.boolean(weapon->automatic != 0u);
+    }
+
+    if (rigid_body) {
+        w.str("RigidBodyComponent");
+        w.map_header(6);
+        w.str("shape");
+        w.u32_(static_cast<u32>(rigid_body->shape));
+        w.str("mass");
+        w.f32_(rigid_body->mass);
+        w.str("half_extent");
+        write_vec3(w, rigid_body->half_extent);
+        w.str("friction");
+        w.f32_(rigid_body->friction);
+        w.str("restitution");
+        w.f32_(rigid_body->restitution);
+        w.str("runtime_body");
+        w.u32_(rigid_body->runtime_body);
+    }
+
+    if (vehicle) {
+        w.str("VehicleComponent");
+        w.map_header(11);
+        w.str("half_extent");
+        write_vec3(w, vehicle->half_extent);
+        w.str("mass");
+        w.f32_(vehicle->mass);
+        w.str("engine_max_torque");
+        w.f32_(vehicle->engine_max_torque);
+        w.str("drag");
+        w.f32_(vehicle->drag);
+        w.str("wheel_radius");
+        w.f32_(vehicle->wheel_radius);
+        w.str("suspension");
+        w.f32_(vehicle->suspension);
+        w.str("stiffness");
+        w.f32_(vehicle->stiffness);
+        w.str("damping");
+        w.f32_(vehicle->damping);
+        w.str("is_player");
+        w.boolean(vehicle->is_player != 0u);
+        w.str("runtime_vehicle");
+        w.u32_(vehicle->runtime_vehicle);
+        w.str("runtime_chassis");
+        w.u32_(vehicle->runtime_chassis);
+    }
+
+    if (helicopter) {
+        w.str("HelicopterComponent");
+        w.map_header(10);
+        w.str("half_extent");
+        write_vec3(w, helicopter->half_extent);
+        w.str("mass");
+        w.f32_(helicopter->mass);
+        w.str("max_thrust_n");
+        w.f32_(helicopter->max_thrust_n);
+        w.str("pitch_torque");
+        w.f32_(helicopter->pitch_torque);
+        w.str("roll_torque");
+        w.f32_(helicopter->roll_torque);
+        w.str("yaw_torque");
+        w.f32_(helicopter->yaw_torque);
+        w.str("angular_damping");
+        w.f32_(helicopter->angular_damping);
+        w.str("hover_assist");
+        w.boolean(helicopter->hover_assist != 0u);
+        w.str("is_player");
+        w.boolean(helicopter->is_player != 0u);
+        w.str("runtime_body");
+        w.u32_(helicopter->runtime_body);
+    }
+
+    if (character) {
+        w.str("CharacterControllerComponent");
+        w.map_header(4);
+        w.str("height");
+        w.f32_(character->height);
+        w.str("radius");
+        w.f32_(character->radius);
+        w.str("move_speed");
+        w.f32_(character->move_speed);
+        w.str("runtime_character");
+        w.u32_(character->runtime_character);
     }
 
     return w.buffer();

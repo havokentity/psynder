@@ -72,6 +72,7 @@ bool add_active_arcade_helicopter();
 bool add_active_arcade_rigid_body_to(Entity entity, bool make_static);
 bool add_active_arcade_vehicle_to(Entity entity);
 bool add_active_arcade_helicopter_to(Entity entity);
+bool add_active_arcade_character_controller_to(Entity entity);
 void set_active_arcade_rt_mode(bool on);
 bool active_arcade_rt_mode();
 bool bake_active_arcade_lightmaps();
@@ -1997,6 +1998,96 @@ struct PlayerApp {
             return std::nullopt;
         }
 
+        if (component == "RigidBodyComponent") {
+            const auto* rb = registry.get<scene::RigidBodyComponent>(entity);
+            if (!rb)
+                return std::nullopt;
+            if (field == "shape")
+                return std::to_string(static_cast<u32>(rb->shape));
+            if (field == "mass")
+                return f32_text(rb->mass);
+            if (field == "half_extent")
+                return vec3_text(rb->half_extent);
+            if (field == "friction")
+                return f32_text(rb->friction);
+            if (field == "restitution")
+                return f32_text(rb->restitution);
+            if (field == "runtime_body")
+                return std::to_string(rb->runtime_body);
+            return std::nullopt;
+        }
+
+        if (component == "VehicleComponent") {
+            const auto* vehicle = registry.get<scene::VehicleComponent>(entity);
+            if (!vehicle)
+                return std::nullopt;
+            if (field == "half_extent")
+                return vec3_text(vehicle->half_extent);
+            if (field == "mass")
+                return f32_text(vehicle->mass);
+            if (field == "engine_max_torque")
+                return f32_text(vehicle->engine_max_torque);
+            if (field == "drag")
+                return f32_text(vehicle->drag);
+            if (field == "wheel_radius")
+                return f32_text(vehicle->wheel_radius);
+            if (field == "suspension")
+                return f32_text(vehicle->suspension);
+            if (field == "stiffness")
+                return f32_text(vehicle->stiffness);
+            if (field == "damping")
+                return f32_text(vehicle->damping);
+            if (field == "is_player")
+                return bool_text(vehicle->is_player != 0u);
+            if (field == "runtime_vehicle")
+                return std::to_string(vehicle->runtime_vehicle);
+            if (field == "runtime_chassis")
+                return std::to_string(vehicle->runtime_chassis);
+            return std::nullopt;
+        }
+
+        if (component == "HelicopterComponent") {
+            const auto* heli = registry.get<scene::HelicopterComponent>(entity);
+            if (!heli)
+                return std::nullopt;
+            if (field == "half_extent")
+                return vec3_text(heli->half_extent);
+            if (field == "mass")
+                return f32_text(heli->mass);
+            if (field == "max_thrust_n")
+                return f32_text(heli->max_thrust_n);
+            if (field == "pitch_torque")
+                return f32_text(heli->pitch_torque);
+            if (field == "roll_torque")
+                return f32_text(heli->roll_torque);
+            if (field == "yaw_torque")
+                return f32_text(heli->yaw_torque);
+            if (field == "angular_damping")
+                return f32_text(heli->angular_damping);
+            if (field == "hover_assist")
+                return bool_text(heli->hover_assist != 0u);
+            if (field == "is_player")
+                return bool_text(heli->is_player != 0u);
+            if (field == "runtime_body")
+                return std::to_string(heli->runtime_body);
+            return std::nullopt;
+        }
+
+        if (component == "CharacterControllerComponent") {
+            const auto* character = registry.get<scene::CharacterControllerComponent>(entity);
+            if (!character)
+                return std::nullopt;
+            if (field == "height")
+                return f32_text(character->height);
+            if (field == "radius")
+                return f32_text(character->radius);
+            if (field == "move_speed")
+                return f32_text(character->move_speed);
+            if (field == "runtime_character")
+                return std::to_string(character->runtime_character);
+            return std::nullopt;
+        }
+
         return std::nullopt;
     }
 
@@ -2391,6 +2482,182 @@ struct PlayerApp {
             }
             registry.add<scene::WeaponComponent>(
                 entity, scene::sanitize_weapon_component(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        // Physics authoring components (#60a). Editable AUTHORING fields only;
+        // every runtime_* opaque physics handle is rejected here (RUNTIME-only,
+        // owned by PlayRuntime). Shape parses against scene::ColliderShape.
+        if (component == "RigidBodyComponent") {
+            const auto* rb = registry.get<scene::RigidBodyComponent>(entity);
+            if (!rb)
+                return false;
+            scene::RigidBodyComponent updated = *rb;
+            f32 f = 0.0f;
+            u32 u = 0u;
+            if (field == "shape") {
+                if (!parse_u32_value(value, u) ||
+                    u > static_cast<u32>(scene::ColliderShape::TriangleMesh))
+                    return false;
+                updated.shape = static_cast<scene::ColliderShape>(u);
+            } else if (field == "mass") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.mass = std::max(0.0f, f);  // 0 = static
+            } else if (field == "half_extent") {
+                std::array<f32, 3> v{};
+                if (!parse_f32_array(value, v))
+                    return false;
+                updated.half_extent = math::Vec3{std::max(0.001f, v[0]),
+                                                 std::max(0.001f, v[1]),
+                                                 std::max(0.001f, v[2])};
+            } else if (field == "friction") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.friction = std::clamp(f, 0.0f, 1.0f);
+            } else if (field == "restitution") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.restitution = std::clamp(f, 0.0f, 1.0f);
+            } else {
+                return false;  // runtime_body + unknown fields are not editable
+            }
+            registry.add<scene::RigidBodyComponent>(entity, updated);
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "VehicleComponent") {
+            const auto* vehicle = registry.get<scene::VehicleComponent>(entity);
+            if (!vehicle)
+                return false;
+            scene::VehicleComponent updated = *vehicle;
+            f32 f = 0.0f;
+            bool b = false;
+            if (field == "half_extent") {
+                std::array<f32, 3> v{};
+                if (!parse_f32_array(value, v))
+                    return false;
+                updated.half_extent = math::Vec3{std::max(0.001f, v[0]),
+                                                 std::max(0.001f, v[1]),
+                                                 std::max(0.001f, v[2])};
+            } else if (field == "mass") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.mass = std::max(0.001f, f);
+            } else if (field == "engine_max_torque") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.engine_max_torque = std::max(0.0f, f);
+            } else if (field == "drag") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.drag = std::max(0.0f, f);
+            } else if (field == "wheel_radius") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.wheel_radius = std::max(0.001f, f);
+            } else if (field == "suspension") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.suspension = std::max(0.0f, f);
+            } else if (field == "stiffness") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.stiffness = std::max(0.0f, f);
+            } else if (field == "damping") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.damping = std::max(0.0f, f);
+            } else if (field == "is_player") {
+                if (!parse_bool_value(value, b))
+                    return false;
+                updated.is_player = b ? 1u : 0u;
+            } else {
+                return false;  // runtime_vehicle / runtime_chassis not editable
+            }
+            registry.add<scene::VehicleComponent>(entity, updated);
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "HelicopterComponent") {
+            const auto* heli = registry.get<scene::HelicopterComponent>(entity);
+            if (!heli)
+                return false;
+            scene::HelicopterComponent updated = *heli;
+            f32 f = 0.0f;
+            bool b = false;
+            if (field == "half_extent") {
+                std::array<f32, 3> v{};
+                if (!parse_f32_array(value, v))
+                    return false;
+                updated.half_extent = math::Vec3{std::max(0.001f, v[0]),
+                                                 std::max(0.001f, v[1]),
+                                                 std::max(0.001f, v[2])};
+            } else if (field == "mass") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.mass = std::max(0.001f, f);
+            } else if (field == "max_thrust_n") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.max_thrust_n = std::max(0.0f, f);
+            } else if (field == "pitch_torque") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.pitch_torque = std::max(0.0f, f);
+            } else if (field == "roll_torque") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.roll_torque = std::max(0.0f, f);
+            } else if (field == "yaw_torque") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.yaw_torque = std::max(0.0f, f);
+            } else if (field == "angular_damping") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.angular_damping = std::max(0.0f, f);
+            } else if (field == "hover_assist") {
+                if (!parse_bool_value(value, b))
+                    return false;
+                updated.hover_assist = b ? 1u : 0u;
+            } else if (field == "is_player") {
+                if (!parse_bool_value(value, b))
+                    return false;
+                updated.is_player = b ? 1u : 0u;
+            } else {
+                return false;  // runtime_body not editable
+            }
+            registry.add<scene::HelicopterComponent>(entity, updated);
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "CharacterControllerComponent") {
+            const auto* character = registry.get<scene::CharacterControllerComponent>(entity);
+            if (!character)
+                return false;
+            scene::CharacterControllerComponent updated = *character;
+            f32 f = 0.0f;
+            if (field == "height") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.height = std::max(0.001f, f);
+            } else if (field == "radius") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.radius = std::max(0.001f, f);
+            } else if (field == "move_speed") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.move_speed = std::max(0.0f, f);
+            } else {
+                return false;  // runtime_character not editable
+            }
+            registry.add<scene::CharacterControllerComponent>(entity, updated);
             editor::publish_web_scene_hierarchy(scene);
             return true;
         }
@@ -2842,6 +3109,32 @@ struct PlayerApp {
 
     bool add_helicopter_to_selected() {
         return add_helicopter_to_entity(editor::selection::selected_scene_entity());
+    }
+
+    // Tag a specific entity as a kinematic capsule character so it simulates +
+    // accepts walk input in Play mode. Capsule sized from the renderable's local
+    // bounds, falling back to the component default.
+    bool add_character_controller_to_entity(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return false;
+        if (!entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<scene::CharacterControllerComponent>(entity) != nullptr)
+            return true;  // already a character
+        scene::CharacterControllerComponent cc{};
+        if (const auto* r = reg.get<scene::RenderableComponent>(entity)) {
+            const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
+            cc.height = std::max(0.2f, ext.y * 2.0f);
+            cc.radius = std::max(0.05f, std::max(ext.x, ext.z));
+        }
+        reg.add<scene::CharacterControllerComponent>(entity, cc);
+        return true;
+    }
+
+    bool add_character_controller_to_selected() {
+        return add_character_controller_to_entity(editor::selection::selected_scene_entity());
     }
 
     void set_rt_mode(bool on) noexcept { rt_mode_ = on; }
@@ -4160,6 +4453,10 @@ bool add_active_arcade_helicopter_to(Entity entity) {
     return g_active_arcade && g_active_arcade->add_helicopter_to_entity(entity);
 }
 
+bool add_active_arcade_character_controller_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_character_controller_to_entity(entity);
+}
+
 void set_active_arcade_rt_mode(bool on) {
     if (g_active_arcade)
         g_active_arcade->set_rt_mode(on);
@@ -4255,6 +4552,9 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
         add.component == "Vehicle" || add.component == "VehicleComponent";
     const bool is_helicopter =
         add.component == "Helicopter" || add.component == "HelicopterComponent";
+    const bool is_character =
+        add.component == "CharacterController" ||
+        add.component == "CharacterControllerComponent";
     if (is_rigid_body) {
         const bool make_static =
             add.component == "RigidBodyStatic" || add.variant == "static";
@@ -4280,6 +4580,14 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
         } else {
             text = "add Helicopter failed (entity not alive / no active scene)";
             PSY_LOG_WARN("psynder_arcade: add Helicopter failed on {}", add.entity_id);
+        }
+    } else if (is_character) {
+        ok = add_active_arcade_character_controller_to(entity);
+        if (ok) {
+            text = "added CharacterController";
+        } else {
+            text = "add CharacterController failed (entity not alive / no active scene)";
+            PSY_LOG_WARN("psynder_arcade: add CharacterController failed on {}", add.entity_id);
         }
     } else {
         text = "add component not supported: ";

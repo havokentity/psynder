@@ -75,8 +75,49 @@ export function Inspector() {
     const [add_status, set_add_status] = React.useState<InspectorEditAck | null>(null);
     const pending_edit = React.useRef<PendingEdit | null>(null);
     const fallback_timer = React.useRef<number | null>(null);
+    const ack_dismiss_timer = React.useRef<number | null>(null);
+    const add_dismiss_timer = React.useRef<number | null>(null);
 
     React.useEffect(() => subscribe_editor_scene_dirty(set_dirty), []);
+
+    // Auto-dismiss the transient edit/add toasts a couple seconds after they
+    // settle (#62b). A `pending` toast stays put until it resolves; only
+    // terminal `applied` / `error` states schedule a clear.
+    React.useEffect(() => {
+        if (ack_dismiss_timer.current !== null) {
+            window.clearTimeout(ack_dismiss_timer.current);
+            ack_dismiss_timer.current = null;
+        }
+        if (!edit_ack || edit_ack.status === 'pending') return;
+        ack_dismiss_timer.current = window.setTimeout(() => {
+            ack_dismiss_timer.current = null;
+            set_edit_ack(null);
+        }, 2500);
+        return () => {
+            if (ack_dismiss_timer.current !== null) {
+                window.clearTimeout(ack_dismiss_timer.current);
+                ack_dismiss_timer.current = null;
+            }
+        };
+    }, [edit_ack]);
+
+    React.useEffect(() => {
+        if (add_dismiss_timer.current !== null) {
+            window.clearTimeout(add_dismiss_timer.current);
+            add_dismiss_timer.current = null;
+        }
+        if (!add_status || add_status.status === 'pending') return;
+        add_dismiss_timer.current = window.setTimeout(() => {
+            add_dismiss_timer.current = null;
+            set_add_status(null);
+        }, 2500);
+        return () => {
+            if (add_dismiss_timer.current !== null) {
+                window.clearTimeout(add_dismiss_timer.current);
+                add_dismiss_timer.current = null;
+            }
+        };
+    }, [add_status]);
 
     const clear_fallback_timer = React.useCallback(() => {
         if (fallback_timer.current === null) return;
@@ -339,12 +380,17 @@ export function Inspector() {
                 <span className={`psy-dirty-pill ${dirty ? 'is-dirty' : ''}`}>
                     {dirty ? 'modified' : 'saved'}
                 </span>
-                {edit_ack && (
-                    <span className={`psy-edit-ack is-${edit_ack.status}`} aria-live="polite">
-                        {edit_ack.text}
-                    </span>
-                )}
             </header>
+
+            {edit_ack && (
+                <div
+                    className={`psy-edit-toast is-${edit_ack.status}`}
+                    role="status"
+                    aria-live="polite"
+                >
+                    {edit_ack.text}
+                </div>
+            )}
 
             {!selection && (
                 <div className="psy-empty">
@@ -406,11 +452,38 @@ export function Inspector() {
                             >
                                 RigidBody (static)
                             </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'VehicleComponent' in selection.components}
+                                onClick={() => add_component('Vehicle')}
+                                title="Add a drivable Vehicle so this object accepts WASD in Play mode"
+                            >
+                                Vehicle
+                            </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'HelicopterComponent' in selection.components}
+                                onClick={() => add_component('Helicopter')}
+                                title="Add a flyable Helicopter so this object accepts flight input in Play mode"
+                            >
+                                Helicopter
+                            </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'CharacterControllerComponent' in selection.components}
+                                onClick={() => add_component('CharacterController')}
+                                title="Add a kinematic CharacterController capsule for walk-around play"
+                            >
+                                CharacterController
+                            </button>
                         </div>
                         {add_status && (
-                            <span className={`psy-edit-ack is-${add_status.status}`} aria-live="polite">
+                            <div className={`psy-edit-toast is-${add_status.status}`} role="status" aria-live="polite">
                                 {add_status.text}
-                            </span>
+                            </div>
                         )}
                     </section>
                 </div>

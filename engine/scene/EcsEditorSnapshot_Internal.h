@@ -26,6 +26,10 @@ enum class EcsEditorWellKnownComponentKind : u8 {
     Camera,
     Light,
     Renderable,
+    RigidBody,
+    Vehicle,
+    Helicopter,
+    CharacterController,
 };
 
 enum class EcsEditorEntityKind : u8 {
