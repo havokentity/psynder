@@ -2770,19 +2770,19 @@ struct PlayerApp {
         if (!entity.valid() || !scene->registry().alive(entity))
             return false;
         auto& reg = scene->registry();
-        if (auto* existing = reg.get<editor::play::RigidBodyComponent>(entity)) {
+        if (auto* existing = reg.get<scene::RigidBodyComponent>(entity)) {
             existing->mass = make_static ? 0.0f : 1.0f;  // retag in place
             return true;
         }
-        editor::play::RigidBodyComponent rb{};
-        rb.shape = physics::Shape::Box;
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
         rb.mass = make_static ? 0.0f : 1.0f;  // 0 = static floor/wall
         if (const auto* r = reg.get<scene::RenderableComponent>(entity)) {
             const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
             rb.half_extent = math::Vec3{std::max(0.05f, ext.x), std::max(0.05f, ext.y),
                                         std::max(0.05f, ext.z)};
         }
-        reg.add<editor::play::RigidBodyComponent>(entity, rb);
+        reg.add<scene::RigidBodyComponent>(entity, rb);
         return true;
     }
 
@@ -2800,16 +2800,16 @@ struct PlayerApp {
         if (!entity.valid() || !scene->registry().alive(entity))
             return false;
         auto& reg = scene->registry();
-        if (reg.get<editor::play::VehicleComponent>(entity) != nullptr)
+        if (reg.get<scene::VehicleComponent>(entity) != nullptr)
             return true;  // already a vehicle
-        editor::play::VehicleComponent vc{};
-        vc.is_player = true;
+        scene::VehicleComponent vc{};
+        vc.is_player = 1u;
         if (const auto* r = reg.get<scene::RenderableComponent>(entity)) {
             const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
             vc.half_extent = math::Vec3{std::max(0.1f, ext.x), std::max(0.1f, ext.y),
                                         std::max(0.1f, ext.z)};
         }
-        reg.add<editor::play::VehicleComponent>(entity, vc);
+        reg.add<scene::VehicleComponent>(entity, vc);
         return true;
     }
 
@@ -2827,16 +2827,16 @@ struct PlayerApp {
         if (!entity.valid() || !scene->registry().alive(entity))
             return false;
         auto& reg = scene->registry();
-        if (reg.get<editor::play::HelicopterComponent>(entity) != nullptr)
+        if (reg.get<scene::HelicopterComponent>(entity) != nullptr)
             return true;  // already a helicopter
-        editor::play::HelicopterComponent hc{};
-        hc.is_player = true;
+        scene::HelicopterComponent hc{};
+        hc.is_player = 1u;
         if (const auto* r = reg.get<scene::RenderableComponent>(entity)) {
             const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
             hc.half_extent = math::Vec3{std::max(0.1f, ext.x), std::max(0.1f, ext.y),
                                         std::max(0.1f, ext.z)};
         }
-        reg.add<editor::play::HelicopterComponent>(entity, hc);
+        reg.add<scene::HelicopterComponent>(entity, hc);
         return true;
     }
 

@@ -4,10 +4,12 @@
 //
 // PlayRuntime is the engine-side bridge the editor host drives when the user
 // enters / leaves Play mode. It is DOTS-correct: ALL per-entity sim linkage
-// lives in pooled ECS components (RigidBodyComponent::body,
-// CharacterControllerComponent::character) processed column-at-a-time via
-// registry().query<reads,writes>(). There is NO Entity->BodyId
-// std::unordered_map side-table.
+// lives in pooled scene-level ECS components (scene::RigidBodyComponent::
+// runtime_body, scene::CharacterControllerComponent::runtime_character, ...)
+// processed column-at-a-time via registry().query<reads,writes>(). The handles
+// are stored as opaque u32 (the physics handle's .raw); this TU is the single
+// place that maps them to/from physics:: types at the physics boundary. There
+// is NO Entity->BodyId std::unordered_map side-table.
 //
 // The only PlayRuntime-owned heap is a small set of pooled std::vectors:
 //   * one per-begin scan list per simulated kind -- the entities carrying a

@@ -8,6 +8,7 @@
 #include "math/Math.h"
 #include "render/Geometry.h"
 #include "render/Material.h"
+#include "scene/PhysicsComponents.h"
 #include "scene/SceneEcs.h"
 
 #include <functional>
@@ -21,7 +22,10 @@
 namespace psynder::scene {
 
 inline constexpr u32 kPsySceneMagic = 0x4E435350u;  // "PSCN", little endian.
-inline constexpr u16 kPsySceneVersion = 1u;
+// v2 adds the PhysicsBodies (SPHY) chunk (authoring RigidBody / Vehicle /
+// Helicopter / Character components). Older v1 files have no SPHY chunk and load
+// unchanged — parse_scene_file accepts any version <= kPsySceneVersion.
+inline constexpr u16 kPsySceneVersion = 2u;
 inline constexpr u32 kPsySceneAlignment = 64u;
 
 enum class SceneFileChunkType : u32 {
@@ -39,6 +43,7 @@ enum class SceneFileChunkType : u32 {
     BehaviorTranslateOps = 0x4C544253u,  // SBTL
     AuthoringNodes = 0x54554153u,   // SAUT
     GameplayEntities = 0x504D4753u,  // SGMP
+    PhysicsBodies = 0x59485053u,    // SPHY
 };
 
 struct SceneFileHeader {
@@ -182,6 +187,61 @@ struct SceneFileGameplayEntity {
     WeaponComponent weapon{};
 };
 
+// Authoring physics components persisted with the scene (DESIGN.md SS10.1).
+// Keyed by authoring_node_index (the SAUT entry it attaches to), mirroring
+// SceneFileGameplayEntity. component_mask selects which of the four authoring
+// payloads below are present. Only AUTHORING fields are stored — the runtime_*
+// handle fields on the live components stay 0 on load (never serialized).
+struct SceneFilePhysicsRigidBody {
+    ColliderShape shape = ColliderShape::Box;
+    u8 _pad[3] = {};
+    f32 mass = 1.0f;
+    math::Vec3 half_extent{0.5f, 0.5f, 0.5f};
+    f32 friction = 0.5f;
+    f32 restitution = 0.0f;
+};
+
+struct SceneFilePhysicsVehicle {
+    math::Vec3 half_extent{1.0f, 0.4f, 2.0f};
+    f32 mass = 1200.0f;
+    f32 engine_max_torque = 400.0f;
+    f32 drag = 0.30f;
+    f32 wheel_radius = 0.34f;
+    f32 suspension = 0.35f;
+    f32 stiffness = 35000.0f;
+    f32 damping = 4500.0f;
+    u8 is_player = 1u;
+    u8 _pad[3] = {};
+};
+
+struct SceneFilePhysicsHelicopter {
+    math::Vec3 half_extent{1.2f, 0.6f, 2.0f};
+    f32 mass = 900.0f;
+    f32 max_thrust_n = 14000.0f;
+    f32 pitch_torque = 8000.0f;
+    f32 roll_torque = 8000.0f;
+    f32 yaw_torque = 4000.0f;
+    f32 angular_damping = 2.0f;
+    u8 hover_assist = 1u;
+    u8 is_player = 1u;
+    u8 _pad[2] = {};
+};
+
+struct SceneFilePhysicsCharacter {
+    f32 height = 1.8f;
+    f32 radius = 0.35f;
+    f32 move_speed = 4.5f;
+};
+
+struct SceneFilePhysicsBody {
+    u32 authoring_node_index = 0u;
+    u32 component_mask = 0u;
+    SceneFilePhysicsRigidBody rigid_body{};
+    SceneFilePhysicsVehicle vehicle{};
+    SceneFilePhysicsHelicopter helicopter{};
+    SceneFilePhysicsCharacter character{};
+};
+
 struct SceneFileView {
     const SceneFileHeader* header = nullptr;
     std::span<const char> strings;
@@ -198,6 +258,7 @@ struct SceneFileView {
     std::span<const SceneFileBehaviorTranslateOp> behavior_translate_ops;
     std::span<const SceneFileAuthoringNode> authoring_nodes;
     std::span<const SceneFileGameplayEntity> gameplay_entities;
+    std::span<const SceneFilePhysicsBody> physics_bodies;
 };
 
 struct SceneFileLoaded {
@@ -265,6 +326,7 @@ struct SceneFileSaveStats {
     u32 approximate_world_transforms = 0u;
     u32 authoring_nodes = 0u;
     u32 gameplay_entities = 0u;
+    u32 physics_bodies = 0u;
 };
 
 [[nodiscard]] bool parse_scene_file(std::span<const u8> bytes,
@@ -436,5 +498,10 @@ static_assert(sizeof(SceneFileMaterial) == 64u);
 static_assert(sizeof(SceneFileBehaviorSpinOp) == 64u);
 static_assert(sizeof(SceneFileBehaviorTranslateOp) == 64u);
 static_assert(sizeof(SceneFileGameplayEntity) == 76u);
+static_assert(sizeof(SceneFilePhysicsRigidBody) == 28u);
+static_assert(sizeof(SceneFilePhysicsVehicle) == 44u);
+static_assert(sizeof(SceneFilePhysicsHelicopter) == 40u);
+static_assert(sizeof(SceneFilePhysicsCharacter) == 12u);
+static_assert(sizeof(SceneFilePhysicsBody) == 132u);
 
 }  // namespace psynder::scene

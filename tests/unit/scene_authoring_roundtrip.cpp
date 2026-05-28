@@ -512,3 +512,136 @@ TEST_CASE("scene file roundtrips FPS gameplay authoring components",
     REQUIRE(loaded_weapon->ammo == 42u);
     REQUIRE(loaded_weapon->automatic == 0u);
 }
+
+TEST_CASE("scene file roundtrips authoring physics components",
+          "[scene][scene_file][authoring][physics]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    scene::Scene authored{registry};
+
+    // A rigid body (non-Box shape + non-default mass/half-extent to prove the
+    // shape enum + all authoring fields survive).
+    scene::LocalTransform box_transform{};
+    box_transform.translation = {3.0f, 1.0f, -2.0f};
+    const Entity box = authored.create_entity(box_transform);
+    REQUIRE(box.valid());
+    REQUIRE(authored.set_entity_name(box, "Crate"));
+    scene::RigidBodyComponent rb{};
+    rb.shape = scene::ColliderShape::Sphere;
+    rb.mass = 7.5f;
+    rb.half_extent = {1.25f, 0.5f, 2.0f};
+    rb.friction = 0.42f;
+    rb.restitution = 0.31f;
+    rb.runtime_body = 12345u;  // RUNTIME junk — must NOT be persisted.
+    registry.add<scene::RigidBodyComponent>(box, rb);
+
+    // A player vehicle with non-default authoring params.
+    const Entity car = authored.create_entity(translate({-4.0f, 0.0f, 0.0f}));
+    REQUIRE(car.valid());
+    REQUIRE(authored.set_entity_name(car, "Car"));
+    scene::VehicleComponent vc{};
+    vc.half_extent = {1.1f, 0.45f, 2.2f};
+    vc.mass = 1450.0f;
+    vc.engine_max_torque = 520.0f;
+    vc.drag = 0.27f;
+    vc.wheel_radius = 0.36f;
+    vc.suspension = 0.33f;
+    vc.stiffness = 36000.0f;
+    vc.damping = 4700.0f;
+    vc.is_player = 1u;
+    vc.runtime_vehicle = 999u;  // RUNTIME junk — must NOT be persisted.
+    vc.runtime_chassis = 888u;  // RUNTIME junk — must NOT be persisted.
+    registry.add<scene::VehicleComponent>(car, vc);
+
+    // A player helicopter with non-default authoring params.
+    const Entity heli = authored.create_entity(translate({0.0f, 6.0f, 0.0f}));
+    REQUIRE(heli.valid());
+    REQUIRE(authored.set_entity_name(heli, "Heli"));
+    scene::HelicopterComponent hc{};
+    hc.half_extent = {1.3f, 0.65f, 2.1f};
+    hc.mass = 950.0f;
+    hc.max_thrust_n = 15000.0f;
+    hc.pitch_torque = 8200.0f;
+    hc.roll_torque = 8100.0f;
+    hc.yaw_torque = 4100.0f;
+    hc.angular_damping = 2.5f;
+    hc.hover_assist = 1u;
+    hc.is_player = 1u;
+    hc.runtime_body = 777u;  // RUNTIME junk — must NOT be persisted.
+    registry.add<scene::HelicopterComponent>(heli, hc);
+
+    scene::detail::AlignedVector<u8> bytes;
+    scene::SceneFileSaveStats stats{};
+    std::string error;
+    REQUIRE(scene::save_scene_file(authored, {}, bytes, &stats, &error));
+    REQUIRE(error.empty());
+    REQUIRE(stats.authoring_nodes == 3u);
+    REQUIRE(stats.physics_bodies == 3u);
+
+    scene::SceneFileView view{};
+    REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()}, view, &error));
+    REQUIRE(error.empty());
+    REQUIRE(view.header->version == scene::kPsySceneVersion);
+    REQUIRE(view.authoring_nodes.size() == 3u);
+    REQUIRE(view.physics_bodies.size() == 3u);
+
+    registry.clear();
+    registry.set_structural_deferred(false);
+    scene::Scene loaded{registry};
+    std::array<scene::SceneMeshBinding, 0> mesh_bindings{};
+    std::array<Entity, 0> out_mesh_entities{};
+    const scene::SceneFileInstantiateResult result =
+        scene::instantiate_scene_file(loaded, view, mesh_bindings, out_mesh_entities);
+    REQUIRE(result.mesh_instances == 0u);
+
+    const Entity loaded_box = find_entity_named(loaded, "Crate");
+    const Entity loaded_car = find_entity_named(loaded, "Car");
+    const Entity loaded_heli = find_entity_named(loaded, "Heli");
+    REQUIRE(loaded_box.valid());
+    REQUIRE(loaded_car.valid());
+    REQUIRE(loaded_heli.valid());
+
+    const auto* loaded_rb = registry.get<scene::RigidBodyComponent>(loaded_box);
+    REQUIRE(loaded_rb != nullptr);
+    REQUIRE(loaded_rb->shape == scene::ColliderShape::Sphere);
+    REQUIRE_THAT(static_cast<double>(loaded_rb->mass),
+                 Catch::Matchers::WithinAbs(7.5, 0.0001));
+    REQUIRE_THAT(static_cast<double>(loaded_rb->half_extent.x),
+                 Catch::Matchers::WithinAbs(1.25, 0.0001));
+    REQUIRE_THAT(static_cast<double>(loaded_rb->half_extent.y),
+                 Catch::Matchers::WithinAbs(0.5, 0.0001));
+    REQUIRE_THAT(static_cast<double>(loaded_rb->half_extent.z),
+                 Catch::Matchers::WithinAbs(2.0, 0.0001));
+    REQUIRE_THAT(static_cast<double>(loaded_rb->friction),
+                 Catch::Matchers::WithinAbs(0.42, 0.0001));
+    REQUIRE_THAT(static_cast<double>(loaded_rb->restitution),
+                 Catch::Matchers::WithinAbs(0.31, 0.0001));
+    // Runtime handle is NOT serialized: it must be 0 on load.
+    REQUIRE(loaded_rb->runtime_body == 0u);
+
+    const auto* loaded_vc = registry.get<scene::VehicleComponent>(loaded_car);
+    REQUIRE(loaded_vc != nullptr);
+    REQUIRE_THAT(static_cast<double>(loaded_vc->mass),
+                 Catch::Matchers::WithinAbs(1450.0, 0.01));
+    REQUIRE_THAT(static_cast<double>(loaded_vc->engine_max_torque),
+                 Catch::Matchers::WithinAbs(520.0, 0.01));
+    REQUIRE_THAT(static_cast<double>(loaded_vc->wheel_radius),
+                 Catch::Matchers::WithinAbs(0.36, 0.0001));
+    REQUIRE(loaded_vc->is_player == 1u);
+    REQUIRE(loaded_vc->runtime_vehicle == 0u);
+    REQUIRE(loaded_vc->runtime_chassis == 0u);
+
+    const auto* loaded_hc = registry.get<scene::HelicopterComponent>(loaded_heli);
+    REQUIRE(loaded_hc != nullptr);
+    REQUIRE_THAT(static_cast<double>(loaded_hc->mass),
+                 Catch::Matchers::WithinAbs(950.0, 0.01));
+    REQUIRE_THAT(static_cast<double>(loaded_hc->max_thrust_n),
+                 Catch::Matchers::WithinAbs(15000.0, 0.01));
+    REQUIRE_THAT(static_cast<double>(loaded_hc->yaw_torque),
+                 Catch::Matchers::WithinAbs(4100.0, 0.01));
+    REQUIRE(loaded_hc->hover_assist == 1u);
+    REQUIRE(loaded_hc->is_player == 1u);
+    REQUIRE(loaded_hc->runtime_body == 0u);
+}

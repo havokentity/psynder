@@ -140,6 +140,7 @@ struct SceneFileSaveScratch {
     std::vector<SceneFileBehaviorTranslateOp> behavior_translate_ops;
     std::vector<SceneFileAuthoringNode> authoring_nodes;
     std::vector<SceneFileGameplayEntity> gameplay_entities;
+    std::vector<SceneFilePhysicsBody> physics_bodies;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
     std::unordered_map<u32, u32> material_slots;
@@ -150,6 +151,12 @@ constexpr u32 kSceneFileGameplayTagMask = 1u << 0u;
 constexpr u32 kSceneFilePlayerControllerMask = 1u << 1u;
 constexpr u32 kSceneFileHealthMask = 1u << 2u;
 constexpr u32 kSceneFileWeaponMask = 1u << 3u;
+
+// SceneFilePhysicsBody::component_mask selectors (which authoring payload is set).
+constexpr u32 kSceneFileRigidBodyMask = 1u << 0u;
+constexpr u32 kSceneFileVehicleMask = 1u << 1u;
+constexpr u32 kSceneFileHelicopterMask = 1u << 2u;
+constexpr u32 kSceneFileCharacterMask = 1u << 3u;
 
 [[nodiscard]] bool fail_save(std::string* error, std::string_view message) {
     if (error)
@@ -331,6 +338,55 @@ constexpr u32 kSceneFileWeaponMask = 1u << 3u;
             ++stats.gameplay_entities;
         }
 
+        // Authoring physics components (SS10.1). Persist ONLY the authoring
+        // fields; the live components' runtime_* handles are RUNTIME state and
+        // are never serialized (they stay 0 on load). Keyed by authoring_index,
+        // exactly like the gameplay record above.
+        SceneFilePhysicsBody physics{};
+        physics.authoring_node_index = authoring_index;
+        if (const auto* rb = registry.get<RigidBodyComponent>(entity)) {
+            physics.component_mask |= kSceneFileRigidBodyMask;
+            physics.rigid_body.shape = rb->shape;
+            physics.rigid_body.mass = rb->mass;
+            physics.rigid_body.half_extent = rb->half_extent;
+            physics.rigid_body.friction = rb->friction;
+            physics.rigid_body.restitution = rb->restitution;
+        }
+        if (const auto* vc = registry.get<VehicleComponent>(entity)) {
+            physics.component_mask |= kSceneFileVehicleMask;
+            physics.vehicle.half_extent = vc->half_extent;
+            physics.vehicle.mass = vc->mass;
+            physics.vehicle.engine_max_torque = vc->engine_max_torque;
+            physics.vehicle.drag = vc->drag;
+            physics.vehicle.wheel_radius = vc->wheel_radius;
+            physics.vehicle.suspension = vc->suspension;
+            physics.vehicle.stiffness = vc->stiffness;
+            physics.vehicle.damping = vc->damping;
+            physics.vehicle.is_player = vc->is_player;
+        }
+        if (const auto* hc = registry.get<HelicopterComponent>(entity)) {
+            physics.component_mask |= kSceneFileHelicopterMask;
+            physics.helicopter.half_extent = hc->half_extent;
+            physics.helicopter.mass = hc->mass;
+            physics.helicopter.max_thrust_n = hc->max_thrust_n;
+            physics.helicopter.pitch_torque = hc->pitch_torque;
+            physics.helicopter.roll_torque = hc->roll_torque;
+            physics.helicopter.yaw_torque = hc->yaw_torque;
+            physics.helicopter.angular_damping = hc->angular_damping;
+            physics.helicopter.hover_assist = hc->hover_assist;
+            physics.helicopter.is_player = hc->is_player;
+        }
+        if (const auto* cc = registry.get<CharacterControllerComponent>(entity)) {
+            physics.component_mask |= kSceneFileCharacterMask;
+            physics.character.height = cc->height;
+            physics.character.radius = cc->radius;
+            physics.character.move_speed = cc->move_speed;
+        }
+        if (physics.component_mask != 0u) {
+            saved.physics_bodies.push_back(physics);
+            ++stats.physics_bodies;
+        }
+
         authoring_index_by_node[node_component->node.raw] = authoring_index;
         ++stats.authoring_nodes;
     }
@@ -496,7 +552,7 @@ template <class T>
 [[nodiscard]] bool write_save_blob(const SceneFileSaveScratch& scene,
                                    detail::AlignedVector<u8>& out,
                                    std::string* error) {
-    constexpr usize kSceneFileChunkCount = 14u;
+    constexpr usize kSceneFileChunkCount = 15u;
     out.clear();
     out.resize(sizeof(SceneFileHeader) + kSceneFileChunkCount * sizeof(SceneFileChunk));
 
@@ -594,6 +650,13 @@ template <class T>
                            std::span<const SceneFileGameplayEntity>{scene.gameplay_entities.data(),
                                                                     scene.gameplay_entities.size()},
                            sizeof(SceneFileGameplayEntity),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::PhysicsBodies,
+                           std::span<const SceneFilePhysicsBody>{scene.physics_bodies.data(),
+                                                                 scene.physics_bodies.size()},
+                           sizeof(SceneFilePhysicsBody),
                            error)) {
         out.clear();
         return false;
@@ -626,7 +689,10 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
             *error = "psyscene: bad magic";
         return false;
     }
-    if (header->version != kPsySceneVersion) {
+    // Backward-compat load: accept any version up to the current one. A v1 file
+    // simply has no PhysicsBodies (SPHY) chunk; load_span treats a missing chunk
+    // as empty, so it loads unchanged.
+    if (header->version == 0u || header->version > kPsySceneVersion) {
         if (error)
             *error = "psyscene: unsupported version";
         return false;
@@ -722,7 +788,11 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
         !load_span(SceneFileChunkType::GameplayEntities,
                    sizeof(SceneFileGameplayEntity),
                    out.gameplay_entities,
-                   "gameplay_entities")) {
+                   "gameplay_entities") ||
+        !load_span(SceneFileChunkType::PhysicsBodies,
+                   sizeof(SceneFilePhysicsBody),
+                   out.physics_bodies,
+                   "physics_bodies")) {
         return false;
     }
 
@@ -858,6 +928,60 @@ void attach_saved_gameplay_components(Scene& scene,
     }
 }
 
+// Recreate the authoring physics components on a loaded entity from a saved
+// SPHY record. Mirrors attach_saved_gameplay_components. Only authoring fields
+// are restored; runtime_* handle fields stay at their POD default (0) until the
+// next Play session fills them.
+void attach_saved_physics_components(Scene& scene,
+                                     Entity entity,
+                                     const SceneFilePhysicsBody& saved) {
+    if (!entity.valid())
+        return;
+    EcsRegistry& registry = scene.registry();
+    if ((saved.component_mask & kSceneFileRigidBodyMask) != 0u) {
+        RigidBodyComponent rb{};
+        rb.shape = saved.rigid_body.shape;
+        rb.mass = saved.rigid_body.mass;
+        rb.half_extent = saved.rigid_body.half_extent;
+        rb.friction = saved.rigid_body.friction;
+        rb.restitution = saved.rigid_body.restitution;
+        registry.add<RigidBodyComponent>(entity, rb);
+    }
+    if ((saved.component_mask & kSceneFileVehicleMask) != 0u) {
+        VehicleComponent vc{};
+        vc.half_extent = saved.vehicle.half_extent;
+        vc.mass = saved.vehicle.mass;
+        vc.engine_max_torque = saved.vehicle.engine_max_torque;
+        vc.drag = saved.vehicle.drag;
+        vc.wheel_radius = saved.vehicle.wheel_radius;
+        vc.suspension = saved.vehicle.suspension;
+        vc.stiffness = saved.vehicle.stiffness;
+        vc.damping = saved.vehicle.damping;
+        vc.is_player = saved.vehicle.is_player;
+        registry.add<VehicleComponent>(entity, vc);
+    }
+    if ((saved.component_mask & kSceneFileHelicopterMask) != 0u) {
+        HelicopterComponent hc{};
+        hc.half_extent = saved.helicopter.half_extent;
+        hc.mass = saved.helicopter.mass;
+        hc.max_thrust_n = saved.helicopter.max_thrust_n;
+        hc.pitch_torque = saved.helicopter.pitch_torque;
+        hc.roll_torque = saved.helicopter.roll_torque;
+        hc.yaw_torque = saved.helicopter.yaw_torque;
+        hc.angular_damping = saved.helicopter.angular_damping;
+        hc.hover_assist = saved.helicopter.hover_assist;
+        hc.is_player = saved.helicopter.is_player;
+        registry.add<HelicopterComponent>(entity, hc);
+    }
+    if ((saved.component_mask & kSceneFileCharacterMask) != 0u) {
+        CharacterControllerComponent cc{};
+        cc.height = saved.character.height;
+        cc.radius = saved.character.radius;
+        cc.move_speed = saved.character.move_speed;
+        registry.add<CharacterControllerComponent>(entity, cc);
+    }
+}
+
 [[nodiscard]] SceneFileInstantiateResult instantiate_authoring_scene_file(
     Scene& scene,
     const SceneFileView& scene_file,
@@ -979,6 +1103,12 @@ void attach_saved_gameplay_components(Scene& scene,
         if (gameplay.authoring_node_index >= entities.size())
             continue;
         attach_saved_gameplay_components(scene, entities[gameplay.authoring_node_index], gameplay);
+    }
+
+    for (const SceneFilePhysicsBody& physics : scene_file.physics_bodies) {
+        if (physics.authoring_node_index >= entities.size())
+            continue;
+        attach_saved_physics_components(scene, entities[physics.authoring_node_index], physics);
     }
 
     return result;

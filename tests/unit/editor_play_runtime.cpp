@@ -59,11 +59,11 @@ TEST_CASE("PlayRuntime drops dynamic boxes onto a static ground and restores on 
     // Static ground: a wide, thin box at y = 0. mass 0 => static.
     const Entity ground = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
     {
-        editor::play::RigidBodyComponent rb{};
-        rb.shape = physics::Shape::Box;
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
         rb.mass = 0.0f;
         rb.half_extent = math::Vec3{20.0f, 0.5f, 20.0f};
-        registry.add<editor::play::RigidBodyComponent>(ground, rb);
+        registry.add<scene::RigidBodyComponent>(ground, rb);
     }
 
     // A few dynamic boxes stacked above the ground (mass > 0).
@@ -75,12 +75,12 @@ TEST_CASE("PlayRuntime drops dynamic boxes onto a static ground and restores on 
     for (usize i = 0; i < kBoxes; ++i) {
         const f32 y = 5.0f + static_cast<f32>(i) * 2.0f;
         const Entity box = scene.create_entity(at({0.0f, y, 0.0f}));
-        editor::play::RigidBodyComponent rb{};
-        rb.shape = physics::Shape::Box;
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
         rb.mass = 1.0f;
         rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};
         rb.friction = 0.6f;
-        registry.add<editor::play::RigidBodyComponent>(box, rb);
+        registry.add<scene::RigidBodyComponent>(box, rb);
         boxes.push_back(box);
         authored_y.push_back(y);
     }
@@ -93,7 +93,7 @@ TEST_CASE("PlayRuntime drops dynamic boxes onto a static ground and restores on 
 
     // Each box now has a live body handle written into its component.
     for (const Entity box : boxes)
-        REQUIRE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+        REQUIRE(registry.get<scene::RigidBodyComponent>(box)->runtime_body != 0u);
 
     // Simulate a couple seconds of fixed steps so everything settles.
     for (int step = 0; step < 600; ++step)
@@ -124,9 +124,9 @@ TEST_CASE("PlayRuntime drops dynamic boxes onto a static ground and restores on 
     REQUIRE(entity_y(scene, ground) == Approx(0.0f).margin(1e-4f));
     for (usize i = 0; i < kBoxes; ++i) {
         REQUIRE(entity_y(scene, boxes[i]) == Approx(authored_y[i]).margin(1e-4f));
-        REQUIRE_FALSE(registry.get<editor::play::RigidBodyComponent>(boxes[i])->body.valid());
+        REQUIRE_FALSE(registry.get<scene::RigidBodyComponent>(boxes[i])->runtime_body != 0u);
     }
-    REQUIRE_FALSE(registry.get<editor::play::RigidBodyComponent>(ground)->body.valid());
+    REQUIRE_FALSE(registry.get<scene::RigidBodyComponent>(ground)->runtime_body != 0u);
 }
 
 TEST_CASE("PlayRuntime syncs simulated poses into the SceneGraph (renderer source)",
@@ -141,20 +141,20 @@ TEST_CASE("PlayRuntime syncs simulated poses into the SceneGraph (renderer sourc
 
     const Entity ground = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
     {
-        editor::play::RigidBodyComponent rb{};
-        rb.shape = physics::Shape::Box;
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
         rb.mass = 0.0f;
         rb.half_extent = math::Vec3{20.0f, 0.5f, 20.0f};
-        registry.add<editor::play::RigidBodyComponent>(ground, rb);
+        registry.add<scene::RigidBodyComponent>(ground, rb);
     }
     const f32 authored_y = 6.0f;
     const Entity box = scene.create_entity(at({0.0f, authored_y, 0.0f}));
     {
-        editor::play::RigidBodyComponent rb{};
-        rb.shape = physics::Shape::Box;
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
         rb.mass = 1.0f;
         rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};
-        registry.add<editor::play::RigidBodyComponent>(box, rb);
+        registry.add<scene::RigidBodyComponent>(box, rb);
     }
 
     editor::play::PlayRuntime runtime;
@@ -188,11 +188,11 @@ TEST_CASE("PlayRuntime: collider honors entity scale + re-simulates on replay",
     // scale (3, 0.5, 3) -> world collider half-extent (1.5, 0.25, 1.5).
     const Entity floor = scene.create_entity(scaled_at({0.0f, 0.0f, 0.0f}, {3.0f, 0.5f, 3.0f}));
     {
-        editor::play::RigidBodyComponent rb{};
-        rb.shape = physics::Shape::Box;
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
         rb.mass = 0.0f;
         rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};  // mesh unit-cube bounds
-        registry.add<editor::play::RigidBodyComponent>(floor, rb);
+        registry.add<scene::RigidBodyComponent>(floor, rb);
     }
     // Dynamic box dropped OFF-CENTER (x = 1.2): inside the scaled 1.5 half-width
     // floor, but OUTSIDE the buggy unscaled 0.5 cube. With the scale fix it
@@ -200,11 +200,11 @@ TEST_CASE("PlayRuntime: collider honors entity scale + re-simulates on replay",
     const f32 drop_y = 3.0f;
     const Entity box = scene.create_entity(at({1.2f, drop_y, 0.0f}));
     {
-        editor::play::RigidBodyComponent rb{};
-        rb.shape = physics::Shape::Box;
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
         rb.mass = 1.0f;
         rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};
-        registry.add<editor::play::RigidBodyComponent>(box, rb);
+        registry.add<scene::RigidBodyComponent>(box, rb);
     }
 
     editor::play::PlayRuntime runtime;
@@ -222,7 +222,7 @@ TEST_CASE("PlayRuntime: collider honors entity scale + re-simulates on replay",
 
     // Replay WITHOUT re-adding the component: it must simulate again.
     runtime.begin(scene);
-    REQUIRE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+    REQUIRE(registry.get<scene::RigidBodyComponent>(box)->runtime_body != 0u);
     for (int s = 0; s < 480; ++s)
         runtime.tick(scene, 1.0f / 120.0f);
     const f32 y2 = entity_y(scene, box);
@@ -241,24 +241,24 @@ TEST_CASE("PlayRuntime drives a kinematic character horizontally", "[play][edito
     // A static floor so the capsule has something to stand on.
     const Entity floor = scene.create_entity(at({0.0f, -0.5f, 0.0f}));
     {
-        editor::play::RigidBodyComponent rb{};
+        scene::RigidBodyComponent rb{};
         rb.mass = 0.0f;
         rb.half_extent = math::Vec3{20.0f, 0.5f, 20.0f};
-        registry.add<editor::play::RigidBodyComponent>(floor, rb);
+        registry.add<scene::RigidBodyComponent>(floor, rb);
     }
 
     const Entity actor = scene.create_entity(at({0.0f, 1.0f, 0.0f}));
     {
-        editor::play::CharacterControllerComponent cc{};
+        scene::CharacterControllerComponent cc{};
         cc.height = 1.8f;
         cc.radius = 0.35f;
         cc.move_speed = 4.0f;
-        registry.add<editor::play::CharacterControllerComponent>(actor, cc);
+        registry.add<scene::CharacterControllerComponent>(actor, cc);
     }
 
     editor::play::PlayRuntime runtime;
     runtime.begin(scene);
-    REQUIRE(registry.get<editor::play::CharacterControllerComponent>(actor)->character.valid());
+    REQUIRE(registry.get<scene::CharacterControllerComponent>(actor)->runtime_character != 0u);
 
     const f32 start_x = scene.transform(actor).translation.x;
 
@@ -276,7 +276,7 @@ TEST_CASE("PlayRuntime drives a kinematic character horizontally", "[play][edito
     REQUIRE(end_x == Approx(runtime.character_position(scene, actor).x).margin(1e-4f));
 
     runtime.end(scene);
-    REQUIRE_FALSE(registry.get<editor::play::CharacterControllerComponent>(actor)->character.valid());
+    REQUIRE_FALSE(registry.get<scene::CharacterControllerComponent>(actor)->runtime_character != 0u);
     // Authored transform restored.
     REQUIRE(scene.transform(actor).translation.x == Approx(start_x).margin(1e-4f));
 }
@@ -292,18 +292,18 @@ TEST_CASE("PlayRuntime drives a player vehicle forward and restores on stop",
     const math::Vec3 authored_pos{0.0f, 1.0f, 0.0f};
     const Entity car = scene.create_entity(at(authored_pos));
     {
-        editor::play::VehicleComponent vc{};
+        scene::VehicleComponent vc{};
         vc.is_player = true;
-        registry.add<editor::play::VehicleComponent>(car, vc);
+        registry.add<scene::VehicleComponent>(car, vc);
     }
 
     editor::play::PlayRuntime runtime;
     runtime.begin(scene);
     REQUIRE(runtime.playing());
 
-    auto* comp = registry.get<editor::play::VehicleComponent>(car);
-    REQUIRE(comp->vehicle.valid());
-    REQUIRE(comp->chassis.valid());
+    auto* comp = registry.get<scene::VehicleComponent>(car);
+    REQUIRE(comp->runtime_vehicle != 0u);
+    REQUIRE(comp->runtime_chassis != 0u);
 
     const math::Vec3 start = scene.transform(car).translation;
     // Forward is -Z in the authored (identity) frame.
@@ -326,8 +326,8 @@ TEST_CASE("PlayRuntime drives a player vehicle forward and restores on stop",
     runtime.end(scene);
     REQUIRE_FALSE(runtime.playing());
     // Handles cleared and authored transform restored.
-    REQUIRE_FALSE(comp->vehicle.valid());
-    REQUIRE_FALSE(comp->chassis.valid());
+    REQUIRE_FALSE(comp->runtime_vehicle != 0u);
+    REQUIRE_FALSE(comp->runtime_chassis != 0u);
     REQUIRE(scene.transform(car).translation.x == Approx(authored_pos.x).margin(1e-4f));
     REQUIRE(scene.transform(car).translation.y == Approx(authored_pos.y).margin(1e-4f));
     REQUIRE(scene.transform(car).translation.z == Approx(authored_pos.z).margin(1e-4f));
@@ -342,10 +342,10 @@ TEST_CASE("PlayRuntime writes a parented dynamic body back in parent-local space
     // Static ground at y = 0 (top surface y = 0.5), top-level.
     const Entity ground = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
     {
-        editor::play::RigidBodyComponent rb{};
+        scene::RigidBodyComponent rb{};
         rb.mass = 0.0f;
         rb.half_extent = math::Vec3{20.0f, 0.5f, 20.0f};
-        registry.add<editor::play::RigidBodyComponent>(ground, rb);
+        registry.add<scene::RigidBodyComponent>(ground, rb);
     }
 
     // A parent node MOVED far from the origin and YAWED 90 degrees, so its world
@@ -369,17 +369,17 @@ TEST_CASE("PlayRuntime writes a parented dynamic body back in parent-local space
 
     const Entity box = scene.create_entity(at({0.0f, 4.0f, 0.0f}), scene.node(parent));
     {
-        editor::play::RigidBodyComponent rb{};
+        scene::RigidBodyComponent rb{};
         rb.mass = 1.0f;
         rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};
         rb.friction = 0.6f;
-        registry.add<editor::play::RigidBodyComponent>(box, rb);
+        registry.add<scene::RigidBodyComponent>(box, rb);
     }
 
     editor::play::PlayRuntime runtime;
     runtime.begin(scene);
     REQUIRE(runtime.playing());
-    REQUIRE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+    REQUIRE(registry.get<scene::RigidBodyComponent>(box)->runtime_body != 0u);
 
     // The body was created from the WORLD pose (scene.transform composes through
     // the parent), so it starts at box_world0 -- confirm the authored world.
@@ -432,7 +432,7 @@ TEST_CASE("PlayRuntime writes a parented dynamic body back in parent-local space
     REQUIRE(restored.translation.x == Approx(0.0f).margin(1e-4f));
     REQUIRE(restored.translation.y == Approx(4.0f).margin(1e-4f));
     REQUIRE(restored.translation.z == Approx(0.0f).margin(1e-4f));
-    REQUIRE_FALSE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+    REQUIRE_FALSE(registry.get<scene::RigidBodyComponent>(box)->runtime_body != 0u);
 }
 
 TEST_CASE("PlayRuntime creates and simulates more than 256 bodies in one archetype",
@@ -444,10 +444,10 @@ TEST_CASE("PlayRuntime creates and simulates more than 256 bodies in one archety
     // Static ground.
     const Entity ground = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
     {
-        editor::play::RigidBodyComponent rb{};
+        scene::RigidBodyComponent rb{};
         rb.mass = 0.0f;
         rb.half_extent = math::Vec3{200.0f, 0.5f, 200.0f};
-        registry.add<editor::play::RigidBodyComponent>(ground, rb);
+        registry.add<scene::RigidBodyComponent>(ground, rb);
     }
 
     // 300 dynamic boxes -- one ECS chunk holds at most 256 rows (16 KiB / cache
@@ -465,11 +465,11 @@ TEST_CASE("PlayRuntime creates and simulates more than 256 bodies in one archety
         const f32 z = static_cast<f32>(i / 30u) * 2.0f - 10.0f;
         const f32 y = 6.0f;
         const Entity box = scene.create_entity(at({x, y, z}));
-        editor::play::RigidBodyComponent rb{};
+        scene::RigidBodyComponent rb{};
         rb.mass = 1.0f;
         rb.half_extent = math::Vec3{0.4f, 0.4f, 0.4f};
         rb.friction = 0.6f;
-        registry.add<editor::play::RigidBodyComponent>(box, rb);
+        registry.add<scene::RigidBodyComponent>(box, rb);
         boxes.push_back(box);
         authored_y.push_back(y);
     }
@@ -480,7 +480,7 @@ TEST_CASE("PlayRuntime creates and simulates more than 256 bodies in one archety
     // ground + every one of the 300 boxes got a live body.
     REQUIRE(runtime.body_count() == kBoxes + 1u);
     for (const Entity box : boxes)
-        REQUIRE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+        REQUIRE(registry.get<scene::RigidBodyComponent>(box)->runtime_body != 0u);
 
     for (int step = 0; step < 360; ++step)
         runtime.tick(scene, 1.0f / 120.0f);
@@ -502,7 +502,7 @@ TEST_CASE("PlayRuntime creates and simulates more than 256 bodies in one archety
     runtime.end(scene);
     REQUIRE_FALSE(runtime.playing());
     for (const Entity box : boxes)
-        REQUIRE_FALSE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+        REQUIRE_FALSE(registry.get<scene::RigidBodyComponent>(box)->runtime_body != 0u);
 }
 
 TEST_CASE("PlayRuntime flies a player helicopter up and yaws it, restores on stop",
@@ -514,17 +514,17 @@ TEST_CASE("PlayRuntime flies a player helicopter up and yaws it, restores on sto
     const math::Vec3 authored_pos{0.0f, 5.0f, 0.0f};
     const Entity heli = scene.create_entity(at(authored_pos));
     {
-        editor::play::HelicopterComponent hc{};
+        scene::HelicopterComponent hc{};
         hc.is_player = true;
-        registry.add<editor::play::HelicopterComponent>(heli, hc);
+        registry.add<scene::HelicopterComponent>(heli, hc);
     }
 
     editor::play::PlayRuntime runtime;
     runtime.begin(scene);
     REQUIRE(runtime.playing());
 
-    auto* comp = registry.get<editor::play::HelicopterComponent>(heli);
-    REQUIRE(comp->body.valid());
+    auto* comp = registry.get<scene::HelicopterComponent>(heli);
+    REQUIRE(comp->runtime_body != 0u);
 
     const f32 start_y = scene.transform(heli).translation.y;
     const math::Quat start_rot = scene.transform(heli).rotation;
@@ -555,7 +555,7 @@ TEST_CASE("PlayRuntime flies a player helicopter up and yaws it, restores on sto
 
     runtime.end(scene);
     REQUIRE_FALSE(runtime.playing());
-    REQUIRE_FALSE(comp->body.valid());
+    REQUIRE_FALSE(comp->runtime_body != 0u);
     // Authored transform restored.
     REQUIRE(scene.transform(heli).translation.x == Approx(authored_pos.x).margin(1e-4f));
     REQUIRE(scene.transform(heli).translation.y == Approx(authored_pos.y).margin(1e-4f));

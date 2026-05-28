@@ -216,9 +216,10 @@ void PlayRuntime::begin(scene::Scene& scene) {
     // appended under the mutex; reserve-then-push keeps it amortized alloc-free.
     {
         std::mutex append_mutex;
-        reg.query<scene::reads<scene::SceneNodeComponent, RigidBodyComponent>, scene::writes<>>(
+        reg.query<scene::reads<scene::SceneNodeComponent, scene::RigidBodyComponent>,
+                  scene::writes<>>(
             [&](std::span<const scene::SceneNodeComponent> nodes,
-                std::span<const RigidBodyComponent> bodies) {
+                std::span<const scene::RigidBodyComponent> bodies) {
                 const usize n = std::min(nodes.size(), bodies.size());
                 if (n == 0u)
                     return;
@@ -232,10 +233,10 @@ void PlayRuntime::begin(scene::Scene& scene) {
     // Same scan for character entities.
     {
         std::mutex append_mutex;
-        reg.query<scene::reads<scene::SceneNodeComponent, CharacterControllerComponent>,
+        reg.query<scene::reads<scene::SceneNodeComponent, scene::CharacterControllerComponent>,
                   scene::writes<>>(
             [&](std::span<const scene::SceneNodeComponent> nodes,
-                std::span<const CharacterControllerComponent> chars) {
+                std::span<const scene::CharacterControllerComponent> chars) {
                 const usize n = std::min(nodes.size(), chars.size());
                 if (n == 0u)
                     return;
@@ -249,9 +250,10 @@ void PlayRuntime::begin(scene::Scene& scene) {
     // Same scan for vehicle entities.
     {
         std::mutex append_mutex;
-        reg.query<scene::reads<scene::SceneNodeComponent, VehicleComponent>, scene::writes<>>(
+        reg.query<scene::reads<scene::SceneNodeComponent, scene::VehicleComponent>,
+                  scene::writes<>>(
             [&](std::span<const scene::SceneNodeComponent> nodes,
-                std::span<const VehicleComponent> vehicles) {
+                std::span<const scene::VehicleComponent> vehicles) {
                 const usize n = std::min(nodes.size(), vehicles.size());
                 if (n == 0u)
                     return;
@@ -265,9 +267,10 @@ void PlayRuntime::begin(scene::Scene& scene) {
     // Same scan for helicopter entities.
     {
         std::mutex append_mutex;
-        reg.query<scene::reads<scene::SceneNodeComponent, HelicopterComponent>, scene::writes<>>(
+        reg.query<scene::reads<scene::SceneNodeComponent, scene::HelicopterComponent>,
+                  scene::writes<>>(
             [&](std::span<const scene::SceneNodeComponent> nodes,
-                std::span<const HelicopterComponent> helis) {
+                std::span<const scene::HelicopterComponent> helis) {
                 const usize n = std::min(nodes.size(), helis.size());
                 if (n == 0u)
                     return;
@@ -303,7 +306,7 @@ void PlayRuntime::begin(scene::Scene& scene) {
     };
 
     for (const Entity e : rigid_entities_) {
-        RigidBodyComponent* rb = reg.get<RigidBodyComponent>(e);
+        scene::RigidBodyComponent* rb = reg.get<scene::RigidBodyComponent>(e);
         if (rb == nullptr)
             continue;
         const scene::LocalTransform local = scene.transform(e);
@@ -311,7 +314,9 @@ void PlayRuntime::begin(scene::Scene& scene) {
         const WorldPose spawn = world_spawn(local, e);
 
         physics::BodyDesc d{};
-        d.shape = rb->shape;
+        // Map the scene-level collider shape to physics::Shape (the enums share
+        // value order, so a single cast is exact — see ColliderShape's contract).
+        d.shape = static_cast<physics::Shape>(rb->shape);
         d.mass = rb->mass;  // 0 => static
         d.position = spawn.translation;
         d.rotation = spawn.rotation;
@@ -319,14 +324,16 @@ void PlayRuntime::begin(scene::Scene& scene) {
         d.friction = rb->friction;
         d.restitution = rb->restitution;
 
-        rb->body = world.create_body(d);
-        if (rb->body.valid())
+        // Store the opaque BodyId.raw back into the component's runtime field.
+        const physics::BodyId body = world.create_body(d);
+        rb->runtime_body = body.raw;
+        if (body.valid())
             ++body_count_;
     }
 
     // Characters.
     for (const Entity e : character_entities_) {
-        CharacterControllerComponent* cc = reg.get<CharacterControllerComponent>(e);
+        scene::CharacterControllerComponent* cc = reg.get<scene::CharacterControllerComponent>(e);
         if (cc == nullptr)
             continue;
         const scene::LocalTransform local = scene.transform(e);
@@ -336,7 +343,7 @@ void PlayRuntime::begin(scene::Scene& scene) {
         d.position = world_spawn(local, e).translation;
         d.height = cc->height;
         d.radius = cc->radius;
-        cc->character = physics::character::create(d, world);
+        cc->runtime_character = physics::character::create(d, world).raw;
         cc->walk_dir = math::Vec3{0.0f, 0.0f, 0.0f};
     }
 
@@ -346,7 +353,7 @@ void PlayRuntime::begin(scene::Scene& scene) {
     // forward is -Z to match the camera convention) = steer/non-drive, rear pair
     // (+Z) = drive (RWD: the solver treats wheels[2],[3] as the drive axle).
     for (const Entity e : vehicle_entities_) {
-        VehicleComponent* vc = reg.get<VehicleComponent>(e);
+        scene::VehicleComponent* vc = reg.get<scene::VehicleComponent>(e);
         if (vc == nullptr)
             continue;
         const scene::LocalTransform local = scene.transform(e);
@@ -361,8 +368,10 @@ void PlayRuntime::begin(scene::Scene& scene) {
         cd.half_extent = scaled_half_extent(vc->half_extent, local.scale);
         cd.friction = 0.5f;
         cd.restitution = 0.0f;
-        vc->chassis = world.create_body(cd);
-        if (!vc->chassis.valid())
+        // Store the opaque chassis BodyId.raw back into the component.
+        const physics::BodyId chassis = world.create_body(cd);
+        vc->runtime_chassis = chassis.raw;
+        if (!chassis.valid())
             continue;
         ++body_count_;
 
@@ -385,21 +394,23 @@ void PlayRuntime::begin(scene::Scene& scene) {
         }
 
         physics::vehicle::VehicleDesc vd{};
-        vd.chassis = vc->chassis;
+        vd.chassis = chassis;
         vd.wheels = std::span<const physics::vehicle::WheelDesc>{wheels.data(), wheels.size()};
         vd.engine_max_torque = vc->engine_max_torque;
         vd.drag_coefficient = vc->drag;
         vd.downforce_coefficient = 0.0f;
-        vc->vehicle = physics::vehicle::create(vd, world);
+        // Store the opaque VehicleId.raw back into the component.
+        const physics::vehicle::VehicleId vehicle = physics::vehicle::create(vd, world);
+        vc->runtime_vehicle = vehicle.raw;
         // Flat ground plane at y=0 (no terrain yet; KNOWN follow-up).
-        physics::vehicle::set_ground_plane(vc->vehicle, 0.0f, world);
+        physics::vehicle::set_ground_plane(vehicle, 0.0f, world);
     }
 
     // Helicopters (serial; create_body mutates the shared World). The chassis is
     // a dynamic box body at the authored pose. The angular-velocity estimate is
     // zeroed so the craft starts at rest.
     for (const Entity e : helicopter_entities_) {
-        HelicopterComponent* hc = reg.get<HelicopterComponent>(e);
+        scene::HelicopterComponent* hc = reg.get<scene::HelicopterComponent>(e);
         if (hc == nullptr)
             continue;
         const scene::LocalTransform local = scene.transform(e);
@@ -414,9 +425,11 @@ void PlayRuntime::begin(scene::Scene& scene) {
         hd.half_extent = scaled_half_extent(hc->half_extent, local.scale);
         hd.friction = 0.5f;
         hd.restitution = 0.0f;
-        hc->body = world.create_body(hd);
+        // Store the opaque chassis BodyId.raw back into the component.
+        const physics::BodyId body = world.create_body(hd);
+        hc->runtime_body = body.raw;
         hc->ang_vel_est = math::Vec3{0.0f, 0.0f, 0.0f};
-        if (hc->body.valid())
+        if (body.valid())
             ++body_count_;
     }
 
@@ -442,15 +455,18 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // physics::character::move mutates the shared character store, so this is a
     // serial pass. Few characters, so the cost is negligible.
     for (const Entity e : character_entities_) {
-        CharacterControllerComponent* cc = reg.get<CharacterControllerComponent>(e);
-        if (cc == nullptr || !cc->character.valid())
+        scene::CharacterControllerComponent* cc = reg.get<scene::CharacterControllerComponent>(e);
+        if (cc == nullptr)
+            continue;
+        const physics::character::CharacterId character{cc->runtime_character};
+        if (!character.valid())
             continue;
         const math::Vec3 walk = cc->walk_dir;
         const f32 wlen2 = math::dot(walk, walk);
         if (wlen2 > 1e-8f) {
             const f32 wlen = std::sqrt(wlen2);
             const math::Vec3 dir = math::mul(walk, 1.0f / wlen);
-            physics::character::move(cc->character, math::mul(dir, cc->move_speed * dt), dt, world);
+            physics::character::move(character, math::mul(dir, cc->move_speed * dt), dt, world);
         }
     }
 
@@ -459,12 +475,15 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // controller values on the engine vehicle; the solver consumes them inside
     // world.step() below, so no per-vehicle stepping happens here.
     for (const Entity e : vehicle_entities_) {
-        VehicleComponent* vc = reg.get<VehicleComponent>(e);
-        if (vc == nullptr || !vc->vehicle.valid() || !vc->is_player)
+        scene::VehicleComponent* vc = reg.get<scene::VehicleComponent>(e);
+        if (vc == nullptr || vc->is_player == 0u)
             continue;
-        physics::vehicle::set_throttle(vc->vehicle, vehicle_throttle_, world);
-        physics::vehicle::set_brake(vc->vehicle, vehicle_brake_, world);
-        physics::vehicle::set_steer(vc->vehicle, vehicle_steer_, world);
+        const physics::vehicle::VehicleId vehicle{vc->runtime_vehicle};
+        if (!vehicle.valid())
+            continue;
+        physics::vehicle::set_throttle(vehicle, vehicle_throttle_, world);
+        physics::vehicle::set_brake(vehicle, vehicle_brake_, world);
+        physics::vehicle::set_steer(vehicle, vehicle_steer_, world);
     }
 
     // --- Apply helicopter flight intent (serial) --------------------------
@@ -482,11 +501,14 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     //     estimate tracks the body. An inertia proxy I = m * (hx^2+hz^2)/3 maps
     //     torque -> angular acceleration (solid-box about a horizontal axis).
     for (const Entity e : helicopter_entities_) {
-        HelicopterComponent* hc = reg.get<HelicopterComponent>(e);
-        if (hc == nullptr || !hc->body.valid() || !hc->is_player)
+        scene::HelicopterComponent* hc = reg.get<scene::HelicopterComponent>(e);
+        if (hc == nullptr || hc->is_player == 0u)
+            continue;
+        const physics::BodyId body{hc->runtime_body};
+        if (!body.valid())
             continue;
 
-        const math::Quat rot = math::quat_normalize(world.get_rotation(hc->body));
+        const math::Quat rot = math::quat_normalize(world.get_rotation(body));
         const math::Vec3 up = math::quat_rotate(rot, math::Vec3{0.0f, 1.0f, 0.0f});
         const math::Vec3 right = math::quat_rotate(rot, math::Vec3{1.0f, 0.0f, 0.0f});
         const math::Vec3 fwd = math::quat_rotate(rot, math::Vec3{0.0f, 0.0f, -1.0f});
@@ -498,7 +520,7 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
             thrust = 0.0f;
         if (thrust > hc->max_thrust_n)
             thrust = hc->max_thrust_n;
-        world.apply_impulse(hc->body, math::mul(up, thrust * dt));
+        world.apply_impulse(body, math::mul(up, thrust * dt));
 
         // Cyclic + pedals -> torque about body axes. Pitch nose-down (positive
         // input) tilts the nose forward (negative torque about body-right);
@@ -521,7 +543,7 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         const f32 decay = std::max(0.0f, 1.0f - hc->angular_damping * dt);
         w = math::mul(w, decay);
         hc->ang_vel_est = w;
-        world.set_angular_velocity(hc->body, w);
+        world.set_angular_velocity(body, w);
     }
 
     // --- Step the world ONCE (serial, single writer) ----------------------
@@ -544,15 +566,15 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // after every writeback) -- exact for a static parent, one-frame-lagged for
     // a moving one, which is the best achievable in a single graph pass.
     const scene::SceneGraph& graph = scene.graph();
-    reg.query<scene::reads<scene::SceneNodeComponent, RigidBodyComponent>,
+    reg.query<scene::reads<scene::SceneNodeComponent, scene::RigidBodyComponent>,
               scene::writes<scene::TransformComponent>>(
         [&](std::span<const scene::SceneNodeComponent> nodes,
-            std::span<const RigidBodyComponent> bodies,
+            std::span<const scene::RigidBodyComponent> bodies,
             std::span<scene::TransformComponent> transforms) {
             const usize n =
                 std::min(std::min(nodes.size(), bodies.size()), transforms.size());
             for (usize i = 0; i < n; ++i) {
-                const physics::BodyId id = bodies[i].body;
+                const physics::BodyId id{bodies[i].runtime_body};
                 if (!id.valid())
                     continue;
                 const math::Vec3 wp = world.get_position(id);
@@ -576,15 +598,15 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // Same safety as the rigid body writeback: get_position/get_rotation are
     // pure const reads and step() has completed. Each row writes only its own
     // TransformComponent column.
-    reg.query<scene::reads<scene::SceneNodeComponent, VehicleComponent>,
+    reg.query<scene::reads<scene::SceneNodeComponent, scene::VehicleComponent>,
               scene::writes<scene::TransformComponent>>(
         [&](std::span<const scene::SceneNodeComponent> nodes,
-            std::span<const VehicleComponent> vehicles,
+            std::span<const scene::VehicleComponent> vehicles,
             std::span<scene::TransformComponent> transforms) {
             const usize n =
                 std::min(std::min(nodes.size(), vehicles.size()), transforms.size());
             for (usize i = 0; i < n; ++i) {
-                const physics::BodyId id = vehicles[i].chassis;
+                const physics::BodyId id{vehicles[i].runtime_chassis};
                 if (!id.valid())
                     continue;
                 const math::Vec3 wp = world.get_position(id);
@@ -607,15 +629,15 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // Same safety as the rigid body / vehicle writebacks: get_position /
     // get_rotation are pure const reads and step() has completed. Each row
     // writes only its own TransformComponent column.
-    reg.query<scene::reads<scene::SceneNodeComponent, HelicopterComponent>,
+    reg.query<scene::reads<scene::SceneNodeComponent, scene::HelicopterComponent>,
               scene::writes<scene::TransformComponent>>(
         [&](std::span<const scene::SceneNodeComponent> nodes,
-            std::span<const HelicopterComponent> helis,
+            std::span<const scene::HelicopterComponent> helis,
             std::span<scene::TransformComponent> transforms) {
             const usize n =
                 std::min(std::min(nodes.size(), helis.size()), transforms.size());
             for (usize i = 0; i < n; ++i) {
-                const physics::BodyId id = helis[i].body;
+                const physics::BodyId id{helis[i].runtime_body};
                 if (!id.valid())
                     continue;
                 const math::Vec3 wp = world.get_position(id);
@@ -639,13 +661,16 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     // position is resolved. Parented characters fold that world point into the
     // parent's local space (rotation kept as authored).
     for (const Entity e : character_entities_) {
-        CharacterControllerComponent* cc = reg.get<CharacterControllerComponent>(e);
-        if (cc == nullptr || !cc->character.valid())
+        scene::CharacterControllerComponent* cc = reg.get<scene::CharacterControllerComponent>(e);
+        if (cc == nullptr)
+            continue;
+        const physics::character::CharacterId character{cc->runtime_character};
+        if (!character.valid())
             continue;
         auto* tc = reg.get<scene::TransformComponent>(e);
         if (tc == nullptr)
             continue;
-        const math::Vec3 wp = physics::character::get_position(cc->character, world);
+        const math::Vec3 wp = physics::character::get_position(character, world);
         const scene::SceneNode parent = graph.parent(scene.node(e));
         if (parent.valid()) {
             const WorldPose lp =
@@ -697,46 +722,51 @@ void PlayRuntime::end(scene::Scene& scene) {
 
     // Destroy bodies and clear the runtime handle column.
     for (const Entity e : rigid_entities_) {
-        RigidBodyComponent* rb = reg.get<RigidBodyComponent>(e);
+        scene::RigidBodyComponent* rb = reg.get<scene::RigidBodyComponent>(e);
         if (rb == nullptr)
             continue;
-        if (rb->body.valid())
-            world.destroy_body(rb->body);
-        rb->body = physics::BodyId{};
+        const physics::BodyId body{rb->runtime_body};
+        if (body.valid())
+            world.destroy_body(body);
+        rb->runtime_body = 0u;
     }
 
     // Destroy characters and clear their handle column.
     for (const Entity e : character_entities_) {
-        CharacterControllerComponent* cc = reg.get<CharacterControllerComponent>(e);
+        scene::CharacterControllerComponent* cc = reg.get<scene::CharacterControllerComponent>(e);
         if (cc == nullptr)
             continue;
-        if (cc->character.valid())
-            physics::character::destroy(cc->character, world);
-        cc->character = physics::character::CharacterId{};
+        const physics::character::CharacterId character{cc->runtime_character};
+        if (character.valid())
+            physics::character::destroy(character, world);
+        cc->runtime_character = 0u;
         cc->walk_dir = math::Vec3{0.0f, 0.0f, 0.0f};
     }
 
     // Destroy vehicles + their chassis bodies and clear the handle columns.
     for (const Entity e : vehicle_entities_) {
-        VehicleComponent* vc = reg.get<VehicleComponent>(e);
+        scene::VehicleComponent* vc = reg.get<scene::VehicleComponent>(e);
         if (vc == nullptr)
             continue;
-        if (vc->vehicle.valid())
-            physics::vehicle::destroy(vc->vehicle, world);
-        if (vc->chassis.valid())
-            world.destroy_body(vc->chassis);
-        vc->vehicle = physics::vehicle::VehicleId{};
-        vc->chassis = physics::BodyId{};
+        const physics::vehicle::VehicleId vehicle{vc->runtime_vehicle};
+        const physics::BodyId chassis{vc->runtime_chassis};
+        if (vehicle.valid())
+            physics::vehicle::destroy(vehicle, world);
+        if (chassis.valid())
+            world.destroy_body(chassis);
+        vc->runtime_vehicle = 0u;
+        vc->runtime_chassis = 0u;
     }
 
     // Destroy helicopter chassis bodies and clear the handle column.
     for (const Entity e : helicopter_entities_) {
-        HelicopterComponent* hc = reg.get<HelicopterComponent>(e);
+        scene::HelicopterComponent* hc = reg.get<scene::HelicopterComponent>(e);
         if (hc == nullptr)
             continue;
-        if (hc->body.valid())
-            world.destroy_body(hc->body);
-        hc->body = physics::BodyId{};
+        const physics::BodyId body{hc->runtime_body};
+        if (body.valid())
+            world.destroy_body(body);
+        hc->runtime_body = 0u;
         hc->ang_vel_est = math::Vec3{0.0f, 0.0f, 0.0f};
     }
 
@@ -770,17 +800,17 @@ void PlayRuntime::update_chase_camera(scene::Scene& scene) noexcept {
     // chase camera follows the craft the flight input drives.
     physics::BodyId chassis{};
     for (const Entity e : vehicle_entities_) {
-        const VehicleComponent* vc = reg.get<VehicleComponent>(e);
-        if (vc != nullptr && vc->is_player && vc->chassis.valid()) {
-            chassis = vc->chassis;
+        const scene::VehicleComponent* vc = reg.get<scene::VehicleComponent>(e);
+        if (vc != nullptr && vc->is_player != 0u && vc->runtime_chassis != 0u) {
+            chassis = physics::BodyId{vc->runtime_chassis};
             break;
         }
     }
     if (!chassis.valid()) {
         for (const Entity e : helicopter_entities_) {
-            const HelicopterComponent* hc = reg.get<HelicopterComponent>(e);
-            if (hc != nullptr && hc->is_player && hc->body.valid()) {
-                chassis = hc->body;
+            const scene::HelicopterComponent* hc = reg.get<scene::HelicopterComponent>(e);
+            if (hc != nullptr && hc->is_player != 0u && hc->runtime_body != 0u) {
+                chassis = physics::BodyId{hc->runtime_body};
                 break;
             }
         }
@@ -828,20 +858,21 @@ void PlayRuntime::update_chase_camera(scene::Scene& scene) noexcept {
 void PlayRuntime::set_character_input(scene::Scene& scene,
                                       Entity entity,
                                       math::Vec3 walk_dir) noexcept {
-    auto* cc = scene.registry().get<CharacterControllerComponent>(entity);
+    auto* cc = scene.registry().get<scene::CharacterControllerComponent>(entity);
     if (cc != nullptr)
         cc->walk_dir = walk_dir;
 }
 
 math::Vec3 PlayRuntime::character_position(scene::Scene& scene, Entity entity) const noexcept {
-    auto* cc = scene.registry().get<CharacterControllerComponent>(entity);
+    auto* cc = scene.registry().get<scene::CharacterControllerComponent>(entity);
     if (cc == nullptr)
         return math::Vec3{0.0f, 0.0f, 0.0f};
     // get_position reads this session's world; the read is logically const but
     // the free function takes World& (uniform with the mutating character ops),
     // so cast away const on our own member to call it. No state is mutated.
-    return physics::character::get_position(cc->character,
-                                            const_cast<physics::World&>(world_));
+    return physics::character::get_position(
+        physics::character::CharacterId{cc->runtime_character},
+        const_cast<physics::World&>(world_));
 }
 
 }  // namespace psynder::editor::play
