@@ -32,6 +32,13 @@ scene::LocalTransform at(math::Vec3 t) {
     return out;
 }
 
+scene::LocalTransform scaled_at(math::Vec3 t, math::Vec3 s) {
+    scene::LocalTransform out{};
+    out.translation = t;
+    out.scale = s;
+    return out;
+}
+
 struct RegistryReset {
     RegistryReset() { scene::detail::EcsRegistryImpl::Get().shutdown(); }
     ~RegistryReset() { scene::detail::EcsRegistryImpl::Get().shutdown(); }
@@ -163,6 +170,66 @@ TEST_CASE("PlayRuntime syncs simulated poses into the SceneGraph (renderer sourc
     REQUIRE(graph_y > 0.5f);               // rests above the ground top
     // ...and the graph agrees with the TransformComponent the body wrote.
     REQUIRE(graph_y == Approx(entity_y(scene, box)).margin(1e-3f));
+    runtime.end(scene);
+}
+
+TEST_CASE("PlayRuntime: collider honors entity scale + re-simulates on replay",
+          "[play][editor]") {
+    // Regression for the interactive-test fall-through: the collider was sized
+    // from the mesh's unit bounds and ignored the entity scale, so a floor
+    // authored via scale got a 1 m cube collider and dynamic bodies missed it.
+    // Also covers "subsequent plays need re-add" -> a clean begin/end/begin
+    // must re-simulate without re-adding the component.
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // Wide, thick STATIC floor authored via SCALE on a unit-cube mesh:
+    // scale (3, 0.5, 3) -> world collider half-extent (1.5, 0.25, 1.5).
+    const Entity floor = scene.create_entity(scaled_at({0.0f, 0.0f, 0.0f}, {3.0f, 0.5f, 3.0f}));
+    {
+        editor::play::RigidBodyComponent rb{};
+        rb.shape = physics::Shape::Box;
+        rb.mass = 0.0f;
+        rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};  // mesh unit-cube bounds
+        registry.add<editor::play::RigidBodyComponent>(floor, rb);
+    }
+    // Dynamic box dropped OFF-CENTER (x = 1.2): inside the scaled 1.5 half-width
+    // floor, but OUTSIDE the buggy unscaled 0.5 cube. With the scale fix it
+    // lands; without it, it misses the 1 m cube and falls to -inf.
+    const f32 drop_y = 3.0f;
+    const Entity box = scene.create_entity(at({1.2f, drop_y, 0.0f}));
+    {
+        editor::play::RigidBodyComponent rb{};
+        rb.shape = physics::Shape::Box;
+        rb.mass = 1.0f;
+        rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};
+        registry.add<editor::play::RigidBodyComponent>(box, rb);
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    for (int s = 0; s < 480; ++s)
+        runtime.tick(scene, 1.0f / 120.0f);
+    const f32 y1 = entity_y(scene, box);
+    INFO("first play settled y = " << y1);
+    REQUIRE(std::isfinite(y1));
+    REQUIRE(y1 > 0.0f);            // rested ON the scaled floor (no fall-through)
+    REQUIRE(y1 < drop_y - 0.5f);   // it fell
+
+    runtime.end(scene);
+    REQUIRE(entity_y(scene, box) == Approx(drop_y).margin(1e-3f));  // restored
+
+    // Replay WITHOUT re-adding the component: it must simulate again.
+    runtime.begin(scene);
+    REQUIRE(registry.get<editor::play::RigidBodyComponent>(box)->body.valid());
+    for (int s = 0; s < 480; ++s)
+        runtime.tick(scene, 1.0f / 120.0f);
+    const f32 y2 = entity_y(scene, box);
+    INFO("second play settled y = " << y2);
+    REQUIRE(y2 > 0.0f);
+    REQUIRE(y2 < drop_y - 0.5f);
+    REQUIRE(y2 == Approx(y1).margin(0.3f));  // re-sim matches first play
     runtime.end(scene);
 }
 

@@ -150,6 +150,20 @@ struct WorldPose {
     return out;
 }
 
+// Collider half-extent in WORLD units = the component's object-local half-extent
+// (sized from the mesh's unit bounds) times the entity's transform scale.
+// Without this a scaled object -- e.g. a floor authored scale (3, 0.035, 3) on a
+// unit-cube mesh -- gets a 1 m cube collider and dynamic bodies miss it / fall
+// through. abs() + a small floor so a zero/negative authored scale can't make a
+// degenerate (zero/inverted) collider. (Uses the entity's own local scale;
+// exact for unparented entities -- the same top-level caveat as the writeback.)
+[[nodiscard]] math::Vec3 scaled_half_extent(math::Vec3 half, math::Vec3 scale) noexcept {
+    constexpr f32 kMin = 1.0e-4f;
+    return {std::max(kMin, half.x * std::fabs(scale.x)),
+            std::max(kMin, half.y * std::fabs(scale.y)),
+            std::max(kMin, half.z * std::fabs(scale.z))};
+}
+
 }  // namespace
 
 PlayRuntime::~PlayRuntime() {
@@ -301,7 +315,7 @@ void PlayRuntime::begin(scene::Scene& scene) {
         d.mass = rb->mass;  // 0 => static
         d.position = spawn.translation;
         d.rotation = spawn.rotation;
-        d.half_extent = rb->half_extent;
+        d.half_extent = scaled_half_extent(rb->half_extent, local.scale);
         d.friction = rb->friction;
         d.restitution = rb->restitution;
 
@@ -344,7 +358,7 @@ void PlayRuntime::begin(scene::Scene& scene) {
         cd.mass = vc->mass;
         cd.position = spawn.translation;
         cd.rotation = spawn.rotation;
-        cd.half_extent = vc->half_extent;
+        cd.half_extent = scaled_half_extent(vc->half_extent, local.scale);
         cd.friction = 0.5f;
         cd.restitution = 0.0f;
         vc->chassis = world.create_body(cd);
@@ -397,7 +411,7 @@ void PlayRuntime::begin(scene::Scene& scene) {
         hd.mass = hc->mass;
         hd.position = spawn.translation;
         hd.rotation = spawn.rotation;
-        hd.half_extent = hc->half_extent;
+        hd.half_extent = scaled_half_extent(hc->half_extent, local.scale);
         hd.friction = 0.5f;
         hd.restitution = 0.0f;
         hc->body = world.create_body(hd);
