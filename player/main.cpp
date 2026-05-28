@@ -65,6 +65,8 @@ Entity add_active_arcade_camera();
 Entity add_active_arcade_light(scene::LightKind kind = scene::LightKind::Point);
 Entity add_active_arcade_gameplay(std::string_view kind);
 bool add_active_arcade_rigid_body(bool make_static);
+bool set_active_arcade_material_color(u32 rgba8);
+bool set_active_arcade_material_texture(std::string_view name);
 bool add_active_arcade_vehicle();
 bool add_active_arcade_helicopter();
 bool add_active_arcade_rigid_body_to(Entity entity, bool make_static);
@@ -306,6 +308,40 @@ void register_arcade_console_commands() {
                                make_static ? "static" : "dynamic");
             else
                 out.PrintLine("phys_rigidbody: no valid selection / no active scene");
+        });
+    console_ref.RegisterCommand(
+        "mat_color",
+        "Set the selected object's material albedo: mat_color <r> <g> <b> [a] (0-255).",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            if (args.size() < 3u) {
+                out.PrintLine("mat_color: expected <r> <g> <b> [a] (0-255)");
+                return;
+            }
+            auto parse = [](std::string_view s) -> u32 {
+                u32 v = 0u;
+                std::from_chars(s.data(), s.data() + s.size(), v);
+                return std::min(v, 255u);
+            };
+            const u32 r = parse(args[0]);
+            const u32 g = parse(args[1]);
+            const u32 b = parse(args[2]);
+            const u32 a = args.size() >= 4u ? parse(args[3]) : 255u;
+            const u32 rgba8 = r | (g << 8) | (b << 16) | (a << 24);
+            if (set_active_arcade_material_color(rgba8))
+                out.FormatLine("mat_color: albedo r={} g={} b={} a={}", r, g, b, a);
+            else
+                out.PrintLine("mat_color: no valid selection / no material");
+        });
+    console_ref.RegisterCommand(
+        "mat_tex",
+        "Set the selected object's base-color texture: mat_tex <name|none>. Procedural names: "
+        "textures.procedural.{checker,grid,bricks,wooden_crate,wood_planks,building_facade}.",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            const std::string_view name = args.empty() ? std::string_view{"none"} : args[0];
+            if (set_active_arcade_material_texture(name))
+                out.FormatLine("mat_tex: texture = {}", name);
+            else
+                out.PrintLine("mat_tex: no valid selection / no material");
         });
     console_ref.RegisterCommand(
         "phys_vehicle",
@@ -2362,6 +2398,19 @@ struct PlayerApp {
         return false;
     }
 
+    // Console-friendly material editing on the current selection. The web
+    // Inspector lacks a material editor yet (#61), so these route through the
+    // same apply_component_field("MaterialComponent", ...) path the IPC uses.
+    bool set_selected_material_color(u32 rgba8) {
+        return set_component_field(editor::selection::selected_scene_entity(),
+                                   "MaterialComponent", "albedo_rgba8",
+                                   std::to_string(rgba8));
+    }
+    bool set_selected_material_texture(std::string_view name) {
+        return set_component_field(editor::selection::selected_scene_entity(),
+                                   "MaterialComponent", "base_color_texture_name", name);
+    }
+
     bool set_component_field(Entity entity,
                              std::string_view component,
                              std::string_view field,
@@ -4077,6 +4126,14 @@ Entity add_active_arcade_gameplay(std::string_view kind) {
 
 bool add_active_arcade_rigid_body(bool make_static) {
     return g_active_arcade && g_active_arcade->add_rigid_body_to_selected(make_static);
+}
+
+bool set_active_arcade_material_color(u32 rgba8) {
+    return g_active_arcade && g_active_arcade->set_selected_material_color(rgba8);
+}
+
+bool set_active_arcade_material_texture(std::string_view name) {
+    return g_active_arcade && g_active_arcade->set_selected_material_texture(name);
 }
 
 bool add_active_arcade_vehicle() {
