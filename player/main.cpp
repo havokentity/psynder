@@ -3018,7 +3018,11 @@ struct PlayerApp {
         bool changed = false;
         constexpr f32 kLookSensitivity = 0.0065f;
         if (std::fabs(mouse.dx) > 0.0001f || std::fabs(mouse.dy) > 0.0001f) {
-            editor_camera_yaw += mouse.dx * kLookSensitivity;
+            // Negated: quat_from_euler's Y-rotation (used below) has the
+            // opposite handedness to the FPS controller's hand-rolled
+            // sin/cos forward, so a plain += yawed the wrong way (drag-right
+            // looked left). Negate dx so editor look matches the FPS path.
+            editor_camera_yaw -= mouse.dx * kLookSensitivity;
             editor_camera_pitch = std::clamp(editor_camera_pitch + mouse.dy * kLookSensitivity,
                                              -math::kHalfPi + 0.02f,
                                              math::kHalfPi - 0.02f);
