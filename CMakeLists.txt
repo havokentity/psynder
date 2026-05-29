@@ -121,6 +121,9 @@ add_subdirectory(engine/scene)
 add_subdirectory(engine/render)
 add_subdirectory(engine/world)
 add_subdirectory(engine/physics)
+# M-COMBAT gameplay-combat module (DOTS). Placed after scene + physics since it
+# links both; depends on them + math, never the reverse.
+add_subdirectory(engine/gameplay)
 add_subdirectory(engine/audio)
 add_subdirectory(engine/net)
 add_subdirectory(engine/script)

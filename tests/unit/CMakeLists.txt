@@ -28,6 +28,10 @@ if(TARGET Catch2::Catch2WithMain)
         psynder_asset psynder_audio psynder_net psynder_platform
         psynder_ui_imm psynder_ui_console psynder_editor_core
     )
+    # M-COMBAT gameplay-combat module unit tests (gameplay_combat.cpp).
+    if(TARGET psynder_gameplay)
+        target_link_libraries(psynder_unit PRIVATE psynder_gameplay)
+    endif()
     # Lane-19 (editor-ipc) tests need to link against the IPC server library.
     if(TARGET psynder_editor_ipc)
         target_link_libraries(psynder_unit PRIVATE psynder_editor_ipc)
