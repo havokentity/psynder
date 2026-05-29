@@ -14,8 +14,11 @@ running ledger: update it every wake-up. Newest entries on top.
 
 ## Wave 1
 - M-COMBAT gameplay core: LANDED `9007b38` (new engine/gameplay lib; hitscan/projectile/damage/death DOTS systems; 14 tests; release-green). Gap flagged: no public `physics::World::raycast(origin,dir,max_t)` — gameplay sweeps its own HitboxComponents; add a public raycast so combat hits physics bodies/static geometry (real cover). [tracked]
-- M-HYB hybrid shadows (engine/render) — in flight.
+- M-HYB hybrid shadows: LANDED `d764114`. Raster primary + per-pixel hard shadow rays (sun/point/spot), Hybrid mode, opaque ShadowOccluder trampoline (raster core doesn't link rt), goldens unchanged, release-green. Deferred fidelity: soft penumbra, terrain heightmap-march occlusion, spot-cone sampling.
 - M-PSYGRAPH visual scripting (new engine/script/psygraph) — in flight.
+
+## Wave 2 (next, after M-PSYGRAPH integrates)
+M-AI (enemy perception/nav/state machine — uses combat + needs World::raycast #69), M-NET (UDP snapshot+delta replication), first demo game (indoor BSP shooter exercising combat+lights+hybrid shadows). Also fold in #69 raycast (unblocks AI LOS + combat cover) and deferred fidelity/anti-tunneling (#63) as capacity allows.
 
 ## Done (recent → older)
 - Editor render-settings panel (mode/sun/ambient/shadow/RT quality) + scene-level RenderSettings serialized to .psyscene.
