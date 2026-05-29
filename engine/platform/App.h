@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <concepts>
 #include <cstdlib>
 #include <filesystem>
@@ -230,6 +231,19 @@ class WindowApp {
         active_scene_rendered_ = false;
     }
 
+    // Golden-safe opt-in: when enabled, engine_frame_render() gathers the active
+    // scene's LightComponents (plus the RenderSettings sun/ambient) into a
+    // reused, pre-reserved buffer and feeds them to the raster ViewState. When
+    // disabled (the default) the view carries no lights, so the raster path
+    // keeps its historical default/preview behaviour and samples/goldens stay
+    // byte-identical. The arcade enables this in PlayerApp::started().
+    void set_scene_lighting_enabled(bool enabled) noexcept {
+        scene_lighting_enabled_ = enabled;
+    }
+    [[nodiscard]] bool scene_lighting_enabled() const noexcept {
+        return scene_lighting_enabled_;
+    }
+
     void reset_scenes() noexcept {
         clear_scene();
         for (u32 i = 0; i < owned_scene_count_; ++i)
@@ -284,6 +298,7 @@ class WindowApp {
         view.projection = camera.projection;
         view.tile_w = camera.tile_w;
         view.tile_h = camera.tile_h;
+        populate_view_scene_lights(*active_scene_, view);
         return render_scene(*active_scene_, view);
     }
 
@@ -441,6 +456,9 @@ class WindowApp {
         active_scene_ = remap_scene(other.active_scene_);
         active_runtime_ = active_scene_ ? &active_scene_->runtime() : nullptr;
         active_scene_rendered_ = other.active_scene_rendered_;
+        scene_lighting_enabled_ = other.scene_lighting_enabled_;
+        scene_light_items_ = std::move(other.scene_light_items_);
+        raster_lights_ = std::move(other.raster_lights_);
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
         rendering_system_ = std::move(other.rendering_system_);
@@ -459,6 +477,7 @@ class WindowApp {
         other.active_scene_ = nullptr;
         other.active_runtime_ = nullptr;
         other.active_scene_rendered_ = false;
+        other.scene_lighting_enabled_ = false;
         other.loaded_scenes_ = {};
         other.loaded_scene_count_ = 0;
         for (u32 i = 0; i < other.owned_scene_count_; ++i)
@@ -487,10 +506,18 @@ class WindowApp {
     scene::Scene* active_scene_ = nullptr;
     scene::SceneRuntime* active_runtime_ = nullptr;
     bool active_scene_rendered_ = false;
+    bool scene_lighting_enabled_ = false;
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
     render::RenderingSystem rendering_system_{};
+
+    // Pooled per-frame light buffers (cleared + refilled, never reallocated
+    // once warmed). `scene_light_items_` receives the gathered SceneLightItems;
+    // `raster_lights_` holds the converted RasterLights that the ViewState
+    // borrows for the frame. Only touched when scene_lighting_enabled_.
+    std::vector<scene::SceneLightItem> scene_light_items_{};
+    std::vector<render::raster::RasterLight> raster_lights_{};
 
     struct NamedSceneTexture {
         std::string name;
@@ -662,6 +689,89 @@ class WindowApp {
 
     [[nodiscard]] f32 render_target_aspect() const noexcept {
         return height_ == 0u ? 1.0f : static_cast<f32>(width_) / static_cast<f32>(height_);
+    }
+
+    // Gather scene LightComponents + the RenderSettings sun/ambient into the
+    // pooled raster_lights_ buffer and point `view` at it. No-op (leaves the
+    // view's lights null) unless scene_lighting_enabled_ — so the disabled
+    // default path stays byte-identical to pre-change behaviour. Allocation-
+    // free in steady state: both pooled buffers reserve once and are reused.
+    void populate_view_scene_lights(scene::Scene& scene, render::raster::ViewState& view) {
+        if (!scene_lighting_enabled_)
+            return;
+
+        constexpr u32 kMaxLights = render::raster::RasterLightPacket::kMaxLights;
+        raster_lights_.clear();
+        if (raster_lights_.capacity() < kMaxLights)
+            raster_lights_.reserve(kMaxLights);
+
+        // Default ambient term (full white) preserves the no-render-settings
+        // look; overwritten below when the scene carries RenderSettings.
+        view.ambient_linear = math::Vec3{1.0f, 1.0f, 1.0f};
+
+        const auto unpack_rgba8 = [](u32 rgba8) noexcept -> math::Vec3 {
+            // Engine packing is 0xAABBGGRR (R in the low byte), matching the
+            // framebuffer / MaterialDesc / EnvironmentSettings. Linear-ish:
+            // raster shading treats these channels directly (no sRGB decode,
+            // mirroring the existing preview-light colours).
+            const f32 r = static_cast<f32>(rgba8 & 0xFFu) / 255.0f;
+            const f32 g = static_cast<f32>((rgba8 >> 8) & 0xFFu) / 255.0f;
+            const f32 b = static_cast<f32>((rgba8 >> 16) & 0xFFu) / 255.0f;
+            return math::Vec3{r, g, b};
+        };
+
+        const scene::RenderSettings& rs = scene.render_settings();
+        const math::Vec3 ambient = unpack_rgba8(rs.ambient_color_rgba8);
+        view.ambient_linear = math::Vec3{ambient.x * rs.ambient_intensity,
+                                         ambient.y * rs.ambient_intensity,
+                                         ambient.z * rs.ambient_intensity};
+
+        // Per-entity LightComponents (point / spot / directional).
+        scene.gather_lights(scene_light_items_);
+        for (const scene::SceneLightItem& item : scene_light_items_) {
+            if (raster_lights_.size() >= kMaxLights)
+                break;
+            render::raster::RasterLight light{};
+            switch (item.kind) {
+                case scene::LightKind::Directional:
+                    light.kind = render::raster::RasterLightKind::Directional;
+                    break;
+                case scene::LightKind::Spot:
+                    light.kind = render::raster::RasterLightKind::Spot;
+                    break;
+                case scene::LightKind::Point:
+                default:
+                    light.kind = render::raster::RasterLightKind::Point;
+                    break;
+            }
+            light.position_world = item.position;
+            light.direction_world = item.direction;
+            light.color_linear = unpack_rgba8(item.color_rgba8);
+            light.intensity = item.intensity;
+            light.range = item.range;
+            // Cone half-angles are stored in degrees; the shader compares
+            // against cos(half-angle). Inner cone is the brighter/narrower one,
+            // so its cosine is the larger value (matching RasterLight defaults
+            // where spot_inner_cos > spot_outer_cos).
+            light.spot_inner_cos = std::cos(item.inner_cone_deg * math::kDegToRad);
+            light.spot_outer_cos = std::cos(item.outer_cone_deg * math::kDegToRad);
+            raster_lights_.push_back(light);
+        }
+
+        // Global directional sun from RenderSettings (opt-in via sun_enabled).
+        if (rs.sun_enabled != 0u && raster_lights_.size() < kMaxLights) {
+            render::raster::RasterLight sun{};
+            sun.kind = render::raster::RasterLightKind::Directional;
+            sun.direction_world = scene::sanitize_render_sun_direction(rs.sun_direction);
+            sun.color_linear = unpack_rgba8(rs.sun_color_rgba8);
+            sun.intensity = rs.sun_intensity;
+            raster_lights_.push_back(sun);
+        }
+
+        if (!raster_lights_.empty()) {
+            view.lights = raster_lights_.data();
+            view.light_count = static_cast<u32>(raster_lights_.size());
+        }
     }
 
     void apply_environment_clear(const scene::EnvironmentRuntimeSoA& environment) noexcept {

@@ -135,7 +135,14 @@ void Rasterizer::begin_frame(const ViewState& view) {
     (void)cvars();  // ensure cvar registration
     fs.light_packet = {};
     fs.light_packet.ambient_linear = {1.0f, 1.0f, 1.0f};
-    if (cvars().r_raster_preview_light && cvars().r_raster_preview_light->GetBool()) {
+    if (view.light_count > 0 && view.lights != nullptr) {
+        // Host-supplied scene lights override the default/preview path. The
+        // `view.lights` buffer is borrowed and must outlive the frame (the host
+        // owns it — see ViewState docs). We only retain the pointer + count.
+        fs.light_packet.lights = view.lights;
+        fs.light_packet.light_count = std::min(view.light_count, RasterLightPacket::kMaxLights);
+        fs.light_packet.ambient_linear = view.ambient_linear;
+    } else if (cvars().r_raster_preview_light && cvars().r_raster_preview_light->GetBool()) {
         fs.preview_lights[0] = {};
         fs.preview_lights[0].kind = RasterLightKind::Directional;
         fs.preview_lights[0].direction_world = {-0.35f, -1.0f, -0.45f};

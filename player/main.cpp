@@ -3583,6 +3583,11 @@ struct PlayerApp {
 
     void started(app::WindowApp& app_ref, const PlayerArgs& args) {
         app = &app_ref;
+        // Feed the active scene's LightComponents + RenderSettings sun/ambient
+        // into the raster path so light_add and the Render Settings sun are
+        // actually visible in the editor viewport. Golden-safe: samples that
+        // never call this keep the historical full-white default.
+        app->set_scene_lighting_enabled(true);
         g_active_arcade = this;
         editor::ensure_web_panel_commands_registered();
         editor::ipc::Server::Get().set_selection_component_edit_handler(

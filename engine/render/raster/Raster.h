@@ -10,6 +10,7 @@
 #include "math/Math.h"
 #include "render/Framebuffer.h"
 #include "render/Material.h"
+#include "render/raster/RasterLighting.h"
 
 namespace psynder::render::raster {
 
@@ -150,6 +151,20 @@ struct ViewState {
     Framebuffer target;
     u32 tile_w = 64;
     u32 tile_h = 64;
+
+    // Optional per-frame dynamic light list. Defaults preserve historical
+    // behaviour: when `lights == nullptr` / `light_count == 0`, begin_frame
+    // keeps its existing default (full-white ambient, no lights) or the
+    // r_raster_preview_light debug path — so samples/goldens are byte-identical
+    // unless a host explicitly supplies lights through the view.
+    //
+    // When set, `lights` overrides the begin_frame default/preview entirely.
+    // The buffer is borrowed, not owned: the host must keep it alive for the
+    // whole begin_frame/end_frame span. `ambient_linear` replaces the default
+    // ambient term only when lights are supplied.
+    const RasterLight* lights = nullptr;
+    u32 light_count = 0;
+    math::Vec3 ambient_linear{1.0f, 1.0f, 1.0f};
 };
 
 // ─── Driver API ──────────────────────────────────────────────────────────
