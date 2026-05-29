@@ -124,6 +124,10 @@ add_subdirectory(engine/physics)
 # M-COMBAT gameplay-combat module (DOTS). Placed after scene + physics since it
 # links both; depends on them + math, never the reverse.
 add_subdirectory(engine/gameplay)
+# M-AI enemy-AI module (DOTS). Placed after gameplay since it links the combat
+# components (Health/Faction reuse); depends on scene + gameplay + math, never
+# the reverse, and never on render/host/net.
+add_subdirectory(engine/ai)
 add_subdirectory(engine/audio)
 add_subdirectory(engine/net)
 add_subdirectory(engine/script)

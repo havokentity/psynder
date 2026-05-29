@@ -32,6 +32,10 @@ if(TARGET Catch2::Catch2WithMain)
     if(TARGET psynder_gameplay)
         target_link_libraries(psynder_unit PRIVATE psynder_gameplay)
     endif()
+    # M-AI enemy-AI module unit tests (ai_systems.cpp).
+    if(TARGET psynder_ai)
+        target_link_libraries(psynder_unit PRIVATE psynder_ai)
+    endif()
     # Lane-19 (editor-ipc) tests need to link against the IPC server library.
     if(TARGET psynder_editor_ipc)
         target_link_libraries(psynder_unit PRIVATE psynder_editor_ipc)
