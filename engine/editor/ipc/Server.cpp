@@ -380,6 +380,8 @@ std::atomic<::psynder::editor::ipc::SelectionComponentEditHandler>
     g_selection_component_edit_handler{nullptr};
 std::atomic<::psynder::editor::ipc::SelectionComponentAddHandler>
     g_selection_component_add_handler{nullptr};
+std::atomic<::psynder::editor::ipc::SelectionComponentRemoveHandler>
+    g_selection_component_remove_handler{nullptr};
 
 bool msgpack_tag_is_signed_integer(::psynder::u8 tag) noexcept {
     return (tag & 0xE0) == 0xE0 || tag == 0xD0 || tag == 0xD1 || tag == 0xD2 || tag == 0xD3;
@@ -1279,6 +1281,18 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
                     std::lock_guard<std::mutex> lk(inbound_mu_);
                     inbound_.emplace_back(std::move(ic));
                 } else if (env.channel == proto::channels::kselection &&
+                           env.type == "remove_component" &&
+                           env.has_entity_id &&
+                           !env.component.empty()) {
+                    InboundCmd ic;
+                    ic.conn = conn;
+                    ic.selection_op = InboundCmd::SelectionOp::ComponentRemove;
+                    ic.selection_entity_id = env.entity_id;
+                    ic.selection_remove.entity_id = env.entity_id;
+                    ic.selection_remove.component = std::move(env.component);
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
+                } else if (env.channel == proto::channels::kselection &&
                     env.type == "spawn_prop" &&
                     !env.prop_id.empty()) {
                     std::string text = "editor_spawn_prop ";
@@ -1572,6 +1586,12 @@ void Server::pump() {
                         handler(cmd.selection_add);
                     break;
                 }
+                case InboundCmd::SelectionOp::ComponentRemove: {
+                    if (auto* handler =
+                            g_selection_component_remove_handler.load(std::memory_order_acquire))
+                        handler(cmd.selection_remove);
+                    break;
+                }
                 case InboundCmd::SelectionOp::None:
                     break;
             }
@@ -1706,6 +1726,10 @@ void Server::set_selection_component_edit_handler(SelectionComponentEditHandler 
 
 void Server::set_selection_component_add_handler(SelectionComponentAddHandler handler) {
     internal::g_selection_component_add_handler.store(handler, std::memory_order_release);
+}
+
+void Server::set_selection_component_remove_handler(SelectionComponentRemoveHandler handler) {
+    internal::g_selection_component_remove_handler.store(handler, std::memory_order_release);
 }
 
 bool Server::has_subscribers(std::string_view channel) const {

@@ -1917,14 +1917,20 @@ button.psy-window-control:hover {
     overflow: hidden;
 }
 
+.psy-component-header-row {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--psy-border);
+}
+
 .psy-component-header {
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 8px;
     background: transparent;
     border: 0;
-    border-bottom: 1px solid var(--psy-border);
     min-height: 34px;
     padding: 0 10px;
     color: var(--psy-fg);
@@ -1932,6 +1938,22 @@ button.psy-window-control:hover {
     text-align: left;
 }
 .psy-component-header:hover { background: var(--psy-bg-elev-2); }
+
+.psy-component-remove {
+    flex: 0 0 auto;
+    width: 30px;
+    background: transparent;
+    border: 0;
+    border-left: 1px solid var(--psy-border);
+    color: var(--psy-fg-muted);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+}
+.psy-component-remove:hover {
+    background: var(--psy-bg-elev-2);
+    color: var(--psy-danger, #e06c75);
+}
 
 .psy-disclosure {
     width: 12px;

@@ -18,6 +18,7 @@ import type {
     SchemaDelta,
     SceneDirtyState,
     SelectionComponentAdd,
+    SelectionComponentRemove,
     SelectionPatch,
     SelectionState,
 } from '../ipc/protocol';
@@ -60,6 +61,20 @@ interface InspectorEditAck {
     text: string;
     sent_at: number;
 }
+
+// Components the Inspector is allowed to remove (inverse of Add Component).
+// Only the optional authoring components are removable; structural/foundational
+// ones (TransformComponent/SceneNodeComponent) and the render data
+// (RenderableComponent/CameraComponent/MaterialComponent) are NOT — dropping
+// them would corrupt the entity. Keyed by the full component name as it appears
+// in `selection.components`. The value is the short label the host accepts.
+const REMOVABLE_COMPONENTS: Readonly<Record<string, string>> = {
+    RigidBodyComponent: 'RigidBody',
+    VehicleComponent: 'Vehicle',
+    HelicopterComponent: 'Helicopter',
+    CharacterControllerComponent: 'CharacterController',
+    LightComponent: 'Light',
+};
 
 export function Inspector() {
     use_mock_when_offline();
@@ -229,6 +244,12 @@ export function Inspector() {
                         text: ack.text || (ack.ok ? 'component added' : 'add component failed'),
                         sent_at: Date.now(),
                     });
+                } else if (ack.command === 'remove_component') {
+                    set_add_status({
+                        status: ack.ok ? 'applied' : 'error',
+                        text: ack.text || (ack.ok ? 'component removed' : 'remove component failed'),
+                        sent_at: Date.now(),
+                    });
                 }
             } else if (env.type === 'cleared') {
                 set_selection(null);
@@ -372,6 +393,20 @@ export function Inspector() {
         mark_editor_scene_dirty();
     }, [client, selection]);
 
+    // Inverse of add_component: strip a removable authoring component off the
+    // selection. `component` is the host label (e.g. "RigidBody"); `display` is
+    // the full name shown in the panel header. Targets the entity carried in the
+    // payload (host validates liveness at apply time) — same discipline as add.
+    const remove_component = React.useCallback((component: string, display: string) => {
+        if (!selection) return;
+        set_add_status({ status: 'pending', text: `removing ${display}...`, sent_at: Date.now() });
+        client.send<SelectionComponentRemove>('selection', 'remove_component', {
+            entity_id: selection.entity_id,
+            component,
+        });
+        mark_editor_scene_dirty();
+    }, [client, selection]);
+
     return (
         <div className="psy-panel psy-inspector">
             <header className="psy-panel-header">
@@ -409,6 +444,7 @@ export function Inspector() {
 
                     {Object.entries(selection.components).map(([name, values]) => {
                         const schema = schemas.get(name);
+                        const removable_label = REMOVABLE_COMPONENTS[name];
                         return (
                             <ComponentBlock
                                 key={name}
@@ -417,6 +453,11 @@ export function Inspector() {
                                 values={values}
                                 on_apply_material_preset={
                                     name === 'MaterialComponent' ? apply_material_preset : undefined
+                                }
+                                on_remove={
+                                    removable_label
+                                        ? () => remove_component(removable_label, name)
+                                        : undefined
                                 }
                                 on_change={(field, v) => {
                                     if (schema) on_field_change(name, schema, field, v);
@@ -528,6 +569,7 @@ interface ComponentBlockProps {
     schema?: ComponentSchema;
     values: Record<string, unknown>;
     on_apply_material_preset?: (preset: MaterialPresetId) => void;
+    on_remove?: () => void;
     on_change: (field: FieldSchema, value: unknown) => void;
 }
 
@@ -536,22 +578,36 @@ function ComponentBlock({
     schema,
     values,
     on_apply_material_preset,
+    on_remove,
     on_change,
 }: ComponentBlockProps) {
     const [collapsed, set_collapsed] = React.useState(false);
     return (
         <section className="psy-component">
-            <button
-                type="button"
-                className="psy-component-header"
-                onClick={() => set_collapsed((c) => !c)}
-                aria-expanded={!collapsed}
-            >
-                <span className={`psy-disclosure ${collapsed ? 'is-collapsed' : ''}`}>
-                    {collapsed ? '▸' : '▾'}
-                </span>
-                <span className="psy-component-name">{name}</span>
-            </button>
+            <div className="psy-component-header-row">
+                <button
+                    type="button"
+                    className="psy-component-header"
+                    onClick={() => set_collapsed((c) => !c)}
+                    aria-expanded={!collapsed}
+                >
+                    <span className={`psy-disclosure ${collapsed ? 'is-collapsed' : ''}`}>
+                        {collapsed ? '▸' : '▾'}
+                    </span>
+                    <span className="psy-component-name">{name}</span>
+                </button>
+                {on_remove && (
+                    <button
+                        type="button"
+                        className="psy-component-remove"
+                        onClick={on_remove}
+                        title={`Remove ${name} from this entity`}
+                        aria-label={`Remove ${name}`}
+                    >
+                        ✕
+                    </button>
+                )}
+            </div>
 
             {!collapsed && (
                 schema

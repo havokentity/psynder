@@ -161,6 +161,14 @@ export interface SelectionComponentAdd {
     variant?: string;
 }
 
+// Inspector per-component remove intent (inverse of "Add Component"):
+// panel -> engine on the `selection` channel. The engine replies on the
+// `selection` channel with a `command_ack` whose command is "remove_component".
+export interface SelectionComponentRemove {
+    entity_id: number;
+    component: string;
+}
+
 // ─── Console channel ─────────────────────────────────────────────────────
 //
 // `eval`        : panel → engine. Pushes either an engine-console command/cvar

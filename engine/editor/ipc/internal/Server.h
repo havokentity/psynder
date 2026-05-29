@@ -103,6 +103,7 @@ class Server {
             Select,
             ComponentEdit,
             ComponentAdd,
+            ComponentRemove,
         };
 
         std::string channel;
@@ -125,6 +126,7 @@ class Server {
         ::psynder::u32 selection_entity_id = 0;
         ::psynder::editor::ipc::SelectionComponentEdit selection_edit;
         ::psynder::editor::ipc::SelectionComponentAdd selection_add;
+        ::psynder::editor::ipc::SelectionComponentRemove selection_remove;
     };
     struct InboundCompletion {
         ::psynder::u32 id = 0;

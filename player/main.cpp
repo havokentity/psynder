@@ -73,6 +73,7 @@ bool add_active_arcade_rigid_body_to(Entity entity, bool make_static);
 bool add_active_arcade_vehicle_to(Entity entity);
 bool add_active_arcade_helicopter_to(Entity entity);
 bool add_active_arcade_character_controller_to(Entity entity);
+bool remove_active_arcade_component_from(Entity entity, std::string_view component);
 void set_active_arcade_rt_mode(bool on);
 bool active_arcade_rt_mode();
 bool bake_active_arcade_lightmaps();
@@ -94,6 +95,7 @@ bool redo_active_arcade_editor_command(std::string& label);
 bool save_active_arcade_scene(std::string_view path, std::string& error);
 void apply_active_arcade_component_edit(const editor::ipc::SelectionComponentEdit& edit);
 void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd& add);
+void apply_active_arcade_component_remove(const editor::ipc::SelectionComponentRemove& remove);
 std::optional<Entity> parse_entity_arg(std::string_view text);
 std::string joined_name_args(std::span<const std::string_view> args, usize first);
 std::string_view material_preset_arg(std::span<const std::string_view> args);
@@ -3249,6 +3251,86 @@ struct PlayerApp {
         return add_character_controller_to_entity(editor::selection::selected_scene_entity());
     }
 
+    // Whether `component` names an optional authoring component that the
+    // Inspector is allowed to remove. Structural/foundational components
+    // (Transform, SceneNode) and the always-present render data (Renderable,
+    // Camera, Material) are NOT removable - dropping them would corrupt the
+    // entity. Accept both the short Inspector label ("RigidBody") and the full
+    // schema/component name ("RigidBodyComponent").
+    static bool component_is_removable(std::string_view component) {
+        return component == "RigidBody" || component == "RigidBodyComponent" ||
+               component == "RigidBodyStatic" || component == "Vehicle" ||
+               component == "VehicleComponent" || component == "Helicopter" ||
+               component == "HelicopterComponent" || component == "CharacterController" ||
+               component == "CharacterControllerComponent" || component == "Light" ||
+               component == "LightComponent";
+    }
+
+    // Inverse of the add_*_to_entity family: strip a single optional authoring
+    // component off `entity`. Validated alive here so an IPC remove_component
+    // queued on a socket thread and drained a frame later still targets a live
+    // entity. No-ops (returns true) when the component is already absent so the
+    // panel can resync without surfacing a spurious error. Returns false only
+    // when the request is invalid (dead entity / no scene / non-removable
+    // component name).
+    bool remove_component_from_entity(Entity entity, std::string_view component) {
+        if (!component_is_removable(component))
+            return false;
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return false;
+        if (!entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+
+        const std::optional<SceneSnapshot> before =
+            replaying_history ? std::nullopt : capture_scene_snapshot();
+
+        bool removed = false;
+        if (component == "RigidBody" || component == "RigidBodyComponent" ||
+            component == "RigidBodyStatic") {
+            if (reg.get<scene::RigidBodyComponent>(entity) != nullptr) {
+                reg.remove<scene::RigidBodyComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "Vehicle" || component == "VehicleComponent") {
+            if (reg.get<scene::VehicleComponent>(entity) != nullptr) {
+                reg.remove<scene::VehicleComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "Helicopter" || component == "HelicopterComponent") {
+            if (reg.get<scene::HelicopterComponent>(entity) != nullptr) {
+                reg.remove<scene::HelicopterComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "CharacterController" ||
+                   component == "CharacterControllerComponent") {
+            if (reg.get<scene::CharacterControllerComponent>(entity) != nullptr) {
+                reg.remove<scene::CharacterControllerComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "Light" || component == "LightComponent") {
+            if (reg.get<scene::LightComponent>(entity) != nullptr) {
+                reg.remove<scene::LightComponent>(entity);
+                removed = true;
+            }
+        }
+
+        if (removed) {
+            mark_authoring_dirty();
+            std::string label{"Remove "};
+            label += component;
+            push_snapshot_history_after(std::move(label), before);
+        }
+        // Component already absent is a benign no-op; report success either way
+        // so the inverse op stays idempotent against a stale panel click.
+        return true;
+    }
+
+    bool remove_component_from_selected(std::string_view component) {
+        return remove_component_from_entity(editor::selection::selected_scene_entity(), component);
+    }
+
     // Toggle the viewport raytracer. The authoritative state lives on the
     // active scene's RenderSettings (so it serializes + drives the web panel);
     // rt_mode_ is a host-side mirror used as the fallback when no scene is
@@ -3594,6 +3676,8 @@ struct PlayerApp {
             apply_active_arcade_component_edit);
         editor::ipc::Server::Get().set_selection_component_add_handler(
             apply_active_arcade_component_add);
+        editor::ipc::Server::Get().set_selection_component_remove_handler(
+            apply_active_arcade_component_remove);
         register_arcade_console_commands();
         platform::runtime_config::register_console_commands();
         platform::runtime_config::register_console_archive_autosave();
@@ -4630,6 +4714,10 @@ bool add_active_arcade_character_controller_to(Entity entity) {
     return g_active_arcade && g_active_arcade->add_character_controller_to_entity(entity);
 }
 
+bool remove_active_arcade_component_from(Entity entity, std::string_view component) {
+    return g_active_arcade && g_active_arcade->remove_component_from_entity(entity, component);
+}
+
 void set_active_arcade_rt_mode(bool on) {
     if (g_active_arcade)
         g_active_arcade->set_rt_mode(on);
@@ -4772,6 +4860,44 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
                                               text,
                                               entity,
                                               add.component);
+}
+
+// Inspector per-component remove intent (inverse of Add Component). Routes the
+// requested component to the host remove path, targeting the entity the client
+// picked (carried as `remove.entity_id` over the wire). Runs on the engine main
+// thread via Server::pump(), so the structural ECS mutation is safe against the
+// per-frame registry iteration. The target entity is validated alive at apply
+// time inside remove_component_from_entity; if it died between the client click
+// and this dispatch the op fails and the ack reports the actual target so the
+// panel can resync. Structural/foundational components are rejected up front.
+void apply_active_arcade_component_remove(const editor::ipc::SelectionComponentRemove& remove) {
+    const Entity entity{remove.entity_id};
+    bool ok = false;
+    std::string text;
+    if (!PlayerApp::component_is_removable(remove.component)) {
+        text = "remove component not allowed: ";
+        text += remove.component;
+        PSY_LOG_WARN("psynder_arcade: rejected remove_component '{}' (not removable)",
+                     remove.component);
+    } else {
+        ok = remove_active_arcade_component_from(entity, remove.component);
+        if (ok) {
+            text = "removed ";
+            text += remove.component;
+        } else {
+            text = "remove ";
+            text += remove.component;
+            text += " failed (entity not alive / no active scene)";
+            PSY_LOG_WARN("psynder_arcade: remove {} failed on {}",
+                         remove.component,
+                         remove.entity_id);
+        }
+    }
+    editor::publish_web_selection_command_ack("remove_component",
+                                              ok,
+                                              text,
+                                              entity,
+                                              remove.component);
 }
 
 bool apply_active_arcade_material_preset(Entity entity, std::string_view preset) {

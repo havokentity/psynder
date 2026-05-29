@@ -80,6 +80,16 @@ struct SelectionComponentAdd {
 
 using SelectionComponentAddHandler = void (*)(const SelectionComponentAdd& add);
 
+// Remove a component from an entity from the Inspector per-component remove
+// (the inverse of "Add Component"). Only the optional authoring components are
+// removable; the host handler rejects structural/foundational ones.
+struct SelectionComponentRemove {
+    u32 entity_id = 0;
+    std::string component;
+};
+
+using SelectionComponentRemoveHandler = void (*)(const SelectionComponentRemove& remove);
+
 class Server {
    public:
     static Server& Get();
@@ -93,6 +103,7 @@ class Server {
     void set_selection_select_handler(SelectionSelectHandler handler);
     void set_selection_component_edit_handler(SelectionComponentEditHandler handler);
     void set_selection_component_add_handler(SelectionComponentAddHandler handler);
+    void set_selection_component_remove_handler(SelectionComponentRemoveHandler handler);
 
     [[nodiscard]] bool has_subscribers(std::string_view channel) const;
 
