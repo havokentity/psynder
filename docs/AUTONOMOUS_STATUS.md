@@ -7,6 +7,14 @@ running ledger: update it every wake-up. Newest entries on top.
 ## Current branch
 `integration/wave-hybrid-material-shadows` (push to origin every cycle).
 
+## Resume mechanism (survive usage-limit pauses)
+- In-session: `ScheduleWakeup` heartbeat (~30 min, re-armed each turn) + background-agent completions auto-re-invoke.
+- Cross-pause: recurring cron `2a5cb303` (hourly at :23) fires the mission-continue prompt at the first idle tick after a usage-limit reset. IDEMPOTENT — it integrates only what's ready and won't start redundant waves while lanes are in flight. Auto-expires after 7 days (re-create if needed).
+- Cross-restart (full session exit): this file + AUTONOMOUS_MISSION.md + memory are the durable record; a fresh session resumes from here.
+
+## Wave 1 (in flight)
+M-HYB hybrid shadows (engine/render), M-COMBAT gameplay core (new engine/gameplay), M-PSYGRAPH visual scripting (new engine/script/psygraph). 3 file-disjoint worktree lanes.
+
 ## Done (recent → older)
 - Editor render-settings panel (mode/sun/ambient/shadow/RT quality) + scene-level RenderSettings serialized to .psyscene.
 - Raster path consumes scene lights + sun (root-cause fix: lights now actually shade in raster; goldens unchanged via opt-in gate).
