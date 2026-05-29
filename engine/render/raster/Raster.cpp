@@ -142,6 +142,10 @@ void Rasterizer::begin_frame(const ViewState& view) {
         fs.light_packet.lights = view.lights;
         fs.light_packet.light_count = std::min(view.light_count, RasterLightPacket::kMaxLights);
         fs.light_packet.ambient_linear = view.ambient_linear;
+        // M-HYB: carry the borrowed traced-shadow occluder (Hybrid mode only;
+        // null/inactive on every other path, so the shadow term is a no-op and
+        // goldens/samples stay byte-identical).
+        fs.light_packet.shadow = view.shadow;
     } else if (cvars().r_raster_preview_light && cvars().r_raster_preview_light->GetBool()) {
         fs.preview_lights[0] = {};
         fs.preview_lights[0].kind = RasterLightKind::Directional;

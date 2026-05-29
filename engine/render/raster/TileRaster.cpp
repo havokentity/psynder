@@ -459,6 +459,11 @@ void rasterize_tile(const Framebuffer& fb,
         const bool alpha_test = (d.flags & DrawFlags::AlphaTest) != 0u;
         const bool affine = affine_mode || (d.flags & DrawFlags::Affine) != 0u;
         const bool multiply_blend = d.blend_mode == 1u;
+        // M-HYB: pick the lighting evaluator ONCE per draw on a const bool — the
+        // per-pixel loop never re-checks the runtime occluder beyond this. When
+        // no occluder is bound (Raster mode / no shadows) we use the plain
+        // evaluator, so the hot path is unchanged and goldens are byte-identical.
+        const bool hybrid_shadows = d.light_packet.shadow.active();
 
         // Material albedo tint, unpacked once per draw (0xAABBGGRR -> R low).
         // Modulates the shaded base colour: final = vertexColor*texture*albedo*
@@ -626,10 +631,16 @@ void rasterize_tile(const Framebuffer& fb,
                                     w_recip,
                             };
                         }
-                        const math::Vec3 light_rgb = evaluate_raster_lighting(d.light_packet,
-                                                                              d.material_lighting,
-                                                                              world_pos,
-                                                                              normal_world);
+                        const math::Vec3 light_rgb =
+                            hybrid_shadows
+                                ? evaluate_raster_lighting_hybrid(d.light_packet,
+                                                                  d.material_lighting,
+                                                                  world_pos,
+                                                                  normal_world)
+                                : evaluate_raster_lighting(d.light_packet,
+                                                           d.material_lighting,
+                                                           world_pos,
+                                                           normal_world);
 
                         u32 out_rgba;
                         if (surface_cached) {

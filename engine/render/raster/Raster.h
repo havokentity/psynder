@@ -165,6 +165,16 @@ struct ViewState {
     const RasterLight* lights = nullptr;
     u32 light_count = 0;
     math::Vec3 ambient_linear{1.0f, 1.0f, 1.0f};
+
+    // Optional traced-shadow occluder (M-HYB; DESIGN.md §8). Default-inactive
+    // (null occluder) reproduces today's behaviour exactly: no shadow rays, so
+    // Raster mode + samples + goldens are byte-identical. The host sets this
+    // ONLY in Hybrid mode, supplying a borrowed render::rt::Tlas* (opaque here)
+    // plus a trampoline. begin_frame copies it into the per-frame light packet;
+    // the fragment stage then traces one shadow ray per light per pixel and
+    // MAX-combines occlusion into each light's diffuse term. Per-pixel-per-light
+    // tracing is expensive and intentionally gated to Hybrid only.
+    ShadowOccluder shadow{};
 };
 
 // ─── Driver API ──────────────────────────────────────────────────────────

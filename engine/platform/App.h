@@ -244,6 +244,21 @@ class WindowApp {
         return scene_lighting_enabled_;
     }
 
+    // M-HYB (DESIGN.md §8): supply a borrowed traced-shadow occluder for the
+    // NEXT engine_frame_render() raster pass (Hybrid mode). The host builds the
+    // scene shadow TLAS (render::hybrid::build_shadow_scene) and hands the
+    // resulting ShadowOccluder here right before rendering; engine_frame_render
+    // attaches it to the raster ViewState (only when scene lighting is enabled,
+    // so the shadow term has lights to attenuate) and then CLEARS it, so it is a
+    // strictly one-frame opt-in. Default (never set / inactive) leaves the view
+    // occluder null, keeping the Raster path byte-identical (goldens unchanged).
+    void set_pending_shadow_occluder(const render::raster::ShadowOccluder& shadow) noexcept {
+        pending_shadow_ = shadow;
+    }
+    void clear_pending_shadow_occluder() noexcept {
+        pending_shadow_ = render::raster::ShadowOccluder{};
+    }
+
     void reset_scenes() noexcept {
         clear_scene();
         for (u32 i = 0; i < owned_scene_count_; ++i)
@@ -299,6 +314,13 @@ class WindowApp {
         view.tile_w = camera.tile_w;
         view.tile_h = camera.tile_h;
         populate_view_scene_lights(*active_scene_, view);
+        // M-HYB: attach the one-frame traced-shadow occluder (Hybrid mode). Only
+        // meaningful when scene lighting fed lights into the view above; otherwise
+        // the hybrid evaluator early-outs and the occluder is inert. Consume it
+        // here so it never bleeds into a later frame / a different render mode.
+        if (scene_lighting_enabled_ && view.lights != nullptr && pending_shadow_.active())
+            view.shadow = pending_shadow_;
+        clear_pending_shadow_occluder();
         return render_scene(*active_scene_, view);
     }
 
@@ -457,6 +479,7 @@ class WindowApp {
         active_runtime_ = active_scene_ ? &active_scene_->runtime() : nullptr;
         active_scene_rendered_ = other.active_scene_rendered_;
         scene_lighting_enabled_ = other.scene_lighting_enabled_;
+        pending_shadow_ = other.pending_shadow_;
         scene_light_items_ = std::move(other.scene_light_items_);
         raster_lights_ = std::move(other.raster_lights_);
         pixels_ = std::move(other.pixels_);
@@ -478,6 +501,7 @@ class WindowApp {
         other.active_runtime_ = nullptr;
         other.active_scene_rendered_ = false;
         other.scene_lighting_enabled_ = false;
+        other.pending_shadow_ = render::raster::ShadowOccluder{};
         other.loaded_scenes_ = {};
         other.loaded_scene_count_ = 0;
         for (u32 i = 0; i < other.owned_scene_count_; ++i)
@@ -507,6 +531,10 @@ class WindowApp {
     scene::SceneRuntime* active_runtime_ = nullptr;
     bool active_scene_rendered_ = false;
     bool scene_lighting_enabled_ = false;
+    // M-HYB one-frame traced-shadow occluder (see set_pending_shadow_occluder).
+    // Borrowed: the host's shadow TLAS must outlive the next render. Default
+    // inactive -> no shadow rays -> Raster/golden path byte-identical.
+    render::raster::ShadowOccluder pending_shadow_{};
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};

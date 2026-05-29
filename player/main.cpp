@@ -22,6 +22,7 @@
 #include "platform/RuntimeConfig.h"
 #include "render/Image.h"
 #include "render/TextureGenerators.h"
+#include "render/hybrid/ShadowScene.h"
 #include "scene/SceneFile.h"
 #include "ui/imm/Imm.h"
 #include "ui/imm/Overlay.h"
@@ -3335,7 +3336,8 @@ struct PlayerApp {
     // active scene's RenderSettings (so it serializes + drives the web panel);
     // rt_mode_ is a host-side mirror used as the fallback when no scene is
     // loaded. `on` selects Raytraced; off selects Raster. Hybrid is only set via
-    // the panel (it maps to the RT path -- a Phase-A placeholder).
+    // the panel (it runs the raster + traced-shadow path, M-HYB); the toggle
+    // still reports "ray-tracing active" for Hybrid since rays are traced.
     void set_rt_mode(bool on) noexcept {
         rt_mode_ = on;
         if (scene::Scene* scene = app ? app->active_scene() : nullptr) {
@@ -3738,27 +3740,67 @@ struct PlayerApp {
     }
 
     void frame_post(app::WindowFrameContextT<PlayerArgs>& ctx, app::WindowFrameCacheReady&) {
-        if (!render_scene_raytraced(ctx))
+        // RenderMode dispatch:
+        //   Raytraced -> full software RT path (render_scene_raytraced).
+        //   Hybrid    -> raster primary visibility + traced shadow rays in the
+        //                SAME frame (M-HYB): build/cache the shadow TLAS and hand
+        //                it to the raster ViewState, then run the raster pass.
+        //   Raster    -> plain raster (no occluder), unchanged.
+        if (!render_scene_raytraced(ctx)) {
+            prepare_hybrid_shadows(ctx);
             ctx.app.engine_frame_render();
+        }
         draw_scene_light_post(ctx);
         draw_viewport_gizmo_with_undo(ctx);
         ctx.app.engine_frame_post();
     }
 
+    // M-HYB host dispatch (DESIGN.md §8). In Hybrid mode, build (and cache across
+    // frames) a shadow-occluder TLAS from the scene's RT-visible geometry and set
+    // it on the App so the next raster pass traces one shadow ray per light per
+    // pixel and attenuates each light's diffuse term where occluded. No-op in
+    // every other mode (and when shadows are disabled / nothing is traceable), so
+    // Raster mode stays byte-identical and goldens are unchanged.
+    //
+    // COST: per-pixel-per-light occlusion tracing. This first increment fires ONE
+    // hard shadow ray per light per shaded pixel (samples == 1). Deferred (see
+    // STATUS): soft penumbra via jittered multi-ray, terrain heightmap-march
+    // occlusion, and spot-cone-aware sampling.
+    void prepare_hybrid_shadows(app::WindowFrameContextT<PlayerArgs>& ctx) {
+        ctx.app.clear_pending_shadow_occluder();
+        scene::Scene* scene = ctx.app.active_scene();
+        if (!scene)
+            return;
+        const scene::RenderSettings rs = scene::sanitize_render_settings(scene->render_settings());
+        if (rs.render_mode != scene::RenderMode::Hybrid || rs.shadows_enabled == 0u)
+            return;
+        render::raster::ShadowOccluder occluder{};
+        const render::hybrid::ShadowSceneStats stats =
+            render::hybrid::build_shadow_scene(*scene, ctx.app.rendering_system(), occluder);
+        if (!stats.built || !occluder.active())
+            return;
+        occluder.opacity = rs.shadow_opacity;
+        occluder.softness = rs.shadow_softness;
+        occluder.samples = 1u;  // hard shadow first increment; penumbra deferred
+        ctx.app.set_pending_shadow_occluder(occluder);
+    }
+
     // Raytraced viewport path. Dispatch is driven by the active scene's
-    // RenderSettings.render_mode: Raytraced and Hybrid (a Phase-A placeholder
-    // that maps to the RT path) both render here; Raster falls through to the
-    // raster pass. Returns true if it rendered into the framebuffer (so the
-    // caller skips the raster pass). Falls back to raster when in Raster mode,
-    // no scene, or no active camera. The scene's sun/ambient/shadow/RT-quality
-    // settings are forwarded as SceneRtOptions so the RT light set + config
-    // reflect the panel (build_scene_rt_options).
+    // RenderSettings.render_mode: ONLY Raytraced renders here (full software RT).
+    // Hybrid is no longer a Phase-A alias for the RT path -- it now runs the
+    // genuinely-hybrid raster + traced-shadow path (see prepare_hybrid_shadows),
+    // so Hybrid falls through to the raster pass with a shadow occluder bound.
+    // Returns true if it rendered into the framebuffer (so the caller skips the
+    // raster pass). Falls back to raster when in Raster/Hybrid mode, no scene, or
+    // no active camera. The scene's sun/ambient/shadow/RT-quality settings are
+    // forwarded as SceneRtOptions so the RT light set + config reflect the panel
+    // (build_scene_rt_options).
     bool render_scene_raytraced(app::WindowFrameContextT<PlayerArgs>& ctx) {
         scene::Scene* scene = ctx.app.active_scene();
         if (!scene)
             return false;
         const scene::RenderMode mode = scene->render_settings().render_mode;
-        if (mode != scene::RenderMode::Raytraced && mode != scene::RenderMode::Hybrid)
+        if (mode != scene::RenderMode::Raytraced)
             return false;
         scene::SceneCameraView view{};
         if (!scene->active_camera_view(framebuffer_aspect(ctx.framebuffer), view))

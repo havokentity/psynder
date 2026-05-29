@@ -6,6 +6,7 @@ set_target_properties(psynder_player PROPERTIES OUTPUT_NAME psynder_arcade)
 target_link_libraries(psynder_player PRIVATE
     psynder_core psynder_math psynder_simd psynder_jobs
     psynder_scene psynder_render_raster psynder_render_post psynder_asset psynder_platform psynder_audio
+    psynder_render_hybrid
     psynder_ui_imm
 )
 
