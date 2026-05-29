@@ -14,11 +14,17 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "ai/AiComponents.h"
 #include "editor/play/PlayRuntime.h"
+#include "gameplay/GameplayComponents.h"
 #include "scene/EcsRegistry_Internal.h"
 #include "scene/SceneEcs.h"
+#include "script/psygraph/Bytecode.h"
+#include "script/psygraph/Graph.h"
+#include "script/psygraph/NodeTypes.h"
 
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 using namespace psynder;
@@ -560,4 +566,260 @@ TEST_CASE("PlayRuntime flies a player helicopter up and yaws it, restores on sto
     REQUIRE(scene.transform(heli).translation.x == Approx(authored_pos.x).margin(1e-4f));
     REQUIRE(scene.transform(heli).translation.y == Approx(authored_pos.y).margin(1e-4f));
     REQUIRE(scene.transform(heli).translation.z == Approx(authored_pos.z).margin(1e-4f));
+}
+
+// ─── GAMEPLAY PHASE: AI combat during Play ─────────────────────────────────
+namespace {
+
+// Spawn a stationary AI enemy: AiAgent (omni-FOV, fires every tick once cooled),
+// Health+Faction (faction 2), a sphere Hitbox, and a hitscan Weapon + runtime.
+Entity spawn_ai_enemy(scene::Scene& scene, math::Vec3 pos, u32 faction, f32 damage) {
+    auto& reg = scene.registry();
+    const Entity e = scene.create_entity(at(pos));
+
+    scene::HealthComponent health{};
+    health.max_health = 100.0f;
+    health.current_health = 100.0f;
+    health.faction = faction;
+    reg.add<scene::HealthComponent>(e, health);
+
+    gameplay::FactionComponent fac{};
+    fac.faction = faction;
+    reg.add<gameplay::FactionComponent>(e, fac);
+
+    gameplay::HitboxComponent hb{};
+    hb.radius = 0.5f;
+    reg.add<gameplay::HitboxComponent>(e, gameplay::sanitize_hitbox(hb));
+
+    scene::WeaponComponent weapon{};
+    weapon.damage = damage;
+    weapon.range = 100.0f;
+    weapon.fire_rate = 10.0f;  // 10 shots/sec -> cooldown 0.1s between shots
+    weapon.ammo = 10000u;
+    reg.add<scene::WeaponComponent>(e, weapon);
+
+    gameplay::WeaponRuntimeComponent rt{};
+    rt.kind = gameplay::WeaponKind::Hitscan;
+    reg.add<gameplay::WeaponRuntimeComponent>(e, gameplay::sanitize_weapon_runtime(rt));
+
+    ai::AiAgentComponent agent{};
+    agent.state = ai::AiState::Idle;
+    agent.sight_range = 50.0f;
+    agent.fov_cos = -1.0f;       // omnidirectional => deterministic acquisition
+    agent.attack_range = 50.0f;  // always in attack range within sight
+    agent.think_cooldown = 0.0f;
+    agent.think_interval = 0.0f;  // re-evaluate every tick
+    agent.move_speed = 0.0f;      // stationary turret
+    reg.add<ai::AiAgentComponent>(e, ai::sanitize_ai_agent(agent));
+    reg.add<ai::PerceptionComponent>(e, ai::PerceptionComponent{});
+    return e;
+}
+
+// Spawn the player target: Health+Faction (faction 1) + a sphere Hitbox so the
+// AI hitscan can resolve a hit against it.
+Entity spawn_player_target(scene::Scene& scene, math::Vec3 pos, u32 faction, f32 hp) {
+    auto& reg = scene.registry();
+    const Entity e = scene.create_entity(at(pos));
+    scene::HealthComponent health{};
+    health.max_health = hp;
+    health.current_health = hp;
+    health.faction = faction;
+    reg.add<scene::HealthComponent>(e, health);
+    gameplay::HitboxComponent hb{};
+    hb.radius = 0.5f;
+    reg.add<gameplay::HitboxComponent>(e, gameplay::sanitize_hitbox(hb));
+    return e;
+}
+
+}  // namespace
+
+TEST_CASE("PlayRuntime gameplay: an AI enemy fires on a player target and kills it",
+          "[play][editor][gameplay]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // Enemy (faction 2) at origin, player target (faction 1) 6 m away. No
+    // physics bodies between them => the AI LOS raycast against world_ is clear.
+    const Entity enemy = spawn_ai_enemy(scene, {0.0f, 0.0f, 0.0f}, /*faction*/ 2u,
+                                        /*damage*/ 5.0f);
+    const f32 target_hp = 100.0f;
+    const Entity player = spawn_player_target(scene, {6.0f, 0.0f, 0.0f}, /*faction*/ 1u, target_hp);
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+
+    // No shots before any tick.
+    REQUIRE(runtime.ai_shots_fired() == 0u);
+
+    // Tick a while: the AI should acquire the hostile, reach Attack, and fire
+    // (rate-limited by the weapon cooldown). Health drops; eventually the target
+    // dies and is despawned, after which the AI loses its target and stops.
+    const f32 dt = 1.0f / 60.0f;
+    bool player_alive = true;
+    for (int step = 0; step < 2000 && player_alive; ++step) {
+        runtime.tick(scene, dt);
+        player_alive = registry.alive(player);
+    }
+
+    // The AI fired at least once (the running tally counts resolved hits).
+    INFO("ai shots fired = " << runtime.ai_shots_fired());
+    REQUIRE(runtime.ai_shots_fired() > 0u);
+
+    // The target took damage and ultimately died (resolve_deaths despawned it).
+    REQUIRE_FALSE(registry.alive(player));
+
+    // The enemy itself never died (the target had no weapon to fight back).
+    const auto* enemy_hp = registry.get<scene::HealthComponent>(enemy);
+    REQUIRE(enemy_hp != nullptr);
+    REQUIRE(enemy_hp->current_health == Approx(100.0f));
+
+    // Once the target is gone, the AI stops firing: record the tally, tick more,
+    // and confirm it did not climb (no live hostile to engage).
+    const u32 shots_after_kill = runtime.ai_shots_fired();
+    for (int step = 0; step < 300; ++step)
+        runtime.tick(scene, dt);
+    REQUIRE(runtime.ai_shots_fired() == shots_after_kill);
+
+    runtime.end(scene);
+    REQUIRE_FALSE(runtime.playing());
+}
+
+TEST_CASE("PlayRuntime gameplay: a wall between enemy and target blocks AI fire",
+          "[play][editor][gameplay]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // Enemy (faction 2) at origin, target (faction 1) 10 m along +X.
+    const Entity enemy = spawn_ai_enemy(scene, {0.0f, 0.0f, 0.0f}, 2u, /*damage*/ 5.0f);
+    (void)enemy;
+    const f32 target_hp = 100.0f;
+    const Entity player = spawn_player_target(scene, {10.0f, 0.0f, 0.0f}, 1u, target_hp);
+
+    // A STATIC physics wall (rigid body, mass 0) sitting between them at x=5.
+    // The AI LOS raycast against world_ hits this body before the target => the
+    // line of sight is blocked, so the AI never reaches Attack / fires.
+    const Entity wall = scene.create_entity(at({5.0f, 0.0f, 0.0f}));
+    {
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
+        rb.mass = 0.0f;
+        rb.half_extent = math::Vec3{0.5f, 3.0f, 3.0f};  // tall slab across the line
+        registry.add<scene::RigidBodyComponent>(wall, rb);
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+
+    const f32 dt = 1.0f / 60.0f;
+    for (int step = 0; step < 600; ++step)
+        runtime.tick(scene, dt);
+
+    // LOS was blocked every tick => no shots, target untouched and alive.
+    REQUIRE(runtime.ai_shots_fired() == 0u);
+    REQUIRE(registry.alive(player));
+    const auto* hp = registry.get<scene::HealthComponent>(player);
+    REQUIRE(hp != nullptr);
+    REQUIRE(hp->current_health == Approx(target_hp));
+
+    runtime.end(scene);
+}
+
+// ─── GAMEPLAY PHASE: PsyGraph OnTick during Play ───────────────────────────
+namespace {
+
+// Build a graph whose OnTick calls ApplyDamage(<self>, amount): the Target pin
+// is left unconnected (defaults to entity 0) so the play runtime's host
+// substitutes the running graph's own entity (the documented self fallback).
+script::psygraph::Graph build_ontick_self_damage_graph(double amount) {
+    using namespace script::psygraph;
+    Graph g;
+    g.variable_count = 0;
+
+    auto add_node = [&](NodeTypeId type, std::vector<u64> params = {}) -> NodeIndex {
+        Node n;
+        n.type = type;
+        n.params = std::move(params);
+        g.nodes.push_back(std::move(n));
+        return static_cast<NodeIndex>(g.nodes.size() - 1);
+    };
+    auto exec_edge = [&](NodeIndex from, u16 pin, NodeIndex to) {
+        Edge e;
+        e.kind = EdgeKind::Exec;
+        e.from_node = from;
+        e.from_pin = pin;
+        e.to_node = to;
+        g.edges.push_back(e);
+    };
+    auto data_edge = [&](NodeIndex from, u16 from_pin, NodeIndex to, u16 to_pin) {
+        Edge e;
+        e.kind = EdgeKind::Data;
+        e.from_node = from;
+        e.from_pin = from_pin;
+        e.to_node = to;
+        e.to_pin = to_pin;
+        g.edges.push_back(e);
+    };
+    auto float_bits = [](double v) -> u64 {
+        u64 bits = 0;
+        std::memcpy(&bits, &v, sizeof(bits));
+        return bits;
+    };
+
+    const NodeIndex on_tick = add_node(NodeTypeId::OnTick);
+    const NodeIndex amt = add_node(NodeTypeId::LiteralFloat, {float_bits(amount)});
+    const NodeIndex dmg = add_node(NodeTypeId::ApplyDamage);
+    // ApplyDamage pins: 0 = Target (Entity, left unconnected => self), 1 = Amount.
+    data_edge(amt, 0, dmg, 1);
+    exec_edge(on_tick, 0, dmg);
+    return g;
+}
+
+}  // namespace
+
+TEST_CASE("PlayRuntime gameplay: a PsyGraph OnTick action runs during Play",
+          "[play][editor][gameplay][psygraph]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // An entity that simply carries health; its graph drains it each OnTick.
+    const f32 start_hp = 100.0f;
+    const Entity scripted = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
+    {
+        scene::HealthComponent health{};
+        health.max_health = start_hp;
+        health.current_health = start_hp;
+        health.faction = 0u;
+        registry.add<scene::HealthComponent>(scripted, health);
+    }
+
+    editor::play::PlayRuntime runtime;
+    // Bind the OnTick->ApplyDamage(self, 2) graph BEFORE play begins.
+    const script::psygraph::Graph graph = build_ontick_self_damage_graph(/*amount*/ 2.0);
+    REQUIRE(runtime.bind_psygraph(scene, scripted, graph));
+    // Binding twice on the same entity is rejected.
+    REQUIRE_FALSE(runtime.bind_psygraph(scene, scripted, graph));
+
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+
+    // Tick a handful of times: each OnTick applies 2 damage to self.
+    constexpr int kTicks = 10;
+    const f32 dt = 1.0f / 60.0f;
+    for (int step = 0; step < kTicks; ++step)
+        runtime.tick(scene, dt);
+
+    const auto* hp = registry.get<scene::HealthComponent>(scripted);
+    REQUIRE(hp != nullptr);
+    INFO("scripted health after " << kTicks << " ticks = " << hp->current_health);
+    // The OnTick action ran every tick => health dropped by 2 * kTicks (clamped
+    // at 0). With 100 hp and 20 total damage it lands at 80.
+    REQUIRE(hp->current_health == Approx(start_hp - 2.0f * static_cast<f32>(kTicks)));
+
+    runtime.end(scene);
+    REQUIRE_FALSE(runtime.playing());
 }

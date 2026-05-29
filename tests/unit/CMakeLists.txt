@@ -36,6 +36,12 @@ if(TARGET Catch2::Catch2WithMain)
     if(TARGET psynder_ai)
         target_link_libraries(psynder_unit PRIVATE psynder_ai)
     endif()
+    # M-PSYGRAPH visual-scripting module (script_psygraph.cpp + editor_play's
+    # gameplay PsyGraph phase). editor_play already links it PUBLICly, but link
+    # it explicitly so the tests resolve even when editor_play is OFF.
+    if(TARGET psynder_psygraph)
+        target_link_libraries(psynder_unit PRIVATE psynder_psygraph)
+    endif()
     # Lane-19 (editor-ipc) tests need to link against the IPC server library.
     if(TARGET psynder_editor_ipc)
         target_link_libraries(psynder_unit PRIVATE psynder_editor_ipc)

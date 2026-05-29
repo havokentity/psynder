@@ -25,13 +25,36 @@
 //                         entities, snapshot authored transforms, create the
 //                         physics bodies/characters from the authored pose +
 //                         component params, store the returned handles back
-//                         into each entity's component.
+//                         into each entity's component. ALSO resets the reused
+//                         gameplay contexts (combat scratch, AI clock, PsyGraph
+//                         instances) so a new Play session starts clean.
 //   tick(scene, dt) * N - per host frame while playing: step the world, write
 //                         resolved body poses back into TransformComponent
-//                         columns, drive characters, then run ONE
+//                         columns, drive characters, then run the GAMEPLAY phase
+//                         (combat -> AI -> PsyGraph), then ONE
 //                         graph().update_world_transforms().
 //   end(scene)          - on "Stop": destroy all bodies/characters, clear the
 //                         handle fields, restore the authored snapshot.
+//
+// GAMEPLAY PHASE (added; runs only while playing, AFTER the physics step +
+// transform writeback, BEFORE the final graph sync / world-transform recompute):
+//   per-tick order is
+//     input -> physics step -> transform writeback + graph-sync (existing)
+//       -> combat tick      (cooldowns, projectile integration + hits, damage
+//                            flush, death resolution; gameplay::*)
+//       -> AI perceive/think/act (ai::*; LOS via world_.raycast, fire via
+//                            gameplay::fire_weapon, movement written into the
+//                            agent's TransformComponent)
+//       -> psygraph tick    (psygraph::GraphRuntime::tick_psygraphs; action
+//                            hooks bound to gameplay::apply_damage / scene spawn
+//                            / set-active / log)
+//       -> chase cam
+//   Everything in this phase is alloc-free in the steady state: the CombatContext
+//   scratch, the AiContext, the PsyGraph instance pool, and the per-entity
+//   HostContext are all reused PlayRuntime members (reserved/created once, only
+//   reset between sessions). Host hooks are plain function pointers / a single
+//   reused std::function set, never re-bound per frame, so no per-tick heap.
+//   Deterministic: the systems are pure sweeps with no RNG or wall-clock reads.
 //
 // Parenting: the writeback resolves each simulated body's WORLD pose, then
 // stores it into TransformComponent.local correctly for BOTH top-level and
@@ -43,12 +66,15 @@
 
 #pragma once
 
+#include "ai/AiSystems.h"
 #include "core/Types.h"
 #include "editor/play/PlayComponents.h"
+#include "gameplay/CombatSystems.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
 #include "scene/SceneEcs.h"
 #include "scene/SceneGraph.h"
+#include "script/psygraph/EcsBinding.h"
 
 #include <vector>
 
@@ -122,6 +148,30 @@ class PlayRuntime {
     // live character.
     [[nodiscard]] math::Vec3 character_position(scene::Scene& scene, Entity entity) const noexcept;
 
+    // --- Gameplay tuning ---------------------------------------------------
+    // The combat friendly-fire / neutral policy applied every tick. Host may set
+    // it before begin(); defaults to friendly-fire OFF (same faction never hurts).
+    void set_combat_config(const gameplay::CombatConfig& config) noexcept {
+        combat_config_ = config;
+    }
+    [[nodiscard]] const gameplay::CombatConfig& combat_config() const noexcept {
+        return combat_config_;
+    }
+
+    // --- Gameplay introspection (tests / tools) ----------------------------
+    // Shots the AI fire-hook actually let out this Play session (running tally,
+    // reset on begin()). Lets a test confirm AI engaged a target.
+    [[nodiscard]] u32 ai_shots_fired() const noexcept { return ai_shots_total_; }
+
+    // Bind a compiled PsyGraph asset into the runtime and attach an instance to
+    // `entity` (alloc happens here, never during tick). Returns false if the
+    // graph failed to compile or the entity already carries the component. The
+    // host/editor calls this when authoring a PsyGraphComponent; tests use it to
+    // wire a graph onto an entity. Safe to call before or between Play sessions.
+    bool bind_psygraph(scene::Scene& scene,
+                       Entity entity,
+                       const script::psygraph::Graph& graph);
+
    private:
     // Authored-transform snapshot record. Pooled; reserved once.
     struct AuthoredTransform {
@@ -130,6 +180,32 @@ class PlayRuntime {
     };
 
     void clear_pools() noexcept;
+
+    // --- Gameplay phase (called from tick, in this order) ------------------
+    // Combat: cooldowns -> projectile integration + hits -> damage flush ->
+    // projectile cleanup -> death resolution. Reuses combat_ctx_ scratch.
+    void tick_combat(scene::Scene& scene, f32 dt);
+    // AI: perceive -> think -> act over every AiAgentComponent entity. LOS,
+    // fire, and the shot tally are wired through ai_ctx_'s host hooks (bound
+    // once in begin()). Moved agents land in TransformComponent (later folded
+    // into the graph by the consolidation sync).
+    void tick_ai(scene::Scene& scene, f32 dt);
+    // PsyGraph: OnStart (once) + OnTick for every PsyGraphComponent entity, with
+    // the reused HostContext's action hooks bound to gameplay/scene.
+    void tick_psygraphs(scene::Scene& scene, f32 dt);
+
+    // Reset the reused gameplay contexts for a fresh Play session (begin()).
+    void reset_gameplay() noexcept;
+
+    // --- AI host hooks (bound once into ai_ctx_, never per-frame) ----------
+    // Plain static functions matching ai::LosFn / ai::FireFn so they can be
+    // stored as function pointers (no std::function heap). `user` is `this`.
+    // LOS: clear when nothing blocks origin->target. Wired to world_.raycast --
+    // occluded if a physics body is struck closer than the target distance.
+    static bool ai_los_hook(void* user, math::Vec3 origin, math::Vec3 target);
+    // Fire: the agent shoots `target` via gameplay::fire_weapon (origin = agent
+    // position, dir = toward the target), queuing damage into combat_ctx_.
+    static bool ai_fire_hook(void* user, Entity agent, Entity target);
 
     PlayConfig config_{};
     bool playing_ = false;
@@ -156,6 +232,41 @@ class PlayRuntime {
     std::vector<Entity> helicopter_entities_;
     // Authored transforms captured in begin(), restored in end(). Reserved once.
     std::vector<AuthoredTransform> authored_;
+    // Entities carrying an AiAgentComponent, gathered in begin(). The AI act()
+    // pass moves these via TransformComponent; the consolidation graph-sync at
+    // the end of tick() pushes their (possibly moved) local into the graph so
+    // the renderer sees AI motion. Reserved once.
+    std::vector<Entity> ai_entities_;
+
+    // --- Reused, alloc-free gameplay contexts ------------------------------
+    // Combat scratch + policy. ctx scratch is reserve()d in begin() and only
+    // ever begin_tick()-cleared (capacity kept) per tick, so combat never heap-
+    // allocates in the steady state. Policy is host-set via set_combat_config().
+    gameplay::CombatConfig combat_config_{};
+    gameplay::CombatContext combat_ctx_{};
+
+    // AI context: host hooks (LOS / fire) are bound ONCE in begin() to this
+    // PlayRuntime's raycast + fire wrappers; perceive/think/act own no per-frame
+    // heap. apply_move stays null so act() writes the kinematic step straight
+    // into the agent's TransformComponent (deterministic, no character store).
+    ai::AiContext ai_ctx_{};
+    // Running AI shot tally accumulated across the session from ai_ctx_.
+    u32 ai_shots_total_ = 0u;
+
+    // PsyGraph runtime owns the compiled programs + the pooled per-instance
+    // VmStates (one-time alloc on bind_psygraph). The reused HostContext is
+    // refilled (not reallocated) per entity inside tick_psygraphs; its action
+    // hooks are bound once in reset_gameplay(). The lambdas capture only
+    // active_scene_, so they never re-bind per frame.
+    script::psygraph::GraphRuntime psygraph_runtime_{};
+    script::psygraph::HostContext psygraph_host_{};
+    bool psygraph_hooks_bound_ = false;
+
+    // Transient: the scene currently being ticked. Set at the top of tick()
+    // (and bind_psygraph) so the C-pointer AI host hooks + the PsyGraph action
+    // lambdas can reach the scene without a per-frame closure allocation. Only
+    // ever read while a tick is in flight; null otherwise.
+    scene::Scene* active_scene_ = nullptr;
 
     // Shared player driving intent (host-set per frame; see set_vehicle_input).
     f32 vehicle_throttle_ = 0.0f;

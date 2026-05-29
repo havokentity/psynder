@@ -22,12 +22,15 @@
 
 #include "editor/play/PlayRuntime.h"
 
+#include "ai/AiComponents.h"            // AiAgentComponent (gameplay AI phase)
+#include "gameplay/GameplayComponents.h"  // WeaponComponent / HealthComponent / ...
 #include "math/MathExt.h"               // inverse_affine (parenting writeback)
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <mutex>
+#include <string_view>
 
 namespace psynder::editor::play {
 
@@ -181,6 +184,7 @@ void PlayRuntime::clear_pools() noexcept {
     character_entities_.clear();
     vehicle_entities_.clear();
     helicopter_entities_.clear();
+    ai_entities_.clear();
     authored_.clear();
     body_count_ = 0u;
 }
@@ -278,6 +282,27 @@ void PlayRuntime::begin(scene::Scene& scene) {
                 helicopter_entities_.reserve(helicopter_entities_.size() + n);
                 for (usize i = 0; i < n; ++i)
                     helicopter_entities_.push_back(nodes[i].entity);
+            });
+    }
+
+    // Same scan for AI agent entities. The AI act() pass steers these via their
+    // TransformComponent each tick; we gather them once so the end-of-tick
+    // graph-sync can push their moved local into the SceneGraph (the renderer
+    // source). AiAgentComponent lives in the ai/ lane; the scan only needs the
+    // row-aligned entity column.
+    {
+        std::mutex append_mutex;
+        reg.query<scene::reads<scene::SceneNodeComponent, ai::AiAgentComponent>,
+                  scene::writes<>>(
+            [&](std::span<const scene::SceneNodeComponent> nodes,
+                std::span<const ai::AiAgentComponent> agents) {
+                const usize n = std::min(nodes.size(), agents.size());
+                if (n == 0u)
+                    return;
+                std::scoped_lock lock{append_mutex};
+                ai_entities_.reserve(ai_entities_.size() + n);
+                for (usize i = 0; i < n; ++i)
+                    ai_entities_.push_back(nodes[i].entity);
             });
     }
 
@@ -441,7 +466,244 @@ void PlayRuntime::begin(scene::Scene& scene) {
     heli_roll_ = 0.0f;
     heli_yaw_ = 0.0f;
 
+    // Reset the reused gameplay contexts for this session (clears combat scratch,
+    // re-binds the alloc-free AI host hooks, zeroes the AI clock + shot tally).
+    // Done after the physics scan so the AI fire hook + PsyGraph host can reach
+    // this runtime + scene.
+    reset_gameplay();
+
+    // Re-arm every PsyGraphComponent's OnStart latch so a fresh Play session
+    // (including a replay) re-runs OnStart deterministically. The per-instance
+    // VmState is owned by the GraphRuntime; OnStart is expected to (re)initialise
+    // any variables it cares about. Cleared serially via a per-row write query.
+    reg.query<scene::reads<>, scene::writes<script::psygraph::PsyGraphComponent>>(
+        [&](std::span<script::psygraph::PsyGraphComponent> comps) {
+            for (auto& c : comps)
+                c.started = 0u;
+        });
+
     playing_ = true;
+}
+
+// ─── AI host hooks ────────────────────────────────────────────────────────
+// Both are bound ONCE into ai_ctx_ (reset_gameplay); `user` is the PlayRuntime.
+// They read active_scene_, set at the top of tick(), so AI side effects reach
+// the live scene without a per-frame closure. No heap allocation.
+
+bool PlayRuntime::ai_los_hook(void* user, math::Vec3 origin, math::Vec3 target) {
+    auto* self = static_cast<PlayRuntime*>(user);
+    if (self == nullptr)
+        return true;  // no host => treat as clear
+    const math::Vec3 delta = math::sub(target, origin);
+    const f32 dist2 = math::dot(delta, delta);
+    if (dist2 <= 1e-8f)
+        return true;  // coincident => trivially visible
+    const f32 dist = std::sqrt(dist2);
+    const math::Vec3 dir = math::mul(delta, 1.0f / dist);
+    // Cast against this session's physics world. A hit strictly nearer than the
+    // target (minus a small skin so a body sitting AT the target does not self-
+    // occlude) means geometry blocks the line of sight. With no physics bodies
+    // in the scene the ray hits nothing => LOS is clear.
+    constexpr f32 kSkin = 0.05f;
+    const physics::World::RaycastHit hit =
+        self->world_.raycast(origin, dir, dist);
+    if (hit.hit && hit.t < dist - kSkin)
+        return false;  // occluded
+    return true;
+}
+
+bool PlayRuntime::ai_fire_hook(void* user, Entity agent, Entity target) {
+    auto* self = static_cast<PlayRuntime*>(user);
+    if (self == nullptr || self->active_scene_ == nullptr)
+        return false;
+    scene::Scene& scene = *self->active_scene_;
+    scene::EcsRegistry& reg = scene.registry();
+    // The agent must own a weapon to fire (the combat layer also gates on
+    // cooldown / ammo inside fire_weapon).
+    if (reg.get<scene::WeaponComponent>(agent) == nullptr)
+        return false;
+    math::Vec3 origin{};
+    math::Vec3 tgt{};
+    if (!gameplay::entity_position(reg, agent, origin) ||
+        !gameplay::entity_position(reg, target, tgt))
+        return false;
+    const math::Vec3 delta = math::sub(tgt, origin);
+    const f32 dist2 = math::dot(delta, delta);
+    if (dist2 <= 1e-8f)
+        return false;
+    const math::Vec3 dir = math::mul(delta, 1.0f / std::sqrt(dist2));
+    // fire_weapon queues damage into combat_ctx_ (flushed later this tick) and
+    // honours cooldown/ammo; it returns hit=false on cooldown / out of range /
+    // friendly fire. We report "a shot went out" whenever the weapon was free to
+    // fire, which fire_weapon signals by consuming the cooldown -- but since we
+    // do not see that here, treat a resolved hit OR a cooldown-clear weapon as a
+    // shot. Simpler + deterministic: a return of true means the round resolved
+    // to a damaging hit; the AI telemetry counts those.
+    const gameplay::HitResult res = gameplay::fire_weapon(
+        reg, scene, agent, origin, dir, &self->combat_ctx_, self->combat_config_);
+    return res.hit;
+}
+
+void PlayRuntime::reset_gameplay() noexcept {
+    // Combat scratch: size once for this session's worst case, then only
+    // begin_tick()-clear per tick (capacity retained => no steady-state heap).
+    // The reserve is a one-time grow; if a prior session already grew it, this
+    // is a no-op. Sized off the gathered entity counts as a cheap upper bound.
+    const usize agents = ai_entities_.size();
+    const usize bodies = rigid_entities_.size();
+    // Generous-but-bounded: every agent could queue one shot, every dynamic body
+    // could be a projectile/death this tick. Min floors keep tiny scenes sane.
+    combat_ctx_.reserve(/*damage*/ std::max<usize>(64u, agents + bodies),
+                        /*deaths*/ std::max<usize>(64u, agents + bodies),
+                        /*despawn*/ std::max<usize>(64u, bodies));
+    combat_ctx_.begin_tick();
+
+    // AI context: bind the alloc-free host hooks ONCE (function pointers, no
+    // std::function). apply_move stays null => act() writes Transform directly.
+    // Zero the clock + shot telemetry for a fresh session.
+    ai_ctx_.los = &PlayRuntime::ai_los_hook;
+    ai_ctx_.los_user = this;
+    ai_ctx_.fire = &PlayRuntime::ai_fire_hook;
+    ai_ctx_.fire_user = this;
+    ai_ctx_.apply_move = nullptr;
+    ai_ctx_.move_user = nullptr;
+    ai_ctx_.time = 0.0f;
+    ai_ctx_.begin_tick();
+    ai_shots_total_ = 0u;
+
+    // PsyGraph host: bind the action hooks ONCE (the lambdas capture only
+    // `this`, so binding is a one-time cost -- they reach the live scene through
+    // active_scene_). Re-binding only if not already bound keeps it cheap on
+    // replay; the per-entity HostContext is otherwise refilled in tick.
+    if (!psygraph_hooks_bound_) {
+        // An action's Target pin defaults to entity 0 when unconnected; per the
+        // HostContext contract (Host.h) the host then substitutes the running
+        // graph's own entity (self). Each hook below applies that fallback inline
+        // (entity != 0 ? entity : self) so the std::function captures ONLY `this`
+        // (a single pointer => libc++ small-buffer, no per-copy heap alloc).
+        // ApplyDamage(entity, amount): route to gameplay::apply_damage with a
+        // neutral source faction + friendly-fire ON so a graph can hurt anything
+        // regardless of policy (scripted damage is unconditional).
+        psygraph_host_.apply_damage = [this](u32 entity, f64 amount) {
+            if (active_scene_ == nullptr)
+                return;
+            const Entity target{entity != 0u ? entity : psygraph_host_.self_entity};
+            gameplay::CombatConfig cfg = combat_config_;
+            cfg.friendly_fire = gameplay::FriendlyFire::On;
+            (void)gameplay::apply_damage(active_scene_->registry(), target,
+                                         static_cast<f32>(amount), /*src*/ 0u, cfg);
+        };
+        // SetHealth(entity, hp): clamp + write the HealthComponent directly.
+        psygraph_host_.set_health = [this](u32 entity, f64 health) {
+            if (active_scene_ == nullptr)
+                return;
+            const Entity target{entity != 0u ? entity : psygraph_host_.self_entity};
+            if (auto* hc = active_scene_->registry().get<scene::HealthComponent>(target)) {
+                f32 hp = static_cast<f32>(health);
+                if (hp < 0.0f)
+                    hp = 0.0f;
+                if (hp > hc->max_health)
+                    hp = hc->max_health;
+                hc->current_health = hp;
+            }
+        };
+        // SetActive(entity, active): toggle the entity's renderable Visible bit.
+        psygraph_host_.set_active = [this](u32 entity, bool active) {
+            if (active_scene_ == nullptr)
+                return;
+            const Entity target{entity != 0u ? entity : psygraph_host_.self_entity};
+            auto* r = active_scene_->registry().get<scene::RenderableComponent>(target);
+            if (r == nullptr)
+                return;
+            const u32 bits = scene::renderable_flags_bits(r->flags);
+            const u32 vis = scene::renderable_flags_bits(scene::RenderableFlags::Visible);
+            r->flags = static_cast<scene::RenderableFlags>(active ? (bits | vis) : (bits & ~vis));
+        };
+        // SpawnEntity(prefab): no prefab library yet in the play runtime, so
+        // spawn a bare entity at the origin and return its raw id (the graph can
+        // then act on it). A real prefab resolve is a follow-up.
+        psygraph_host_.spawn_entity = [this](std::string_view) -> u32 {
+            if (active_scene_ == nullptr)
+                return 0u;
+            return active_scene_->create_entity().raw;
+        };
+        // Log: swallowed (the play runtime has no console sink wired here). Bound
+        // so the hook is non-null and the VM's Log node is a clean no-op rather
+        // than an unset-hook branch.
+        psygraph_host_.log = [](std::string_view) {};
+        psygraph_hooks_bound_ = true;
+    }
+}
+
+bool PlayRuntime::bind_psygraph(scene::Scene& scene,
+                                Entity entity,
+                                const script::psygraph::Graph& graph) {
+    if (!entity.valid())
+        return false;
+    scene::EcsRegistry& reg = scene.registry();
+    if (reg.get<script::psygraph::PsyGraphComponent>(entity) != nullptr)
+        return false;  // already bound
+    std::string err;
+    const script::psygraph::GraphId gid = psygraph_runtime_.register_graph(graph, &err);
+    if (gid == script::psygraph::kInvalidGraphId)
+        return false;
+    script::psygraph::PsyGraphComponent comp{};
+    comp.graph_id = gid;
+    comp.instance = psygraph_runtime_.create_instance(gid);  // one-time alloc here
+    comp.started = 0u;
+    reg.add<script::psygraph::PsyGraphComponent>(entity, comp);
+    return true;
+}
+
+// ─── Gameplay phase passes ─────────────────────────────────────────────────
+
+void PlayRuntime::tick_combat(scene::Scene& scene, f32 dt) {
+    // NOTE: the orchestration in tick() calls combat_ctx_.begin_tick() ONCE for
+    // the whole gameplay phase, runs cooldowns + projectile integration here,
+    // then runs AI (which queues more damage into the SAME ctx via fire_weapon),
+    // then flushes + resolves deaths AFTER AI so AI hitscan damage lands the same
+    // tick. This function does only the pre-AI combat work.
+    scene::EcsRegistry& reg = scene.registry();
+    gameplay::tick_weapon_cooldowns(reg, dt);
+    gameplay::tick_projectiles(reg, dt, combat_ctx_, combat_config_);
+}
+
+void PlayRuntime::tick_ai(scene::Scene& scene, f32 dt) {
+    if (ai_entities_.empty())
+        return;
+    scene::EcsRegistry& reg = scene.registry();
+    // One full AI step over every AiAgentComponent entity. perceive/think/act
+    // are pure DOTS sweeps; the only shared side effects (LOS + fire) go through
+    // the function-pointer hooks bound in reset_gameplay(). begin_tick() resets
+    // the per-tick shot counter; we fold it into the running session tally.
+    ai_ctx_.begin_tick();
+    ai::perceive(reg, ai_ctx_, dt);
+    ai::think(reg, ai_ctx_, dt);
+    ai::act(reg, ai_ctx_, dt);
+    ai_shots_total_ += ai_ctx_.shots_fired.load(std::memory_order_relaxed);
+}
+
+void PlayRuntime::tick_psygraphs(scene::Scene& scene, f32 dt) {
+    scene::EcsRegistry& reg = scene.registry();
+    // tick_psygraphs builds a per-entity HostContext via the make_host callback
+    // (it copies the returned value into a local, then sets self + delta_time on
+    // that LOCAL copy). Our action hooks read self_entity off the reused
+    // psygraph_host_ MEMBER (the hooks capture `this`, not the copy), so we must
+    // stamp the member with the running entity here, BEFORE the binding copies +
+    // runs it. The sweep is serial (one entity at a time), so the member always
+    // reflects the entity currently executing. The hooks each capture only
+    // `this` (a single pointer) => the per-entity copy stays inside libc++'s
+    // small-buffer optimisation and allocates nothing. They reach the live scene
+    // through active_scene_, set at the top of tick().
+    const f64 dt64 = static_cast<f64>(dt);
+    psygraph_runtime_.tick_psygraphs(
+        reg,
+        [this](Entity self, f64 step) -> const script::psygraph::HostContext& {
+            psygraph_host_.self_entity = self.raw;
+            psygraph_host_.delta_time = step;
+            return psygraph_host_;
+        },
+        dt64);
 }
 
 void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
@@ -450,6 +712,10 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
 
     scene::EcsRegistry& reg = scene.registry();
     physics::World& world = world_;
+
+    // The gameplay phase host hooks (AI fire/LOS, PsyGraph actions) reach the
+    // scene through this transient pointer; valid only while this tick runs.
+    active_scene_ = &scene;
 
     // --- Drive characters first (serial) ----------------------------------
     // physics::character::move mutates the shared character store, so this is a
@@ -681,6 +947,34 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         }
     }
 
+    // --- GAMEPLAY PHASE (serial, alloc-free) ------------------------------
+    // Runs only while playing, AFTER the physics step + transform writeback and
+    // BEFORE the chase camera + final graph sync. Order (see PlayRuntime.h):
+    //   combat (pre) -> AI -> combat (flush + deaths) -> psygraph.
+    // All scratch is reused (combat_ctx_, ai_ctx_, the PsyGraph pools + host),
+    // so this phase never heap-allocates in the steady state, and the systems
+    // are deterministic pure sweeps. The damage flush + death resolution run
+    // AFTER the AI pass so an AI hitscan fired this tick lands the same tick
+    // (AI's fire hook queues into the SAME combat_ctx_).
+    {
+        // One begin_tick() for the whole phase: clears the combat scratch so the
+        // projectile pass and the AI fire hook queue into a fresh ctx.
+        combat_ctx_.begin_tick();
+        // Combat (pre): cooldowns + projectile integration / hits.
+        tick_combat(scene, dt);
+        // AI: perceive/think/act; the Attack branch fires via ai_fire_hook ->
+        // gameplay::fire_weapon, queuing damage into combat_ctx_.
+        tick_ai(scene, dt);
+        // Combat (post): apply ALL queued damage (projectiles + AI), despawn
+        // spent projectiles, then resolve deaths (despawn the dead). Done here so
+        // a target the AI killed this tick is gone before the renderer samples.
+        gameplay::flush_damage_events(reg, combat_ctx_, combat_config_);
+        gameplay::cleanup_projectiles(scene, combat_ctx_);
+        (void)gameplay::resolve_deaths(scene, /*despawn*/ true);
+        // PsyGraph: OnStart (once) + OnTick for every PsyGraphComponent entity.
+        tick_psygraphs(scene, dt);
+    }
+
     // --- Chase camera (serial) --------------------------------------------
     // Position the active scene camera behind/above the player chassis. Done
     // before update_world_transforms so the camera's world matrix refreshes in
@@ -708,9 +1002,18 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
     sync_graph_locals(vehicle_entities_);
     sync_graph_locals(helicopter_entities_);
     sync_graph_locals(character_entities_);
+    // AI agents are kinematic (no physics body): act() moved them directly in
+    // their TransformComponent during the gameplay phase, so push those locals
+    // into the graph too or the renderer would never see AI motion. A despawned
+    // agent's node() is invalid; set_local_transform tolerates that.
+    sync_graph_locals(ai_entities_);
 
     // --- Recompute world matrices ONCE ------------------------------------
     scene.graph().update_world_transforms();
+
+    // The transient scene pointer is only valid during a tick; clear it so a
+    // stray hook call between ticks can't dereference a stale scene.
+    active_scene_ = nullptr;
 }
 
 void PlayRuntime::end(scene::Scene& scene) {
