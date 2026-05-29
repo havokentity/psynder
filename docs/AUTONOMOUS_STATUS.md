@@ -12,8 +12,10 @@ running ledger: update it every wake-up. Newest entries on top.
 - Cross-pause: recurring cron `2a5cb303` (hourly at :23) fires the mission-continue prompt at the first idle tick after a usage-limit reset. IDEMPOTENT — it integrates only what's ready and won't start redundant waves while lanes are in flight. Auto-expires after 7 days (re-create if needed).
 - Cross-restart (full session exit): this file + AUTONOMOUS_MISSION.md + memory are the durable record; a fresh session resumes from here.
 
-## Wave 1 (in flight)
-M-HYB hybrid shadows (engine/render), M-COMBAT gameplay core (new engine/gameplay), M-PSYGRAPH visual scripting (new engine/script/psygraph). 3 file-disjoint worktree lanes.
+## Wave 1
+- M-COMBAT gameplay core: LANDED `9007b38` (new engine/gameplay lib; hitscan/projectile/damage/death DOTS systems; 14 tests; release-green). Gap flagged: no public `physics::World::raycast(origin,dir,max_t)` — gameplay sweeps its own HitboxComponents; add a public raycast so combat hits physics bodies/static geometry (real cover). [tracked]
+- M-HYB hybrid shadows (engine/render) — in flight.
+- M-PSYGRAPH visual scripting (new engine/script/psygraph) — in flight.
 
 ## Done (recent → older)
 - Editor render-settings panel (mode/sun/ambient/shadow/RT quality) + scene-level RenderSettings serialized to .psyscene.
