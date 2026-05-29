@@ -203,11 +203,15 @@ void HostImpl::handle_reliable_in_(PeerState& ps,
 }
 
 void HostImpl::handle_unreliable_in_(PeerState& ps,
-                                     const FrameHeader& /*h*/,
+                                     const FrameHeader& h,
                                      std::span<const u8> payload) noexcept {
     InboundMessage im{};
     im.from = ps.id;
-    im.channel = kChannelDefault;
+    // Preserve the sender's channel so the app can route by channel (e.g. the
+    // M-NET replication layer rides channel 2 / kChannelSnapshot). Previously
+    // this was hard-coded to kChannelDefault, which erased the channel for
+    // every unreliable datagram.
+    im.channel = h.channel;
     im.reliable = false;
     im.bytes.assign(payload.begin(), payload.end());
     inbox_.push_back(std::move(im));
