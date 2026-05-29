@@ -460,6 +460,15 @@ void rasterize_tile(const Framebuffer& fb,
         const bool affine = affine_mode || (d.flags & DrawFlags::Affine) != 0u;
         const bool multiply_blend = d.blend_mode == 1u;
 
+        // Material albedo tint, unpacked once per draw (0xAABBGGRR -> R low).
+        // Modulates the shaded base colour: final = vertexColor*texture*albedo*
+        // light. Default 0xFFFFFFFF -> (1,1,1,1) identity, so vertex-colour /
+        // texture-only meshes are unchanged.
+        const f32 albedo_r = static_cast<f32>(d.albedo_rgba8 & 0xFFu) * (1.0f / 255.0f);
+        const f32 albedo_g = static_cast<f32>((d.albedo_rgba8 >> 8) & 0xFFu) * (1.0f / 255.0f);
+        const f32 albedo_b = static_cast<f32>((d.albedo_rgba8 >> 16) & 0xFFu) * (1.0f / 255.0f);
+        const f32 albedo_a = static_cast<f32>((d.albedo_rgba8 >> 24) & 0xFFu) * (1.0f / 255.0f);
+
         // Dispatch tag — DESIGN.md §7.6. Picked once per draw; the inner
         // pixel loop branches on a const bool, never on a per-pixel
         // variable. SurfaceCached takes the pre-multiplied path; OnTheFly
@@ -638,10 +647,10 @@ void rasterize_tile(const Framebuffer& fb,
                             const f32 tg = static_cast<f32>((t_rgba >> 8) & 0xFFu) * (1.0f / 255.0f);
                             const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f / 255.0f);
                             const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f / 255.0f);
-                            out_rgba = pack_rgba(r * tr * light_rgb.x,
-                                                 g * tg * light_rgb.y,
-                                                 b * tb * light_rgb.z,
-                                                 a * ta);
+                            out_rgba = pack_rgba(r * tr * albedo_r * light_rgb.x,
+                                                 g * tg * albedo_g * light_rgb.y,
+                                                 b * tb * albedo_b * light_rgb.z,
+                                                 a * ta * albedo_a);
                         } else if (has_tex) {
                             // OnTheFly: sample base texture. Three paths,
                             // picked by per-draw const bools above:
@@ -667,12 +676,15 @@ void rasterize_tile(const Framebuffer& fb,
                             const f32 tg = static_cast<f32>((t_rgba >> 8) & 0xFFu) * (1.0f / 255.0f);
                             const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f / 255.0f);
                             const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f / 255.0f);
-                            out_rgba = pack_rgba(r * tr * light_rgb.x,
-                                                 g * tg * light_rgb.y,
-                                                 b * tb * light_rgb.z,
-                                                 a * ta);
+                            out_rgba = pack_rgba(r * tr * albedo_r * light_rgb.x,
+                                                 g * tg * albedo_g * light_rgb.y,
+                                                 b * tb * albedo_b * light_rgb.z,
+                                                 a * ta * albedo_a);
                         } else {
-                            out_rgba = pack_rgba(r * light_rgb.x, g * light_rgb.y, b * light_rgb.z, a);
+                            out_rgba = pack_rgba(r * albedo_r * light_rgb.x,
+                                                 g * albedo_g * light_rgb.y,
+                                                 b * albedo_b * light_rgb.z,
+                                                 a * albedo_a);
                         }
                         row_pix[x] =
                             multiply_blend

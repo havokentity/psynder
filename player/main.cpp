@@ -3316,7 +3316,8 @@ struct PlayerApp {
             // sin/cos forward, so a plain += yawed the wrong way (drag-right
             // looked left). Negate dx so editor look matches the FPS path.
             editor_camera_yaw -= mouse.dx * kLookSensitivity;
-            editor_camera_pitch = std::clamp(editor_camera_pitch + mouse.dy * kLookSensitivity,
+            // Negate dy too: drag-up should look up (standard non-inverted feel).
+            editor_camera_pitch = std::clamp(editor_camera_pitch - mouse.dy * kLookSensitivity,
                                              -math::kHalfPi + 0.02f,
                                              math::kHalfPi - 0.02f);
             changed = true;

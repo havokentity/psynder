@@ -433,6 +433,7 @@ void Rasterizer::end_frame() {
         cmd.tris = tris;
         cmd.tri_count = produced;
         cmd.material_id = d.material.raw;
+        cmd.albedo_rgba8 = d.albedo_rgba8;
         cmd.flags = d.flags;
         cmd.aniso_max = frame_aniso_max;
         cmd.blend_mode = static_cast<u8>(d.blend);

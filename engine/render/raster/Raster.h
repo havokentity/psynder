@@ -132,6 +132,15 @@ struct DrawItem {
     const u32* lightmap_texels = nullptr;
     u32 lightmap_w = 0;
     u32 lightmap_h = 0;
+
+    // Material albedo tint (RGBA8, 0xAABBGGRR — R in the low byte, same packing
+    // as the framebuffer / textures). Modulates the shaded base colour in the
+    // fragment loop: final = vertexColor * texture * albedo * light. Default
+    // 0xFFFFFFFF (white) is the identity tint, so meshes relying purely on
+    // vertex colour / texture are unaffected. Without this the rasterizer never
+    // read MaterialDesc::albedo_rgba8, so editor primitives (white vertices, no
+    // texture) rendered white regardless of their authored material colour.
+    u32 albedo_rgba8 = 0xFFFFFFFFu;
 };
 
 // ─── Scene-wide rasterizer state ─────────────────────────────────────────

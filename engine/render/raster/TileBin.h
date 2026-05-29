@@ -28,6 +28,10 @@ struct PSY_CACHELINE_ALIGN DrawCmd {
     const TriSetup* tris = nullptr;
     u32 tri_count = 0;
     u32 material_id = 0;
+    // Material albedo tint (0xAABBGGRR). Copied from DrawItem; the fragment loop
+    // modulates base colour by this so authored material colours show in raster
+    // (was previously never read). 0xFFFFFFFF = identity (white).
+    u32 albedo_rgba8 = 0xFFFFFFFFu;
     DrawFlags flags = DrawFlags::None;
     // Surface-cache dispatch (DESIGN.md §7.6).
     u8 shading_path = 0;  // ShadingPath enum

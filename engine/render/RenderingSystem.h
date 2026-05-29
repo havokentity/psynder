@@ -495,6 +495,10 @@ class RenderingSystem {
             cull_from_material(material_view.winding[material_slot], mesh_view.cull[mesh_slot]);
         if (material_view.blend[material_slot] == MaterialBlendMode::AlphaTest)
             draw.flags |= raster::DrawFlags::AlphaTest;
+        // Material albedo tint -> raster fragment modulate. Without this the
+        // rasterizer ignored MaterialDesc::albedo_rgba8 entirely (it only shaded
+        // vertexColor * texture), so authored material colours never showed.
+        draw.albedo_rgba8 = material_view.albedo_rgba8[material_slot];
         TextureView texture = material_view.base_color_asset[material_slot] != nullptr
                                   ? material_view.base_color_asset[material_slot]->view()
                                   : material_view.base_color[material_slot];
