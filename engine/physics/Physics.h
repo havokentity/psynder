@@ -20,14 +20,33 @@ struct WorldImpl;
 struct BodyTag {};
 using BodyId = Handle<BodyTag>;
 
-enum class Shape : u8 { Sphere, Capsule, Box, ConvexHull, Compound, Heightfield, TriangleMesh };
+// `Plane` is appended LAST so the prior numeric values (Sphere=0 .. TriangleMesh=6)
+// stay byte-stable — the engine stores the shape as a u8 and existing scenes /
+// goldens depend on those codes not shifting. A Plane is an INFINITE half-space:
+// the solid side is the half below the plane. Its world plane is derived from the
+// body transform — normal = rotation * +Y, offset d = dot(normal, position). A
+// static Plane cannot be tunnelled: any body that lands on the far (solid) side in
+// one tick is, by definition, penetrating and gets resolved that same step. This
+// is the correct collider for flat floors and walls (orient the +Y face outward).
+// `half_extent` is IGNORED for a Plane (the surface is infinite); for the world
+// AABB a Plane reports a very large box so the broadphase always pairs it.
+enum class Shape : u8 {
+    Sphere,
+    Capsule,
+    Box,
+    ConvexHull,
+    Compound,
+    Heightfield,
+    TriangleMesh,
+    Plane,
+};
 
 struct BodyDesc {
     Shape shape = Shape::Sphere;
     f32 mass = 1.0f;  // kg; 0 = static
     math::Vec3 position{0, 0, 0};
     math::Quat rotation{0, 0, 0, 1};
-    math::Vec3 half_extent{0.5f, 0.5f, 0.5f};  // shape-dependent
+    math::Vec3 half_extent{0.5f, 0.5f, 0.5f};  // shape-dependent; ignored for Plane
     f32 friction = 0.5f;
     f32 restitution = 0.0f;
 };

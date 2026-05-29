@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -170,6 +171,98 @@ inline bool kernel_aabb_aabb(math::Aabb a, math::Aabb b, Contact& out) noexcept 
                        (std::max(a.min.y, b.min.y) + std::min(a.max.y, b.max.y)) * 0.5f,
                        (std::max(a.min.z, b.min.z) + std::min(a.max.z, b.max.z)) * 0.5f};
     return true;
+}
+
+// Speculative-contact reach. A separated pair is promoted to a speculative
+// contact only when the gap is within this fixed margin OR the pair would
+// close the gap this tick (relative normal approach * dt >= gap). The margin
+// keeps a tiny standing band of speculative contacts around resting bodies
+// from doing anything (they carry positive separation, so the solver clamp is
+// a no-op there) while still catching a fast body a frame early. Small + fixed
+// = cheap + deterministic.
+inline constexpr f32 kSpeculativeMargin = 0.02f;  // 2 cm
+
+// ─── Plane half-space kernels (exact signed-distance, cheap) ────────────
+//
+// A Plane is an INFINITE half-space whose surface normal is `pn` (the body's
+// local +Y rotated to world) and whose offset is `pd = dot(pn, plane_pos)`.
+// The signed distance of a world point p to the surface is dot(pn, p) - pd;
+// the solid side is below (signed distance < 0). For each shape we find its
+// support point in the -pn direction (the part nearest / furthest into the
+// solid side), measure that support's signed distance `sep`, and:
+//   sep < 0  -> penetrating; depth = -sep, a real contact.
+//   sep >= 0 -> separated; the caller decides whether to emit a SPECULATIVE
+//               contact (negative depth = `sep`) when the shapes approach.
+// Output convention matches kernel_collide_pair: `normal_world` points from
+// A (the plane) toward B (the shape) == +pn, so the solver pushes the shape
+// out along the plane normal. The contact point sits on the surface beneath
+// the support point. A static plane is never tunnelled: a body that leaps to
+// the solid side in one tick has sep < 0 and is resolved this step.
+//
+// `out.depth` may be returned NEGATIVE here (separation). kernel_collide_pair
+// only forwards a negative-depth contact when the pair is closing; resting /
+// receding separated pairs are dropped (return false) so behaviour for the
+// existing shapes is unchanged.
+
+PSY_FORCEINLINE f32 plane_signed_dist(math::Vec3 pn, f32 pd, math::Vec3 p) noexcept {
+    return math::dot(pn, p) - pd;
+}
+
+// Plane (normal pn, offset pd) vs a sphere centred at `cs` with radius `rs`.
+// `sep` (output) is the gap between the sphere surface and the plane (>0 apart,
+// <0 penetrating). Returns the separation; the contact point/normal are filled
+// regardless so the caller can promote a near-miss to a speculative contact.
+inline f32 kernel_plane_sphere(
+    math::Vec3 pn, f32 pd, math::Vec3 cs, f32 rs, Contact& out) noexcept {
+    f32 center_sd = plane_signed_dist(pn, pd, cs);
+    f32 sep = center_sd - rs;  // gap from sphere surface to plane
+    out.normal_world = pn;     // A(plane) -> B(sphere)
+    // Contact point: the sphere's lowest point projected onto the surface.
+    math::Vec3 support = math::sub(cs, math::mul(pn, rs));
+    out.point_world = math::sub(support, math::mul(pn, center_sd - rs));
+    out.depth = -sep;  // >0 when penetrating
+    return sep;
+}
+
+// Plane vs an oriented box (centre `cc`, rotation `qc`, half extents `he`).
+// The box's deepest point into the solid side is found by summing the three
+// half-axis projections with the sign that drives each toward -pn.
+inline f32 kernel_plane_box(
+    math::Vec3 pn, f32 pd, math::Vec3 cc, math::Quat qc, math::Vec3 he, Contact& out) noexcept {
+    math::Vec3 ax = detail::quat_rotate(qc, math::Vec3{he.x, 0, 0});
+    math::Vec3 ay = detail::quat_rotate(qc, math::Vec3{0, he.y, 0});
+    math::Vec3 az = detail::quat_rotate(qc, math::Vec3{0, 0, he.z});
+    // Lowest corner along the plane normal: step each half-axis toward -pn.
+    math::Vec3 lowest = cc;
+    lowest = math::add(lowest, math::mul(ax, (math::dot(ax, pn) > 0.0f) ? -1.0f : 1.0f));
+    lowest = math::add(lowest, math::mul(ay, (math::dot(ay, pn) > 0.0f) ? -1.0f : 1.0f));
+    lowest = math::add(lowest, math::mul(az, (math::dot(az, pn) > 0.0f) ? -1.0f : 1.0f));
+    f32 sep = plane_signed_dist(pn, pd, lowest);
+    out.normal_world = pn;
+    // Contact point: the lowest corner projected onto the surface.
+    out.point_world = math::sub(lowest, math::mul(pn, sep));
+    out.depth = -sep;
+    return sep;
+}
+
+// Plane vs a capsule (centre `cc`, rotation `qc`, radius `rc`, half-height `hc`).
+// The capsule's deepest point is the segment endpoint with the smaller signed
+// distance, minus the radius. Sub-radius accuracy is enough for the PGS solver
+// (we re-collide every step); a true two-point manifold is a Wave-B refinement.
+inline f32 kernel_plane_capsule(
+    math::Vec3 pn, f32 pd, math::Vec3 cc, math::Quat qc, f32 rc, f32 hc, Contact& out) noexcept {
+    math::Vec3 e0, e1;
+    capsule_endpoints(cc, qc, hc, e0, e1);
+    f32 d0 = plane_signed_dist(pn, pd, e0);
+    f32 d1 = plane_signed_dist(pn, pd, e1);
+    math::Vec3 lower = (d0 <= d1) ? e0 : e1;
+    f32 lower_sd = (d0 <= d1) ? d0 : d1;
+    f32 sep = lower_sd - rc;  // gap from capsule surface to plane
+    out.normal_world = pn;
+    math::Vec3 support = math::sub(lower, math::mul(pn, rc));
+    out.point_world = math::sub(support, math::mul(pn, lower_sd - rc));
+    out.depth = -sep;
+    return sep;
 }
 
 // ─── GJK + EPA (support-mapping convex pair) ────────────────────────────
@@ -475,7 +568,65 @@ inline bool kernel_gjk_epa(const GjkSupport& a, const GjkSupport& b, Contact& ou
 
 // ─── Pair-shape dispatcher (header-inline so tests get the full path) ───
 
+// Plane-vs-shape signed-distance dispatch. Fills `out` (normal/point/depth)
+// and returns the separation: > 0 apart, <= 0 penetrating. `out.normal_world`
+// always points A -> B (plane -> shape). Both swap orders are handled so the
+// caller can pass the bodies in either order. Returns +inf when neither body
+// is a plane OR both are planes (two infinite half-spaces have no meaningful
+// finite separation — skipped). The separation lets kernel_collide_pair emit a
+// penetration contact and kernel_collide_pair_spec additionally emit a
+// speculative contact.
+inline f32 kernel_plane_pair_sep(const Body& a, const Body& b, Contact& out) noexcept {
+    const bool a_plane = (a.shape == kShapePlane);
+    const bool b_plane = (b.shape == kShapePlane);
+    if (a_plane == b_plane)
+        return std::numeric_limits<f32>::infinity();  // neither, or both
+
+    // Orient so the PLANE is A in the kernel's A->B normal convention; if the
+    // physical body order is (shape, plane) we flip the resulting normal so the
+    // returned contact still points from the world's A to its B.
+    const Body& plane = a_plane ? a : b;
+    const Body& shape = a_plane ? b : a;
+    math::Vec3 pn = plane_normal_world(plane.rotation);
+    f32 pd = plane_offset_world(pn, plane.position);
+
+    f32 sep;
+    switch (shape.shape) {
+        case 0:  // Sphere
+            sep = kernel_plane_sphere(pn, pd, shape.position, shape.half_extent.x, out);
+            break;
+        case 1:  // Capsule
+            sep = kernel_plane_capsule(
+                pn, pd, shape.position, shape.rotation, shape.half_extent.x, shape.half_extent.y, out);
+            break;
+        case 2:  // Box
+            sep = kernel_plane_box(pn, pd, shape.position, shape.rotation, shape.half_extent, out);
+            break;
+        default:  // hull/compound/heightfield/trimesh -> bounding sphere fallback
+            sep = kernel_plane_sphere(pn, pd, shape.position, shape.half_extent.x, out);
+            break;
+    }
+    // `out` was filled with the plane->shape normal. If the world order is
+    // (shape, plane) i.e. A is the shape, flip to A->B (shape->plane).
+    if (!a_plane)
+        out.normal_world = math::mul(out.normal_world, -1.0f);
+    return sep;
+}
+
 inline bool kernel_collide_pair(const Body& a, const Body& b, Contact& out) noexcept {
+    // Plane half-space first: a static plane can never be tunnelled, and the
+    // signed-distance test is exact + cheap. Emit a (touching) contact only
+    // when actually penetrating so resting/separated behaviour for every other
+    // pair stays exactly as before.
+    if (a.shape == kShapePlane || b.shape == kShapePlane) {
+        f32 sep = kernel_plane_pair_sep(a, b, out);
+        if (sep < 0.0f) {
+            out.depth = -sep;
+            out.speculative = false;
+            return true;
+        }
+        return false;
+    }
     if (a.shape == 0 && b.shape == 0) {
         return kernel_sphere_sphere(a.position, a.half_extent.x, b.position, b.half_extent.x, out);
     }
@@ -524,6 +675,76 @@ inline bool kernel_collide_pair(const Body& a, const Body& b, Contact& out) noex
     GjkSupport sa{a.position, a.rotation, a.shape, a.half_extent};
     GjkSupport sb{b.position, b.rotation, b.shape, b.half_extent};
     return kernel_gjk_epa(sa, sb, out);
+}
+
+// Closed-form separation distance for the shape pairs that admit one cheaply
+// (Plane-vs-shape and sphere-vs-sphere). Fills `out` (A->B normal + a contact
+// point on the gap) and returns the gap along that normal: > 0 apart,
+// <= 0 penetrating. Returns +inf when the pair has no closed-form distance
+// here (box-box / capsule / GJK), signalling "no speculative path — use the
+// overlap-only kernel". This is the separation the speculative contact rides.
+inline f32 kernel_pair_separation(const Body& a, const Body& b, Contact& out) noexcept {
+    if (a.shape == kShapePlane || b.shape == kShapePlane)
+        return kernel_plane_pair_sep(a, b, out);
+
+    if (a.shape == 0 && b.shape == 0) {
+        // Sphere-sphere: exact gap = |centres| - (ra + rb).
+        math::Vec3 d = math::sub(b.position, a.position);
+        f32 dist = std::sqrt(math::dot(d, d));
+        f32 r = a.half_extent.x + b.half_extent.x;
+        math::Vec3 n = (dist > 1e-9f) ? math::mul(d, 1.0f / dist) : math::Vec3{0, 1, 0};
+        out.normal_world = n;  // A -> B
+        out.point_world = math::add(a.position, math::mul(n, a.half_extent.x));
+        f32 sep = dist - r;
+        out.depth = -sep;
+        return sep;
+    }
+
+    return std::numeric_limits<f32>::infinity();
+}
+
+// Speculative-aware collide. Used by the world step's narrowphase. Behaviour:
+//   1. Penetrating pair -> identical touching contact as kernel_collide_pair
+//      (speculative == false), so existing resting contacts are UNCHANGED.
+//   2. Separated pair, closed-form distance available, and the bodies are
+//      CLOSING along the contact normal fast enough that the gap could close
+//      within `dt` (rel approach * dt >= gap) OR the gap is already within
+//      `margin` -> emit a SPECULATIVE contact (speculative == true,
+//      separation = gap). The solver clamps the approach so the bodies cannot
+//      cross the gap this step — no fake thickness, no position bias.
+//   3. Otherwise -> false (no contact), matching the old behaviour.
+// For pairs with no closed-form distance (box-box / capsule / GJK) this falls
+// straight through to kernel_collide_pair: their overlap-only behaviour, and
+// therefore every existing test + sample, is byte-for-byte unchanged.
+inline bool kernel_collide_pair_spec(
+    const Body& a, const Body& b, f32 dt, f32 margin, Contact& out) noexcept {
+    f32 sep = kernel_pair_separation(a, b, out);
+    if (sep == std::numeric_limits<f32>::infinity())
+        return kernel_collide_pair(a, b, out);  // no closed-form gap — overlap only
+
+    if (sep < 0.0f) {
+        // Penetrating: ordinary touching contact (depth already set by the
+        // separation kernel). Bit-identical to the kernel_collide_pair path.
+        out.depth = -sep;
+        out.speculative = false;
+        return true;
+    }
+
+    // Separated. Relative velocity of B w.r.t. A along the contact normal;
+    // negative == closing (B moving toward A along -normal). Only a closing
+    // pair can tunnel, so a receding/static separated pair never spawns a
+    // speculative contact (no spurious impulses on resting stacks).
+    const math::Vec3 n = out.normal_world;
+    const f32 vn = math::dot(math::sub(b.linear_velocity, a.linear_velocity), n);
+    const f32 closing = -vn;  // > 0 when approaching
+    const bool within_reach = (sep <= margin) || (closing * dt >= sep);
+    if (closing > 0.0f && within_reach) {
+        out.speculative = true;
+        out.separation = sep;
+        out.depth = 0.0f;  // not penetrating; the clamp uses `separation`
+        return true;
+    }
+    return false;
 }
 
 // ─── Union-find island detection (header-inline) ────────────────────────
@@ -679,13 +900,31 @@ inline void kernel_solve_island(const Island& island,
         math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
         math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
         f32 rel_n = math::dot(math::sub(vb, va), c.normal_world);
-        f32 e = std::max(A.restitution, B.restitution);
-        cc.e = (rel_n < -params.restitution_threshold) ? -e * rel_n : 0.0f;
 
-        cc.mu = std::sqrt(std::max(0.0f, A.friction) * std::max(0.0f, B.friction));
+        if (c.speculative) {
+            // Speculative contact (bodies not yet touching). The constraint is
+            // a one-sided SPEED LIMIT: the closing velocity may not exceed
+            // separation/dt, so the bodies cannot cross the gap this step. We
+            // encode that as a NEGATIVE target normal velocity (bias) and the
+            // shared velocity-iteration clamp (new_jn = max(0, acc + jn)) does
+            // the rest: when the pair closes slower than allowed the impulse
+            // clamps to zero (no spurious push), when it closes too fast the
+            // impulse brings it exactly to the limit. No restitution, no
+            // friction (not in contact yet), and the position-correction loop
+            // skips it (depth == 0). This is the only thing that resolves a
+            // fast thin-body pair a frame early — no fake thickness, no CCD.
+            cc.e = 0.0f;
+            cc.mu = 0.0f;
+            cc.bias = -c.separation / dt;
+        } else {
+            f32 e = std::max(A.restitution, B.restitution);
+            cc.e = (rel_n < -params.restitution_threshold) ? -e * rel_n : 0.0f;
 
-        f32 pen = std::max(0.0f, c.depth - params.slop);
-        cc.bias = (params.baumgarte / dt) * pen;
+            cc.mu = std::sqrt(std::max(0.0f, A.friction) * std::max(0.0f, B.friction));
+
+            f32 pen = std::max(0.0f, c.depth - params.slop);
+            cc.bias = (params.baumgarte / dt) * pen;
+        }
 
         math::Vec3 P = math::add(math::mul(c.normal_world, c.normal_impulse_acc),
                                  math::add(math::mul(cc.t1, c.friction_impulse_acc1),

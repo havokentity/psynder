@@ -20,6 +20,7 @@
 #include "Shape.h"
 #include "Vehicle.h"
 #include "FpControl.h"
+#include "internal/Kernels.h"
 #include "internal/Raycast.h"
 
 #include "jobs/JobSystem.h"
@@ -115,7 +116,7 @@ static void step_vehicles(WorldState& w, VehicleWorld& vw, f32 dt) noexcept {
     }
 }
 
-static void rebuild_aabbs(WorldState& w) {
+static void rebuild_aabbs(WorldState& w, f32 dt) {
     w.aabb_scratch.clear();
     w.aabb_scratch.reserve(w.bodies.size());
     for (u32 i = 0; i < w.bodies.size(); ++i) {
@@ -123,16 +124,49 @@ static void rebuild_aabbs(WorldState& w) {
         if (b.alive == 0)
             continue;  // hole
         math::Aabb box = aabb_world(b.shape, b.half_extent, b.position, b.rotation);
+
+        // Speculative anti-tunnelling: expand a FAST dynamic body's AABB by its
+        // swept displacement this tick (velocity * dt) so an about-to-cross
+        // pair is found THIS step rather than after it has already tunnelled.
+        // Gated on the body actually moving more than the speculative margin in
+        // one tick, so slow / resting bodies keep their EXACT prior AABB — the
+        // candidate-pair set (and therefore every existing resting contact) is
+        // byte-for-byte unchanged. The expansion is one-sided per axis toward
+        // the motion direction. Static bodies (inv_mass == 0) never sweep.
+        if (b.inv_mass > 0.0f) {
+            const math::Vec3 disp = math::mul(b.linear_velocity, dt);
+            const f32 disp_len2 = math::dot(disp, disp);
+            const f32 margin = detail::kernels::kSpeculativeMargin;
+            if (disp_len2 > margin * margin) {
+                if (disp.x < 0.0f)
+                    box.min.x += disp.x;
+                else
+                    box.max.x += disp.x;
+                if (disp.y < 0.0f)
+                    box.min.y += disp.y;
+                else
+                    box.max.y += disp.y;
+                if (disp.z < 0.0f)
+                    box.min.z += disp.z;
+                else
+                    box.max.z += disp.z;
+            }
+        }
         w.aabb_scratch.push_back({box.min, box.max, i});
     }
 }
 
-static void run_narrowphase(WorldState& w) {
+static void run_narrowphase(WorldState& w, f32 dt) {
     w.contact_scratch.clear();
     w.contact_scratch.reserve(w.pair_scratch.size());
+    const f32 margin = detail::kernels::kSpeculativeMargin;
     for (const CandidatePair& p : w.pair_scratch) {
         Contact c;
-        if (collide_pair(w.bodies[p.a], w.bodies[p.b], c)) {
+        // Speculative-aware collide: penetrating pairs behave exactly as
+        // before; a fast pair about to cross emits a speculative contact the
+        // solver clamps. Pairs with no closed-form gap (box-box / capsule /
+        // GJK) fall through to the unchanged overlap path inside.
+        if (collide_pair_spec(w.bodies[p.a], w.bodies[p.b], dt, margin, c)) {
             c.body_a = p.a;
             c.body_b = p.b;
             w.contact_scratch.push_back(c);
@@ -272,6 +306,12 @@ BodyId World::create_body(const BodyDesc& desc) {
         case Shape::Capsule:
             In = detail::inertia_capsule(desc.mass, desc.half_extent.x, desc.half_extent.y);
             break;
+        case Shape::Plane:
+            // An infinite half-space has no finite rotational inertia; treat it
+            // as non-rotating (zero local inertia -> zero inverse inertia
+            // below). Planes are normally static (mass 0) anyway.
+            In = {0, 0, 0};
+            break;
         case Shape::Box:
         default:
             In = detail::inertia_box(desc.mass, desc.half_extent);
@@ -335,9 +375,11 @@ void World::step(f32 dt_seconds) {
         // in the chassis accumulators when integrate_forces consumes them.
         detail::step_vehicles(w, impl_->vehicles, dt);
         detail::integrate_forces(w, dt);
-        detail::rebuild_aabbs(w);
+        // Swept AABB + speculative narrowphase run AFTER integrate_forces so
+        // the velocity they sweep with is the post-gravity velocity this tick.
+        detail::rebuild_aabbs(w, dt);
         detail::broadphase_sap(w.aabb_scratch, w.pair_scratch);
-        detail::run_narrowphase(w);
+        detail::run_narrowphase(w, dt);
         detail::run_island_solve(w, dt);
         detail::integrate_positions(w, dt);
 
