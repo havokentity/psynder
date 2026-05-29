@@ -30,7 +30,15 @@ running ledger: update it every wake-up. Newest entries on top.
 - DEMO GAME 1: indoor BSP shooter (games/shooter_demo) — level + hybrid render + physics + combat + AI, FP controls, headless smoke.
 - Editor play runs gameplay: PlayRuntime ticks combat + AI (LOS via world_.raycast, fire via gameplay) + PsyGraph during Play mode.
 
-## Wave 3+ (planned)
+## Wave 3 — COMPLETE (HEAD 71c0dfc): editor-play gameplay a7992cb, shooter_demo 71c0dfc.
+First playable FPS demo (games/shooter_demo): BSP room + hybrid shadows + combat + AI; headless run player killed all 3 enemies. Editor Play mode now ticks combat/AI/PsyGraph. Release-green, goldens 4/4.
+
+## Wave 4 (in flight)
+- DEMO GAME 2: NFS2SE-style racer (games/racer_demo) — spline track + vehicle physics + chase cam + lap timing.
+- Anti-tunneling #63: plane half-space primitive + speculative contacts (engine/physics).
+- Render fidelity: soft shadow penumbra (jittered multi-ray) + terrain heightmap-march shadow occlusion (engine/render).
+
+## Wave 5+ (planned)
 First demo GAME (indoor BSP shooter: combat + lights + hybrid shadows + AI + a level) under games/ — orchestrator wires it (root CMake + host). Then NFS racer demo, Delta Force terrain demo. Plus: wire PsyGraph tick + AI + combat into the editor play runtime; deferred render fidelity (soft penumbra, terrain-march shadows); anti-tunneling #63; editor graph-panel for PsyGraph.
 
 ## Done (recent → older)
