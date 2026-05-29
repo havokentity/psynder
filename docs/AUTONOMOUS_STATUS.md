@@ -24,7 +24,13 @@ running ledger: update it every wake-up. Newest entries on top.
 - M-AI (new engine/ai) — perception/state-machine/nav-v1 driving combat via host hooks.
 - M-NET (engine/net) — ECS snapshot+delta replication over existing Loopback/Frame/Snapshot; loopback convergence test.
 
-## Wave 3 (planned)
+## Wave 2 — COMPLETE (HEAD 342cca6): #69 raycast 89b5e33, M-AI 80eefd3, M-NET 342cca6. All release-green, goldens 4/4.
+
+## Wave 3 (in flight)
+- DEMO GAME 1: indoor BSP shooter (games/shooter_demo) — level + hybrid render + physics + combat + AI, FP controls, headless smoke.
+- Editor play runs gameplay: PlayRuntime ticks combat + AI (LOS via world_.raycast, fire via gameplay) + PsyGraph during Play mode.
+
+## Wave 3+ (planned)
 First demo GAME (indoor BSP shooter: combat + lights + hybrid shadows + AI + a level) under games/ — orchestrator wires it (root CMake + host). Then NFS racer demo, Delta Force terrain demo. Plus: wire PsyGraph tick + AI + combat into the editor play runtime; deferred render fidelity (soft penumbra, terrain-march shadows); anti-tunneling #63; editor graph-panel for PsyGraph.
 
 ## Done (recent → older)
