@@ -26,6 +26,7 @@
 #include "core/Types.h"
 #include "render/RenderingSystem.h"
 #include "render/raster/RasterLighting.h"
+#include "render/rt/HeightmapShadow.h"
 #include "scene/SceneEcs.h"
 
 namespace psynder::render::hybrid {
@@ -35,6 +36,7 @@ struct ShadowSceneStats {
     u32 blas_count = 0;      // unique meshes referenced this frame
     u32 blas_built = 0;      // BLAS actually (re)built this frame (0 = cache hit)
     bool built = false;      // false when nothing traceable was found
+    bool heightmap = false;  // true when a terrain heightmap is MAX-combined in
 };
 
 // Refresh the module-owned shadow TLAS from the scene's RT-visible mesh
@@ -48,6 +50,26 @@ struct ShadowSceneStats {
 // (null) and stats.built == false; the caller then renders plain raster.
 ShadowSceneStats build_shadow_scene(::psynder::scene::Scene& scene,
                                     ::psynder::render::RenderingSystem& renderer,
+                                    ::psynder::render::raster::ShadowOccluder& out_occluder) noexcept;
+
+// Heightmap-aware overload (DESIGN.md 8.2). When `heightmap != nullptr` and it
+// describes a valid field, the returned occluder MAX-combines two occlusion
+// results per shadow ray -- the mesh BVH (TLAS) AND a uniform-grid heightmap
+// march (render::rt::trace_heightmap_shadow) -- so terrain self-shadows and
+// casts onto meshes without putting the terrain into the BVH. The combine is a
+// logical OR of "blocked": a ray is occluded if EITHER path blocks it (per
+// 8.2, "the two occlusion results are MAX-combined per pixel"). The heightmap
+// is borrowed (the caller owns its y_data storage for the occluder's lifetime).
+//
+// If `heightmap == nullptr` (or it is degenerate) the result is identical to the
+// mesh-only overload -- the heightmap path is inert. If there is no mesh
+// geometry but a valid heightmap IS supplied, the occluder is still active
+// (terrain-only shadows). Host wiring of a live scene terrain heightmap into a
+// render::rt::Heightmap is the documented follow-up; this entry point + the
+// trampoline MAX-combine are in place and unit-tested.
+ShadowSceneStats build_shadow_scene(::psynder::scene::Scene& scene,
+                                    ::psynder::render::RenderingSystem& renderer,
+                                    const ::psynder::render::rt::Heightmap* heightmap,
                                     ::psynder::render::raster::ShadowOccluder& out_occluder) noexcept;
 
 }  // namespace psynder::render::hybrid

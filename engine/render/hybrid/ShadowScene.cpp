@@ -11,6 +11,7 @@
 
 #include "render/Geometry.h"
 #include "render/rt/Bvh.h"
+#include "render/rt/HeightmapShadow.h"
 
 #include <algorithm>
 #include <deque>
@@ -59,6 +60,15 @@ struct CachedBlas {
     MeshFingerprint fingerprint{};
 };
 
+// A combined occluder the trampoline reads through: the mesh BVH (TLAS) AND an
+// optional borrowed terrain heightmap. Address-stable (lives in the module
+// cache) so the ShadowOccluder can borrow a pointer to it across frames.
+struct CombinedOccluder {
+    const rrt::Tlas* tlas = nullptr;
+    rrt::Heightmap heightmap{};  // valid() == false when no terrain is bound
+    bool has_heightmap = false;
+};
+
 // Module-owned cache reused across build_shadow_scene calls (the host calls it
 // every frame). All members keep address-stable / reusable storage so a steady
 // scene allocates nothing after the first frame.
@@ -68,6 +78,7 @@ struct ShadowCache {
     rrt::Tlas tlas{};                                  // persistent (address-keyed) TLAS
     std::vector<rrt::Tlas::InstanceDesc> instances;
     std::vector<u32> referenced_slots;
+    CombinedOccluder combined{};                       // address-stable view handed out
 };
 
 ShadowCache& shadow_cache() {
@@ -100,23 +111,37 @@ void gather_mesh_triangles(const ::psynder::render::MeshView& mesh_view,
     }
 }
 
-// The ShadowOccluder trampoline: cast the opaque pointer back to the concrete
-// TLAS and answer an occlusion query. This is the single point where the raster
-// shadow term reaches into the raytracer; everything upstream stays opaque.
-bool tlas_occluded(const void* occluder,
-                   math::Vec3 origin,
-                   math::Vec3 dir,
-                   f32 t_min,
-                   f32 t_max) noexcept {
-    const auto* tlas = static_cast<const rrt::Tlas*>(occluder);
-    if (tlas == nullptr)
+// The ShadowOccluder trampoline (DESIGN.md 8.2): cast the opaque pointer back
+// to the module's CombinedOccluder and MAX-combine the two occlusion paths --
+// the mesh BVH (TLAS) AND, when bound, a uniform-grid heightmap march. This is
+// the single point where the raster shadow term reaches into the raytracer;
+// everything upstream stays opaque. "MAX-combine per pixel" reduces to a
+// logical OR of the two "blocked" results: a ray is occluded if EITHER path
+// blocks it. The heightmap-only / mesh-only cases fall out naturally (the
+// unbound path short-circuits), and an inactive heightmap leaves the mesh
+// result byte-identical to the BVH-only build.
+bool combined_occluded(const void* occluder,
+                       math::Vec3 origin,
+                       math::Vec3 dir,
+                       f32 t_min,
+                       f32 t_max) noexcept {
+    const auto* combined = static_cast<const CombinedOccluder*>(occluder);
+    if (combined == nullptr)
         return false;
+
     rrt::Ray ray{};
     ray.origin = origin;
     ray.direction = dir;
     ray.t_min = t_min;
     ray.t_max = t_max;
-    return tlas->occluded(ray);
+
+    // Mesh BVH first (cheap early-out on the common occluded-by-mesh case).
+    if (combined->tlas != nullptr && combined->tlas->occluded(ray))
+        return true;
+    // Terrain heightmap march, MAX-combined. Inert when no field is bound.
+    if (combined->has_heightmap)
+        return rrt::trace_heightmap_shadow(combined->heightmap, ray);
+    return false;
 }
 
 }  // namespace
@@ -125,9 +150,19 @@ ShadowSceneStats build_shadow_scene(
     ::psynder::scene::Scene& scene,
     ::psynder::render::RenderingSystem& renderer,
     ::psynder::render::raster::ShadowOccluder& out_occluder) noexcept {
+    return build_shadow_scene(scene, renderer, /*heightmap=*/nullptr, out_occluder);
+}
+
+ShadowSceneStats build_shadow_scene(
+    ::psynder::scene::Scene& scene,
+    ::psynder::render::RenderingSystem& renderer,
+    const ::psynder::render::rt::Heightmap* heightmap,
+    ::psynder::render::raster::ShadowOccluder& out_occluder) noexcept {
     ShadowSceneStats stats{};
     out_occluder.occluder = nullptr;
     out_occluder.occluded = nullptr;
+
+    const bool has_heightmap = heightmap != nullptr && heightmap->valid();
 
     std::lock_guard<std::mutex> guard(shadow_cache_mutex());
     ShadowCache& cache = shadow_cache();
@@ -135,8 +170,6 @@ ShadowSceneStats build_shadow_scene(
     // Gather the RT-visible renderables (world transforms already resolved).
     ::psynder::render::SceneRenderQueues queues;
     ::psynder::render::build_scene_render_queues(scene, queues);
-    if (queues.rt_visible.empty())
-        return stats;
 
     const ::psynder::render::MeshLibrary& meshes = renderer.meshes();
     const ::psynder::render::MeshView mesh_view = meshes.view();
@@ -198,17 +231,29 @@ ShadowSceneStats build_shadow_scene(
         cache.instances.push_back(desc);
     }
 
-    if (cache.instances.empty())
+    const bool has_mesh = !cache.instances.empty();
+    // Nothing to trace against: no mesh geometry AND no terrain field. Leave the
+    // occluder inactive so the caller falls back to plain raster (goldens safe).
+    if (!has_mesh && !has_heightmap)
         return stats;
 
-    cache.tlas.build(cache.instances.data(), static_cast<u32>(cache.instances.size()));
+    cache.combined = CombinedOccluder{};
+    if (has_mesh) {
+        cache.tlas.build(cache.instances.data(), static_cast<u32>(cache.instances.size()));
+        cache.combined.tlas = &cache.tlas;
+    }
+    if (has_heightmap) {
+        cache.combined.heightmap = *heightmap;  // borrowed y_data; caller owns storage
+        cache.combined.has_heightmap = true;
+    }
 
-    out_occluder.occluder = &cache.tlas;
-    out_occluder.occluded = &tlas_occluded;
+    out_occluder.occluder = &cache.combined;
+    out_occluder.occluded = &combined_occluded;
 
     stats.instance_count = static_cast<u32>(cache.instances.size());
     stats.blas_count = static_cast<u32>(cache.referenced_slots.size());
     stats.blas_built = blas_built;
+    stats.heightmap = has_heightmap;
     stats.built = true;
     return stats;
 }
