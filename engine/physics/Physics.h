@@ -69,6 +69,36 @@ class World {
     math::Vec3 get_position(BodyId id) const;
     math::Quat get_rotation(BodyId id) const;
 
+    // --- Scene raycast (line-of-sight + bullet hits; DESIGN.md 10.1) ------
+    // Closest live body struck by the ray, for gameplay/AI LOS and hit-scan.
+    // `body` is a gen-safe BodyId (decodes through resolve_body); `t` is the
+    // distance along the UNIT-normalised `dir` to the hit (in metres), so
+    // point == origin + dir*t. `normal` is the outward surface normal at the
+    // hit. `hit` is false when nothing is struck within `max_t`.
+    struct RaycastHit {
+        BodyId body{};
+        f32 t = 0.0f;
+        math::Vec3 point{0, 0, 0};
+        math::Vec3 normal{0, 0, 0};
+        bool hit = false;
+    };
+
+    // Cast a ray from `origin` along `dir` (any length; internally normalised)
+    // up to `max_t` metres and return the NEAREST hit. Iterates live bodies,
+    // skipping holes, the optional `ignore` body (the shooter), and bodies
+    // whose broad AABB the ray misses, then runs the exact per-shape test:
+    //   Sphere  -> ray-vs-sphere
+    //   Capsule -> ray-vs-capsule (local +Y segment, swept-sphere)
+    //   Box     -> ray-vs-OBB (oriented by the body rotation)
+    //   ConvexHull / Compound / Heightfield / TriangleMesh -> ray-vs-OBB of the
+    //       half_extent (documented Wave-A fallback until those shapes land).
+    // Pure const read: no mutation, no heap allocation per call, no RNG. Safe
+    // to call concurrently with OTHER const reads, but must not race step().
+    [[nodiscard]] RaycastHit raycast(math::Vec3 origin,
+                                     math::Vec3 dir,
+                                     f32 max_t,
+                                     BodyId ignore = {}) const noexcept;
+
     // ─── Body mutation (sample 10 physgun; DESIGN.md §10.8) ───────────────
     // Minimal deterministic writers so an external "physgun" (or any gameplay
     // code) can grab and fling a body without owning the internal Body struct.

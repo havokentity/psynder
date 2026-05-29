@@ -20,6 +20,7 @@
 #include "Shape.h"
 #include "Vehicle.h"
 #include "FpControl.h"
+#include "internal/Raycast.h"
 
 #include "jobs/JobSystem.h"
 
@@ -462,6 +463,81 @@ math::Quat World::get_rotation(BodyId id) const {
         b.prev_rotation.w + (b.rotation.w - b.prev_rotation.w) * a,
     };
     return math::quat_normalize(q);
+}
+
+World::RaycastHit World::raycast(math::Vec3 origin,
+                                 math::Vec3 dir,
+                                 f32 max_t,
+                                 BodyId ignore) const noexcept {
+    RaycastHit result{};
+    const auto& w = impl_->state;
+
+    // Normalise the direction so `t` is a true distance in metres; a degenerate
+    // (zero-length) dir can never hit anything.
+    const f32 dir_len = math::length(dir);
+    if (!(dir_len > 0.0f) || !(max_t > 0.0f))
+        return result;
+    const math::Vec3 d = math::mul(dir, 1.0f / dir_len);
+
+    // Decode `ignore` once: skip the shooter's own slot only when its slot AND
+    // generation are live (a stale ignore handle must not blanket-skip a reused
+    // slot). kSkip is an index that never matches a real slot when ignore is
+    // empty/stale.
+    constexpr u32 kSkip = 0xFFFFFFFFu;
+    u32 ignore_idx = kSkip;
+    if (ignore.raw != 0u) {
+        const u32 ii = detail::handle_index(ignore.raw);
+        if (ii < w.bodies.size() && w.bodies[ii].alive != 0 &&
+            w.bodies[ii].gen == detail::handle_gen(ignore.raw))
+            ignore_idx = ii;
+    }
+
+    f32 best_t = max_t;  // shrinks as nearer hits are found
+    for (u32 i = 0; i < w.bodies.size(); ++i) {
+        const detail::Body& b = w.bodies[i];
+        if (b.alive == 0 || i == ignore_idx)
+            continue;  // hole or the shooter's own body
+
+        // Broad prefilter: skip bodies whose (conservative, possibly fattened)
+        // world AABB the ray does not enter within the current best distance.
+        // This is the same AABB the broadphase builds, so a body that can't be
+        // hit is rejected before the exact per-shape solve.
+        const math::Aabb box =
+            detail::aabb_world(b.shape, b.half_extent, b.position, b.rotation);
+        f32 broad_t;
+        if (!detail::ray_aabb(origin, d, box, best_t, broad_t))
+            continue;
+
+        detail::RayShapeHit hit{};
+        bool got = false;
+        switch (static_cast<Shape>(b.shape)) {
+            case Shape::Sphere:
+                got = detail::ray_sphere(origin, d, b.position, b.half_extent.x,
+                                         best_t, hit);
+                break;
+            case Shape::Capsule:
+                got = detail::ray_capsule(origin, d, b.position, b.rotation,
+                                          b.half_extent.x, b.half_extent.y, best_t, hit);
+                break;
+            case Shape::Box:
+            // ConvexHull / Compound / Heightfield / TriangleMesh fall back to the
+            // OBB of their half_extent (Wave-A; lane-13 Wave B refines these).
+            default:
+                got = detail::ray_obb(origin, d, b.position, b.rotation, b.half_extent,
+                                      best_t, hit);
+                break;
+        }
+
+        if (got && hit.hit && hit.t <= best_t) {
+            best_t = hit.t;
+            result.body = BodyId{detail::handle_encode(b.gen, i)};
+            result.t = hit.t;
+            result.point = hit.point;
+            result.normal = hit.normal;
+            result.hit = true;
+        }
+    }
+    return result;
 }
 
 }  // namespace psynder::physics
