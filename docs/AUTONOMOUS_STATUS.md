@@ -17,8 +17,15 @@ running ledger: update it every wake-up. Newest entries on top.
 - M-HYB hybrid shadows: LANDED `d764114`. Raster primary + per-pixel hard shadow rays (sun/point/spot), Hybrid mode, opaque ShadowOccluder trampoline (raster core doesn't link rt), goldens unchanged, release-green. Deferred fidelity: soft penumbra, terrain heightmap-march occlusion, spot-cone sampling.
 - M-PSYGRAPH visual scripting (new engine/script/psygraph) — in flight.
 
-## Wave 2 (next, after M-PSYGRAPH integrates)
-M-AI (enemy perception/nav/state machine — uses combat + needs World::raycast #69), M-NET (UDP snapshot+delta replication), first demo game (indoor BSP shooter exercising combat+lights+hybrid shadows). Also fold in #69 raycast (unblocks AI LOS + combat cover) and deferred fidelity/anti-tunneling (#63) as capacity allows.
+## Wave 1 — COMPLETE (HEAD f2275e6): M-COMBAT 9007b38, M-HYB d764114, M-PSYGRAPH f2275e6. All release-green, goldens 4/4.
+
+## Wave 2 (in flight)
+- #69 physics World::raycast (engine/physics) — public scene raycast for LOS/bullets.
+- M-AI (new engine/ai) — perception/state-machine/nav-v1 driving combat via host hooks.
+- M-NET (engine/net) — ECS snapshot+delta replication over existing Loopback/Frame/Snapshot; loopback convergence test.
+
+## Wave 3 (planned)
+First demo GAME (indoor BSP shooter: combat + lights + hybrid shadows + AI + a level) under games/ — orchestrator wires it (root CMake + host). Then NFS racer demo, Delta Force terrain demo. Plus: wire PsyGraph tick + AI + combat into the editor play runtime; deferred render fidelity (soft penumbra, terrain-march shadows); anti-tunneling #63; editor graph-panel for PsyGraph.
 
 ## Done (recent → older)
 - Editor render-settings panel (mode/sun/ambient/shadow/RT quality) + scene-level RenderSettings serialized to .psyscene.
