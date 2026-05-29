@@ -5,6 +5,7 @@
 
 #include "EcsRegistry_Internal.h"
 #include "scene/Environment.h"
+#include "scene/RenderSettings.h"
 #include "scene/SceneGraph.h"
 
 #include <cstddef>
@@ -68,6 +69,7 @@ struct EcsEditorEntitySnapshot {
 
 struct EcsEditorSceneSnapshot {
     EnvironmentSettings environment{};
+    RenderSettings render_settings{};
     std::vector<EcsEditorEntitySnapshot> hierarchy;
 
     void clear() { hierarchy.clear(); }

@@ -38,6 +38,34 @@ struct SceneRtOptions {
     // When true, pull AO / cores / reflection overrides from the console
     // (frame_render_config_from_console). When false, defaults are used.
     bool use_console_config = true;
+
+    // Scene-level render settings applied on top of the gathered ECS lights and
+    // the (console or default) FrameRenderConfig. When `apply_render_settings`
+    // is true the host has filled these from scene::RenderSettings:
+    //   - sun_enabled: append a synthesized directional sun to the light set
+    //     (distant point proxy, see gather; uses sun_direction/color/intensity).
+    //   - ambient_*: scale the RT ambient term (FrameRenderConfig.ambient_scale)
+    //     by the ambient colour luminance * intensity.
+    //   - rt_ao / rt_reflection_bounces: drive FrameRenderConfig.ambient_occlusion
+    //     and reflection_bounces (these override the console config when applied).
+    //   - rt_samples: plumbed; the current FrameRenderConfig has no multisample
+    //     knob, so this is carried but not yet effective (documented gap).
+    // trace_downscale above is set from RenderSettings.rt_trace_downscale by the
+    // host. Sun/ambient feed the same FrameLights / FrameRenderConfig the RT
+    // kernel already consumes -- no raster-core or RenderingSystem changes.
+    bool apply_render_settings = false;
+    u8 sun_enabled = 0u;
+    math::Vec3 sun_direction{-0.4f, -0.8f, -0.45f};
+    u32 sun_color_rgba8 = 0xFFFFFFFFu;
+    f32 sun_intensity = 1.0f;
+    u32 ambient_color_rgba8 = 0xFF404040u;
+    f32 ambient_intensity = 1.0f;
+    u8 shadows_enabled = 1u;
+    f32 shadow_softness = 0.5f;
+    f32 shadow_opacity = 0.7f;
+    u32 rt_ao = 1u;
+    u32 rt_reflection_bounces = 1u;
+    u32 rt_samples = 1u;
 };
 
 struct SceneRtStats {

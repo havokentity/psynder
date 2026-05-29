@@ -128,6 +128,7 @@ template <class T>
 
 struct SceneFileSaveScratch {
     SceneFileEnvironment environment{};
+    SceneFileRenderSettings render_settings{};
     std::vector<math::Vec3> translations;
     std::vector<math::Quat> rotations;
     std::vector<math::Vec3> scales;
@@ -552,7 +553,7 @@ template <class T>
 [[nodiscard]] bool write_save_blob(const SceneFileSaveScratch& scene,
                                    detail::AlignedVector<u8>& out,
                                    std::string* error) {
-    constexpr usize kSceneFileChunkCount = 15u;
+    constexpr usize kSceneFileChunkCount = 16u;
     out.clear();
     out.resize(sizeof(SceneFileHeader) + kSceneFileChunkCount * sizeof(SceneFileChunk));
 
@@ -569,6 +570,12 @@ template <class T>
                            SceneFileChunkType::Environment,
                            std::span<const SceneFileEnvironment>{&scene.environment, 1u},
                            sizeof(SceneFileEnvironment),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::RenderSettings,
+                           std::span<const SceneFileRenderSettings>{&scene.render_settings, 1u},
+                           sizeof(SceneFileRenderSettings),
                            error) ||
         !append_save_chunk(out,
                            chunks,
@@ -750,6 +757,10 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
                    sizeof(SceneFileEnvironment),
                    out.environments,
                    "environment") ||
+        !load_span(SceneFileChunkType::RenderSettings,
+                   sizeof(SceneFileRenderSettings),
+                   out.render_settings,
+                   "render_settings") ||
         !load_span(SceneFileChunkType::TransformTranslation,
                    sizeof(math::Vec3),
                    out.translations,
@@ -1127,6 +1138,28 @@ SceneFileInstantiateResult instantiate_scene_file(
         scene.environment().set_clear_enabled(e.clear_color != 0u, e.clear_depth != 0u);
     }
 
+    // RenderSettings (v3+ SRND chunk). Older files have no chunk, leaving the
+    // scene's default RenderSettings (sun disabled) untouched.
+    if (!scene_file.render_settings.empty()) {
+        const SceneFileRenderSettings& r = scene_file.render_settings[0];
+        RenderSettings rs{};
+        rs.render_mode = static_cast<RenderMode>(r.render_mode);
+        rs.sun_enabled = r.sun_enabled;
+        rs.sun_direction = r.sun_direction;
+        rs.sun_color_rgba8 = r.sun_color_rgba8;
+        rs.sun_intensity = r.sun_intensity;
+        rs.ambient_color_rgba8 = r.ambient_color_rgba8;
+        rs.ambient_intensity = r.ambient_intensity;
+        rs.shadows_enabled = r.shadows_enabled;
+        rs.shadow_softness = r.shadow_softness;
+        rs.shadow_opacity = r.shadow_opacity;
+        rs.rt_trace_downscale = r.rt_trace_downscale;
+        rs.rt_ao = r.rt_ao;
+        rs.rt_reflection_bounces = r.rt_reflection_bounces;
+        rs.rt_samples = r.rt_samples;
+        scene.set_render_settings(rs);
+    }
+
     if (!scene_file.authoring_nodes.empty()) {
         return instantiate_authoring_scene_file(scene,
                                                 scene_file,
@@ -1271,6 +1304,22 @@ bool save_scene_file(Scene& scene,
     saved.environment.clear_color_rgba8 = env.clear_color_rgba8;
     saved.environment.clear_color = env.clear_color ? 1u : 0u;
     saved.environment.clear_depth = env.clear_depth ? 1u : 0u;
+
+    const RenderSettings rs = sanitize_render_settings(scene.render_settings());
+    saved.render_settings.render_mode = static_cast<u8>(rs.render_mode);
+    saved.render_settings.sun_enabled = rs.sun_enabled ? 1u : 0u;
+    saved.render_settings.shadows_enabled = rs.shadows_enabled ? 1u : 0u;
+    saved.render_settings.rt_ao = rs.rt_ao ? 1u : 0u;
+    saved.render_settings.sun_direction = rs.sun_direction;
+    saved.render_settings.sun_color_rgba8 = rs.sun_color_rgba8;
+    saved.render_settings.sun_intensity = rs.sun_intensity;
+    saved.render_settings.ambient_color_rgba8 = rs.ambient_color_rgba8;
+    saved.render_settings.ambient_intensity = rs.ambient_intensity;
+    saved.render_settings.shadow_softness = rs.shadow_softness;
+    saved.render_settings.shadow_opacity = rs.shadow_opacity;
+    saved.render_settings.rt_trace_downscale = rs.rt_trace_downscale;
+    saved.render_settings.rt_reflection_bounces = rs.rt_reflection_bounces;
+    saved.render_settings.rt_samples = rs.rt_samples;
     scene.graph().update_world_transforms();
 
     bool ok = true;

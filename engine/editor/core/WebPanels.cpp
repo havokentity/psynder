@@ -422,7 +422,7 @@ std::vector<u8> encode_schema_catalog_envelope() {
     w.str("payload");
     w.map_header(1);
     w.str("components");
-    w.array_header(15);
+    w.array_header(16);
 
     write_component_schema_header(w, "EnvironmentComponent", "native-environment-v1", 10);
     write_field_schema(w, "clear_color_rgba8", "color", false);
@@ -435,6 +435,31 @@ std::vector<u8> encode_schema_catalog_envelope() {
     write_field_schema(w, "cloud_coverage", "f32", false, 0.01f);
     write_field_schema(w, "cloud_density", "f32", false, 0.01f);
     write_field_schema(w, "cloud_height", "f32", false, 1.0f, "m");
+
+    // Scene-level render settings. Published on the synthetic scene root
+    // (entity 0, "Arcade Scene") alongside EnvironmentComponent; edits route
+    // back through the component_edit path (RenderSettingsComponent branch in
+    // the host apply_component_field) on the main thread.
+    constexpr std::array<EnumOption, 3> kRenderModeOptions{{
+        {"Raster", static_cast<u32>(scene::RenderMode::Raster)},
+        {"Raytraced", static_cast<u32>(scene::RenderMode::Raytraced)},
+        {"Hybrid", static_cast<u32>(scene::RenderMode::Hybrid)},
+    }};
+    write_component_schema_header(w, "RenderSettingsComponent", "native-render-settings-v1", 14);
+    write_field_schema(w, "render_mode", "enum", false, {}, {}, kRenderModeOptions);
+    write_field_schema(w, "sun_enabled", "bool", false);
+    write_field_schema(w, "sun_direction", "vec3", false, 0.01f);
+    write_field_schema(w, "sun_color_rgba8", "color", false);
+    write_field_schema(w, "sun_intensity", "f32", false, 0.05f);
+    write_field_schema(w, "ambient_color_rgba8", "color", false);
+    write_field_schema(w, "ambient_intensity", "f32", false, 0.05f);
+    write_field_schema(w, "shadows_enabled", "bool", false);
+    write_field_schema(w, "shadow_softness", "f32", false, 0.01f);
+    write_field_schema(w, "shadow_opacity", "f32", false, 0.01f);
+    write_field_schema(w, "rt_trace_downscale", "u32", false, 1.0f);
+    write_field_schema(w, "rt_ao", "u32", false, 1.0f);
+    write_field_schema(w, "rt_reflection_bounces", "u32", false, 1.0f);
+    write_field_schema(w, "rt_samples", "u32", false, 1.0f);
 
     write_component_schema_header(w, "TransformComponent", "native-transform-v2", 3);
     write_field_schema(w, "translation", "vec3", false, 0.01f, "m");
@@ -636,6 +661,23 @@ u64 selection_signature(scene::Scene& scene, Entity entity, u32 generation) {
         out = hash_f32(out, env.clouds.coverage);
         out = hash_f32(out, env.clouds.density);
         out = hash_f32(out, env.clouds.height);
+        const scene::RenderSettings& rs = scene.render_settings();
+        out = hierarchy_hash_combine(out, static_cast<u32>(rs.render_mode));
+        out = hierarchy_hash_combine(out, rs.sun_enabled ? 1u : 0u);
+        out = hash_f32(out, rs.sun_direction.x);
+        out = hash_f32(out, rs.sun_direction.y);
+        out = hash_f32(out, rs.sun_direction.z);
+        out = hierarchy_hash_combine(out, rs.sun_color_rgba8);
+        out = hash_f32(out, rs.sun_intensity);
+        out = hierarchy_hash_combine(out, rs.ambient_color_rgba8);
+        out = hash_f32(out, rs.ambient_intensity);
+        out = hierarchy_hash_combine(out, rs.shadows_enabled ? 1u : 0u);
+        out = hash_f32(out, rs.shadow_softness);
+        out = hash_f32(out, rs.shadow_opacity);
+        out = hierarchy_hash_combine(out, rs.rt_trace_downscale);
+        out = hierarchy_hash_combine(out, rs.rt_ao);
+        out = hierarchy_hash_combine(out, rs.rt_reflection_bounces);
+        out = hierarchy_hash_combine(out, rs.rt_samples);
         return out;
     }
 
@@ -761,6 +803,7 @@ u64 selection_signature(scene::Scene& scene, Entity entity, u32 generation) {
 
 std::vector<u8> encode_scene_selection_state_envelope(scene::Scene& scene) {
     const scene::EnvironmentSettings& env = scene.environment().settings();
+    const scene::RenderSettings& rs = scene.render_settings();
     ipc::msgpack::Writer w;
     w.map_header(4);
     w.str("v");
@@ -776,7 +819,7 @@ std::vector<u8> encode_scene_selection_state_envelope(scene::Scene& scene) {
     w.str("entity_label");
     w.str("Arcade Scene");
     w.str("components");
-    w.map_header(1);
+    w.map_header(2);
     w.str("EnvironmentComponent");
     w.map_header(10);
     w.str("clear_color_rgba8");
@@ -799,6 +842,36 @@ std::vector<u8> encode_scene_selection_state_envelope(scene::Scene& scene) {
     w.f32_(env.clouds.density);
     w.str("cloud_height");
     w.f32_(env.clouds.height);
+    w.str("RenderSettingsComponent");
+    w.map_header(14);
+    w.str("render_mode");
+    w.u32_(static_cast<u32>(rs.render_mode));
+    w.str("sun_enabled");
+    w.boolean(rs.sun_enabled != 0u);
+    w.str("sun_direction");
+    write_vec3(w, rs.sun_direction);
+    w.str("sun_color_rgba8");
+    w.u32_(rs.sun_color_rgba8);
+    w.str("sun_intensity");
+    w.f32_(rs.sun_intensity);
+    w.str("ambient_color_rgba8");
+    w.u32_(rs.ambient_color_rgba8);
+    w.str("ambient_intensity");
+    w.f32_(rs.ambient_intensity);
+    w.str("shadows_enabled");
+    w.boolean(rs.shadows_enabled != 0u);
+    w.str("shadow_softness");
+    w.f32_(rs.shadow_softness);
+    w.str("shadow_opacity");
+    w.f32_(rs.shadow_opacity);
+    w.str("rt_trace_downscale");
+    w.u32_(rs.rt_trace_downscale);
+    w.str("rt_ao");
+    w.u32_(rs.rt_ao);
+    w.str("rt_reflection_bounces");
+    w.u32_(rs.rt_reflection_bounces);
+    w.str("rt_samples");
+    w.u32_(rs.rt_samples);
     return w.buffer();
 }
 

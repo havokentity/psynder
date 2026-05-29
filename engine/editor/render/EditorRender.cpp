@@ -207,6 +207,54 @@ void gather_scene_frame_lights(::psynder::scene::Scene& scene,
     }
 }
 
+// Synthesize the scene's global directional sun (RenderSettings.sun_*) as a
+// distant point-light proxy and append it to the gathered RT light set. The RT
+// FrameLight is point-only, so we place the proxy far along -sun_direction so
+// its rays are roughly parallel over the scene's local extent -- the same trick
+// gather_scene_frame_lights uses for ECS directional lights. A directional sun
+// has no world position, so we anchor the proxy at the world origin. Skipped
+// entirely when sun_enabled is false, so the default (sun off) adds no light.
+void append_sun_frame_light(const SceneRtOptions& options,
+                            std::vector<rrt::FrameLight>& out) {
+    if (!options.apply_render_settings || !options.sun_enabled)
+        return;
+    const f32 len2 = options.sun_direction.x * options.sun_direction.x +
+                     options.sun_direction.y * options.sun_direction.y +
+                     options.sun_direction.z * options.sun_direction.z;
+    if (len2 <= 1.0e-12f)
+        return;
+    const math::Vec3 dir = math::mul(options.sun_direction, 1.0f / std::sqrt(len2));
+    const u32 rgba = options.sun_color_rgba8;
+    rrt::FrameLight light{};
+    light.r = static_cast<f32>(rgba & 0xFFu) / 255.0f;
+    light.g = static_cast<f32>((rgba >> 8) & 0xFFu) / 255.0f;
+    light.b = static_cast<f32>((rgba >> 16) & 0xFFu) / 255.0f;
+    light.intensity = std::max(0.0f, options.sun_intensity);
+    light.range = 10000.0f;  // huge range: near-constant attenuation scene-wide
+    light.position = math::mul(dir, -light.range);
+    out.push_back(light);
+}
+
+// Apply the scene-level RenderSettings knobs to the per-frame RT config. Sun is
+// folded in as a light (append_sun_frame_light); here we fold ambient + AO +
+// reflection bounces into the FrameRenderConfig the kernel consumes. ambient
+// scales the existing ambient_scale by the ambient colour luminance * intensity
+// so a darker/brighter ambient colour reads through. rt_samples has no kernel
+// knob yet, so it is intentionally not applied (documented gap).
+void apply_render_settings_to_config(const SceneRtOptions& options,
+                                     rrt::FrameRenderConfig& config) {
+    if (!options.apply_render_settings)
+        return;
+    const u32 rgba = options.ambient_color_rgba8;
+    const f32 ar = static_cast<f32>(rgba & 0xFFu) / 255.0f;
+    const f32 ag = static_cast<f32>((rgba >> 8) & 0xFFu) / 255.0f;
+    const f32 ab = static_cast<f32>((rgba >> 16) & 0xFFu) / 255.0f;
+    const f32 luma = 0.2126f * ar + 0.7152f * ag + 0.0722f * ab;
+    config.ambient_scale = config.ambient_scale * luma * std::max(0.0f, options.ambient_intensity);
+    config.ambient_occlusion = options.rt_ao != 0u;
+    config.reflection_bounces = options.rt_reflection_bounces;
+}
+
 // Recover an rt::FrameCamera from a scene::SceneCameraView (view + projection
 // matrices, column-major). The camera world matrix is the inverse of the view
 // matrix; eye is its translation, forward is its -Z column, up is its +Y
@@ -363,6 +411,11 @@ SceneRtStats render_scene_rt_locked(RtCache& cache,
         config.tile_size = tile_size;
     }
 
+    // Fold scene-level RenderSettings (ambient / AO / reflection bounces) into
+    // the per-frame config. The sun, when enabled, was already appended to the
+    // gathered light set by the ECS entry point (append_sun_frame_light).
+    apply_render_settings_to_config(options, config);
+
     renderer.render_rt(input, config, reinterpret_cast<u32*>(target.pixels), &stats.frame);
 
     stats.instance_count = static_cast<u32>(cache.instances.size());
@@ -496,6 +549,7 @@ SceneRtStats render_scene_rt(::psynder::scene::Scene& scene,
     std::lock_guard<std::mutex> lock(rt_cache_mutex());
     RtCache& cache = rt_cache();
     gather_scene_frame_lights(scene, cache.lights);  // fills the reused light buffer
+    append_sun_frame_light(options, cache.lights);   // global sun (RenderSettings.sun_*)
     return render_scene_rt_locked(cache, scene, view, renderer, cache.lights, target, options);
 }
 

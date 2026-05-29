@@ -11,6 +11,7 @@
 #include "render/Material.h"
 #include "scene/EcsRegistry.h"
 #include "scene/Environment.h"
+#include "scene/RenderSettings.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneRuntime.h"
 
@@ -1052,6 +1053,16 @@ class Scene {
     }
     [[nodiscard]] Environment& environment() noexcept { return environment_; }
     [[nodiscard]] const Environment& environment() const noexcept { return environment_; }
+    // Scene-level render settings (render mode, sun + ambient lighting, shadow
+    // controls, RT quality). Pure POD, owned by value like EnvironmentSettings;
+    // serialized in the scene file and applied by the host each frame.
+    [[nodiscard]] RenderSettings& render_settings() noexcept { return render_settings_; }
+    [[nodiscard]] const RenderSettings& render_settings() const noexcept {
+        return render_settings_;
+    }
+    void set_render_settings(const RenderSettings& settings) noexcept {
+        render_settings_ = sanitize_render_settings(settings);
+    }
     [[nodiscard]] SceneRuntime& runtime() noexcept { return runtime_; }
     [[nodiscard]] const SceneRuntime& runtime() const noexcept { return runtime_; }
 
@@ -1513,6 +1524,7 @@ class Scene {
         runtime_ = std::move(other.runtime_);
         environment_ = std::move(other.environment_);
         environment_.bind_runtime(runtime_.environment);
+        render_settings_ = other.render_settings_;
         render_item_capacity_ = other.render_item_capacity_;
         mesh_spawner_user_ = other.mesh_spawner_user_;
         mesh_spawner_ = other.mesh_spawner_;
@@ -1528,6 +1540,7 @@ class Scene {
 
         other.registry_ = &EcsRegistry::Get();
         other.environment_.bind_runtime(other.runtime_.environment);
+        other.render_settings_ = RenderSettings{};
         other.render_item_capacity_ = 0u;
         other.mesh_spawner_user_ = nullptr;
         other.mesh_spawner_ = nullptr;
@@ -1616,6 +1629,7 @@ class Scene {
     ::psynder::render::MaterialLibrary materials_{};
     SceneRuntime runtime_{};
     Environment environment_{};
+    RenderSettings render_settings_{};
     u32 render_item_capacity_ = 0u;
     void* mesh_spawner_user_ = nullptr;
     SpawnMeshFn mesh_spawner_ = nullptr;

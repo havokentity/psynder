@@ -527,3 +527,84 @@ TEST_CASE("scene save roundtrips authoring metadata through cooked v1",
     REQUIRE(std::abs(loaded_lights[0].range - light.range) < 0.0001f);
     REQUIRE(loaded_lights[0].casts_shadow);
 }
+
+TEST_CASE("scene save roundtrips render settings through the SRND chunk",
+          "[scene][scene_file][render_settings]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    // A freshly-built scene defaults to Raster + sun disabled so older scenes
+    // and goldens are unaffected.
+    scene::Scene defaults{registry};
+    REQUIRE(defaults.render_settings().render_mode == scene::RenderMode::Raster);
+    REQUIRE(defaults.render_settings().sun_enabled == 0u);
+
+    scene::Scene authored{registry};
+    scene::RenderSettings rs{};
+    rs.render_mode = scene::RenderMode::Raytraced;
+    rs.sun_enabled = 1u;
+    rs.sun_direction = math::Vec3{0.25f, -0.5f, 0.75f};
+    rs.sun_color_rgba8 = 0xFF8040C0u;
+    rs.sun_intensity = 2.5f;
+    rs.ambient_color_rgba8 = 0xFF203040u;
+    rs.ambient_intensity = 0.6f;
+    rs.shadows_enabled = 0u;
+    rs.shadow_softness = 0.33f;
+    rs.shadow_opacity = 0.88f;
+    rs.rt_trace_downscale = 3u;
+    rs.rt_ao = 0u;
+    rs.rt_reflection_bounces = 4u;
+    rs.rt_samples = 8u;
+    authored.set_render_settings(rs);
+
+    const scene::SceneFileSaveHooks hooks{};
+    scene::detail::AlignedVector<u8> bytes;
+    std::string error;
+    REQUIRE(scene::save_scene_file(authored, hooks, bytes, nullptr, &error));
+    REQUIRE(error.empty());
+
+    scene::SceneFileView view{};
+    REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()}, view, &error));
+    REQUIRE(view.header != nullptr);
+    REQUIRE(view.header->version == scene::kPsySceneVersion);
+    REQUIRE(view.render_settings.size() == 1u);
+    const scene::SceneFileRenderSettings& cooked = view.render_settings[0];
+    REQUIRE(cooked.render_mode == static_cast<u8>(scene::RenderMode::Raytraced));
+    REQUIRE(cooked.sun_enabled == 1u);
+    REQUIRE(cooked.shadows_enabled == 0u);
+    REQUIRE(cooked.rt_ao == 0u);
+    REQUIRE(std::abs(cooked.sun_direction.x - 0.25f) < 0.0001f);
+    REQUIRE(std::abs(cooked.sun_direction.y + 0.5f) < 0.0001f);
+    REQUIRE(std::abs(cooked.sun_direction.z - 0.75f) < 0.0001f);
+    REQUIRE(cooked.sun_color_rgba8 == 0xFF8040C0u);
+    REQUIRE(cooked.ambient_color_rgba8 == 0xFF203040u);
+    REQUIRE(cooked.rt_trace_downscale == 3u);
+    REQUIRE(cooked.rt_reflection_bounces == 4u);
+    REQUIRE(cooked.rt_samples == 8u);
+
+    RegistryReset reload_reset;
+    auto& reload_registry = scene::EcsRegistry::Get();
+    reload_registry.set_structural_deferred(false);
+    scene::Scene loaded{reload_registry};
+    const scene::SceneFileInstantiateResult instantiate =
+        scene::instantiate_scene_file(loaded, view, {});
+    (void)instantiate;
+    const scene::RenderSettings& got = loaded.render_settings();
+    REQUIRE(got.render_mode == scene::RenderMode::Raytraced);
+    REQUIRE(got.sun_enabled == 1u);
+    REQUIRE(std::abs(got.sun_direction.x - 0.25f) < 0.0001f);
+    REQUIRE(std::abs(got.sun_direction.y + 0.5f) < 0.0001f);
+    REQUIRE(std::abs(got.sun_direction.z - 0.75f) < 0.0001f);
+    REQUIRE(got.sun_color_rgba8 == 0xFF8040C0u);
+    REQUIRE(std::abs(got.sun_intensity - 2.5f) < 0.0001f);
+    REQUIRE(got.ambient_color_rgba8 == 0xFF203040u);
+    REQUIRE(std::abs(got.ambient_intensity - 0.6f) < 0.0001f);
+    REQUIRE(got.shadows_enabled == 0u);
+    REQUIRE(std::abs(got.shadow_softness - 0.33f) < 0.0001f);
+    REQUIRE(std::abs(got.shadow_opacity - 0.88f) < 0.0001f);
+    REQUIRE(got.rt_trace_downscale == 3u);
+    REQUIRE(got.rt_ao == 0u);
+    REQUIRE(got.rt_reflection_bounces == 4u);
+    REQUIRE(got.rt_samples == 8u);
+}

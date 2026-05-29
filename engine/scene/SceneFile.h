@@ -25,7 +25,10 @@ inline constexpr u32 kPsySceneMagic = 0x4E435350u;  // "PSCN", little endian.
 // v2 adds the PhysicsBodies (SPHY) chunk (authoring RigidBody / Vehicle /
 // Helicopter / Character components). Older v1 files have no SPHY chunk and load
 // unchanged — parse_scene_file accepts any version <= kPsySceneVersion.
-inline constexpr u16 kPsySceneVersion = 2u;
+// v3 adds the RenderSettings (SRND) chunk (render mode + sun/ambient/shadow/RT
+// quality). Older v1/v2 files have no SRND chunk; load_span treats a missing
+// chunk as empty, so they load with the RenderSettings defaults (sun disabled).
+inline constexpr u16 kPsySceneVersion = 3u;
 inline constexpr u32 kPsySceneAlignment = 64u;
 
 enum class SceneFileChunkType : u32 {
@@ -44,6 +47,7 @@ enum class SceneFileChunkType : u32 {
     AuthoringNodes = 0x54554153u,   // SAUT
     GameplayEntities = 0x504D4753u,  // SGMP
     PhysicsBodies = 0x59485053u,    // SPHY
+    RenderSettings = 0x444E5253u,   // SRND
 };
 
 struct SceneFileHeader {
@@ -71,6 +75,26 @@ struct SceneFileEnvironment {
     u8 clear_color = 1u;
     u8 clear_depth = 1u;
     u8 _pad[2] = {};
+};
+
+// Cooked render settings (v3+ SRND chunk). Mirrors scene::RenderSettings field
+// for field; render_mode is stored as a u8 (scene::RenderMode). Older files
+// have no SRND chunk and load with the runtime defaults (sun disabled).
+struct SceneFileRenderSettings {
+    u8 render_mode = 0u;  // scene::RenderMode (Raster=0, Raytraced=1, Hybrid=2)
+    u8 sun_enabled = 0u;
+    u8 shadows_enabled = 1u;
+    u8 rt_ao = 1u;
+    math::Vec3 sun_direction{-0.4f, -0.8f, -0.45f};
+    u32 sun_color_rgba8 = 0xFFFFFFFFu;
+    f32 sun_intensity = 1.0f;
+    u32 ambient_color_rgba8 = 0xFF404040u;
+    f32 ambient_intensity = 1.0f;
+    f32 shadow_softness = 0.5f;
+    f32 shadow_opacity = 0.7f;
+    u32 rt_trace_downscale = 2u;
+    u32 rt_reflection_bounces = 1u;
+    u32 rt_samples = 1u;
 };
 
 struct SceneFileCamera {
@@ -246,6 +270,7 @@ struct SceneFileView {
     const SceneFileHeader* header = nullptr;
     std::span<const char> strings;
     std::span<const SceneFileEnvironment> environments;
+    std::span<const SceneFileRenderSettings> render_settings;
     std::span<const math::Vec3> translations;
     std::span<const math::Quat> rotations;
     std::span<const math::Vec3> scales;
@@ -490,6 +515,7 @@ class SceneLoadRequest {
 static_assert(sizeof(SceneFileHeader) == 64u);
 static_assert(sizeof(SceneFileChunk) == 16u);
 static_assert(sizeof(SceneFileEnvironment) == 8u);
+static_assert(sizeof(SceneFileRenderSettings) == 52u);
 static_assert(sizeof(SceneFileCamera) == 64u);
 static_assert(sizeof(SceneFileMeshInstance) == 24u);
 static_assert(sizeof(SceneFileLight) == 60u);

@@ -176,6 +176,7 @@ EcsEditorSelectionSnapshot snapshot_selected_entities(std::span<const Entity> se
 void snapshot_scene_authoring(Scene& scene, EcsEditorSceneSnapshot& out) {
     out.clear();
     out.environment = sanitize_environment_settings(scene.environment().settings());
+    out.render_settings = sanitize_render_settings(scene.render_settings());
 
     EcsRegistry& registry = scene.registry();
     const u32 total = registry.snapshot_live_entities(std::span<Entity>{});

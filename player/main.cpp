@@ -1840,6 +1840,41 @@ struct PlayerApp {
             return std::nullopt;
         }
 
+        if (component == "RenderSettingsComponent") {
+            if (entity.raw != 0u)
+                return std::nullopt;
+            const scene::RenderSettings& rs = scene->render_settings();
+            if (field == "render_mode")
+                return std::to_string(static_cast<u32>(rs.render_mode));
+            if (field == "sun_enabled")
+                return bool_text(rs.sun_enabled != 0u);
+            if (field == "sun_direction")
+                return vec3_text(rs.sun_direction);
+            if (field == "sun_color_rgba8")
+                return std::to_string(rs.sun_color_rgba8);
+            if (field == "sun_intensity")
+                return f32_text(rs.sun_intensity);
+            if (field == "ambient_color_rgba8")
+                return std::to_string(rs.ambient_color_rgba8);
+            if (field == "ambient_intensity")
+                return f32_text(rs.ambient_intensity);
+            if (field == "shadows_enabled")
+                return bool_text(rs.shadows_enabled != 0u);
+            if (field == "shadow_softness")
+                return f32_text(rs.shadow_softness);
+            if (field == "shadow_opacity")
+                return f32_text(rs.shadow_opacity);
+            if (field == "rt_trace_downscale")
+                return std::to_string(rs.rt_trace_downscale);
+            if (field == "rt_ao")
+                return std::to_string(rs.rt_ao);
+            if (field == "rt_reflection_bounces")
+                return std::to_string(rs.rt_reflection_bounces);
+            if (field == "rt_samples")
+                return std::to_string(rs.rt_samples);
+            return std::nullopt;
+        }
+
         if (!scene->registry().alive(entity))
             return std::nullopt;
 
@@ -2147,6 +2182,83 @@ struct PlayerApp {
                 return false;
             }
             scene->environment().set_settings(settings);
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "RenderSettingsComponent") {
+            if (!scene || entity.raw != 0u)
+                return false;
+            scene::RenderSettings rs = scene->render_settings();
+            f32 f = 0.0f;
+            u32 u = 0u;
+            bool b = false;
+            if (field == "render_mode") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                if (u > static_cast<u32>(scene::RenderMode::Hybrid))
+                    return false;
+                rs.render_mode = static_cast<scene::RenderMode>(u);
+                // Keep the host-side mirror in sync so a no-scene fallback and
+                // the RT-toggle button reflect the panel choice.
+                rt_mode_ = rs.render_mode != scene::RenderMode::Raster;
+            } else if (field == "sun_enabled") {
+                if (!parse_bool_value(value, b))
+                    return false;
+                rs.sun_enabled = b ? 1u : 0u;
+            } else if (field == "sun_direction") {
+                std::array<f32, 3> v{};
+                if (!parse_f32_array(value, v))
+                    return false;
+                rs.sun_direction = math::Vec3{v[0], v[1], v[2]};
+            } else if (field == "sun_color_rgba8") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                rs.sun_color_rgba8 = u;
+            } else if (field == "sun_intensity") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                rs.sun_intensity = std::max(0.0f, f);
+            } else if (field == "ambient_color_rgba8") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                rs.ambient_color_rgba8 = u;
+            } else if (field == "ambient_intensity") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                rs.ambient_intensity = std::max(0.0f, f);
+            } else if (field == "shadows_enabled") {
+                if (!parse_bool_value(value, b))
+                    return false;
+                rs.shadows_enabled = b ? 1u : 0u;
+            } else if (field == "shadow_softness") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                rs.shadow_softness = std::clamp(f, 0.0f, 1.0f);
+            } else if (field == "shadow_opacity") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                rs.shadow_opacity = std::clamp(f, 0.0f, 1.0f);
+            } else if (field == "rt_trace_downscale") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                rs.rt_trace_downscale = std::clamp(u, 1u, 16u);
+            } else if (field == "rt_ao") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                rs.rt_ao = u ? 1u : 0u;
+            } else if (field == "rt_reflection_bounces") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                rs.rt_reflection_bounces = std::min(u, 8u);
+            } else if (field == "rt_samples") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                rs.rt_samples = std::clamp(u, 1u, 64u);
+            } else {
+                return false;
+            }
+            scene->set_render_settings(rs);
             editor::publish_web_scene_hierarchy(scene);
             return true;
         }
@@ -3137,8 +3249,27 @@ struct PlayerApp {
         return add_character_controller_to_entity(editor::selection::selected_scene_entity());
     }
 
-    void set_rt_mode(bool on) noexcept { rt_mode_ = on; }
-    [[nodiscard]] bool rt_mode() const noexcept { return rt_mode_; }
+    // Toggle the viewport raytracer. The authoritative state lives on the
+    // active scene's RenderSettings (so it serializes + drives the web panel);
+    // rt_mode_ is a host-side mirror used as the fallback when no scene is
+    // loaded. `on` selects Raytraced; off selects Raster. Hybrid is only set via
+    // the panel (it maps to the RT path -- a Phase-A placeholder).
+    void set_rt_mode(bool on) noexcept {
+        rt_mode_ = on;
+        if (scene::Scene* scene = app ? app->active_scene() : nullptr) {
+            scene::RenderSettings rs = scene->render_settings();
+            rs.render_mode = on ? scene::RenderMode::Raytraced : scene::RenderMode::Raster;
+            scene->set_render_settings(rs);
+            editor::publish_web_scene_hierarchy(scene);
+        }
+    }
+    [[nodiscard]] bool rt_mode() const noexcept {
+        if (const scene::Scene* scene = app ? app->active_scene() : nullptr) {
+            const scene::RenderMode mode = scene->render_settings().render_mode;
+            return mode == scene::RenderMode::Raytraced || mode == scene::RenderMode::Hybrid;
+        }
+        return rt_mode_;
+    }
 
     // Bake static lightmaps for the active scene; store for a later baked/flat
     // toggle. Returns true when something bakeable was found.
@@ -3525,21 +3656,57 @@ struct PlayerApp {
         ctx.app.engine_frame_post();
     }
 
-    // Raytraced viewport path (rt_mode). Returns true if it rendered into the
-    // framebuffer (so the caller skips the raster pass). Falls back to raster
-    // when off, no scene, or no active camera.
+    // Raytraced viewport path. Dispatch is driven by the active scene's
+    // RenderSettings.render_mode: Raytraced and Hybrid (a Phase-A placeholder
+    // that maps to the RT path) both render here; Raster falls through to the
+    // raster pass. Returns true if it rendered into the framebuffer (so the
+    // caller skips the raster pass). Falls back to raster when in Raster mode,
+    // no scene, or no active camera. The scene's sun/ambient/shadow/RT-quality
+    // settings are forwarded as SceneRtOptions so the RT light set + config
+    // reflect the panel (build_scene_rt_options).
     bool render_scene_raytraced(app::WindowFrameContextT<PlayerArgs>& ctx) {
-        if (!rt_mode_)
-            return false;
         scene::Scene* scene = ctx.app.active_scene();
         if (!scene)
+            return false;
+        const scene::RenderMode mode = scene->render_settings().render_mode;
+        if (mode != scene::RenderMode::Raytraced && mode != scene::RenderMode::Hybrid)
             return false;
         scene::SceneCameraView view{};
         if (!scene->active_camera_view(framebuffer_aspect(ctx.framebuffer), view))
             return false;
+        const editor::render::SceneRtOptions options =
+            build_scene_rt_options(scene->render_settings());
         const editor::render::SceneRtStats stats = editor::render::render_scene_rt(
-            *scene, view, ctx.app.rendering_system(), ctx.framebuffer);
+            *scene, view, ctx.app.rendering_system(), ctx.framebuffer, options);
         return stats.rendered;
+    }
+
+    // Build the RT options that carry scene-level RenderSettings into the
+    // editor RT path: trace_downscale from rt_trace_downscale, plus the sun /
+    // ambient / shadow / AO / reflection knobs (consumed in EditorRender.cpp's
+    // gather + config). use_console_config stays true so the console RT
+    // overrides still apply on top; apply_render_settings layers the scene
+    // settings over that.
+    static editor::render::SceneRtOptions build_scene_rt_options(
+        const scene::RenderSettings& rs) noexcept {
+        const scene::RenderSettings s = scene::sanitize_render_settings(rs);
+        editor::render::SceneRtOptions options{};
+        options.trace_downscale = s.rt_trace_downscale;
+        options.use_console_config = true;
+        options.apply_render_settings = true;
+        options.sun_enabled = s.sun_enabled;
+        options.sun_direction = s.sun_direction;
+        options.sun_color_rgba8 = s.sun_color_rgba8;
+        options.sun_intensity = s.sun_intensity;
+        options.ambient_color_rgba8 = s.ambient_color_rgba8;
+        options.ambient_intensity = s.ambient_intensity;
+        options.shadows_enabled = s.shadows_enabled;
+        options.shadow_softness = s.shadow_softness;
+        options.shadow_opacity = s.shadow_opacity;
+        options.rt_ao = s.rt_ao;
+        options.rt_reflection_bounces = s.rt_reflection_bounces;
+        options.rt_samples = s.rt_samples;
+        return options;
     }
 
     static bool project_to_screen(const math::Vec3& world,
