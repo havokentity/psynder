@@ -25,6 +25,18 @@ shippable demo projects:
 4. No-code-first authoring (editor) AND C++-capable. Every gameplay feature should be ECS components + systems an editor panel can expose; if editor wiring is unclear, build it as a standalone demo/game target first and migrate later.
 5. Generation-safe handles; deterministic, -fno-fast-math-friendly sim.
 
+## Performance & architecture invariants (HARD gates — every lane)
+These are not aspirations; they are merge gates. A lane that violates a HARD
+gate is reworked before it lands.
+- **DOTS-first, cache-coherent (HARD):** per-entity state lives in archetype/column SoA chunks, iterated column-at-a-time via `EcsRegistry::query<reads,writes>`. Components are POD, trivially-copyable, `PSYNDER_COMPONENT`. Linkage stored *in* components — NO `std::unordered_map`/side-tables for per-frame data. Hot structs are cache-line aligned (`PSY_CACHELINE_ALIGN`, `kCacheLine`); split hot/cold fields; contiguous iteration, no pointer-chasing in hot loops.
+- **Zero per-frame heap garbage (HARD):** no transient `std::vector`/`std::map`/`std::function`/`new` in any tick/render/sim/query body. Pre-size + reuse pooled scratch (members, frame/level arenas, or stack SBO). Prove it (counting allocator test or by-construction argument).
+- **Parallel + race-safe (HARD):** prefer `parallel_for`/parallel queries; ECS query bodies run once-per-chunk across worker threads, so all shared accumulation is atomic/mutex'd and re-entrancy is argued. No data races (ASan/UBSan clean ×3 is necessary but not sufficient — reason about it).
+- **Determinism (HARD):** `-fno-fast-math`-friendly; no `Date::now`/RNG/time in sim except via explicit seeded/host paths; fixed 120 Hz physics tick.
+- **Correct `restrict` (HARD):** only on genuinely non-aliasing pointers (aliasing `restrict` = silent -O2 miscompile; this already bit us — verify the call sites can't alias).
+- **Kernel/SIMD (PERF PASS, not a landing-blocker):** hot inner loops become SoA batch kernels with AVX-512/AVX2/SSE4.2/NEON dispatch + scalar fallback; branchless; FMA; const-bool per-draw/per-batch dispatch (never a per-pixel/per-element runtime branch); templated tile/lane specialization. Land the DOTS-correct, alloc-free, scalar-or-naive version first **with a bench** (`tests/bench/`), then a dedicated **kernelization pass** vectorizes it and the bench gates the speedup + parity. Do NOT hand-SIMD an unproven feature before it's correct + benched.
+
+Order of enforcement per lane: correctness → DOTS shape → alloc-free → parallel-safe (all HARD, gate the merge) → bench it → kernelize (perf pass, separate commit, bench-gated).
+
 ## The autonomous work loop (each wake-up)
 1. `git -C "<repo>" status`/`log` — confirm branch `integration/wave-hybrid-material-shadows`, clean tree, in sync with origin.
 2. Read `docs/AUTONOMOUS_STATUS.md`; pick the next milestone/lane from the roadmap (or the highest-value unblock).
