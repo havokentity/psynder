@@ -6,3 +6,4 @@
 add_subdirectory(shooter_demo)
 add_subdirectory(racer_demo)
 add_subdirectory(df_demo)
+add_subdirectory(duke_demo)
