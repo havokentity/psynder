@@ -118,6 +118,33 @@ struct BspPortal {
     f32 plane_d;
 };
 
+// W10-2 room geometry records. `QbVertex` mirrors the rasterizer
+// `render::raster::Vertex` packed layout (position / normal / uv / lightmap_uv /
+// packed RGBA8) so the runtime bulk-memcpys the bytes straight into a
+// `render::raster::Vertex` array; the tool serialises field-by-field little-
+// endian (write_psybsp_engine) and the loader reads with the runtime struct
+// stride - both agree on kQbVertexBytes == 44. `QbFace` is a fan-triangulated
+// convex n-gon: `first_vertex` indexes BOTH the vertex AND the (parallel) index
+// slab, since the runtime BspDraw converter aliases `geom.indices[first_vertex]`
+// as the face's index block (BspDraw.h). Indices are FACE-LOCAL (0-based within
+// the face's vertex block). `lightmap` == kBspNoLightmap when unlit.
+struct QbVertex {
+    math::Vec3 position;
+    math::Vec3 normal;
+    math::Vec2 uv;
+    math::Vec2 lightmap_uv;
+    u32 color = 0xFFFFFFFFu;
+};
+inline constexpr u32 kQbVertexBytes = 44u;  // 3+3+2+2 f32 + 1 u32, packed LE.
+
+struct QbFace {
+    u32 first_vertex;
+    u32 vertex_count;
+    u32 material;
+    u32 lightmap;
+};
+inline constexpr u32 kBspNoLightmap = 0xFFFFFFFFu;  // "no baked lightmap" sentinel.
+
 struct CompiledBsp {
     std::vector<BspPlane> planes;
     std::vector<BspNode> nodes;
@@ -126,6 +153,16 @@ struct CompiledBsp {
     std::vector<u32> brush_planes;            // flattened plane indices per brush
     std::vector<BspPortal> portals;           // Wave-B
     std::vector<math::Vec3> portal_vertices;  // Wave-B (windings)
+
+    // W10-2: emitted room geometry (rooms path only). Faces are ordered by leaf
+    // (leaf i owns faces [leaf_first_face[i], leaf_first_face[i]+leaf_face_count[i]))
+    // so write_psybsp_engine can stamp the per-leaf face range into the PBSP v1
+    // leaf records and PVS culling skips a culled leaf's faces wholesale.
+    std::vector<QbFace> faces;
+    std::vector<QbVertex> vertices;
+    std::vector<u32> indices;                 // face-local, parallel to vertices
+    std::vector<u32> leaf_first_face;         // per leaf: index into `faces`
+    std::vector<u32> leaf_face_count;         // per leaf: face count
 };
 
 // Compile the worldspawn (entity 0) brushes into a leafy BSP. Other
@@ -157,9 +194,13 @@ bool read_psybsp(std::span<const u8> bytes, CompiledBsp& out, std::string* err =
 //     reusing engine `world::bsp::build_pvs`) and serialises the engine `PBSP`
 //     v1 layout that `Bsp::load` validates and consumes.
 //
-// Faces/vertices/indices are emitted EMPTY: the runtime renders its own scene
-// meshes and uses the BSP purely for leaf / cluster / PVS visibility culling
-// (mirroring the in-memory demo, whose BspMap also carried zero faces).
+// W10-2: the rooms compiler ALSO emits REAL room geometry (see compile_rooms +
+// write_psybsp_engine). For each room box it tessellates the 6 axis-aligned
+// faces (4 walls + floor + ceiling) as PBSP v1 faces + vertices + indices,
+// INWARD-facing so the room interior is visible from a camera standing inside
+// it. Faces are stored per-leaf so PVS culling skips a culled leaf's faces.
+// Lightmaps are out of scope (flat/unlit). The QbVertex / QbFace records used
+// by CompiledBsp are declared above (next to the other compiled tables).
 
 struct RoomVolume {
     i32 cluster = 0;

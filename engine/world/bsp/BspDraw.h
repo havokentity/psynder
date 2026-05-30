@@ -36,6 +36,15 @@ struct BspGeometry {
     std::vector<u32> indices;
 };
 
+// Load the per-BSP geometry tables (vertices + indices) from the same on-disk
+// `.psybsp` blob that `Bsp::load` consumes (W10-2). `Bsp::load` itself only
+// reads nodes / leaves / faces / pvs into the `BspMap`; this companion reads the
+// vertex + index chunks into a `BspGeometry` so the runtime can render the BSP
+// faces via `build_leaf_draws`. Returns false (and leaves `out` empty) if the
+// blob is missing / malformed / has no geometry. Purely additive: callers that
+// don't need geometry never pay for it.
+bool load_geometry(std::string_view virtual_path, BspGeometry& out);
+
 // Build a DrawItem stream for every face in `faces`. `out` is appended to
 // (so callers can accumulate across PVS callbacks). The DrawItem's
 // `vertices` / `indices` pointers are aliases into `geom.vertices` /

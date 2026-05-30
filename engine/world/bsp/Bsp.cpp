@@ -357,6 +357,52 @@ void build_leaf_draws(const BspMap& map,
     build_face_draws(geom, faces, resolve, out);
 }
 
+// --- Geometry loader (W10-2) ----------------------------------------------
+// Read the vertex + index chunks of the on-disk `.psybsp` (the same blob
+// `load` reads for nodes/leaves/faces/pvs) into a BspGeometry so the runtime
+// can render the BSP faces. The on-disk vertex stride mirrors the rasterizer
+// Vertex packed layout (44 bytes); we bulk-memcpy straight into the runtime
+// struct. The static_assert below pins that stride so any change to the
+// rasterizer Vertex layout surfaces here (and demands a format bump) rather
+// than silently corrupting the load.
+bool load_geometry(std::string_view virtual_path, BspGeometry& out) {
+    static_assert(sizeof(render::raster::Vertex) == 44u,
+                  "on-disk BSP vertex stride (44) must match render::raster::Vertex");
+
+    out.vertices.clear();
+    out.indices.clear();
+
+    asset::Blob blob = asset::Vfs::Get().read(virtual_path);
+    if (blob.data == nullptr || blob.bytes < sizeof(BspFileHeader)) {
+        return false;
+    }
+    BspFileHeader header{};
+    std::memcpy(&header, blob.data, sizeof(BspFileHeader));
+    if (header.magic != kBspFileMagic || header.version != kBspFileVersion ||
+        header.total_bytes > blob.bytes) {
+        return false;
+    }
+    const u32 used_bytes = header.total_bytes;
+
+    // Vertices: raw 44-byte records -> render::raster::Vertex (bulk memcpy).
+    if (header.vertices.count > 0u) {
+        const u64 vbytes = static_cast<u64>(header.vertices.count) * sizeof(render::raster::Vertex);
+        if (header.vertices.offset > used_bytes ||
+            vbytes > static_cast<u64>(used_bytes - header.vertices.offset)) {
+            return false;
+        }
+        out.vertices.resize(header.vertices.count);
+        std::memcpy(out.vertices.data(), blob.data + header.vertices.offset, vbytes);
+    }
+    // Indices: u32 records (face-local, parallel to the vertex slab).
+    if (!copy_chunk(blob.data, used_bytes, header.indices, out.indices)) {
+        out.vertices.clear();
+        out.indices.clear();
+        return false;
+    }
+    return true;
+}
+
 // `walk_portal_visible_leaves` + `build_portal_set` (Portal.h) live in
 // PortalClip.cpp — Wave B replaced the Wave A PVS-only stub with a real
 // portal-graph walk + frustum clip. See PortalClip.h for the helper surface.

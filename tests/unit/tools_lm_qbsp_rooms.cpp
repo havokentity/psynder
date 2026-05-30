@@ -132,7 +132,13 @@ TEST_CASE("lm_qbsp emits an engine PBSP v1 blob with a baked PVS", "[tools][lm_q
     REQUIRE(clusters == 4u);
     REQUIRE(row_bytes == 1u);  // ceil(4/8) == 1
     REQUIRE(header.leaves.count == 4u);
-    REQUIRE(header.faces.count == 0u);  // runtime renders its own meshes
+    // W10-2: the rooms path now emits REAL room geometry - 6 inward-facing box
+    // faces per room (4 rooms x 6 = 24), with a parallel vertex/index slab. (Pre
+    // W10-2 the runtime rendered its own scene-mesh boxes and faces.count was 0;
+    // see tools_lm_qbsp_faces.cpp for the full geometry/winding/round-trip checks.)
+    REQUIRE(header.faces.count == 24u);
+    REQUIRE(header.vertices.count == header.faces.count * 6u);
+    REQUIRE(header.indices.count == header.faces.count * 6u);
     REQUIRE(header.pvs.count == clusters * row_bytes);
 }
 

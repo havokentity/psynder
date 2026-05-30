@@ -996,6 +996,144 @@ i32 build_kd(CompiledBsp& bsp,
     return static_cast<i32>(node_idx);
 }
 
+// --- W10-2: room box geometry emission ---------------------------------------
+//
+// Each room is an axis-aligned box [lo, hi]. We tessellate its 6 faces INWARD-
+// facing (normal points into the room interior) so a camera standing inside the
+// room sees the walls/floor/ceiling. Each face is a quad fan-triangulated as
+// {0,1,2, 0,2,3}; indices are FACE-LOCAL (0..3). The runtime BspDraw converter
+// aliases the face's index block at `geom.indices[first_vertex]`, so we advance
+// the shared (vertex==index) cursor by max(4, 6) = 6 per quad to keep the
+// parallel index blocks from overlapping (2 trailing vertex slots per face are
+// padding - cheap, and keeps the BspDraw addressing contract intact).
+
+constexpr u32 kQuadVerts = 4u;
+constexpr u32 kQuadIndices = 6u;            // (4-2)*3 fan triangles
+constexpr u32 kFaceCursorStride = 6u;       // max(kQuadVerts, kQuadIndices)
+
+// Emit one inward-facing quad. `corners` are the 4 box corners of the face in an
+// arbitrary order; we re-order them CCW as seen from `+inward_normal` so the
+// face's front side (CCW after the viewport Y-flip) points into the room. The
+// face uses `material` and is unlit (kBspNoLightmap, zero lightmap_uv).
+void emit_quad(CompiledBsp& bsp,
+               const math::Vec3 corners[4],
+               math::Vec3 inward_normal,
+               u32 material,
+               u32 color) {
+    // Order the 4 corners CCW about `inward_normal`. Compute the face centroid,
+    // then sort by the signed angle in the plane (deterministic atan2 order).
+    math::Vec3 c{0, 0, 0};
+    for (int i = 0; i < 4; ++i)
+        c = math::add(c, corners[i]);
+    c = math::mul(c, 0.25f);
+    // Build an in-plane basis (u, v) with v = inward_normal x u so that
+    // (u, v, inward_normal) is right-handed -> increasing atan2(.,.) is CCW seen
+    // from +inward_normal.
+    math::Vec3 ref = math::sub(corners[0], c);
+    f32 rlen = std::sqrt(math::dot(ref, ref));
+    math::Vec3 u = (rlen > 1e-9f) ? math::mul(ref, 1.0f / rlen) : math::Vec3{1, 0, 0};
+    math::Vec3 v = math::cross(inward_normal, u);
+    f32 vlen = std::sqrt(math::dot(v, v));
+    if (vlen > 1e-9f)
+        v = math::mul(v, 1.0f / vlen);
+
+    struct Keyed {
+        math::Vec3 p;
+        f32 ang;
+    };
+    Keyed k[4];
+    for (int i = 0; i < 4; ++i) {
+        const math::Vec3 r = math::sub(corners[i], c);
+        const f32 du = math::dot(r, u);
+        const f32 dv = math::dot(r, v);
+        k[i].p = corners[i];
+        k[i].ang = std::atan2(dv, du);
+    }
+    std::stable_sort(k, k + 4, [](const Keyed& a, const Keyed& b) { return a.ang < b.ang; });
+
+    const u32 base = static_cast<u32>(bsp.vertices.size());
+    QbFace face{};
+    face.first_vertex = base;
+    face.vertex_count = kQuadVerts;
+    face.material = material;
+    face.lightmap = kBspNoLightmap;
+    bsp.faces.push_back(face);
+
+    // 4 vertices (CCW), then 2 padding slots so the next face's first_vertex lands
+    // kFaceCursorStride later and its index block doesn't collide with ours.
+    static constexpr math::Vec2 kCornerUv[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (int i = 0; i < 4; ++i) {
+        QbVertex vert{};
+        vert.position = k[i].p;
+        vert.normal = inward_normal;
+        vert.uv = kCornerUv[i];
+        vert.lightmap_uv = {0.0f, 0.0f};
+        vert.color = color;
+        bsp.vertices.push_back(vert);
+    }
+    // Pad vertices up to the stride (these padding verts are never indexed).
+    for (u32 i = kQuadVerts; i < kFaceCursorStride; ++i)
+        bsp.vertices.push_back(QbVertex{});
+
+    // Face-local fan indices {0,1,2, 0,2,3} written at the parallel slab offset.
+    bsp.indices.resize(base + kFaceCursorStride, 0u);
+    bsp.indices[base + 0] = 0u;
+    bsp.indices[base + 1] = 1u;
+    bsp.indices[base + 2] = 2u;
+    bsp.indices[base + 3] = 0u;
+    bsp.indices[base + 4] = 2u;
+    bsp.indices[base + 5] = 3u;
+}
+
+// Emit the 6 inward-facing box faces for `bounds` and record them under leaf
+// `leaf_idx`. Material id == cluster (room tint resolved at runtime).
+void emit_room_box(CompiledBsp& bsp,
+                   const math::Aabb& bounds,
+                   u32 material,
+                   u32 color,
+                   usize leaf_idx) {
+    const u32 first = static_cast<u32>(bsp.faces.size());
+    const f32 x0 = bounds.min.x, y0 = bounds.min.y, z0 = bounds.min.z;
+    const f32 x1 = bounds.max.x, y1 = bounds.max.y, z1 = bounds.max.z;
+
+    // -X wall: inward normal +X.
+    {
+        const math::Vec3 q[4] = {{x0, y0, z0}, {x0, y1, z0}, {x0, y1, z1}, {x0, y0, z1}};
+        emit_quad(bsp, q, {1, 0, 0}, material, color);
+    }
+    // +X wall: inward normal -X.
+    {
+        const math::Vec3 q[4] = {{x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}};
+        emit_quad(bsp, q, {-1, 0, 0}, material, color);
+    }
+    // -Z wall: inward normal +Z.
+    {
+        const math::Vec3 q[4] = {{x0, y0, z0}, {x1, y0, z0}, {x1, y1, z0}, {x0, y1, z0}};
+        emit_quad(bsp, q, {0, 0, 1}, material, color);
+    }
+    // +Z wall: inward normal -Z.
+    {
+        const math::Vec3 q[4] = {{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}};
+        emit_quad(bsp, q, {0, 0, -1}, material, color);
+    }
+    // Floor (y = y0): inward normal +Y.
+    {
+        const math::Vec3 q[4] = {{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}};
+        emit_quad(bsp, q, {0, 1, 0}, material, color);
+    }
+    // Ceiling (y = y1): inward normal -Y.
+    {
+        const math::Vec3 q[4] = {{x0, y1, z0}, {x1, y1, z0}, {x1, y1, z1}, {x0, y1, z1}};
+        emit_quad(bsp, q, {0, -1, 0}, material, color);
+    }
+
+    const u32 count = static_cast<u32>(bsp.faces.size()) - first;
+    if (leaf_idx < bsp.leaf_first_face.size()) {
+        bsp.leaf_first_face[leaf_idx] = first;
+        bsp.leaf_face_count[leaf_idx] = count;
+    }
+}
+
 }  // namespace
 
 bool compile_rooms(const RoomsFile& rooms, CompiledBsp& out, std::string* err) {
@@ -1014,6 +1152,26 @@ bool compile_rooms(const RoomsFile& rooms, CompiledBsp& out, std::string* err) {
         leaf.flags = kLeafFlagEmpty;
         leaf.bounds = rv.bounds;
         out.leaves.push_back(leaf);
+    }
+
+    // W10-2: emit the room WALL/FLOOR/CEILING geometry, grouped by leaf so the
+    // PBSP v1 leaf records carry a contiguous face range and PVS culling skips a
+    // culled leaf's faces wholesale. Material id == cluster (the runtime tints
+    // per room); a deterministic per-cluster vertex colour gives each room a
+    // distinct look even before material resolution. Faces are inward-facing.
+    out.leaf_first_face.assign(out.leaves.size(), 0u);
+    out.leaf_face_count.assign(out.leaves.size(), 0u);
+    auto cluster_tint = [](i32 cluster) -> u32 {
+        // Cheap deterministic palette in the engine's 0xAABBGGRR packing.
+        const u32 c = static_cast<u32>(cluster);
+        const u32 r = 120u + ((c * 53u) % 110u);
+        const u32 g = 120u + ((c * 97u) % 110u);
+        const u32 b = 120u + ((c * 29u) % 110u);
+        return (r & 0xFFu) | ((g & 0xFFu) << 8) | ((b & 0xFFu) << 16) | (0xFFu << 24);
+    };
+    for (usize i = 0; i < rooms.rooms.size(); ++i) {
+        const RoomVolume& rv = rooms.rooms[i];
+        emit_room_box(out, rv.bounds, static_cast<u32>(rv.cluster), cluster_tint(rv.cluster), i);
     }
 
     // Median-split kd-tree of nodes over the leaf boxes so locate() descends.
@@ -1112,11 +1270,14 @@ void write_psybsp_engine(const CompiledBsp& bsp,
         map.nodes.push_back(rn);
     }
     map.leaves.reserve(bsp.leaves.size());
-    for (const BspLeaf& l : bsp.leaves) {
+    for (usize li = 0; li < bsp.leaves.size(); ++li) {
+        const BspLeaf& l = bsp.leaves[li];
         wb::BspLeaf rl{};
         rl.cluster = l.cluster;
-        rl.first_face = 0u;
-        rl.face_count = 0u;
+        // W10-2: carry the per-leaf face range emitted by compile_rooms (zero
+        // when the leaf has no geometry, e.g. the brush path or an empty room).
+        rl.first_face = (li < bsp.leaf_first_face.size()) ? bsp.leaf_first_face[li] : 0u;
+        rl.face_count = (li < bsp.leaf_face_count.size()) ? bsp.leaf_face_count[li] : 0u;
         rl.bounds = l.bounds;
         map.leaves.push_back(rl);
     }
@@ -1145,12 +1306,24 @@ void write_psybsp_engine(const CompiledBsp& bsp,
 
     // 2. Serialise the engine PBSP v1 layout (BspFormat.h). Header is 96 bytes;
     //    chunks (nodes/leaves/faces/vertices/indices/pvs) follow 4-byte aligned.
-    //    faces/vertices/indices are empty — the runtime renders its own meshes.
+    //    W10-2: faces/vertices/indices now carry the emitted room geometry (when
+    //    the rooms path filled them); they stay empty for the brush path / empty
+    //    rooms, so the brush pipeline is byte-for-byte unchanged.
     constexpr u32 kHeaderBytes = static_cast<u32>(sizeof(wb::BspFileHeader));
     static_assert(kHeaderBytes == 96u, "engine BSP header must be 96 bytes");
 
+    // On-disk record sizes. The vertex stride mirrors the rasterizer Vertex
+    // packed layout (pos3/normal3/uv2/lm_uv2 + RGBA8 = 44 bytes); the loader
+    // memcpys with the same stride. BspFileFace is 16 bytes; indices are u32.
+    constexpr u32 kVertexBytes = kQbVertexBytes;  // 44
+    constexpr u32 kFaceBytes = static_cast<u32>(sizeof(wb::BspFileFace));  // 16
+    constexpr u32 kIndexBytes = wb::kBspFileIndexBytes;  // 4
+
     const u32 node_count = static_cast<u32>(map.nodes.size());
     const u32 leaf_count = static_cast<u32>(map.leaves.size());
+    const u32 face_count = static_cast<u32>(bsp.faces.size());
+    const u32 vertex_count = static_cast<u32>(bsp.vertices.size());
+    const u32 index_count = static_cast<u32>(bsp.indices.size());
 
     auto align4 = [](u32 v) { return (v + 3u) & ~3u; };
 
@@ -1158,10 +1331,13 @@ void write_psybsp_engine(const CompiledBsp& bsp,
     const u32 nodes_bytes = node_count * static_cast<u32>(sizeof(wb::BspFileNode));
     const u32 leaves_off = align4(nodes_off + nodes_bytes);
     const u32 leaves_bytes = leaf_count * static_cast<u32>(sizeof(wb::BspFileLeaf));
-    const u32 faces_off = align4(leaves_off + leaves_bytes);  // zero faces
-    const u32 vertices_off = faces_off;                       // zero vertices
-    const u32 indices_off = vertices_off;                     // zero indices
-    const u32 pvs_off = align4(indices_off);
+    const u32 faces_off = align4(leaves_off + leaves_bytes);
+    const u32 faces_bytes = face_count * kFaceBytes;
+    const u32 vertices_off = align4(faces_off + faces_bytes);
+    const u32 vertices_bytes = vertex_count * kVertexBytes;
+    const u32 indices_off = align4(vertices_off + vertices_bytes);
+    const u32 indices_bytes = index_count * kIndexBytes;
+    const u32 pvs_off = align4(indices_off + indices_bytes);
     const u32 pvs_bytes = static_cast<u32>(pvs.size());
     const u32 total_bytes = align4(pvs_off + pvs_bytes);
 
@@ -1174,9 +1350,9 @@ void write_psybsp_engine(const CompiledBsp& bsp,
     header.pvs_row_bytes = row_bytes;
     header.nodes = {nodes_off, node_count};
     header.leaves = {leaves_off, leaf_count};
-    header.faces = {faces_off, 0u};
-    header.vertices = {vertices_off, 0u};
-    header.indices = {indices_off, 0u};
+    header.faces = {faces_off, face_count};
+    header.vertices = {vertices_off, vertex_count};
+    header.indices = {indices_off, index_count};
     header.pvs = {pvs_off, pvs_bytes};
 
     out.assign(total_bytes, 0u);
@@ -1195,8 +1371,8 @@ void write_psybsp_engine(const CompiledBsp& bsp,
     for (u32 i = 0; i < leaf_count; ++i) {
         wb::BspFileLeaf fl{};
         fl.cluster = map.leaves[i].cluster;
-        fl.first_face = 0u;
-        fl.face_count = 0u;
+        fl.first_face = map.leaves[i].first_face;
+        fl.face_count = map.leaves[i].face_count;
         fl.bbox_min_x = map.leaves[i].bounds.min.x;
         fl.bbox_min_y = map.leaves[i].bounds.min.y;
         fl.bbox_min_z = map.leaves[i].bounds.min.z;
@@ -1204,6 +1380,58 @@ void write_psybsp_engine(const CompiledBsp& bsp,
         fl.bbox_max_y = map.leaves[i].bounds.max.y;
         fl.bbox_max_z = map.leaves[i].bounds.max.z;
         std::memcpy(out.data() + leaves_off + i * sizeof(wb::BspFileLeaf), &fl, sizeof(fl));
+    }
+    // Faces: 16-byte records (first_vertex, vertex_count, material, lightmap).
+    for (u32 i = 0; i < face_count; ++i) {
+        wb::BspFileFace ff{};
+        ff.first_vertex = bsp.faces[i].first_vertex;
+        ff.vertex_count = bsp.faces[i].vertex_count;
+        ff.material = bsp.faces[i].material;
+        ff.lightmap = bsp.faces[i].lightmap;
+        std::memcpy(out.data() + faces_off + i * kFaceBytes, &ff, sizeof(ff));
+    }
+    // Vertices: 44-byte packed records written field-by-field little-endian so
+    // the tool needs no rasterizer header; the loader reads with the runtime
+    // Vertex stride. (offset accumulates per field within the 44-byte record.)
+    for (u32 i = 0; i < vertex_count; ++i) {
+        const QbVertex& v = bsp.vertices[i];
+        u32 off = vertices_off + i * kVertexBytes;
+        auto put_f32 = [&](f32 value) {
+            u32 bits = 0u;
+            std::memcpy(&bits, &value, sizeof(bits));
+            out[off + 0] = static_cast<u8>(bits & 0xFFu);
+            out[off + 1] = static_cast<u8>((bits >> 8) & 0xFFu);
+            out[off + 2] = static_cast<u8>((bits >> 16) & 0xFFu);
+            out[off + 3] = static_cast<u8>((bits >> 24) & 0xFFu);
+            off += 4u;
+        };
+        auto put_u32 = [&](u32 value) {
+            out[off + 0] = static_cast<u8>(value & 0xFFu);
+            out[off + 1] = static_cast<u8>((value >> 8) & 0xFFu);
+            out[off + 2] = static_cast<u8>((value >> 16) & 0xFFu);
+            out[off + 3] = static_cast<u8>((value >> 24) & 0xFFu);
+            off += 4u;
+        };
+        put_f32(v.position.x);
+        put_f32(v.position.y);
+        put_f32(v.position.z);
+        put_f32(v.normal.x);
+        put_f32(v.normal.y);
+        put_f32(v.normal.z);
+        put_f32(v.uv.x);
+        put_f32(v.uv.y);
+        put_f32(v.lightmap_uv.x);
+        put_f32(v.lightmap_uv.y);
+        put_u32(v.color);
+    }
+    // Indices: u32 little-endian.
+    for (u32 i = 0; i < index_count; ++i) {
+        const u32 idx = bsp.indices[i];
+        const u32 off = indices_off + i * kIndexBytes;
+        out[off + 0] = static_cast<u8>(idx & 0xFFu);
+        out[off + 1] = static_cast<u8>((idx >> 8) & 0xFFu);
+        out[off + 2] = static_cast<u8>((idx >> 16) & 0xFFu);
+        out[off + 3] = static_cast<u8>((idx >> 24) & 0xFFu);
     }
     if (pvs_bytes > 0u) {
         std::memcpy(out.data() + pvs_off, pvs.data(), pvs_bytes);
@@ -1300,12 +1528,15 @@ int cli_main(int argc, char** argv) {
             return 1;
         }
         std::fprintf(stdout,
-                     "lm_qbsp: %s -> %s (engine PBSP v1: nodes=%u leaves=%u portals=%u "
-                     "clusters=%u pvs_row_bytes=%u bytes=%u)\n",
+                     "lm_qbsp: %s -> %s (engine PBSP v1: nodes=%u leaves=%u faces=%u verts=%u "
+                     "indices=%u portals=%u clusters=%u pvs_row_bytes=%u bytes=%u)\n",
                      argv[2],
                      argv[3],
                      static_cast<u32>(rbsp.nodes.size()),
                      static_cast<u32>(rbsp.leaves.size()),
+                     static_cast<u32>(rbsp.faces.size()),
+                     static_cast<u32>(rbsp.vertices.size()),
+                     static_cast<u32>(rbsp.indices.size()),
                      static_cast<u32>(rbsp.portals.size()),
                      clusters,
                      row_bytes,

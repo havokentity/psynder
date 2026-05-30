@@ -80,6 +80,7 @@
 #include "scene/SceneEcs.h"
 #include "ui/imm/Imm.h"
 #include "world/bsp/Bsp.h"
+#include "world/bsp/BspDraw.h"
 #include "world/bsp/BspFormat.h"
 #include "world/bsp/Portal.h"
 #include "world/bsp/PvsBuild.h"
@@ -214,6 +215,17 @@ struct DukeGame {
     i32 cam_cluster = kCluStart;
     u32 visible_leaves = 0u;   // last frame's PVS-visible leaf count (HUD)
     u32 total_leaves = 0u;
+
+    // --- BSP face geometry (W10-2) ---
+    // Loaded from the same on-disk .psybsp; the per-frame PVS-culled DrawItem
+    // stream that renders the level FROM the loaded BSP faces (replacing the
+    // hand-authored wall shell). `bsp_draws` is reused each frame (warm capacity).
+    world::bsp::BspGeometry bsp_geom{};
+    std::vector<render::raster::DrawItem> bsp_draws{};
+    bool bsp_geom_loaded = false;
+    u32 total_faces = 0u;        // faces in the loaded BSP
+    u32 visible_faces = 0u;      // last frame's PVS-culled visible face count
+    bool logged_faces = false;   // one-shot "rendering BSP faces" log for smoke
 
     std::array<RoomMeshes, kClusterCount> rooms{};
 
@@ -384,6 +396,21 @@ bool load_bsp_asset(DukeGame& game) {
     game.bsp = std::move(loaded);
     game.map_loaded = true;
     game.total_leaves = static_cast<u32>(game.bsp.leaves.size());
+    game.total_faces = static_cast<u32>(game.bsp.faces.size());
+
+    // W10-2: load the face geometry (vertices + indices) from the SAME blob so we
+    // can render the level FROM the BSP. The loader above fills nodes/leaves/
+    // faces/pvs; this companion fills the vertex+index slabs. Reserve the draw
+    // stream to the face count so the per-frame build is alloc-free.
+    game.bsp_geom_loaded = load_geometry(kVPath, game.bsp_geom);
+    if (game.bsp_geom_loaded) {
+        game.bsp_draws.reserve(game.total_faces);
+        PSY_LOG_INFO("duke_demo: loaded BSP geometry - {} faces, {} verts, {} indices",
+                     game.total_faces, game.bsp_geom.vertices.size(), game.bsp_geom.indices.size());
+    } else {
+        PSY_LOG_WARN("duke_demo: BSP '{}' carries no renderable geometry (faces={})", kVPath,
+                     game.total_faces);
+    }
 
     // Derive the PVS row width from the baked table: row_bytes == ceil(C/8),
     // and pvs.size() == clusters * row_bytes. Recover clusters from max leaf
@@ -523,6 +550,66 @@ u32 apply_pvs_cull(DukeGame& game, i32 cam_cluster) {
             (void)scene::set_renderable_flags(reg, room.entities[i], flags);
     }
     return visible;
+}
+
+// --- BSP face render (W10-2) -----------------------------------------------
+// Build the PVS-culled DrawItem stream from the LOADED BSP faces. We walk the
+// camera's PVS via world::bsp::walk_visible_leaves (the same baked PVS the cull
+// pass uses) and emit one DrawItem per face of each visible leaf via BspDraw's
+// build_leaf_draws. Faces of culled leaves are never touched -> the visible-face
+// count is strictly less than the total when any room is culled. Returns the
+// visible-face count; fills game.bsp_draws (warm capacity, no per-frame alloc in
+// the steady state).
+struct BspDrawAccum {
+    DukeGame* game;
+};
+void accum_leaf_draws(const world::bsp::BspLeaf& leaf, void* user) {
+    auto* acc = static_cast<BspDrawAccum*>(user);
+    world::bsp::BspMaterialResolve resolve{};  // pass the raw material id through
+    world::bsp::build_leaf_draws(acc->game->bsp, acc->game->bsp_geom, leaf, resolve,
+                                 acc->game->bsp_draws);
+}
+
+u32 build_bsp_face_draws(DukeGame& game, math::Vec3 eye) {
+    game.bsp_draws.clear();
+    if (!game.bsp_geom_loaded || game.bsp.faces.empty())
+        return 0u;
+    BspDrawAccum acc{&game};
+    // PVS-culled walk: only visible leaves' faces are emitted.
+    world::bsp::walk_visible_leaves(game.bsp, eye, &accum_leaf_draws, &acc);
+    // Two-sided + full-bright vertex colour so the inward-facing walls read from
+    // inside the room regardless of the unlit BSP draw pass (no scene lights are
+    // threaded into this secondary pass; flat/unlit is in scope, lightmaps are
+    // deferred). The vertex colour already carries the per-room tint baked by
+    // lm_qbsp; the albedo tint stays white (identity) so the colour shows.
+    for (render::raster::DrawItem& di : game.bsp_draws)
+        di.cull = render::raster::CullMode::None;
+    return static_cast<u32>(game.bsp_draws.size());
+}
+
+// Render the PVS-culled BSP faces in a SECONDARY raster pass over the same frame.
+// The engine scene pass already populated the depth buffer; the rasterizer's
+// begin_frame does NOT clear, so this pass depth-tests against the scene and the
+// inward walls composite correctly. Uses the active camera's view/projection.
+void render_bsp_faces(DukeGame& game, app::WindowApp& app_host) {
+    if (game.bsp_draws.empty())
+        return;
+    scene::Scene* scene = app_host.active_scene();
+    if (scene == nullptr)
+        return;
+    render::Framebuffer& fb = app_host.framebuffer();
+    const f32 aspect =
+        (fb.height > 0u) ? static_cast<f32>(fb.width) / static_cast<f32>(fb.height) : 1.0f;
+    scene::SceneCameraView camera{};
+    if (!scene->active_camera_view(aspect, camera))
+        return;
+    render::raster::ViewState view{};
+    view.target = fb;
+    view.view = camera.view;
+    view.projection = camera.projection;
+    view.tile_w = camera.tile_w;
+    view.tile_h = camera.tile_h;
+    (void)app_host.rendering_system().render_raster_draws(view, game.bsp_draws);
 }
 
 // --- Lights + render settings ----------------------------------------------
@@ -774,15 +861,17 @@ void draw_hud(DukeGame& game, render::Framebuffer& fb) {
         if (game.scene->registry().alive(game.enemies[i]))
             ++alive;
     }
-    char line[128];
-    std::snprintf(line, sizeof(line), "HP %3.0f  ENEMIES %u  KILLS %u  PVS %u/%u  VAULT %s",
+    char line[160];
+    std::snprintf(line, sizeof(line),
+                  "HP %3.0f  ENEMIES %u  KILLS %u  PVS %u/%u  FACES %u/%u  VAULT %s",
                   static_cast<double>(health), alive, game.player_kills, game.visible_leaves,
-                  game.total_leaves, game.vault_open ? "OPEN" : "SEALED");
+                  game.total_leaves, game.visible_faces, game.total_faces,
+                  game.vault_open ? "OPEN" : "SEALED");
 
     ui::imm::begin_frame(fb);
-    ui::imm::filled_rect(math::Vec2{8.0f, 8.0f}, math::Vec2{420.0f, 22.0f},
+    ui::imm::filled_rect(math::Vec2{8.0f, 8.0f}, math::Vec2{480.0f, 22.0f},
                          ui::imm::rgba(0x0B, 0x10, 0x18, 0xC0));
-    ui::imm::rect_outline(math::Vec2{8.0f, 8.0f}, math::Vec2{420.0f, 22.0f},
+    ui::imm::rect_outline(math::Vec2{8.0f, 8.0f}, math::Vec2{480.0f, 22.0f},
                           ui::imm::rgba(0x60, 0x70, 0x88));
     ui::imm::label(math::Vec2{16.0f, 14.0f}, line,
                    health > 0.0f ? ui::imm::rgba(0xE6, 0xF0, 0xFF)
@@ -960,6 +1049,18 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
             game.logged_cull = true;
         }
 
+        // 4b. BSP FACE STREAM (W10-2): build the PVS-culled DrawItem stream FROM
+        //     the loaded BSP faces. Culled leaves contribute no faces, so the
+        //     visible-face count drops below the total whenever a room is culled.
+        game.visible_faces = build_bsp_face_draws(game, eye);
+        if (!game.logged_faces && game.bsp_geom_loaded && game.visible_faces < game.total_faces) {
+            PSY_LOG_INFO("duke_demo: BSP faces rendered - visible {} / {} faces, {} draw items "
+                         "(cam cluster {})",
+                         game.visible_faces, game.total_faces,
+                         static_cast<u32>(game.bsp_draws.size()), game.cam_cluster);
+            game.logged_faces = true;
+        }
+
         // 5-7. Combat tick: begin -> AI act/fire -> player fire -> flush/resolve.
         scene::EcsRegistry& registry = game.scene->registry();
         gameplay::CombatContext& cctx = game.combat.ctx;
@@ -992,6 +1093,10 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
             }
         }
         (void)app_host.engine_frame_render();
+        // W10-2: composite the PVS-culled BSP face geometry over the scene pass
+        // (same depth buffer; begin_frame does not clear) so the level is drawn
+        // FROM the loaded BSP. Runs after the engine scene pass, before the HUD.
+        render_bsp_faces(game, app_host);
         draw_hud(game, app_host.framebuffer());
         app_host.present();
 
@@ -1004,17 +1109,22 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
             }
             // The smoke harness greps these lines. We assert (via the exit code
             // below) that the REAL on-disk map loaded, the PVS genuinely culled
-            // at least one leaf at some point, and the player scored a kill.
+            // at least one leaf at some point, the player scored a kill, AND the
+            // level renders FROM the loaded BSP faces with the PVS visibly culling
+            // some of them (visible_faces < total_faces > 0).
             const bool map_ok = game.map_loaded;
             const bool pvs_ok = game.logged_cull;
             const bool kill_ok = game.player_kills > 0u;
+            const bool faces_ok = game.bsp_geom_loaded && game.total_faces > 0u &&
+                                  game.visible_faces > 0u && game.logged_faces;
             PSY_LOG_INFO(
                 "duke_demo: smoke target reached ({}); map_loaded={} kills={} enemies_left={} "
-                "vault_open={} pvs_culled={} -> {}",
+                "vault_open={} pvs_culled={} bsp_faces={}/{} -> {}",
                 smoke_frames, map_ok ? 1 : 0, game.player_kills, alive, game.vault_open ? 1 : 0,
-                pvs_ok ? 1 : 0, (map_ok && pvs_ok && kill_ok) ? "PASS" : "FAIL");
+                pvs_ok ? 1 : 0, game.visible_faces, game.total_faces,
+                (map_ok && pvs_ok && kill_ok && faces_ok) ? "PASS" : "FAIL");
             g_game = nullptr;
-            if (!map_ok || !pvs_ok || !kill_ok)
+            if (!map_ok || !pvs_ok || !kill_ok || !faces_ok)
                 return EXIT_FAILURE;
             const bool capture_ok = app_host.write_capture_if_requested("duke_demo");
             return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
