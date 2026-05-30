@@ -382,3 +382,45 @@ TEST_CASE("render rt frame scheduler: serial row dispatch covers requested range
     REQUIRE(rows[0] == 0);
     REQUIRE(rows[1] == 5);
 }
+
+namespace {
+
+// ─── Process-teardown regression (RT state-registry destruction order) ──
+//
+// This object is default-constructed during static init (before main), so at
+// __cxa_atexit time it is destroyed AFTER the rt state registry: that registry
+// is a function-local static, lazily constructed the first time a Bvh8/Tlas is
+// touched DURING the test run (the telemetry tests above build one), hence it
+// completes construction later and is torn down first. This guard's destructor
+// then builds and tears down a BLAS + TLAS -- a Bvh8/Tlas destroyed after the
+// registry, which is exactly the path the demos hit at process exit.
+//
+// With the registry a leak-on-exit singleton (never destroyed) this is safe.
+// With the old non-leaky function-local static, erase_state() locked an
+// already-destroyed std::mutex; libc++ threw std::system_error from the
+// noexcept dtor and std::terminate aborted the WHOLE unit binary at teardown
+// (exit 134) even though every TEST_CASE passed -- which is why the suite did
+// not catch the demo SIGABRT before. A clean process exit IS the assertion
+// here; there is nothing to REQUIRE because the failure mode is the abort
+// itself. (Reliable when the full suite runs, which the merge gate always
+// does, so an rt test has constructed the registry during main.)
+struct RtTeardownAtExitGuard {
+    ~RtTeardownAtExitGuard() {
+        render::rt::Triangle tri{
+            math::Vec3{-1.0f, -1.0f, 5.0f},
+            math::Vec3{1.0f, -1.0f, 5.0f},
+            math::Vec3{0.0f, 1.0f, 5.0f},
+        };
+        render::rt::Bvh8 blas;
+        blas.build(&tri, 1u);
+        render::rt::Tlas::InstanceDesc instance{&blas, math::identity4()};
+        render::rt::Tlas tlas;
+        tlas.build(&instance, 1u);
+        // blas + tlas destruct here -> erase_state() must not touch a
+        // torn-down registry mutex.
+    }
+};
+
+const RtTeardownAtExitGuard g_rt_teardown_at_exit_guard{};
+
+}  // namespace

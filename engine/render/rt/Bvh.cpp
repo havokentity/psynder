@@ -507,11 +507,15 @@ struct StateRegistry {
     std::unordered_map<const void*, T*> map;
     std::mutex mu;
 
-    ~StateRegistry() {
-        for (auto& kv : map)
-            delete kv.second;
-        map.clear();
-    }
+    // No destructor: the two registries are intentionally leaked at process
+    // exit (see bvh_registry()/tlas_registry() below). Owning Bvh8/Tlas
+    // objects can outlive any registry static and call erase() during their
+    // own destruction at __cxa_atexit time; if the registry (and its mutex)
+    // had already been torn down, that erase would lock a destroyed mutex and
+    // libc++ would throw std::system_error from a noexcept dtor -> terminate
+    // (SIGABRT) -- the static-destruction-order fiasco. Never destroying the
+    // registry makes a late erase always safe. The single map is reclaimed by
+    // the OS at exit, so the leak is bounded and harmless.
 
     T& get_or_create(const void* key) {
         std::lock_guard<std::mutex> lk(mu);
@@ -569,13 +573,18 @@ struct StateRegistry {
     }
 };
 
+// Leak-on-exit singletons: the registries are heap-allocated and never
+// freed, so a Bvh8/Tlas destroyed during process teardown (after these
+// function-local statics would otherwise have run their destructors) can
+// still erase its slot without touching a torn-down mutex. The only static
+// here is a raw pointer (trivially destructible -> no atexit hook).
 StateRegistry<Bvh8State>& bvh_registry() {
-    static StateRegistry<Bvh8State> r;
-    return r;
+    static StateRegistry<Bvh8State>* const r = new StateRegistry<Bvh8State>();
+    return *r;
 }
 StateRegistry<TlasState>& tlas_registry() {
-    static StateRegistry<TlasState> r;
-    return r;
+    static StateRegistry<TlasState>* const r = new StateRegistry<TlasState>();
+    return *r;
 }
 
 }  // anonymous namespace
