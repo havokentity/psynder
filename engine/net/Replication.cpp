@@ -63,6 +63,44 @@ ReplicationServer::ClientState& ReplicationServer::client_(u32 client_key) noexc
     return clients_[client_key];
 }
 
+void ReplicationServer::mark_despawned(u32 net_id) noexcept {
+    if (net_id == 0)
+        return;
+    // Queue the despawn for every known client. A client that connects later
+    // never knew the entity, so it does not need the despawn - this only
+    // touches clients with live state.
+    for (auto& [key, cs] : clients_) {
+        // Dedup: don't double-queue the same net_id for one client.
+        bool present = false;
+        for (const PendingDespawn& pd : cs.pending_despawns) {
+            if (pd.net_id == net_id) {
+                present = true;
+                break;
+            }
+        }
+        if (present)
+            continue;
+        if (cs.pending_despawns.size() >= kMaxPendingDespawns) {
+            // Pool cap reached: drop the oldest. Worst case the client carries
+            // the stale entity until the next despawn frees a slot; correctness
+            // is preserved because the entity simply stops updating.
+            cs.pending_despawns.erase(cs.pending_despawns.begin());
+        }
+        cs.pending_despawns.push_back(PendingDespawn{net_id, 0u});
+        // A despawned entity must also drop out of the baseline so the delta
+        // diff never tries to carry it forward as "unchanged".
+        if (cs.has_baseline) {
+            auto& ents = cs.baseline.entities;
+            for (usize i = 0; i < ents.size(); ++i) {
+                if (ents[i].net_id == net_id) {
+                    ents.erase(ents.begin() + static_cast<isize>(i));
+                    break;
+                }
+            }
+        }
+    }
+}
+
 usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
                                             u32 client_key,
                                             u32 server_tick,
@@ -131,9 +169,18 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
     const bool full = !cs.has_baseline;
     const u32 baseline_seq = full ? 0u : cs.baseline.seq;
 
+    // Stamp this seq onto pending despawns that have not yet been emitted, so
+    // an ack at-or-after `seq` can prune them. (Already-stamped ones keep their
+    // original first_seq.)
+    for (PendingDespawn& pd : cs.pending_despawns) {
+        if (pd.first_seq == 0)
+            pd.first_seq = seq;
+    }
+
     const u32 max_record = u32(kReplEntityPrefixBytes) + set_.max_entity_bytes();
     const usize need = kReplHeaderBytes +
-                       staging_.entities.size() * usize(max_record);
+                       staging_.entities.size() * usize(max_record) +
+                       cs.pending_despawns.size() * kReplDespawnRecordBytes;
     if (out_bytes.size() < need)
         out_bytes.resize(need);
     u8* p = out_bytes.data();
@@ -141,8 +188,10 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
     write_u32_le(p + 4, server_tick);
     write_u32_le(p + 8, seq);
     write_u32_le(p + 12, baseline_seq);
-    // entity_count patched after the loop (we may skip unchanged entities).
+    // entity_count (offset 16) + despawn_count (offset 20) patched after the
+    // bodies are written.
     u8* count_field = p + 16;
+    u8* despawn_count_field = p + 20;
     usize off = kReplHeaderBytes;
     u32 emitted = 0;
 
@@ -179,6 +228,17 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
         ++emitted;
     }
     write_u32_le(count_field, emitted);
+
+    // --- 4. Append the despawn set ------------------------------------------
+    // Every pending despawn rides this snapshot (latest-wins) until the client
+    // acks it. The client destroys the mapped entity + drops the net_id.
+    u32 despawned = 0;
+    for (const PendingDespawn& pd : cs.pending_despawns) {
+        write_u32_le(out_bytes.data() + off, pd.net_id);
+        off += kReplDespawnRecordBytes;
+        ++despawned;
+    }
+    write_u32_le(despawn_count_field, despawned);
     return off;
 }
 
@@ -197,6 +257,19 @@ void ReplicationServer::ack_from_client(u32 client_key, u32 acked_seq) noexcept 
         return;
     cs.baseline = cs.history[slot];
     cs.has_baseline = true;
+
+    // Prune despawns the client has now observed: any pending despawn that was
+    // first emitted in a snapshot at-or-before `acked_seq` has been delivered.
+    // (first_seq == 0 means it has not been emitted yet -> keep.) Erasing here
+    // is what removes the net_id from the latest-wins despawn set so we stop
+    // re-sending it every tick.
+    auto& pds = cs.pending_despawns;
+    for (usize i = 0; i < pds.size();) {
+        if (pds[i].first_seq != 0 && pds[i].first_seq <= acked_seq)
+            pds.erase(pds.begin() + static_cast<isize>(i));
+        else
+            ++i;
+    }
 }
 
 // --- ReplicationClient -------------------------------------------------------
@@ -238,6 +311,7 @@ bool ReplicationClient::apply_snapshot(scene::EcsRegistry& registry,
     const u32 seq = read_u32_le(p + 8);
     const u32 baseline_seq = read_u32_le(p + 12);
     const u32 count = read_u32_le(p + 16);
+    const u32 despawn_count = read_u32_le(p + 20);
 
     // Drop stale / duplicate snapshots (latest-wins on channel 2).
     if (applied_seq_ != 0 && seq <= applied_seq_)
@@ -304,6 +378,26 @@ bool ReplicationClient::apply_snapshot(scene::EcsRegistry& registry,
         }
     }
 
+    // --- Despawn set: read the net_ids, drop them from the carried-forward
+    //     scratch so they are never re-created, and stage them for destroy.
+    despawn_scratch_.clear();
+    for (u32 i = 0; i < despawn_count; ++i) {
+        if (off + kReplDespawnRecordBytes > bytes.size())
+            return false;  // truncated despawn record.
+        const u32 dead_id = read_u32_le(bytes.data() + off);
+        off += kReplDespawnRecordBytes;
+        despawn_scratch_.push_back(dead_id);
+        // Remove from the carried-forward scratch (it may have been seeded from
+        // the base) so the commit loop below does not recreate the entity.
+        auto& ents = decode_scratch_.entities;
+        for (usize j = 0; j < ents.size(); ++j) {
+            if (ents[j].net_id == dead_id) {
+                ents.erase(ents.begin() + static_cast<isize>(j));
+                break;
+            }
+        }
+    }
+
     // Keep scratch sorted by net_id so find()/interp binary-searches work.
     std::sort(decode_scratch_.entities.begin(), decode_scratch_.entities.end(),
               [](const ReplEntityState& a, const ReplEntityState& b) {
@@ -330,7 +424,43 @@ bool ReplicationClient::apply_snapshot(scene::EcsRegistry& registry,
     const usize slot = seq % kHistory;
     history_[slot] = decode_scratch_;
     history_valid_[slot] = true;
+
+    // --- 6. Apply despawns: destroy entities + scrub every cached snapshot ---
+    // Done last so the freshly-rotated prev_/curr_/history_ are also scrubbed
+    // (they were copied from older frames that may still hold the dead id).
+    for (u32 dead_id : despawn_scratch_)
+        despawn_(registry, dead_id);
     return true;
+}
+
+void ReplicationClient::despawn_(scene::EcsRegistry& registry, u32 net_id) noexcept {
+    if (net_id == 0)
+        return;
+    auto it = net_to_entity_.find(net_id);
+    if (it != net_to_entity_.end()) {
+        const Entity e = it->second;
+        if (e.valid())
+            registry.destroy(e);
+        net_to_entity_.erase(it);
+    }
+    // Scrub the net_id from every cached snapshot so it is never carried
+    // forward into a future decode (which would resurrect it).
+    auto scrub = [net_id](ReplWorldSnapshot& s) noexcept {
+        auto& ents = s.entities;
+        for (usize i = 0; i < ents.size(); ++i) {
+            if (ents[i].net_id == net_id) {
+                ents.erase(ents.begin() + static_cast<isize>(i));
+                return;
+            }
+        }
+    };
+    scrub(prev_);
+    scrub(curr_);
+    scrub(decode_scratch_);
+    for (usize h = 0; h < kHistory; ++h) {
+        if (history_valid_[h])
+            scrub(history_[h]);
+    }
 }
 
 void ReplicationClient::interpolate_transforms(scene::EcsRegistry& registry, f32 t) noexcept {

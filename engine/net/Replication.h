@@ -134,11 +134,19 @@ class ReplicatedComponentSet {
 };
 
 // --- Wire constants ----------------------------------------------------------
-inline constexpr u32 kReplMagic = 0x50525031u;  // 'PRP1'
-// Header: magic(4) + tick(4) + seq(4) + baseline_seq(4) + entity_count(4).
-inline constexpr usize kReplHeaderBytes = 20;
+// 'PRP2' - bumped from 'PRP1' when the despawn set joined the header. The
+// magic change makes a v1 decoder reject a v2 stream (and vice-versa) rather
+// than silently mis-reading the despawn_count word as entity bytes.
+inline constexpr u32 kReplMagic = 0x50525032u;  // 'PRP2'
+// Header: magic(4) + tick(4) + seq(4) + baseline_seq(4) + entity_count(4) +
+//         despawn_count(4). The despawn records (net_id each) follow the
+//         entity records in the body.
+inline constexpr usize kReplHeaderBytes = 24;
 // Per-entity record prefix: net_id(4) + mask(4). Component bytes follow.
 inline constexpr usize kReplEntityPrefixBytes = 8;
+// Per-despawn record: a single net_id(4). The client destroys the mapped
+// entity and drops the net_id when it sees one.
+inline constexpr usize kReplDespawnRecordBytes = 4;
 
 // --- Per-entity decoded snapshot state (server baselines + client buffer) ---
 // One replicated entity's full component bytes, addressed by net_component_id.
@@ -190,14 +198,38 @@ class ReplicationServer {
                              u32 server_tick,
                              std::vector<u8>& out_bytes) noexcept;
 
+    // Mark a net_id as despawned: the entity has been removed from the
+    // authoritative world. The despawn is broadcast to every client until each
+    // acknowledges a snapshot at-or-after the one that first carried it, then
+    // pruned. Idempotent; despawning an unknown / already-despawned id is a
+    // no-op. The despawn signal is what stops M-NET from carrying a removed
+    // entity forward in every subsequent delta.
+    //
+    // Call this BEFORE the entity's ECS row is destroyed (the gather no longer
+    // sees it once destroyed; the explicit mark is the authoritative signal).
+    void mark_despawned(u32 net_id) noexcept;
+
     // The client acked snapshot `seq`. Promote our cached copy of that
-    // snapshot to the client's baseline. Stale / unknown acks are ignored.
+    // snapshot to the client's baseline and prune despawns the client has now
+    // seen. Stale / unknown acks are ignored.
     void ack_from_client(u32 client_key, u32 acked_seq) noexcept;
 
     u32 last_seq() const noexcept { return next_seq_ - 1; }
 
    private:
     static constexpr usize kHistory = 8;  // sent-snapshot ring depth per client.
+    // Max distinct despawns we keep pending per client before the oldest is
+    // dropped (it will simply stop being carried-forward instead). Sized
+    // generously for a 16-32 player FPS churn rate; pooled, never per-tick.
+    static constexpr usize kMaxPendingDespawns = 256;
+
+    // A despawn awaiting client ack. `first_seq` is the snapshot seq that first
+    // carried this net_id; once the client acks a seq >= first_seq the despawn
+    // is delivered and we prune it.
+    struct PendingDespawn {
+        u32 net_id = 0;
+        u32 first_seq = 0;  // 0 == not yet emitted in any snapshot.
+    };
 
     struct ClientState {
         ReplWorldSnapshot baseline;  // last snapshot this client acked.
@@ -207,6 +239,10 @@ class ReplicationServer {
         // latest-wins; a handful of slots is enough.
         std::array<ReplWorldSnapshot, kHistory> history{};
         std::array<bool, kHistory> history_valid{};
+        // Despawns this client has not yet acknowledged. Carried in every
+        // snapshot (latest-wins) until acked, then pruned. Pooled vector; only
+        // grows on first use up to kMaxPendingDespawns.
+        std::vector<PendingDespawn> pending_despawns;
     };
 
     ClientState& client_(u32 client_key) noexcept;
@@ -260,6 +296,10 @@ class ReplicationClient {
     // against. Returns nullptr if we no longer hold it (forces resend logic
     // upstream; in practice the server only deltas vs an acked seq we kept).
     const ReplWorldSnapshot* base_for_(u32 baseline_seq) const noexcept;
+    // Apply a despawn: destroy the entity mapped to `net_id`, drop the mapping,
+    // and erase the net_id from every cached snapshot (decode scratch + interp
+    // frames + history) so it is never carried forward again.
+    void despawn_(scene::EcsRegistry& registry, u32 net_id) noexcept;
 
     const ReplicatedComponentSet& set_;
     // net_id -> local Entity. Persistent session state (not per-frame), so a
@@ -278,6 +318,9 @@ class ReplicationClient {
     std::array<bool, kHistory> history_valid_{};
     // Scratch decode target, reused each call (alloc-free per tick).
     ReplWorldSnapshot decode_scratch_;
+    // Scratch list of net_ids despawned by the current snapshot. Pooled -
+    // cleared (not freed) each apply_snapshot, so no per-tick heap alloc.
+    std::vector<u32> despawn_scratch_;
 };
 
 }  // namespace psynder::net

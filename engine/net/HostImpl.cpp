@@ -28,6 +28,21 @@ bool HostImpl::start(const HostDesc& desc) noexcept {
     inbox_.clear();
     pending_ack_peers_.clear();
 
+    // Real-UDP path (Wave B): open a non-blocking socket bound to
+    // 127.0.0.1:port. If it opens we ride the wire and DO NOT touch the
+    // LoopbackBus (so two UDP hosts on the same logical port can coexist with
+    // loopback hosts in other tests). If the socket can't be opened (headless
+    // sandbox), fall back to the loopback bus so nothing aborts.
+    if (want_udp_) {
+        if (udp_.open(port_)) {
+            // An ephemeral request (port 0) resolves to the real bound port.
+            port_ = udp_.local_port();
+            started_ = true;
+            return true;
+        }
+        // Fall through to loopback on failure; udp_active() stays false.
+    }
+
     if (!LoopbackBus::Get().bind(port_, this)) {
         port_ = 0;
         return false;
@@ -39,7 +54,10 @@ bool HostImpl::start(const HostDesc& desc) noexcept {
 void HostImpl::stop() noexcept {
     if (!started_)
         return;
-    LoopbackBus::Get().unbind(port_);
+    if (udp_.is_open())
+        udp_.close();
+    else
+        LoopbackBus::Get().unbind(port_);
     started_ = false;
     port_ = 0;
     peers_.clear();
@@ -96,9 +114,15 @@ void HostImpl::send_raw_(u16 dst_port, const FrameHeader& h, std::span<const u8>
     if (!payload.empty()) {
         std::copy(payload.begin(), payload.end(), buf + kFrameHeaderBytes);
     }
-    LoopbackBus::Get().send_to(port_,
-                               dst_port,
-                               std::span<const u8>(buf, kFrameHeaderBytes + payload.size()));
+    const std::span<const u8> datagram(buf, kFrameHeaderBytes + payload.size());
+    if (udp_.is_open()) {
+        // Real wire: ship the framed datagram to 127.0.0.1:dst_port. The
+        // recipient learns our source port from the UDP header, so the
+        // auto-register-on-first-datagram path in on_datagram() still works.
+        udp_.send_to(dst_port, datagram);
+        return;
+    }
+    LoopbackBus::Get().send_to(port_, dst_port, datagram);
 }
 
 void HostImpl::send(PeerId peer, std::span<const u8> bytes, bool reliable, u8 channel) noexcept {
@@ -265,9 +289,30 @@ void HostImpl::flush_acks_(PeerState& ps) noexcept {
     send_raw_(ps.remote_port, h, std::span<const u8>{});
 }
 
+void HostImpl::pump_udp_() noexcept {
+    if (!udp_.is_open())
+        return;
+    // Drain every queued datagram into on_datagram(). The pooled recv buffer is
+    // reused for each datagram (no per-tick heap alloc). recv_from() returns 0
+    // on would-block, which terminates the loop. Cap the drain so a flood can't
+    // wedge the tick; anything still queued is taken on the next poll.
+    constexpr u32 kMaxDrainPerPoll = 1024;
+    for (u32 i = 0; i < kMaxDrainPerPoll; ++i) {
+        u16 src_port = 0;
+        const usize n = udp_.recv_from(std::span<u8>(udp_recv_buf_.data(), udp_recv_buf_.size()), src_port);
+        if (n == 0)
+            break;
+        on_datagram(src_port, std::span<const u8>(udp_recv_buf_.data(), n));
+    }
+}
+
 u32 HostImpl::poll(std::vector<InboundMessage>& out) noexcept {
     if (!started_)
         return 0;
+    // Pull any wire datagrams in BEFORE draining the inbox so a packet that
+    // arrives between polls is surfaced this call (matches the loopback path,
+    // where on_datagram runs synchronously inside the sender's send()).
+    pump_udp_();
     u32 n = u32(inbox_.size());
     for (InboundMessage& m : inbox_) {
         out.push_back(std::move(m));
