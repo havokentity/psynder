@@ -33,10 +33,15 @@ running ledger: update it every wake-up. Newest entries on top.
 ## Wave 3 — COMPLETE (HEAD 71c0dfc): editor-play gameplay a7992cb, shooter_demo 71c0dfc.
 First playable FPS demo (games/shooter_demo): BSP room + hybrid shadows + combat + AI; headless run player killed all 3 enemies. Editor Play mode now ticks combat/AI/PsyGraph. Release-green, goldens 4/4.
 
-## Wave 4 (in flight)
-- DEMO GAME 2: NFS2SE-style racer (games/racer_demo) — spline track + vehicle physics + chase cam + lap timing.
-- Anti-tunneling #63: plane half-space primitive + speculative contacts (engine/physics).
-- Render fidelity: soft shadow penumbra (jittered multi-ray) + terrain heightmap-march shadow occlusion (engine/render).
+## Wave 4 — COMPLETE (HEAD 9e43de2): render fidelity 4714819, anti-tunneling 6ede3ef (#63), racer demo 9e43de2. All release-green, goldens 4/4; golden+plane+tunneling 19/19.
+- Render fidelity 4714819: soft-penumbra shadows (R2-jittered multi-ray, deterministic) + terrain heightmap-march MAX-combine occlusion.
+- Anti-tunneling 6ede3ef (#63 DONE): Shape::Plane half-space primitive (sphere/box/capsule narrowphase) + speculative contacts (swept-AABB broadphase + separation contact + velocity clamp). No fake thickness. Deferred: box-box/GJK speculative coverage; Plane not yet in scene::ColliderShape for editor authoring.
+- DEMO GAME 2 9e43de2: NFS2SE-style racer (games/racer_demo) — spline track + vehicle physics + chase cam + lap timing. Deferred: vehicle speed-governor/steering-authority weak under auto-drive; terrain elevation (flat track only).
+
+## Wave 5 (in flight)
+- DEMO GAME 3: Delta Force-style terrain tactical shooter (games/df_demo) — heightmap terrain + grounded FP player + ranged AI soldiers + hybrid sun/terrain shadows + headless combat smoke.
+- Netcode hardening (engine/net): real localhost UDP transport + entity-despawn replication + client prediction & server reconciliation over the M-NET layer.
+- AI navigation (engine/ai): NavGrid + deterministic pooled-A* + path-following/smoothing + light local avoidance, replacing steer-v1 straight-line chase (host supplies world sampling via hooks).
 
 ## Wave 5+ (planned)
 First demo GAME (indoor BSP shooter: combat + lights + hybrid shadows + AI + a level) under games/ — orchestrator wires it (root CMake + host). Then NFS racer demo, Delta Force terrain demo. Plus: wire PsyGraph tick + AI + combat into the editor play runtime; deferred render fidelity (soft penumbra, terrain-march shadows); anti-tunneling #63; editor graph-panel for PsyGraph.
