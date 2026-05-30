@@ -58,6 +58,8 @@
 //   --smoke-frames N         Space-separated form (matches Goldens.cmake).
 //   --smoke-capture-out PATH Write the final framebuffer to PATH as PNG.
 
+#include "RagdollFx.h"  // W12-4 pooled death ragdolls (Shape.h-isolated; see header)
+
 #include "common/CharacterController.h"
 #include "ai/AiComponents.h"
 #include "ai/AiSystems.h"
@@ -109,6 +111,19 @@ constexpr f32 kWallThick = 0.4f;   // half-thickness used for the physics slabs
 constexpr f32 kEyeHeight = 1.6f;
 
 constexpr u32 kMaxEnemies = 3u;
+
+// --- Death-ragdoll config -------------------------------------------------
+// One ragdoll per enemy is the worst case (every enemy can be a corpse at once);
+// the RagdollFx pool sizes itself to shooter::kMaxCorpses with kCorpseBodies limb
+// boxes each. Mirror those here for the scene-side render-mesh pool + reserve.
+constexpr u32 kMaxRagdolls = shooter::kMaxCorpses;
+constexpr u32 kRagdollBodies = shooter::kCorpseBodies;  // default_humanoid() segment count
+static_assert(kMaxRagdolls >= kMaxEnemies, "corpse pool must cover every enemy");
+// Shove the corpse this fast (m/s) away from the killer along the kill ray so it
+// tumbles in the kill direction instead of crumpling straight down. Kept gentle
+// so the rag bleeds its energy + settles within the headless frame budget.
+// Deterministic constant.
+constexpr f32 kCorpsePush = 2.0f;
 
 // Pack RGBA8 in the engine's 0xAABBGGRR layout (R in the low byte).
 constexpr u32 rgba8(u32 r, u32 g, u32 b, u32 a = 0xFFu) noexcept {
@@ -164,6 +179,29 @@ struct ShooterGame {
     std::array<gameplay::TriggerEvent, 8u> trigger_events{};
     std::array<gameplay::PickupEvent, 8u> pickup_events{};
     std::array<Entity, 8u> pickup_despawn{};
+
+    // --- W12-4 death ragdolls ----------------------------------------------
+    // A fixed pool of corpse slots (one per possible enemy). When an enemy dies
+    // we grab a free slot, build a humanoid ragdoll in the SAME physics World at
+    // the dead enemy's pose, and render its limb bodies as scene boxes. The
+    // ragdoll keeps simulating (steps + joint-solves with the world) until it
+    // settles on the floor. The physics ragdoll bookkeeping lives in RagdollFx
+    // (its own TU, isolated from physics/Shape.h -- see RagdollFx.h). Here we keep
+    // only the SCENE side: the per-limb render boxes, spawned ONCE at load and
+    // re-pointed each death (hidden while the slot is free, shown + driven while
+    // it holds a corpse). Pooled => the steady state spawns no heap.
+    shooter::RagdollPool ragdolls{};
+    struct CorpseRender {
+        std::array<Entity, kRagdollBodies> meshes{};  // one render box per body
+        bool active = false;                          // slot currently rendering a corpse
+        bool logged_settled = false;                  // one-shot settle log latch
+    };
+    std::array<CorpseRender, kMaxRagdolls> corpse_render{};
+    render::MeshId corpse_mesh{};       // unit cube reused for every limb box
+    render::MaterialId corpse_mat{};    // dim corpse material
+
+    // Scratch for reading back a corpse's limb transforms each frame (no heap).
+    std::array<shooter::LimbTransform, kRagdollBodies> limb_scratch{};
 };
 
 // The AI LOS / FIRE / MOVE hooks all need the live game; stash a pointer so the
@@ -487,6 +525,160 @@ void build_mechanics(ShooterGame& game) {
     }
 }
 
+// --- W12-4 death ragdolls ----------------------------------------------------
+// The physics side (the pooled humanoid ragdolls + the static settle floor + the
+// joint solve + settle detection) lives in RagdollFx (its own TU, isolated from
+// physics/Shape.h). main.cpp owns only the SCENE side: it pre-spawns a hidden
+// render box per limb of every pool slot, reveals them on a kill, and each frame
+// reads the pool's limb transforms back to drive those boxes so the flopping
+// corpse is visible.
+//
+// Build the corpse pool ONCE at load: the physics pool (template + floor) and a
+// hidden render box per limb of every slot. Spawning is then alloc-free.
+void build_ragdoll_pool(ShooterGame& game) {
+    // Physics pool: shared humanoid template + a static floor slab spanning the
+    // room so corpses land + settle. The room's static slabs are only the four
+    // walls + pillar (+ the door); there is NO floor collider, so the pool adds
+    // one at kFloorY -- below the chest-height horizontal LOS/hitscan rays, so it
+    // does not perturb the existing AI-sight / player-hitscan behaviour.
+    const f32 cx = 0.5f * (kRoomX0 + kRoomX1);
+    const f32 cz = 0.5f * (kRoomZ0 + kRoomZ1);
+    const f32 sx = (kRoomX1 - kRoomX0);
+    const f32 sz = (kRoomZ1 - kRoomZ0);
+    game.ragdolls.init(game.world, kFloorY, cx, cz, sx, sz);
+
+    // One reusable cube mesh + a dim material for every limb of every corpse.
+    game.corpse_mesh = game.renderer->builtin_mesh(render::BuiltInMesh::UnitCube);
+    game.corpse_mat = make_material(*game.scene, rgba8(150, 55, 50));
+
+    // Pre-spawn every limb render box, hidden. Each holds a corpse limb's
+    // transform while its slot is active; while idle it is parked invisible.
+    for (auto& cr : game.corpse_render) {
+        for (Entity& mesh : cr.meshes) {
+            scene::LocalTransform local{};
+            local.scale = {0.1f, 0.1f, 0.1f};
+            mesh = game.scene->spawn_mesh_instance(game.corpse_mesh, game.corpse_mat, local,
+                                                   scene::kInvalidSceneNode,
+                                                   scene::RenderableFlags::None,  // hidden
+                                                   scene::ObjectMobility::Dynamic);
+        }
+    }
+}
+
+// Spawn a death ragdoll for a dead enemy. Reads the enemy's pose BEFORE it is
+// despawned this frame, asks the pool for a free slot (building the humanoid in
+// the demo's physics World at that pose with an impulse AWAY from the killer), and
+// reveals that slot's pre-spawned limb meshes. Deterministic: the corpse is pushed
+// along the kill direction so it flops. No-op (graceful) if the pool is full.
+void spawn_corpse(ShooterGame& game, Entity dead_enemy, math::Vec3 killer_pos) {
+    scene::EcsRegistry& registry = game.scene->registry();
+
+    // Pose of the dying enemy (still alive at this point in the tick).
+    math::Vec3 epos{};
+    if (!gameplay::entity_position(registry, dead_enemy, epos))
+        return;
+    math::Quat erot{0, 0, 0, 1};
+    if (const auto* t = registry.get<scene::TransformComponent>(dead_enemy))
+        erot = t->local.rotation;
+
+    // Horizontal kill direction (away from the killer). Deterministic function of
+    // the two positions -- no RNG / no time.
+    math::Vec3 away = math::sub(epos, killer_pos);
+    away.y = 0.0f;
+    const f32 d = math::length(away);
+    const math::Vec3 push_dir =
+        (d > 1e-4f) ? math::mul(away, 1.0f / d) : math::Vec3{0.0f, 0.0f, 1.0f};
+
+    // Spawn the corpse ALREADY LEANING in the push direction and LOW to the floor
+    // so it topples onto its side and settles fast (within the headless frame
+    // budget) -- the canonical death-ragdoll collapse, same trick the engine
+    // ragdoll unit test uses. The lean is a fixed ~70 deg tilt about the
+    // horizontal axis perpendicular to the push (up x push_dir), composed onto
+    // the enemy's own yaw. Root low enough that the leaning figure's torso starts
+    // close to the ground (the pelvis hub sits ~1 m above the root in the desc).
+    const math::Vec3 up{0.0f, 1.0f, 0.0f};
+    math::Vec3 tilt_axis = math::cross(up, push_dir);
+    const f32 axis_len = math::length(tilt_axis);
+    tilt_axis = (axis_len > 1e-4f) ? math::mul(tilt_axis, 1.0f / axis_len)
+                                   : math::Vec3{1.0f, 0.0f, 0.0f};
+    constexpr f32 kLean = 1.2f;  // ~69 deg lean, like the ragdoll settle test
+    const math::Quat tilt = math::quat_from_axis_angle(tilt_axis, kLean);
+    const math::Quat root_rot = math::quat_normalize(math::quat_mul(tilt, erot));
+    // Drop the root so the leaning torso starts ~0.5 m up: it lands almost
+    // immediately and bleeds its energy on the floor rather than free-falling.
+    const math::Vec3 root_pos{epos.x, kFloorY + 0.2f, epos.z};
+
+    // Gentle horizontal shove so the corpse slides/tumbles in the kill direction
+    // as it collapses (no upward kick -- that just prolongs airtime + settling).
+    const math::Vec3 impulse = math::mul(push_dir, kCorpsePush);
+
+    const u32 slot = game.ragdolls.spawn(game.world, root_pos, root_rot, impulse);
+    if (slot == shooter::RagdollPool::kNoSlot || slot >= game.corpse_render.size())
+        return;
+
+    ShooterGame::CorpseRender& cr = game.corpse_render[slot];
+    cr.active = true;
+    cr.logged_settled = false;
+    // Reveal this slot's limb meshes (driven each frame by tick_ragdolls).
+    for (Entity mesh : cr.meshes) {
+        if (mesh.valid())
+            (void)scene::set_renderable_flags(registry, mesh, scene::RenderableFlags::Visible);
+    }
+
+    PSY_LOG_INFO("shooter_demo: enemy died -> ragdoll {} spawned ({} bodies)",
+                 game.ragdolls.spawned_total(), shooter::RagdollPool::body_count());
+}
+
+// Step every active corpse: advance the pool's joint solve (the bodies already
+// moved in game.world.step), push each limb body transform into its render mesh so
+// the flopping is visible, and report settling. Returns the count of corpses that
+// are currently settled + grounded + finite (for the smoke gate). Alloc-free:
+// writes pre-spawned meshes in place via a fixed scratch span, no heap.
+u32 tick_ragdolls(ShooterGame& game, f32 dt) {
+    // Advance the physics ragdolls (joint solve + settle bookkeeping).
+    game.ragdolls.step(game.world, dt);
+
+    u32 settled = 0u;
+    for (u32 slot = 0; slot < game.corpse_render.size(); ++slot) {
+        ShooterGame::CorpseRender& cr = game.corpse_render[slot];
+        if (!cr.active)
+            continue;
+
+        // Pull the limb transforms back and drive the render boxes.
+        const std::span<shooter::LimbTransform> limbs{game.limb_scratch.data(),
+                                                      game.limb_scratch.size()};
+        game.ragdolls.limb_transforms(game.world, slot, limbs);
+        for (u32 i = 0; i < cr.meshes.size(); ++i) {
+            if (!cr.meshes[i].valid() || !limbs[i].valid)
+                continue;
+            scene::LocalTransform local{};
+            local.translation = limbs[i].position;
+            local.rotation = limbs[i].rotation;
+            local.scale = limbs[i].box_scale;
+            (void)game.scene->set_transform(cr.meshes[i], local);
+        }
+
+        const shooter::CorpseState st = game.ragdolls.state(slot);
+        if (st.settled && st.grounded && st.finite) {
+            ++settled;
+            if (!cr.logged_settled) {
+                cr.logged_settled = true;
+                PSY_LOG_INFO("shooter_demo: ragdoll settled (min_y={:.2f}m, grounded + finite)",
+                             static_cast<double>(st.min_y));
+            }
+        }
+    }
+    return settled;
+}
+
+// Tear down every corpse (free the World bodies). Called at shutdown so the
+// pooled ragdolls release their physics bodies cleanly.
+void teardown_ragdolls(ShooterGame& game) {
+    game.ragdolls.teardown(game.world);
+    for (auto& cr : game.corpse_render)
+        cr.active = false;
+}
+
 // Rebuild the actor view (player + live enemies) fed to the trigger / pickup
 // systems. In-place into the pre-sized array => no per-frame heap.
 void refresh_actors(ShooterGame& game) {
@@ -731,15 +923,18 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     game.scene = &app_host.create_active_scene();
     app_host.set_scene_lighting_enabled(true);  // hybrid + raster scene lights
 
-    // Pre-size the ECS + render pools so nothing grows in the steady state.
+    // Pre-size the ECS + render pools so nothing grows in the steady state. The
+    // W12-4 death-ragdoll pool pre-spawns kMaxRagdolls * kRagdollBodies (= 21)
+    // limb meshes at load, so the renderable + entity reserves include them.
+    constexpr u32 kCorpseMeshes = kMaxRagdolls * kRagdollBodies;
     game.scene->prewarm_capacity(scene::ScenePrewarmConfig{
-        .scene_entities = 80u,  // + pickup / door / trigger entities (W10-3)
-        .renderables = 40u,
+        .scene_entities = 80u + kCorpseMeshes,  // + pickup/door/trigger (W10-3) + corpse limbs (W12-4)
+        .renderables = 40u + kCorpseMeshes,
         .cameras = 2u,
         .lights = 4u,
-        .render_items = 40u,
+        .render_items = 40u + kCorpseMeshes,
     });
-    app_host.reserve_scene_capacity(32u, 8u);
+    app_host.reserve_scene_capacity(32u + kCorpseMeshes, 8u);
 
     // NOTE: building the level + actors below incrementally add()s combat / AI
     // components, which migrates each entity through several archetypes and grows
@@ -752,7 +947,8 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     make_lights(game);
     spawn_player(game);
     spawn_enemies(game);
-    build_mechanics(game);  // W10-3: health pickup + trigger-opened door
+    build_mechanics(game);     // W10-3: health pickup + trigger-opened door
+    build_ragdoll_pool(game);  // W12-4: corpse ragdoll pool (floor + hidden limb meshes)
 
     // Reserve combat + AI scratch once (alloc-free per frame thereafter).
     game.combat.config.friendly_fire = gameplay::FriendlyFire::Off;  // factions matter
@@ -767,6 +963,7 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
 
     u64 last_ticks = platform::Clock::ticks_now();
     u32 frame = 0;
+    u32 peak_settled_ragdolls = 0u;  // W12-4: most corpses settled simultaneously
 
     while (!window->should_close()) {
         window->poll_events();
@@ -845,7 +1042,28 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
         //    (despawn enemies). on_death bumps player_kills for player-faction kills.
         gameplay::flush_damage_events(registry, cctx, ccfg);
         gameplay::cleanup_projectiles(*game.scene, cctx);
+
+        // 6a. W12-4 death ragdolls: every entity that hit 0 HP this tick
+        //     (cctx.deaths, populated by flush_damage_events) is still alive HERE
+        //     -- resolve_deaths below is what despawns it. So this is the window to
+        //     read the dying enemy's pose and spawn a flopping corpse at it. We
+        //     only ragdoll enemies; the impulse pushes the corpse away from the
+        //     player (the killer), a deterministic function of their positions.
+        {
+            const math::Vec3 killer = game.controller.eye();
+            for (Entity dead : cctx.deaths) {
+                if (gameplay::entity_faction(registry, dead) == kFactionEnemy)
+                    spawn_corpse(game, dead, killer);
+            }
+        }
+
         (void)gameplay::resolve_deaths(*game.scene, /*despawn*/ true, &on_death, &game);
+
+        // 6a'. Step every active death ragdoll's joint pass + drive its limb
+        //      render boxes (the World already integrated the bodies in step()).
+        //      settled_ragdolls feeds the smoke settle gate below.
+        const u32 settled_ragdolls = tick_ragdolls(game, dt);
+        peak_settled_ragdolls = std::max(peak_settled_ragdolls, settled_ragdolls);
 
         // 6b. W10-3 mechanics: triggers -> doors -> pickups (player grabs the
         //     health item; crossing the trigger slides the door open, clearing
@@ -881,8 +1099,49 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     }
 
     g_game = nullptr;
+
+    // W12-4 smoke gate: the kills above each spawned a death ragdoll; assert at
+    // least one settled (came to rest, grounded + finite) by the end and that
+    // every still-active corpse is grounded + finite right now. A non-settling /
+    // exploding ragdoll fails the gate (non-zero exit), so the headless CI run
+    // actually proves the flop-and-settle behaviour, not just "it spawned".
+    bool smoke_pass = true;
+    if (smoke_frames > 0) {
+        u32 active = 0u;
+        u32 grounded = 0u;
+        u32 finite = 0u;
+        for (u32 slot = 0; slot < shooter::RagdollPool::max_corpses(); ++slot) {
+            const shooter::CorpseState st = game.ragdolls.state(slot);
+            if (!st.active)
+                continue;
+            ++active;
+            if (st.finite)
+                ++finite;
+            if (st.grounded)
+                ++grounded;
+        }
+        const bool spawned_any = game.ragdolls.spawned_total() > 0u;
+        const bool any_settled = peak_settled_ragdolls > 0u;
+        const bool all_grounded_finite = (active == grounded) && (active == finite);
+        smoke_pass = spawned_any && any_settled && all_grounded_finite;
+        PSY_LOG_INFO(
+            "shooter_demo: ragdolls_spawned={} peak_settled={} active_corpses={} "
+            "grounded={} finite={}",
+            game.ragdolls.spawned_total(), peak_settled_ragdolls, active, grounded, finite);
+        if (smoke_pass)
+            PSY_LOG_INFO(
+                "shooter_demo: {} ragdolls settled, all bodies grounded + finite -- ragdoll PASS",
+                peak_settled_ragdolls);
+        else
+            PSY_LOG_ERROR(
+                "shooter_demo: ragdoll FAIL (spawned={} settled={} grounded/finite={})",
+                spawned_any, any_settled, all_grounded_finite);
+    }
+
+    teardown_ragdolls(game);
+
     const bool capture_ok = app_host.write_capture_if_requested("shooter_demo");
-    return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+    return (capture_ok && smoke_pass) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 struct ShooterDemo {
