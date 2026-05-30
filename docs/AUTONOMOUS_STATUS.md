@@ -53,9 +53,12 @@ First playable FPS demo (games/shooter_demo): BSP room + hybrid shadows + combat
 The release gate now ALSO runs the RELEASE psynder_unit suite to 0-failed (not just build_release.sh which only links the arcade). As of 76fd68c it is green.
 
 ## Wave 7 (in flight)
-- PsyGraph editor graph-panel (web/editor/scene/script/PlayRuntime) — web node-graph authoring -> bytecode -> run in Play. [IN FLIGHT — lane aa7f2fa825e92069f]
+- PsyGraph editor graph-panel (web/editor/scene/script/PlayRuntime) — web node-graph authoring -> bytecode -> run in Play. [RESUMING — orig lane aa7f2fa died at token-out with ~826 lines uncommitted; WIP preserved at 878c2be; finisher lane aa206c3b0b1ed64f2 completing+verifying, squash to single commit off 2833246.]
 - AOI per-peer netcode + handshake/lobby + jitter buffer (engine/net). [LANDED f63d848 — AOI-gated per-peer snapshots (interest sphere + byte budget + priority + leave-AOI despawn, reconstructed-world history fix), SYN/FIN Lobby slot table, server InputJitterBuffer; new tagged handshake/ack wire; debug 910 x3, RELEASE unit 0-failed (911), goldens 4/4. Next: dedicated server + matchmaking + AEAD/anti-cheat.]
-- Vehicle-on-terrain demo wiring — df_demo drivable terrain jeep + racer governor (games/df_demo + games/racer_demo). [IN FLIGHT — lane a150fac81648c61ac]
+- Vehicle-on-terrain demo wiring — df_demo drivable terrain jeep + racer governor (games/df_demo + games/racer_demo). [RESUMING — orig lane a150fac died at token-out (df_demo jeep ~360 lines done, racer not started, never built); WIP preserved at ac02d3d; finisher lane ad45723d87d00f020 finishing+verifying.]
+
+## NOTE — token-out recovery (2026-05-30 ~07:5x)
+Session ran out of tokens during the Wave-7 idle wait; the two in-flight worktree agents (PsyGraph, vehicle) DIED mid-flight with uncommitted partial work. On resume: committed each worktree's WIP to its branch (878c2be / ac02d3d) so nothing was lost, removed nothing (dead worktrees stayed locked but commits are in the shared object store), and dispatched fresh FINISHER agents that reset --hard to the WIP and complete+verify+commit. Also: ~40 stale locked agent worktrees accumulated across waves under .claude/worktrees + .worktrees — harmless (disk only); batch-prune with `git worktree remove -f -f` when convenient. AOI netcode (f63d848) had already landed+pushed before the token-out, so it is safe on origin.
 
 ## IMPORTANT — release-suite gap + uncommitted WIP found (2026-05-30)
 - RELEASE `psynder_unit` has 1 PRE-EXISTING failure: render_rt_frame_helpers.cpp:262 (TlasBuilds counter), root cause = StateRegistry<T> keyed by `this` in engine/render/rt/Bvh.cpp leaks stale counters on address reuse; order-dependent, release-only, passes in isolation. Does NOT affect the arcade binary. Being fixed by lane a5238ec. GOING FORWARD: the release gate must also run the RELEASE psynder_unit suite, not just build_release.sh (which only builds the arcade).
