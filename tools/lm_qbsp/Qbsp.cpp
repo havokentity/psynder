@@ -1249,6 +1249,224 @@ bool compile_rooms(const RoomsFile& rooms, CompiledBsp& out, std::string* err) {
     return true;
 }
 
+// --- W12-2: per-face lightmap bake -------------------------------------------
+namespace {
+
+// f32 -> IEEE-754 binary16 (round-to-nearest-even, deterministic). The runtime
+// decode (world::bsp half_to_f32) is its exact inverse for representable values.
+u16 f32_to_half(f32 v) noexcept {
+    u32 bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+    const u32 sign = (bits >> 16) & 0x8000u;
+    i32 exp = static_cast<i32>((bits >> 23) & 0xFFu) - 127 + 15;
+    u32 mant = bits & 0x7FFFFFu;
+    if (((bits >> 23) & 0xFFu) == 0xFFu) {
+        // inf / nan
+        return static_cast<u16>(sign | 0x7C00u | (mant ? 0x200u : 0u));
+    }
+    if (exp >= 0x1F) {
+        return static_cast<u16>(sign | 0x7C00u);  // overflow -> inf
+    }
+    if (exp <= 0) {
+        if (exp < -10) {
+            return static_cast<u16>(sign);  // underflow -> zero
+        }
+        mant |= 0x800000u;  // restore implicit 1
+        const u32 shift = static_cast<u32>(14 - exp);
+        u32 half_mant = mant >> shift;
+        // round to nearest even
+        const u32 rem = mant & ((1u << shift) - 1u);
+        const u32 halfway = 1u << (shift - 1u);
+        if (rem > halfway || (rem == halfway && (half_mant & 1u)))
+            ++half_mant;
+        return static_cast<u16>(sign | half_mant);
+    }
+    u16 half_mant = static_cast<u16>(mant >> 13);
+    const u32 rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (half_mant & 1u))) {
+        ++half_mant;
+        if (half_mant == 0x400u) {  // mantissa overflow -> bump exponent
+            half_mant = 0u;
+            ++exp;
+            if (exp >= 0x1F)
+                return static_cast<u16>(sign | 0x7C00u);
+        }
+    }
+    return static_cast<u16>(sign | (static_cast<u32>(exp) << 10) | half_mant);
+}
+
+// Axis-aligned segment-vs-box overlap on the half-open interval (t in (0,1)).
+// Used for the coarse lumel->light visibility test: a light is occluded when the
+// segment from the lumel to the light pierces a DIFFERENT room's solid shell.
+// We treat each room box as a thin-walled shell, so we only count an occlusion
+// when the segment ENTERS and EXITS a box that neither endpoint lies inside
+// (a real wall between them), not when it merely grazes the lumel's own room.
+bool segment_hits_box_interior(math::Vec3 a, math::Vec3 b, const math::Aabb& box) noexcept {
+    const math::Vec3 d = math::sub(b, a);
+    f32 tmin = 0.0f;
+    f32 tmax = 1.0f;
+    const f32 lo[3] = {box.min.x, box.min.y, box.min.z};
+    const f32 hi[3] = {box.max.x, box.max.y, box.max.z};
+    const f32 oa[3] = {a.x, a.y, a.z};
+    const f32 od[3] = {d.x, d.y, d.z};
+    for (int i = 0; i < 3; ++i) {
+        if (std::fabs(od[i]) < 1e-8f) {
+            if (oa[i] < lo[i] || oa[i] > hi[i])
+                return false;
+        } else {
+            const f32 inv = 1.0f / od[i];
+            f32 t1 = (lo[i] - oa[i]) * inv;
+            f32 t2 = (hi[i] - oa[i]) * inv;
+            if (t1 > t2)
+                std::swap(t1, t2);
+            tmin = std::max(tmin, t1);
+            tmax = std::min(tmax, t2);
+            if (tmin > tmax)
+                return false;
+        }
+    }
+    // Require a non-trivial interior crossing strictly between the endpoints.
+    return tmax > tmin + 1e-4f && tmin > 1e-3f && tmax < 1.0f - 1e-3f;
+}
+
+}  // namespace
+
+u32 bake_room_lightmaps(const RoomsFile& rooms,
+                        CompiledBsp& bsp,
+                        const LightmapBakeParams& params) {
+    bsp.lightmaps.clear();
+    bsp.lightmap_pixels.clear();
+    if (bsp.faces.empty())
+        return 0u;
+
+    const u32 N = params.lumels_per_axis < 1u ? 1u : params.lumels_per_axis;
+
+    // Resolve the light list. With no explicit lights, drop one warm point light
+    // near the centre-top of every room so each room is lit from its own ceiling
+    // (deterministic, derived purely from the room bounds).
+    std::vector<LightmapBakeLight> lights = params.lights;
+    if (lights.empty()) {
+        for (const RoomVolume& rv : rooms.rooms) {
+            const math::Vec3 c{
+                0.5f * (rv.bounds.min.x + rv.bounds.max.x),
+                rv.bounds.max.y - 0.35f * (rv.bounds.max.y - rv.bounds.min.y),
+                0.5f * (rv.bounds.min.z + rv.bounds.max.z),
+            };
+            LightmapBakeLight l{};
+            l.position = c;
+            l.color = {1.0f, 0.93f, 0.82f};  // warm
+            l.intensity = 2.6f;
+            const f32 dx = rv.bounds.max.x - rv.bounds.min.x;
+            const f32 dz = rv.bounds.max.z - rv.bounds.min.z;
+            l.range = std::max(8.0f, std::max(dx, dz) * 1.6f);
+            lights.push_back(l);
+        }
+    }
+
+    // Occlusion geometry: the room boxes, slightly shrunk so a lumel sitting ON a
+    // wall doesn't self-occlude against its own room shell.
+    std::vector<math::Aabb> occluders;
+    occluders.reserve(rooms.rooms.size());
+    for (const RoomVolume& rv : rooms.rooms) {
+        math::Aabb b = rv.bounds;
+        const f32 eps = 0.05f;
+        b.min = math::add(b.min, math::Vec3{eps, eps, eps});
+        b.max = math::sub(b.max, math::Vec3{eps, eps, eps});
+        occluders.push_back(b);
+    }
+
+    auto pack_lumel = [&](math::Vec3 rgb) {
+        const u16 hr = f32_to_half(rgb.x);
+        const u16 hg = f32_to_half(rgb.y);
+        const u16 hb = f32_to_half(rgb.z);
+        u8 buf[6];
+        std::memcpy(buf + 0, &hr, 2);
+        std::memcpy(buf + 2, &hg, 2);
+        std::memcpy(buf + 4, &hb, 2);
+        bsp.lightmap_pixels.insert(bsp.lightmap_pixels.end(), buf, buf + 6);
+    };
+
+    u32 lit_faces = 0u;
+    for (usize fi = 0; fi < bsp.faces.size(); ++fi) {
+        QbFace& f = bsp.faces[fi];
+        if (f.vertex_count < 3u || f.first_vertex + 4u > bsp.vertices.size())
+            continue;
+
+        // The 4 CCW quad corners (emit_quad wrote corner UVs {0,0}{1,0}{1,1}{0,1}
+        // at vertices [first_vertex+0..3]); reconstruct the face plane + the two
+        // UV-aligned edges so a lumel at (u,v) maps to a world position.
+        const math::Vec3 p0 = bsp.vertices[f.first_vertex + 0].position;
+        const math::Vec3 p1 = bsp.vertices[f.first_vertex + 1].position;
+        const math::Vec3 p3 = bsp.vertices[f.first_vertex + 3].position;
+        const math::Vec3 normal = bsp.vertices[f.first_vertex + 0].normal;
+        const math::Vec3 edge_u = math::sub(p1, p0);  // along U (0..1)
+        const math::Vec3 edge_v = math::sub(p3, p0);  // along V (0..1)
+        // Nudge the sample point off the surface toward the interior so the
+        // occlusion ray starts inside the room, not embedded in the wall.
+        const math::Vec3 lift = math::mul(normal, 0.04f);
+
+        QbLightmap lm{};
+        lm.face = static_cast<u32>(fi);
+        lm.width = N;
+        lm.height = N;
+        lm.pixel_offset = static_cast<u32>(bsp.lightmap_pixels.size());
+
+        for (u32 ly = 0; ly < N; ++ly) {
+            // Lumel centres at (i+0.5)/N -> deterministic, symmetric.
+            const f32 fv = (static_cast<f32>(ly) + 0.5f) / static_cast<f32>(N);
+            for (u32 lx = 0; lx < N; ++lx) {
+                const f32 fu = (static_cast<f32>(lx) + 0.5f) / static_cast<f32>(N);
+                math::Vec3 world = math::add(p0, math::add(math::mul(edge_u, fu),
+                                                           math::mul(edge_v, fv)));
+                const math::Vec3 sample = math::add(world, lift);
+
+                math::Vec3 irr = params.ambient;
+                for (const LightmapBakeLight& L : lights) {
+                    const math::Vec3 to_light = math::sub(L.position, sample);
+                    const f32 dist = math::length(to_light);
+                    if (dist < 1e-4f || dist > L.range)
+                        continue;
+                    const math::Vec3 dir = math::mul(to_light, 1.0f / dist);
+                    const f32 ndotl = math::dot(normal, dir);
+                    if (ndotl <= 0.0f)
+                        continue;
+                    // Smooth quadratic range falloff -> 0 at L.range.
+                    const f32 x = dist / L.range;
+                    const f32 atten = (1.0f - x) * (1.0f - x);
+                    // Coarse visibility: occluded if the segment crosses any room
+                    // box interior (a wall) between the lumel and the light.
+                    bool occluded = false;
+                    for (const math::Aabb& box : occluders) {
+                        if (segment_hits_box_interior(sample, L.position, box)) {
+                            occluded = true;
+                            break;
+                        }
+                    }
+                    if (occluded)
+                        continue;
+                    const f32 s = L.intensity * ndotl * atten;
+                    irr = math::add(irr, math::mul(L.color, s));
+                }
+
+                // Cheap edge AO: lumels near a face border (small fu/fv or near 1)
+                // gather less of the hemisphere -> darken toward the corners.
+                const f32 du = std::min(fu, 1.0f - fu);
+                const f32 dv = std::min(fv, 1.0f - fv);
+                const f32 edge = std::min(du, dv);              // 0 at border, .5 centre
+                const f32 ao = 0.55f + 0.45f * std::min(1.0f, edge * 4.0f);
+                irr = math::mul(irr, ao);
+
+                pack_lumel(irr);
+            }
+        }
+
+        f.lightmap = static_cast<u32>(bsp.lightmaps.size());
+        bsp.lightmaps.push_back(lm);
+        ++lit_faces;
+    }
+    return lit_faces;
+}
+
 void write_psybsp_engine(const CompiledBsp& bsp,
                          std::vector<u8>& out,
                          u32* out_clusters,
@@ -1324,6 +1542,11 @@ void write_psybsp_engine(const CompiledBsp& bsp,
     const u32 face_count = static_cast<u32>(bsp.faces.size());
     const u32 vertex_count = static_cast<u32>(bsp.vertices.size());
     const u32 index_count = static_cast<u32>(bsp.indices.size());
+    // W12-2 lightmap chunks. `kLmBytes` is the BspFileLightmap directory-record
+    // stride (16); the pixel blob is already a flat byte array of RGB16F lumels.
+    constexpr u32 kLmBytes = static_cast<u32>(sizeof(wb::BspFileLightmap));  // 16
+    const u32 lightmap_count = static_cast<u32>(bsp.lightmaps.size());
+    const u32 lightmap_pixel_bytes = static_cast<u32>(bsp.lightmap_pixels.size());
 
     auto align4 = [](u32 v) { return (v + 3u) & ~3u; };
 
@@ -1339,7 +1562,10 @@ void write_psybsp_engine(const CompiledBsp& bsp,
     const u32 indices_bytes = index_count * kIndexBytes;
     const u32 pvs_off = align4(indices_off + indices_bytes);
     const u32 pvs_bytes = static_cast<u32>(pvs.size());
-    const u32 total_bytes = align4(pvs_off + pvs_bytes);
+    const u32 lightmaps_off = align4(pvs_off + pvs_bytes);
+    const u32 lightmaps_bytes = lightmap_count * kLmBytes;
+    const u32 lightmap_pixels_off = align4(lightmaps_off + lightmaps_bytes);
+    const u32 total_bytes = align4(lightmap_pixels_off + lightmap_pixel_bytes);
 
     wb::BspFileHeader header{};
     header.magic = wb::kBspFileMagic;
@@ -1354,6 +1580,11 @@ void write_psybsp_engine(const CompiledBsp& bsp,
     header.vertices = {vertices_off, vertex_count};
     header.indices = {indices_off, index_count};
     header.pvs = {pvs_off, pvs_bytes};
+    // W12-2: lightmap directory (count = rows) + packed RGB16F lumels (count =
+    // BYTE size). Both 0/0 when the blob was not baked -> the chunk is absent
+    // and load_lightmaps treats the level as unlit (full-bright).
+    header.lightmaps = {lightmaps_off, lightmap_count};
+    header.lightmap_pixels = {lightmap_pixels_off, lightmap_pixel_bytes};
 
     out.assign(total_bytes, 0u);
     std::memcpy(out.data(), &header, kHeaderBytes);
@@ -1435,6 +1666,28 @@ void write_psybsp_engine(const CompiledBsp& bsp,
     }
     if (pvs_bytes > 0u) {
         std::memcpy(out.data() + pvs_off, pvs.data(), pvs_bytes);
+    }
+    // W12-2: lightmap directory rows (16-byte BspFileLightmap each) then the
+    // packed RGB16F lumel blob. Directory rows are written field-by-field LE so
+    // the tool stays independent of the engine record's struct padding (it is
+    // tightly packed at 16 bytes, but we serialise explicitly to be safe).
+    for (u32 i = 0; i < lightmap_count; ++i) {
+        const QbLightmap& q = bsp.lightmaps[i];
+        const u32 off = lightmaps_off + i * kLmBytes;
+        auto put_u32 = [&](u32 base, u32 value) {
+            out[base + 0] = static_cast<u8>(value & 0xFFu);
+            out[base + 1] = static_cast<u8>((value >> 8) & 0xFFu);
+            out[base + 2] = static_cast<u8>((value >> 16) & 0xFFu);
+            out[base + 3] = static_cast<u8>((value >> 24) & 0xFFu);
+        };
+        put_u32(off + 0, q.face);
+        put_u32(off + 4, q.width);
+        put_u32(off + 8, q.height);
+        put_u32(off + 12, q.pixel_offset);
+    }
+    if (lightmap_pixel_bytes > 0u) {
+        std::memcpy(out.data() + lightmap_pixels_off, bsp.lightmap_pixels.data(),
+                    lightmap_pixel_bytes);
     }
 }
 
@@ -1520,6 +1773,11 @@ int cli_main(int argc, char** argv) {
             std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
             return 1;
         }
+        // W12-2: bake a per-face lightmap (ambient + per-room point lights with
+        // coarse occlusion + edge AO) so the runtime renders the rooms LIT. Pure
+        // CPU + deterministic -> the .psybsp bytes are stable across runs.
+        const LightmapBakeParams bake_params{};
+        const u32 lit_faces = bake_room_lightmaps(rooms, rbsp, bake_params);
         std::vector<u8> rbytes;
         u32 clusters = 0u, row_bytes = 0u;
         write_psybsp_engine(rbsp, rbytes, &clusters, &row_bytes);
@@ -1527,9 +1785,12 @@ int cli_main(int argc, char** argv) {
             std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
             return 1;
         }
+        const u32 lumels_per_face =
+            bake_params.lumels_per_axis * bake_params.lumels_per_axis;
         std::fprintf(stdout,
                      "lm_qbsp: %s -> %s (engine PBSP v1: nodes=%u leaves=%u faces=%u verts=%u "
-                     "indices=%u portals=%u clusters=%u pvs_row_bytes=%u bytes=%u)\n",
+                     "indices=%u portals=%u clusters=%u pvs_row_bytes=%u bytes=%u "
+                     "lightmap=%ux%u lumels/face, %u lit faces)\n",
                      argv[2],
                      argv[3],
                      static_cast<u32>(rbsp.nodes.size()),
@@ -1540,7 +1801,11 @@ int cli_main(int argc, char** argv) {
                      static_cast<u32>(rbsp.portals.size()),
                      clusters,
                      row_bytes,
-                     static_cast<u32>(rbytes.size()));
+                     static_cast<u32>(rbytes.size()),
+                     bake_params.lumels_per_axis,
+                     bake_params.lumels_per_axis,
+                     lit_faces);
+        (void)lumels_per_face;
         return 0;
     }
 

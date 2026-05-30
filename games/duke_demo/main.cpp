@@ -229,6 +229,10 @@ struct DukeGame {
     u32 total_faces = 0u;        // faces in the loaded BSP
     u32 visible_faces = 0u;      // last frame's PVS-culled visible face count
     bool logged_faces = false;   // one-shot "rendering BSP faces" log for smoke
+    // W12-2: baked-lightmap stats (set at load from the .psybsp lightmap chunk).
+    u32 lit_faces = 0u;          // faces carrying a baked lightmap.
+    u32 lightmap_w = 0u;         // lumels across per lit face (N).
+    u32 lightmap_h = 0u;         // lumels down per lit face (N).
 
     std::array<RoomMeshes, kClusterCount> rooms{};
 
@@ -550,6 +554,24 @@ bool load_bsp_asset(DukeGame& game) {
         game.bsp_draws.reserve(game.total_faces);
         PSY_LOG_INFO("duke_demo: loaded BSP geometry - {} faces, {} verts, {} indices",
                      game.total_faces, game.bsp_geom.vertices.size(), game.bsp_geom.indices.size());
+        // W12-2: load the baked per-face lightmaps from the SAME blob. The
+        // loader decodes the on-disk RGB16F lumels into RGBA8 chunks that
+        // BspDraw wires into each lit face's DrawItem, so the rooms render LIT
+        // (brighter near the baked lights, darker in corners). An unlit blob
+        // leaves these empty and the faces stay full-bright (no regression).
+        if (load_lightmaps(kVPath, game.total_faces, game.bsp_geom)) {
+            game.lit_faces = 0u;
+            for (u32 v : game.bsp_geom.face_lightmap)
+                if (v != world::bsp::BspGeometry::kNoLightmap)
+                    ++game.lit_faces;
+            if (!game.bsp_geom.lightmaps.empty()) {
+                game.lightmap_w = game.bsp_geom.lightmaps[0].width;
+                game.lightmap_h = game.bsp_geom.lightmaps[0].height;
+            }
+            PSY_LOG_INFO("duke_demo: lightmap baked {}x{} lumels/face, {} lit faces ({} RGBA8 texels)",
+                         game.lightmap_w, game.lightmap_h, game.lit_faces,
+                         static_cast<u32>(game.bsp_geom.lightmap_texels.size()));
+        }
     } else {
         PSY_LOG_WARN("duke_demo: BSP '{}' carries no renderable geometry (faces={})", kVPath,
                      game.total_faces);
@@ -1508,10 +1530,12 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
                               pickup_ok;
             PSY_LOG_INFO(
                 "duke_demo: smoke target reached ({}); map_loaded={} kills={} enemies_left={} "
-                "vault_open={} pvs_culled={} bsp_faces={}/{} nav_path_followed={} (max_wp={}) "
-                "trigger_fired={} pickup_taken={} -> {}",
+                "vault_open={} pvs_culled={} bsp_faces={}/{} lightmap={}x{}_lumels/face_{}_lit_faces "
+                "nav_path_followed={} (max_wp={}) trigger_fired={} pickup_taken={} -> {}",
                 smoke_frames, map_ok ? 1 : 0, game.player_kills, alive, game.vault_open ? 1 : 0,
-                pvs_ok ? 1 : 0, game.visible_faces, game.total_faces, nav_ok ? 1 : 0,
+                pvs_ok ? 1 : 0, game.visible_faces, game.total_faces,
+                game.lightmap_w, game.lightmap_h,
+                game.lit_faces, nav_ok ? 1 : 0,
                 game.nav_best_waypoints, trig_ok ? 1 : 0, pickup_ok ? 1 : 0, pass ? "PASS" : "FAIL");
             g_game = nullptr;
             if (!pass)

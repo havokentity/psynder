@@ -315,9 +315,11 @@ void walk_visible_leaves(const BspMap& map,
 void build_face_draws(const BspGeometry& geom,
                       std::span<const BspFace> faces,
                       const BspMaterialResolve& resolve,
-                      std::vector<render::raster::DrawItem>& out) {
+                      std::vector<render::raster::DrawItem>& out,
+                      u32 first_face) {
     out.reserve(out.size() + faces.size());
-    for (const BspFace& f : faces) {
+    for (usize fi = 0; fi < faces.size(); ++fi) {
+        const BspFace& f = faces[fi];
         if (f.vertex_count == 0)
             continue;
         render::raster::DrawItem di{};
@@ -339,6 +341,25 @@ void build_face_draws(const BspGeometry& geom,
             di.material = render::raster::MaterialId{f.material};
         }
         di.flags = render::raster::DrawFlags::None;
+        // W12-2: wire the baked lightmap chunk for this face (if any). The
+        // rasterizer's per-draw lightmap path samples the RGBA8 chunk through
+        // the face base UV and modulates: final = vertexColor * lumel. A face
+        // with no baked lightmap leaves lightmap_texels null -> full-bright.
+        const u32 global_face = first_face + static_cast<u32>(fi);
+        if (global_face < geom.face_lightmap.size()) {
+            const u32 lm_idx = geom.face_lightmap[global_face];
+            if (lm_idx != BspGeometry::kNoLightmap && lm_idx < geom.lightmaps.size()) {
+                const BspFaceLightmap& lm = geom.lightmaps[lm_idx];
+                const usize texel_count = static_cast<usize>(lm.width) * lm.height;
+                if (texel_count > 0u &&
+                    static_cast<usize>(lm.first_texel) + texel_count <=
+                        geom.lightmap_texels.size()) {
+                    di.lightmap_texels = &geom.lightmap_texels[lm.first_texel];
+                    di.lightmap_w = lm.width;
+                    di.lightmap_h = lm.height;
+                }
+            }
+        }
         out.push_back(di);
     }
 }
@@ -354,7 +375,7 @@ void build_leaf_draws(const BspMap& map,
     const usize lo = leaf.first_face;
     const usize hi = std::min<usize>(lo + leaf.face_count, map.faces.size());
     std::span<const BspFace> faces{map.faces.data() + lo, hi - lo};
-    build_face_draws(geom, faces, resolve, out);
+    build_face_draws(geom, faces, resolve, out, static_cast<u32>(lo));
 }
 
 // --- Geometry loader (W10-2) ----------------------------------------------
@@ -399,6 +420,143 @@ bool load_geometry(std::string_view virtual_path, BspGeometry& out) {
         out.vertices.clear();
         out.indices.clear();
         return false;
+    }
+    return true;
+}
+
+// --- Lightmap loader (W12-2) ----------------------------------------------
+// Read the W12-2 lightmap chunks (BspFormat.h: `lightmaps` directory + the
+// packed RGB16F `lightmap_pixels`) from the same blob and decode the half-float
+// lumels into the RGBA8 pool the rasterizer's per-draw lightmap path wants. The
+// chunk is OPTIONAL: a blob baked without lightmaps advertises lightmaps.count
+// == 0, and we return success with an empty `lightmaps`/`lightmap_texels` and an
+// all-kNoLightmap `face_lightmap` (so build_face_draws renders full-bright).
+namespace {
+
+// IEEE-754 binary16 -> binary32. Branch-light, deterministic. Mirrors the
+// decode lm_bake uses for its .lmlight blob (bake.f16_to_f32) so the two tools
+// agree bit-for-bit on the half-float interpretation.
+f32 half_to_f32(u16 h) noexcept {
+    const u32 sign = static_cast<u32>(h & 0x8000u) << 16;
+    const u32 exp = (h >> 10) & 0x1Fu;
+    const u32 mant = h & 0x3FFu;
+    u32 bits;
+    if (exp == 0u) {
+        if (mant == 0u) {
+            bits = sign;  // +/- zero
+        } else {
+            // Subnormal half -> normalised float.
+            u32 e = 0u;
+            u32 m = mant;
+            while ((m & 0x400u) == 0u) {
+                m <<= 1;
+                ++e;
+            }
+            m &= 0x3FFu;
+            const u32 fexp = 127u - 15u - e + 1u;
+            bits = sign | (fexp << 23) | (m << 13);
+        }
+    } else if (exp == 0x1Fu) {
+        bits = sign | 0x7F800000u | (mant << 13);  // inf / nan
+    } else {
+        const u32 fexp = exp - 15u + 127u;
+        bits = sign | (fexp << 23) | (mant << 13);
+    }
+    f32 out;
+    std::memcpy(&out, &bits, sizeof(out));
+    return out;
+}
+
+// Clamp + pack a linear RGB triple (lightmap irradiance, may be HDR) to an
+// opaque RGBA8 lumel in the framebuffer's 0xAABBGGRR packing. A simple Reinhard
+// tonemap keeps bright lumels in range without clipping to flat white; the
+// rasterizer multiplies this by the vertex colour, so the absolute scale only
+// needs to be perceptually monotone, not physically exact.
+u32 pack_lumel_rgba8(f32 r, f32 g, f32 b) noexcept {
+    auto tone = [](f32 x) -> u32 {
+        if (!(x > 0.0f))
+            x = 0.0f;
+        const f32 mapped = x / (1.0f + x);  // Reinhard -> [0,1)
+        i32 q = static_cast<i32>(mapped * 255.0f + 0.5f);
+        if (q < 0)
+            q = 0;
+        if (q > 255)
+            q = 255;
+        return static_cast<u32>(q);
+    };
+    return tone(r) | (tone(g) << 8) | (tone(b) << 16) | (0xFFu << 24);
+}
+
+}  // namespace
+
+bool load_lightmaps(std::string_view virtual_path, u32 face_count, BspGeometry& out) {
+    out.lightmaps.clear();
+    out.lightmap_texels.clear();
+    out.face_lightmap.assign(face_count, BspGeometry::kNoLightmap);
+
+    asset::Blob blob = asset::Vfs::Get().read(virtual_path);
+    if (blob.data == nullptr || blob.bytes < sizeof(BspFileHeader)) {
+        return false;
+    }
+    BspFileHeader header{};
+    std::memcpy(&header, blob.data, sizeof(BspFileHeader));
+    if (header.magic != kBspFileMagic || header.version != kBspFileVersion ||
+        header.total_bytes > blob.bytes) {
+        return false;
+    }
+    const u32 used_bytes = header.total_bytes;
+
+    // Unlit blob: no lightmap directory -> success with everything full-bright.
+    if (header.lightmaps.count == 0u) {
+        return true;
+    }
+
+    // Bounds-check the directory chunk.
+    std::vector<BspFileLightmap> dir;
+    if (!copy_chunk(blob.data, used_bytes, header.lightmaps, dir)) {
+        out.face_lightmap.assign(face_count, BspGeometry::kNoLightmap);
+        return false;
+    }
+
+    // The pixel chunk is a flat byte blob of RGB16F lumels. `count` is the byte
+    // count (see write_psybsp_engine). Validate its extent before we index it.
+    const u32 pix_off = header.lightmap_pixels.offset;
+    const u32 pix_bytes = header.lightmap_pixels.count;
+    if (pix_bytes > 0u && (pix_off > used_bytes || pix_bytes > used_bytes - pix_off)) {
+        out.face_lightmap.assign(face_count, BspGeometry::kNoLightmap);
+        return false;
+    }
+    const u8* pix = blob.data + pix_off;
+
+    out.lightmaps.reserve(dir.size());
+    for (const BspFileLightmap& rec : dir) {
+        const usize texel_count = static_cast<usize>(rec.width) * rec.height;
+        if (texel_count == 0u)
+            continue;
+        const u64 need = static_cast<u64>(rec.pixel_offset) +
+                         static_cast<u64>(texel_count) * kBspLightmapTexelBytes;
+        if (rec.pixel_offset > pix_bytes || need > static_cast<u64>(pix_bytes)) {
+            continue;  // skip a malformed row rather than fail the whole load
+        }
+        BspFaceLightmap fl{};
+        fl.face = rec.face;
+        fl.width = rec.width;
+        fl.height = rec.height;
+        fl.first_texel = static_cast<u32>(out.lightmap_texels.size());
+        out.lightmap_texels.reserve(out.lightmap_texels.size() + texel_count);
+        const u8* src = pix + rec.pixel_offset;
+        for (usize t = 0; t < texel_count; ++t) {
+            u16 hr, hg, hb;
+            std::memcpy(&hr, src + t * kBspLightmapTexelBytes + 0, sizeof(u16));
+            std::memcpy(&hg, src + t * kBspLightmapTexelBytes + 2, sizeof(u16));
+            std::memcpy(&hb, src + t * kBspLightmapTexelBytes + 4, sizeof(u16));
+            out.lightmap_texels.push_back(
+                pack_lumel_rgba8(half_to_f32(hr), half_to_f32(hg), half_to_f32(hb)));
+        }
+        const u32 lm_index = static_cast<u32>(out.lightmaps.size());
+        out.lightmaps.push_back(fl);
+        if (rec.face < out.face_lightmap.size())
+            out.face_lightmap[rec.face] = lm_index;
     }
     return true;
 }
