@@ -18,6 +18,7 @@
 #include "editor/play/PlayRuntime.h"
 #include "gameplay/GameplayComponents.h"
 #include "scene/EcsRegistry_Internal.h"
+#include "scene/GameplayComponents.h"
 #include "scene/SceneEcs.h"
 #include "script/psygraph/Bytecode.h"
 #include "script/psygraph/Graph.h"
@@ -822,4 +823,151 @@ TEST_CASE("PlayRuntime gameplay: a PsyGraph OnTick action runs during Play",
 
     runtime.end(scene);
     REQUIRE_FALSE(runtime.playing());
+}
+
+// ── No-code gameplay/AI authoring: ColliderShape::Plane + proxy synthesis ────
+
+TEST_CASE("PlayRuntime: a ColliderShape::Plane floor catches a falling box (no tunnel)",
+          "[play][editor][plane]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // Author a STATIC RigidBody with the new Plane shape at y=0 — an infinite
+    // editor floor. half_extent is ignored for a plane (the contract), so we set
+    // a deliberately tiny one to prove it is not used to size the floor.
+    const Entity floor = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
+    {
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Plane;
+        rb.mass = 0.0f;  // static
+        rb.half_extent = math::Vec3{0.01f, 0.01f, 0.01f};  // ignored for Plane
+        registry.add<scene::RigidBodyComponent>(floor, rb);
+    }
+
+    // A dynamic box dropped from a height. With the plane mapped to
+    // physics::Shape::Plane it must land near y = box_half_extent and NOT tunnel
+    // through to a large negative y.
+    const Entity box = scene.create_entity(at({0.0f, 8.0f, 0.0f}));
+    {
+        scene::RigidBodyComponent rb{};
+        rb.shape = scene::ColliderShape::Box;
+        rb.mass = 1.0f;
+        rb.half_extent = math::Vec3{0.5f, 0.5f, 0.5f};
+        rb.friction = 0.6f;
+        registry.add<scene::RigidBodyComponent>(box, rb);
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+    REQUIRE(runtime.body_count() == 2u);  // plane floor + box
+
+    for (int step = 0; step < 600; ++step)
+        runtime.tick(scene, 1.0f / 120.0f);
+
+    const f32 rest_y = entity_y(scene, box);
+    INFO("box rest y = " << rest_y);
+    // Settled on the plane near y = 0.5 (box half-extent), never tunneled below 0.
+    REQUIRE(rest_y > 0.0f);
+    REQUIRE(rest_y == Approx(0.5f).margin(0.2f));
+
+    runtime.end(scene);
+    REQUIRE(registry.get<scene::RigidBodyComponent>(floor)->shape == scene::ColliderShape::Plane);
+    REQUIRE(registry.get<scene::RigidBodyComponent>(floor)->runtime_body == 0u);
+}
+
+TEST_CASE("PlayRuntime: editor-authored gameplay/AI PROXIES synthesize into live combat",
+          "[play][editor][gameplay][authoring]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    scene::Scene scene{registry};
+
+    // Author an AI enemy entirely from the NO-CODE scene proxies (no live
+    // gameplay::/ai:: components). PlayRuntime::begin() must map every proxy into
+    // the matching live component so the existing combat + AI systems engage.
+    const Entity enemy = scene.create_entity(at({0.0f, 0.0f, 0.0f}));
+    {
+        scene::HealthComponent health{};  // Health/Weapon are scene-native
+        health.faction = 2u;
+        registry.add<scene::HealthComponent>(enemy, health);
+
+        scene::FactionComponent fac{};  // proxy -> gameplay::FactionComponent
+        fac.faction = 2u;
+        registry.add<scene::FactionComponent>(enemy, fac);
+
+        scene::HitboxComponent hb{};  // proxy -> gameplay::HitboxComponent
+        hb.radius = 0.5f;
+        registry.add<scene::HitboxComponent>(enemy, scene::sanitize_hitbox_component(hb));
+
+        scene::WeaponComponent weapon{};  // scene-native
+        weapon.damage = 5.0f;
+        weapon.range = 100.0f;
+        weapon.fire_rate = 10.0f;
+        weapon.ammo = 10000u;
+        registry.add<scene::WeaponComponent>(enemy, weapon);
+
+        scene::WeaponModeComponent wm{};  // proxy -> gameplay::WeaponRuntimeComponent
+        wm.kind = scene::WeaponFireKind::Hitscan;
+        registry.add<scene::WeaponModeComponent>(
+            enemy, scene::sanitize_weapon_mode_component(wm));
+
+        scene::AiAgentComponent agent{};  // proxy -> ai::AiAgentComponent
+        agent.state = scene::AiState::Idle;
+        agent.sight_range = 50.0f;
+        agent.fov_cos = -1.0f;        // omnidirectional => deterministic acquire
+        agent.attack_range = 50.0f;
+        agent.think_interval = 0.0f;  // re-evaluate every tick
+        agent.move_speed = 0.0f;      // stationary turret
+        registry.add<scene::AiAgentComponent>(
+            enemy, scene::sanitize_ai_agent_component(agent));
+        registry.add<scene::PerceptionComponent>(enemy, scene::PerceptionComponent{});
+    }
+
+    // Player target (faction 1) authored with scene-native Health + the Hitbox
+    // proxy so the AI hitscan can resolve a hit.
+    const Entity player = scene.create_entity(at({6.0f, 0.0f, 0.0f}));
+    {
+        scene::HealthComponent health{};
+        health.faction = 1u;
+        registry.add<scene::HealthComponent>(player, health);
+        scene::HitboxComponent hb{};
+        hb.radius = 0.5f;
+        registry.add<scene::HitboxComponent>(player, scene::sanitize_hitbox_component(hb));
+    }
+
+    editor::play::PlayRuntime runtime;
+    runtime.begin(scene);
+    REQUIRE(runtime.playing());
+
+    // begin() must have synthesised the live components from the proxies.
+    REQUIRE(registry.get<ai::AiAgentComponent>(enemy) != nullptr);
+    REQUIRE(registry.get<ai::PerceptionComponent>(enemy) != nullptr);
+    REQUIRE(registry.get<gameplay::FactionComponent>(enemy) != nullptr);
+    REQUIRE(registry.get<gameplay::FactionComponent>(enemy)->faction == 2u);
+    REQUIRE(registry.get<gameplay::HitboxComponent>(enemy) != nullptr);
+    REQUIRE(registry.get<gameplay::WeaponRuntimeComponent>(enemy) != nullptr);
+    REQUIRE(registry.get<gameplay::HitboxComponent>(player) != nullptr);
+
+    // The synthesised AI engages the player and lands hits over time.
+    const f32 dt = 1.0f / 60.0f;
+    bool player_alive = true;
+    for (int step = 0; step < 2000 && player_alive; ++step) {
+        runtime.tick(scene, dt);
+        player_alive = registry.alive(player);
+    }
+    INFO("ai shots fired = " << runtime.ai_shots_fired());
+    REQUIRE(runtime.ai_shots_fired() > 0u);
+    REQUIRE_FALSE(registry.alive(player));
+
+    runtime.end(scene);
+    REQUIRE_FALSE(runtime.playing());
+
+    // end() stripped the synthesised live components back off, but the authoring
+    // proxies survive (the editor scene returns to proxy-only state).
+    REQUIRE(registry.get<ai::AiAgentComponent>(enemy) == nullptr);
+    REQUIRE(registry.get<gameplay::FactionComponent>(enemy) == nullptr);
+    REQUIRE(registry.get<gameplay::WeaponRuntimeComponent>(enemy) == nullptr);
+    REQUIRE(registry.get<scene::AiAgentComponent>(enemy) != nullptr);
+    REQUIRE(registry.get<scene::FactionComponent>(enemy) != nullptr);
 }

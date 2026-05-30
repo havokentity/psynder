@@ -8,6 +8,7 @@
 #include "math/Math.h"
 #include "render/Geometry.h"
 #include "render/Material.h"
+#include "scene/GameplayComponents.h"
 #include "scene/PhysicsComponents.h"
 #include "scene/SceneEcs.h"
 
@@ -28,7 +29,11 @@ inline constexpr u32 kPsySceneMagic = 0x4E435350u;  // "PSCN", little endian.
 // v3 adds the RenderSettings (SRND) chunk (render mode + sun/ambient/shadow/RT
 // quality). Older v1/v2 files have no SRND chunk; load_span treats a missing
 // chunk as empty, so they load with the RenderSettings defaults (sun disabled).
-inline constexpr u16 kPsySceneVersion = 3u;
+// v4 adds the GameplayAi (SGAI) chunk (no-code authoring of Faction / Hitbox /
+// WeaponMode + the AI trio AiAgent / Perception / Patrol). Older v1..v3 files
+// have no SGAI chunk; load_span treats a missing chunk as empty, so they load
+// with no gameplay/AI authoring components attached.
+inline constexpr u16 kPsySceneVersion = 4u;
 inline constexpr u32 kPsySceneAlignment = 64u;
 
 enum class SceneFileChunkType : u32 {
@@ -48,6 +53,7 @@ enum class SceneFileChunkType : u32 {
     GameplayEntities = 0x504D4753u,  // SGMP
     PhysicsBodies = 0x59485053u,    // SPHY
     RenderSettings = 0x444E5253u,   // SRND
+    GameplayAi = 0x49414753u,       // SGAI
 };
 
 struct SceneFileHeader {
@@ -266,6 +272,62 @@ struct SceneFilePhysicsBody {
     SceneFilePhysicsCharacter character{};
 };
 
+// Authoring gameplay + AI components persisted with the scene (v4 SGAI chunk).
+// Keyed by authoring_node_index (the SAUT entry it attaches to), mirroring
+// SceneFileGameplayEntity / SceneFilePhysicsBody. component_mask selects which of
+// the payloads below are present. These mirror scene/GameplayComponents.h (the
+// scene-level proxies), which in turn mirror gameplay::/ai::; PlayRuntime maps
+// the live proxies into the real combat/AI components when a Play session begins.
+// Only AUTHORING fields are stored; the live combat/AI runtime state (acquired
+// target, cooldowns, last-seen memory) is never serialized.
+struct SceneFileGameplayFaction {
+    u32 faction = 0u;
+};
+
+struct SceneFileGameplayHitbox {
+    math::Vec3 offset{0.0f, 0.0f, 0.0f};
+    math::Vec3 half_extent{0.5f, 0.5f, 0.5f};
+    f32 radius = 0.0f;
+    u32 enabled = 1u;
+};
+
+struct SceneFileGameplayWeaponMode {
+    u8 kind = 0u;  // scene::WeaponFireKind (Hitscan=0, Projectile=1)
+    u8 _pad[3] = {};
+    f32 projectile_speed = 40.0f;
+    f32 projectile_life = 3.0f;
+};
+
+struct SceneFileAiAgent {
+    u8 state = 0u;  // scene::AiState (Idle=0..Dead=4)
+    u8 _pad[3] = {};
+    f32 sight_range = 20.0f;
+    f32 fov_cos = 0.5f;
+    f32 attack_range = 12.0f;
+    f32 think_interval = 0.15f;
+    f32 move_speed = 3.5f;
+};
+
+struct SceneFileAiPatrol {
+    math::Vec3 waypoints[8] = {};
+    u32 count = 0u;
+    f32 wait_time = 1.0f;
+    f32 arrive_radius = 0.5f;
+    u32 _pad = 0u;
+};
+
+struct SceneFileGameplayAi {
+    u32 authoring_node_index = 0u;
+    u32 component_mask = 0u;
+    SceneFileGameplayFaction faction{};
+    SceneFileGameplayHitbox hitbox{};
+    SceneFileGameplayWeaponMode weapon_mode{};
+    SceneFileAiAgent ai_agent{};
+    SceneFileAiPatrol patrol{};
+    // Perception is a tag-only proxy (no authored fields); its presence is
+    // carried purely by the component_mask bit, so it needs no payload struct.
+};
+
 struct SceneFileView {
     const SceneFileHeader* header = nullptr;
     std::span<const char> strings;
@@ -284,6 +346,7 @@ struct SceneFileView {
     std::span<const SceneFileAuthoringNode> authoring_nodes;
     std::span<const SceneFileGameplayEntity> gameplay_entities;
     std::span<const SceneFilePhysicsBody> physics_bodies;
+    std::span<const SceneFileGameplayAi> gameplay_ai;
 };
 
 struct SceneFileLoaded {
@@ -352,6 +415,7 @@ struct SceneFileSaveStats {
     u32 authoring_nodes = 0u;
     u32 gameplay_entities = 0u;
     u32 physics_bodies = 0u;
+    u32 gameplay_ai = 0u;
 };
 
 [[nodiscard]] bool parse_scene_file(std::span<const u8> bytes,
@@ -529,5 +593,11 @@ static_assert(sizeof(SceneFilePhysicsVehicle) == 44u);
 static_assert(sizeof(SceneFilePhysicsHelicopter) == 40u);
 static_assert(sizeof(SceneFilePhysicsCharacter) == 12u);
 static_assert(sizeof(SceneFilePhysicsBody) == 132u);
+static_assert(sizeof(SceneFileGameplayFaction) == 4u);
+static_assert(sizeof(SceneFileGameplayHitbox) == 32u);
+static_assert(sizeof(SceneFileGameplayWeaponMode) == 12u);
+static_assert(sizeof(SceneFileAiAgent) == 24u);
+static_assert(sizeof(SceneFileAiPatrol) == 112u);
+static_assert(sizeof(SceneFileGameplayAi) == 192u);
 
 }  // namespace psynder::scene

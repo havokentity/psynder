@@ -12,6 +12,7 @@
 #include "asset/Vault.h"
 #include "math/MathExt.h"
 #include "platform/Platform.h"
+#include "scene/GameplayComponents.h"
 #include "scene/PhysicsComponents.h"
 #include "scene/SceneEcs.h"
 #include "ui/console/ConsoleOverlay.h"
@@ -422,7 +423,7 @@ std::vector<u8> encode_schema_catalog_envelope() {
     w.str("payload");
     w.map_header(1);
     w.str("components");
-    w.array_header(16);
+    w.array_header(22);
 
     write_component_schema_header(w, "EnvironmentComponent", "native-environment-v1", 10);
     write_field_schema(w, "clear_color_rgba8", "color", false);
@@ -564,7 +565,7 @@ std::vector<u8> encode_schema_catalog_envelope() {
     // ── Physics authoring components (#60a). Editable AUTHORING fields only;
     // every runtime_* opaque physics handle is published RUNTIME-only/read-only
     // and is never user-editable (apply_component_field rejects it).
-    constexpr std::array<EnumOption, 7> kColliderShapeOptions{{
+    constexpr std::array<EnumOption, 8> kColliderShapeOptions{{
         {"Sphere", static_cast<u32>(scene::ColliderShape::Sphere)},
         {"Capsule", static_cast<u32>(scene::ColliderShape::Capsule)},
         {"Box", static_cast<u32>(scene::ColliderShape::Box)},
@@ -572,6 +573,7 @@ std::vector<u8> encode_schema_catalog_envelope() {
         {"Compound", static_cast<u32>(scene::ColliderShape::Compound)},
         {"Heightfield", static_cast<u32>(scene::ColliderShape::Heightfield)},
         {"TriangleMesh", static_cast<u32>(scene::ColliderShape::TriangleMesh)},
+        {"Plane", static_cast<u32>(scene::ColliderShape::Plane)},
     }};
     write_component_schema_header(w, "RigidBodyComponent", "native-rigid-body-v1", 6);
     write_field_schema(w, "shape", "enum", false, {}, {}, kColliderShapeOptions);
@@ -611,6 +613,50 @@ std::vector<u8> encode_schema_catalog_envelope() {
     write_field_schema(w, "radius", "f32", false, 0.01f, "m");
     write_field_schema(w, "move_speed", "f32", false, 0.05f, "m/s");
     write_field_schema(w, "runtime_character", "u32");
+
+    // ── No-code gameplay/AI authoring components. Scene-level proxies that
+    // PlayRuntime maps into the live combat/AI components when Play begins; all
+    // fields are designer-editable authoring fields (no runtime handles).
+    write_component_schema_header(w, "FactionComponent", "native-faction-v1", 1);
+    write_field_schema(w, "faction", "u32");
+
+    write_component_schema_header(w, "HitboxComponent", "native-hitbox-v1", 4);
+    write_field_schema(w, "offset", "vec3", false, 0.01f, "m");
+    write_field_schema(w, "half_extent", "vec3", false, 0.01f, "m");
+    write_field_schema(w, "radius", "f32", false, 0.01f, "m");
+    write_field_schema(w, "enabled", "bool", false);
+
+    constexpr std::array<EnumOption, 2> kWeaponFireKindOptions{{
+        {"Hitscan", static_cast<u32>(scene::WeaponFireKind::Hitscan)},
+        {"Projectile", static_cast<u32>(scene::WeaponFireKind::Projectile)},
+    }};
+    write_component_schema_header(w, "WeaponModeComponent", "native-weapon-mode-v1", 3);
+    write_field_schema(w, "kind", "enum", false, {}, {}, kWeaponFireKindOptions);
+    write_field_schema(w, "projectile_speed", "f32", false, 0.5f, "m/s");
+    write_field_schema(w, "projectile_life", "f32", false, 0.1f, "s");
+
+    constexpr std::array<EnumOption, 5> kAiStateOptions{{
+        {"Idle", static_cast<u32>(scene::AiState::Idle)},
+        {"Patrol", static_cast<u32>(scene::AiState::Patrol)},
+        {"Chase", static_cast<u32>(scene::AiState::Chase)},
+        {"Attack", static_cast<u32>(scene::AiState::Attack)},
+        {"Dead", static_cast<u32>(scene::AiState::Dead)},
+    }};
+    write_component_schema_header(w, "AiAgentComponent", "native-ai-agent-v1", 6);
+    write_field_schema(w, "state", "enum", false, {}, {}, kAiStateOptions);
+    write_field_schema(w, "sight_range", "f32", false, 0.5f, "m");
+    write_field_schema(w, "fov_cos", "f32", false, 0.01f);
+    write_field_schema(w, "attack_range", "f32", false, 0.5f, "m");
+    write_field_schema(w, "think_interval", "f32", false, 0.01f, "s");
+    write_field_schema(w, "move_speed", "f32", false, 0.05f, "m/s");
+
+    // Perception is a tag-only proxy: presence marks the agent for a sense
+    // snapshot. No editable fields, so the schema is empty.
+    write_component_schema_header(w, "PerceptionComponent", "native-perception-v1", 0);
+
+    write_component_schema_header(w, "PatrolComponent", "native-patrol-v1", 2);
+    write_field_schema(w, "wait_time", "f32", false, 0.05f, "s");
+    write_field_schema(w, "arrive_radius", "f32", false, 0.01f, "m");
 
     return w.buffer();
 }
@@ -798,6 +844,40 @@ u64 selection_signature(scene::Scene& scene, Entity entity, u32 generation) {
         out = hash_f32(out, character->move_speed);
         out = hierarchy_hash_combine(out, character->runtime_character);
     }
+    if (auto* faction = registry.get<scene::FactionComponent>(entity)) {
+        out = hierarchy_hash_combine(out, faction->faction);
+    }
+    if (auto* hitbox = registry.get<scene::HitboxComponent>(entity)) {
+        out = hash_f32(out, hitbox->offset.x);
+        out = hash_f32(out, hitbox->offset.y);
+        out = hash_f32(out, hitbox->offset.z);
+        out = hash_f32(out, hitbox->half_extent.x);
+        out = hash_f32(out, hitbox->half_extent.y);
+        out = hash_f32(out, hitbox->half_extent.z);
+        out = hash_f32(out, hitbox->radius);
+        out = hierarchy_hash_combine(out, hitbox->enabled);
+    }
+    if (auto* weapon_mode = registry.get<scene::WeaponModeComponent>(entity)) {
+        out = hierarchy_hash_combine(out, static_cast<u32>(weapon_mode->kind));
+        out = hash_f32(out, weapon_mode->projectile_speed);
+        out = hash_f32(out, weapon_mode->projectile_life);
+    }
+    if (auto* ai_agent = registry.get<scene::AiAgentComponent>(entity)) {
+        out = hierarchy_hash_combine(out, static_cast<u32>(ai_agent->state));
+        out = hash_f32(out, ai_agent->sight_range);
+        out = hash_f32(out, ai_agent->fov_cos);
+        out = hash_f32(out, ai_agent->attack_range);
+        out = hash_f32(out, ai_agent->think_interval);
+        out = hash_f32(out, ai_agent->move_speed);
+    }
+    if (registry.get<scene::PerceptionComponent>(entity) != nullptr) {
+        out = hierarchy_hash_combine(out, 0x50455243u);  // "PERC" presence tag
+    }
+    if (auto* patrol = registry.get<scene::PatrolComponent>(entity)) {
+        out = hierarchy_hash_combine(out, patrol->count);
+        out = hash_f32(out, patrol->wait_time);
+        out = hash_f32(out, patrol->arrive_radius);
+    }
     return out;
 }
 
@@ -951,6 +1031,12 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
     const auto* vehicle = registry.get<scene::VehicleComponent>(entity);
     const auto* helicopter = registry.get<scene::HelicopterComponent>(entity);
     const auto* character = registry.get<scene::CharacterControllerComponent>(entity);
+    const auto* faction = registry.get<scene::FactionComponent>(entity);
+    const auto* hitbox = registry.get<scene::HitboxComponent>(entity);
+    const auto* weapon_mode = registry.get<scene::WeaponModeComponent>(entity);
+    const auto* ai_agent = registry.get<scene::AiAgentComponent>(entity);
+    const auto* perception = registry.get<scene::PerceptionComponent>(entity);
+    const auto* patrol = registry.get<scene::PatrolComponent>(entity);
     const bool has_material =
         renderable && scene.materials().valid(renderable->material);
     const usize component_count = (transform ? 1u : 0u) + (node ? 1u : 0u) +
@@ -960,7 +1046,10 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
                                   (player_controller ? 1u : 0u) + (health ? 1u : 0u) +
                                   (weapon ? 1u : 0u) + (rigid_body ? 1u : 0u) +
                                   (vehicle ? 1u : 0u) + (helicopter ? 1u : 0u) +
-                                  (character ? 1u : 0u);
+                                  (character ? 1u : 0u) + (faction ? 1u : 0u) +
+                                  (hitbox ? 1u : 0u) + (weapon_mode ? 1u : 0u) +
+                                  (ai_agent ? 1u : 0u) + (perception ? 1u : 0u) +
+                                  (patrol ? 1u : 0u);
 
     ipc::msgpack::Writer w;
     w.map_header(4);
@@ -1219,6 +1308,68 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
         w.f32_(character->move_speed);
         w.str("runtime_character");
         w.u32_(character->runtime_character);
+    }
+
+    if (faction) {
+        w.str("FactionComponent");
+        w.map_header(1);
+        w.str("faction");
+        w.u32_(faction->faction);
+    }
+
+    if (hitbox) {
+        w.str("HitboxComponent");
+        w.map_header(4);
+        w.str("offset");
+        write_vec3(w, hitbox->offset);
+        w.str("half_extent");
+        write_vec3(w, hitbox->half_extent);
+        w.str("radius");
+        w.f32_(hitbox->radius);
+        w.str("enabled");
+        w.boolean(hitbox->enabled != 0u);
+    }
+
+    if (weapon_mode) {
+        w.str("WeaponModeComponent");
+        w.map_header(3);
+        w.str("kind");
+        w.u32_(static_cast<u32>(weapon_mode->kind));
+        w.str("projectile_speed");
+        w.f32_(weapon_mode->projectile_speed);
+        w.str("projectile_life");
+        w.f32_(weapon_mode->projectile_life);
+    }
+
+    if (ai_agent) {
+        w.str("AiAgentComponent");
+        w.map_header(6);
+        w.str("state");
+        w.u32_(static_cast<u32>(ai_agent->state));
+        w.str("sight_range");
+        w.f32_(ai_agent->sight_range);
+        w.str("fov_cos");
+        w.f32_(ai_agent->fov_cos);
+        w.str("attack_range");
+        w.f32_(ai_agent->attack_range);
+        w.str("think_interval");
+        w.f32_(ai_agent->think_interval);
+        w.str("move_speed");
+        w.f32_(ai_agent->move_speed);
+    }
+
+    if (perception) {
+        w.str("PerceptionComponent");
+        w.map_header(0);
+    }
+
+    if (patrol) {
+        w.str("PatrolComponent");
+        w.map_header(2);
+        w.str("wait_time");
+        w.f32_(patrol->wait_time);
+        w.str("arrive_radius");
+        w.f32_(patrol->arrive_radius);
     }
 
     return w.buffer();

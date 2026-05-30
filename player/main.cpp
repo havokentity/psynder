@@ -2126,6 +2126,80 @@ struct PlayerApp {
             return std::nullopt;
         }
 
+        // No-code gameplay/AI authoring proxies (scene/GameplayComponents.h).
+        if (component == "FactionComponent") {
+            const auto* faction = registry.get<scene::FactionComponent>(entity);
+            if (!faction)
+                return std::nullopt;
+            if (field == "faction")
+                return std::to_string(faction->faction);
+            return std::nullopt;
+        }
+
+        if (component == "HitboxComponent") {
+            const auto* hitbox = registry.get<scene::HitboxComponent>(entity);
+            if (!hitbox)
+                return std::nullopt;
+            if (field == "offset")
+                return vec3_text(hitbox->offset);
+            if (field == "half_extent")
+                return vec3_text(hitbox->half_extent);
+            if (field == "radius")
+                return f32_text(hitbox->radius);
+            if (field == "enabled")
+                return bool_text(hitbox->enabled != 0u);
+            return std::nullopt;
+        }
+
+        if (component == "WeaponModeComponent") {
+            const auto* weapon_mode = registry.get<scene::WeaponModeComponent>(entity);
+            if (!weapon_mode)
+                return std::nullopt;
+            if (field == "kind")
+                return std::to_string(static_cast<u32>(weapon_mode->kind));
+            if (field == "projectile_speed")
+                return f32_text(weapon_mode->projectile_speed);
+            if (field == "projectile_life")
+                return f32_text(weapon_mode->projectile_life);
+            return std::nullopt;
+        }
+
+        if (component == "AiAgentComponent") {
+            const auto* ai_agent = registry.get<scene::AiAgentComponent>(entity);
+            if (!ai_agent)
+                return std::nullopt;
+            if (field == "state")
+                return std::to_string(static_cast<u32>(ai_agent->state));
+            if (field == "sight_range")
+                return f32_text(ai_agent->sight_range);
+            if (field == "fov_cos")
+                return f32_text(ai_agent->fov_cos);
+            if (field == "attack_range")
+                return f32_text(ai_agent->attack_range);
+            if (field == "think_interval")
+                return f32_text(ai_agent->think_interval);
+            if (field == "move_speed")
+                return f32_text(ai_agent->move_speed);
+            return std::nullopt;
+        }
+
+        if (component == "PerceptionComponent") {
+            // Tag-only proxy: no editable fields. Presence is reported by the
+            // selection-state publisher; there is nothing to read here.
+            return std::nullopt;
+        }
+
+        if (component == "PatrolComponent") {
+            const auto* patrol = registry.get<scene::PatrolComponent>(entity);
+            if (!patrol)
+                return std::nullopt;
+            if (field == "wait_time")
+                return f32_text(patrol->wait_time);
+            if (field == "arrive_radius")
+                return f32_text(patrol->arrive_radius);
+            return std::nullopt;
+        }
+
         return std::nullopt;
     }
 
@@ -2613,7 +2687,7 @@ struct PlayerApp {
             u32 u = 0u;
             if (field == "shape") {
                 if (!parse_u32_value(value, u) ||
-                    u > static_cast<u32>(scene::ColliderShape::TriangleMesh))
+                    u > static_cast<u32>(scene::ColliderShape::Plane))
                     return false;
                 updated.shape = static_cast<scene::ColliderShape>(u);
             } else if (field == "mass") {
@@ -2773,6 +2847,156 @@ struct PlayerApp {
                 return false;  // runtime_character not editable
             }
             registry.add<scene::CharacterControllerComponent>(entity, updated);
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        // No-code gameplay/AI authoring proxies (scene/GameplayComponents.h).
+        // Editable AUTHORING fields only; PlayRuntime maps these into the live
+        // combat/AI components on Play.
+        if (component == "FactionComponent") {
+            const auto* faction = registry.get<scene::FactionComponent>(entity);
+            if (!faction)
+                return false;
+            scene::FactionComponent updated = *faction;
+            u32 u = 0u;
+            if (field == "faction") {
+                if (!parse_u32_value(value, u))
+                    return false;
+                updated.faction = u;
+            } else {
+                return false;
+            }
+            registry.add<scene::FactionComponent>(entity, updated);
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "HitboxComponent") {
+            const auto* hitbox = registry.get<scene::HitboxComponent>(entity);
+            if (!hitbox)
+                return false;
+            scene::HitboxComponent updated = *hitbox;
+            f32 f = 0.0f;
+            bool b = false;
+            if (field == "offset") {
+                std::array<f32, 3> v{};
+                if (!parse_f32_array(value, v))
+                    return false;
+                updated.offset = math::Vec3{v[0], v[1], v[2]};
+            } else if (field == "half_extent") {
+                std::array<f32, 3> v{};
+                if (!parse_f32_array(value, v))
+                    return false;
+                updated.half_extent = math::Vec3{std::max(0.001f, v[0]),
+                                                 std::max(0.001f, v[1]),
+                                                 std::max(0.001f, v[2])};
+            } else if (field == "radius") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.radius = std::max(0.0f, f);
+            } else if (field == "enabled") {
+                if (!parse_bool_value(value, b))
+                    return false;
+                updated.enabled = b ? 1u : 0u;
+            } else {
+                return false;
+            }
+            registry.add<scene::HitboxComponent>(
+                entity, scene::sanitize_hitbox_component(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "WeaponModeComponent") {
+            const auto* weapon_mode = registry.get<scene::WeaponModeComponent>(entity);
+            if (!weapon_mode)
+                return false;
+            scene::WeaponModeComponent updated = *weapon_mode;
+            f32 f = 0.0f;
+            u32 u = 0u;
+            if (field == "kind") {
+                if (!parse_u32_value(value, u) ||
+                    u > static_cast<u32>(scene::WeaponFireKind::Projectile))
+                    return false;
+                updated.kind = static_cast<scene::WeaponFireKind>(u);
+            } else if (field == "projectile_speed") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.projectile_speed = std::max(0.0f, f);
+            } else if (field == "projectile_life") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.projectile_life = std::max(0.0f, f);
+            } else {
+                return false;
+            }
+            registry.add<scene::WeaponModeComponent>(
+                entity, scene::sanitize_weapon_mode_component(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "AiAgentComponent") {
+            const auto* ai_agent = registry.get<scene::AiAgentComponent>(entity);
+            if (!ai_agent)
+                return false;
+            scene::AiAgentComponent updated = *ai_agent;
+            f32 f = 0.0f;
+            u32 u = 0u;
+            if (field == "state") {
+                if (!parse_u32_value(value, u) ||
+                    u > static_cast<u32>(scene::AiState::Dead))
+                    return false;
+                updated.state = static_cast<scene::AiState>(u);
+            } else if (field == "sight_range") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.sight_range = std::max(0.0f, f);
+            } else if (field == "fov_cos") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.fov_cos = std::clamp(f, -1.0f, 1.0f);
+            } else if (field == "attack_range") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.attack_range = std::max(0.0f, f);
+            } else if (field == "think_interval") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.think_interval = std::max(0.0f, f);
+            } else if (field == "move_speed") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.move_speed = std::max(0.0f, f);
+            } else {
+                return false;
+            }
+            registry.add<scene::AiAgentComponent>(
+                entity, scene::sanitize_ai_agent_component(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
+        if (component == "PatrolComponent") {
+            const auto* patrol = registry.get<scene::PatrolComponent>(entity);
+            if (!patrol)
+                return false;
+            scene::PatrolComponent updated = *patrol;
+            f32 f = 0.0f;
+            if (field == "wait_time") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.wait_time = std::max(0.0f, f);
+            } else if (field == "arrive_radius") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.arrive_radius = std::max(0.001f, f);
+            } else {
+                return false;
+            }
+            registry.add<scene::PatrolComponent>(
+                entity, scene::sanitize_patrol_component(updated));
             editor::publish_web_scene_hierarchy(scene);
             return true;
         }
@@ -3252,6 +3476,92 @@ struct PlayerApp {
         return add_character_controller_to_entity(editor::selection::selected_scene_entity());
     }
 
+    // No-code gameplay/AI authoring proxies. Each tags an entity with a
+    // scene-level proxy (scene/GameplayComponents.h); PlayRuntime maps the proxy
+    // into the live combat/AI component on Play. Validated alive here so an IPC
+    // add queued on a socket thread + drained a frame later still targets a live
+    // entity. Idempotent: a second add no-ops (the component is already present).
+    bool add_faction_to_entity(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<scene::FactionComponent>(entity) != nullptr)
+            return true;
+        reg.add<scene::FactionComponent>(entity, scene::FactionComponent{});
+        return true;
+    }
+
+    bool add_hitbox_to_entity(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<scene::HitboxComponent>(entity) != nullptr)
+            return true;
+        scene::HitboxComponent hb{};
+        // Size the hitbox from the renderable's local bounds when present so a
+        // designer gets a sensible default; fall back to the component default.
+        if (const auto* r = reg.get<scene::RenderableComponent>(entity)) {
+            const math::Vec3 ext = math::mul(math::sub(r->local_bounds.max, r->local_bounds.min), 0.5f);
+            hb.half_extent = math::Vec3{std::max(0.05f, ext.x), std::max(0.05f, ext.y),
+                                        std::max(0.05f, ext.z)};
+        }
+        reg.add<scene::HitboxComponent>(entity, scene::sanitize_hitbox_component(hb));
+        return true;
+    }
+
+    bool add_weapon_mode_to_entity(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<scene::WeaponModeComponent>(entity) != nullptr)
+            return true;
+        reg.add<scene::WeaponModeComponent>(
+            entity, scene::sanitize_weapon_mode_component(scene::WeaponModeComponent{}));
+        return true;
+    }
+
+    bool add_ai_agent_to_entity(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<scene::AiAgentComponent>(entity) != nullptr)
+            return true;
+        reg.add<scene::AiAgentComponent>(
+            entity, scene::sanitize_ai_agent_component(scene::AiAgentComponent{}));
+        // An agent needs a perception sense to acquire targets; add it alongside
+        // so a one-click "AI Agent" gives a working brain out of the box.
+        if (reg.get<scene::PerceptionComponent>(entity) == nullptr)
+            reg.add<scene::PerceptionComponent>(entity, scene::PerceptionComponent{});
+        return true;
+    }
+
+    bool add_perception_to_entity(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<scene::PerceptionComponent>(entity) != nullptr)
+            return true;
+        reg.add<scene::PerceptionComponent>(entity, scene::PerceptionComponent{});
+        return true;
+    }
+
+    bool add_patrol_to_entity(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<scene::PatrolComponent>(entity) != nullptr)
+            return true;
+        reg.add<scene::PatrolComponent>(
+            entity, scene::sanitize_patrol_component(scene::PatrolComponent{}));
+        return true;
+    }
+
     // Whether `component` names an optional authoring component that the
     // Inspector is allowed to remove. Structural/foundational components
     // (Transform, SceneNode) and the always-present render data (Renderable,
@@ -3264,7 +3574,13 @@ struct PlayerApp {
                component == "VehicleComponent" || component == "Helicopter" ||
                component == "HelicopterComponent" || component == "CharacterController" ||
                component == "CharacterControllerComponent" || component == "Light" ||
-               component == "LightComponent";
+               component == "LightComponent" || component == "Faction" ||
+               component == "FactionComponent" || component == "Hitbox" ||
+               component == "HitboxComponent" || component == "WeaponMode" ||
+               component == "WeaponModeComponent" || component == "AiAgent" ||
+               component == "AiAgentComponent" || component == "Perception" ||
+               component == "PerceptionComponent" || component == "Patrol" ||
+               component == "PatrolComponent";
     }
 
     // Inverse of the add_*_to_entity family: strip a single optional authoring
@@ -3313,6 +3629,36 @@ struct PlayerApp {
         } else if (component == "Light" || component == "LightComponent") {
             if (reg.get<scene::LightComponent>(entity) != nullptr) {
                 reg.remove<scene::LightComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "Faction" || component == "FactionComponent") {
+            if (reg.get<scene::FactionComponent>(entity) != nullptr) {
+                reg.remove<scene::FactionComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "Hitbox" || component == "HitboxComponent") {
+            if (reg.get<scene::HitboxComponent>(entity) != nullptr) {
+                reg.remove<scene::HitboxComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "WeaponMode" || component == "WeaponModeComponent") {
+            if (reg.get<scene::WeaponModeComponent>(entity) != nullptr) {
+                reg.remove<scene::WeaponModeComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "AiAgent" || component == "AiAgentComponent") {
+            if (reg.get<scene::AiAgentComponent>(entity) != nullptr) {
+                reg.remove<scene::AiAgentComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "Perception" || component == "PerceptionComponent") {
+            if (reg.get<scene::PerceptionComponent>(entity) != nullptr) {
+                reg.remove<scene::PerceptionComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "Patrol" || component == "PatrolComponent") {
+            if (reg.get<scene::PatrolComponent>(entity) != nullptr) {
+                reg.remove<scene::PatrolComponent>(entity);
                 removed = true;
             }
         }
@@ -4756,6 +5102,30 @@ bool add_active_arcade_character_controller_to(Entity entity) {
     return g_active_arcade && g_active_arcade->add_character_controller_to_entity(entity);
 }
 
+bool add_active_arcade_faction_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_faction_to_entity(entity);
+}
+
+bool add_active_arcade_hitbox_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_hitbox_to_entity(entity);
+}
+
+bool add_active_arcade_weapon_mode_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_weapon_mode_to_entity(entity);
+}
+
+bool add_active_arcade_ai_agent_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_ai_agent_to_entity(entity);
+}
+
+bool add_active_arcade_perception_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_perception_to_entity(entity);
+}
+
+bool add_active_arcade_patrol_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_patrol_to_entity(entity);
+}
+
 bool remove_active_arcade_component_from(Entity entity, std::string_view component) {
     return g_active_arcade && g_active_arcade->remove_component_from_entity(entity, component);
 }
@@ -4858,6 +5228,18 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
     const bool is_character =
         add.component == "CharacterController" ||
         add.component == "CharacterControllerComponent";
+    const bool is_faction =
+        add.component == "Faction" || add.component == "FactionComponent";
+    const bool is_hitbox =
+        add.component == "Hitbox" || add.component == "HitboxComponent";
+    const bool is_weapon_mode =
+        add.component == "WeaponMode" || add.component == "WeaponModeComponent";
+    const bool is_ai_agent =
+        add.component == "AiAgent" || add.component == "AiAgentComponent";
+    const bool is_perception =
+        add.component == "Perception" || add.component == "PerceptionComponent";
+    const bool is_patrol =
+        add.component == "Patrol" || add.component == "PatrolComponent";
     if (is_rigid_body) {
         const bool make_static =
             add.component == "RigidBodyStatic" || add.variant == "static";
@@ -4892,6 +5274,42 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
             text = "add CharacterController failed (entity not alive / no active scene)";
             PSY_LOG_WARN("psynder_arcade: add CharacterController failed on {}", add.entity_id);
         }
+    } else if (is_faction) {
+        ok = add_active_arcade_faction_to(entity);
+        text = ok ? "added Faction"
+                  : "add Faction failed (entity not alive / no active scene)";
+        if (!ok)
+            PSY_LOG_WARN("psynder_arcade: add Faction failed on {}", add.entity_id);
+    } else if (is_hitbox) {
+        ok = add_active_arcade_hitbox_to(entity);
+        text = ok ? "added Hitbox"
+                  : "add Hitbox failed (entity not alive / no active scene)";
+        if (!ok)
+            PSY_LOG_WARN("psynder_arcade: add Hitbox failed on {}", add.entity_id);
+    } else if (is_weapon_mode) {
+        ok = add_active_arcade_weapon_mode_to(entity);
+        text = ok ? "added WeaponMode"
+                  : "add WeaponMode failed (entity not alive / no active scene)";
+        if (!ok)
+            PSY_LOG_WARN("psynder_arcade: add WeaponMode failed on {}", add.entity_id);
+    } else if (is_ai_agent) {
+        ok = add_active_arcade_ai_agent_to(entity);
+        text = ok ? "added AiAgent"
+                  : "add AiAgent failed (entity not alive / no active scene)";
+        if (!ok)
+            PSY_LOG_WARN("psynder_arcade: add AiAgent failed on {}", add.entity_id);
+    } else if (is_perception) {
+        ok = add_active_arcade_perception_to(entity);
+        text = ok ? "added Perception"
+                  : "add Perception failed (entity not alive / no active scene)";
+        if (!ok)
+            PSY_LOG_WARN("psynder_arcade: add Perception failed on {}", add.entity_id);
+    } else if (is_patrol) {
+        ok = add_active_arcade_patrol_to(entity);
+        text = ok ? "added Patrol"
+                  : "add Patrol failed (entity not alive / no active scene)";
+        if (!ok)
+            PSY_LOG_WARN("psynder_arcade: add Patrol failed on {}", add.entity_id);
     } else {
         text = "add component not supported: ";
         text += add.component;

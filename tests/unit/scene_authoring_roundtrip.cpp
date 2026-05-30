@@ -645,3 +645,186 @@ TEST_CASE("scene file roundtrips authoring physics components",
     REQUIRE(loaded_hc->is_player == 1u);
     REQUIRE(loaded_hc->runtime_body == 0u);
 }
+
+TEST_CASE("scene file roundtrips authoring gameplay + AI components (v4 SGAI)",
+          "[scene][scene_file][authoring][gameplay][ai]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    scene::Scene authored{registry};
+
+    // An armed AI soldier: Faction + Hitbox + WeaponMode + AiAgent + Perception
+    // + Patrol, every authoring field set to a non-default so we prove they all
+    // survive the round trip.
+    const Entity soldier = authored.create_entity(translate({2.0f, 0.0f, -3.0f}));
+    REQUIRE(soldier.valid());
+    REQUIRE(authored.set_entity_name(soldier, "Soldier"));
+
+    scene::FactionComponent fac{};
+    fac.faction = 7u;
+    registry.add<scene::FactionComponent>(soldier, fac);
+
+    scene::HitboxComponent hb{};
+    hb.offset = {0.0f, 0.9f, 0.0f};
+    hb.half_extent = {0.4f, 0.95f, 0.4f};
+    hb.radius = 0.0f;
+    hb.enabled = 1u;
+    registry.add<scene::HitboxComponent>(soldier, hb);
+
+    scene::WeaponModeComponent wm{};
+    wm.kind = scene::WeaponFireKind::Projectile;
+    wm.projectile_speed = 55.0f;
+    wm.projectile_life = 4.5f;
+    registry.add<scene::WeaponModeComponent>(soldier, wm);
+
+    scene::AiAgentComponent agent{};
+    agent.state = scene::AiState::Patrol;
+    agent.sight_range = 28.0f;
+    agent.fov_cos = 0.25f;
+    agent.attack_range = 14.0f;
+    agent.think_interval = 0.2f;
+    agent.move_speed = 4.2f;
+    registry.add<scene::AiAgentComponent>(soldier, agent);
+
+    registry.add<scene::PerceptionComponent>(soldier, scene::PerceptionComponent{});
+
+    scene::PatrolComponent patrol{};
+    patrol.count = 3u;
+    patrol.waypoints[0] = {1.0f, 0.0f, 1.0f};
+    patrol.waypoints[1] = {5.0f, 0.0f, 1.0f};
+    patrol.waypoints[2] = {5.0f, 0.0f, 6.0f};
+    patrol.wait_time = 2.5f;
+    patrol.arrive_radius = 0.75f;
+    registry.add<scene::PatrolComponent>(soldier, patrol);
+
+    scene::detail::AlignedVector<u8> bytes;
+    scene::SceneFileSaveStats stats{};
+    std::string error;
+    REQUIRE(scene::save_scene_file(authored, {}, bytes, &stats, &error));
+    REQUIRE(error.empty());
+    REQUIRE(stats.authoring_nodes == 1u);
+    REQUIRE(stats.gameplay_ai == 1u);
+
+    scene::SceneFileView view{};
+    REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()}, view, &error));
+    REQUIRE(error.empty());
+    REQUIRE(view.header->version == scene::kPsySceneVersion);
+    REQUIRE(view.header->version == 4u);
+    REQUIRE(view.gameplay_ai.size() == 1u);
+
+    registry.clear();
+    registry.set_structural_deferred(false);
+    scene::Scene loaded{registry};
+    std::array<scene::SceneMeshBinding, 0> mesh_bindings{};
+    std::array<Entity, 0> out_mesh_entities{};
+    (void)scene::instantiate_scene_file(loaded, view, mesh_bindings, out_mesh_entities);
+
+    const Entity loaded_soldier = find_entity_named(loaded, "Soldier");
+    REQUIRE(loaded_soldier.valid());
+
+    const auto* lf = registry.get<scene::FactionComponent>(loaded_soldier);
+    REQUIRE(lf != nullptr);
+    REQUIRE(lf->faction == 7u);
+
+    const auto* lh = registry.get<scene::HitboxComponent>(loaded_soldier);
+    REQUIRE(lh != nullptr);
+    REQUIRE_THAT(static_cast<double>(lh->offset.y), Catch::Matchers::WithinAbs(0.9, 0.0001));
+    REQUIRE_THAT(static_cast<double>(lh->half_extent.y), Catch::Matchers::WithinAbs(0.95, 0.0001));
+    REQUIRE(lh->enabled == 1u);
+
+    const auto* lwm = registry.get<scene::WeaponModeComponent>(loaded_soldier);
+    REQUIRE(lwm != nullptr);
+    REQUIRE(lwm->kind == scene::WeaponFireKind::Projectile);
+    REQUIRE_THAT(static_cast<double>(lwm->projectile_speed),
+                 Catch::Matchers::WithinAbs(55.0, 0.0001));
+    REQUIRE_THAT(static_cast<double>(lwm->projectile_life),
+                 Catch::Matchers::WithinAbs(4.5, 0.0001));
+
+    const auto* la = registry.get<scene::AiAgentComponent>(loaded_soldier);
+    REQUIRE(la != nullptr);
+    REQUIRE(la->state == scene::AiState::Patrol);
+    REQUIRE_THAT(static_cast<double>(la->sight_range), Catch::Matchers::WithinAbs(28.0, 0.0001));
+    REQUIRE_THAT(static_cast<double>(la->fov_cos), Catch::Matchers::WithinAbs(0.25, 0.0001));
+    REQUIRE_THAT(static_cast<double>(la->attack_range), Catch::Matchers::WithinAbs(14.0, 0.0001));
+    REQUIRE_THAT(static_cast<double>(la->move_speed), Catch::Matchers::WithinAbs(4.2, 0.0001));
+
+    REQUIRE(registry.get<scene::PerceptionComponent>(loaded_soldier) != nullptr);
+
+    const auto* lp = registry.get<scene::PatrolComponent>(loaded_soldier);
+    REQUIRE(lp != nullptr);
+    REQUIRE(lp->count == 3u);
+    REQUIRE_THAT(static_cast<double>(lp->waypoints[2].z), Catch::Matchers::WithinAbs(6.0, 0.0001));
+    REQUIRE_THAT(static_cast<double>(lp->wait_time), Catch::Matchers::WithinAbs(2.5, 0.0001));
+    REQUIRE_THAT(static_cast<double>(lp->arrive_radius), Catch::Matchers::WithinAbs(0.75, 0.0001));
+}
+
+TEST_CASE("scene file: an OLD scene without the v4 SGAI chunk still loads",
+          "[scene][scene_file][authoring][gameplay][backward_compat]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    // Build + save a scene that carries gameplay/AI authoring, then strip the
+    // SGAI chunk out of the cooked bytes by hand to simulate a pre-v4 file (the
+    // SGAI chunk type did not exist before v4). The remaining chunks + header are
+    // exactly what an older editor would have written, so a successful load
+    // proves the missing-chunk path (load_span treats absent as empty).
+    scene::Scene authored{registry};
+    const Entity soldier = authored.create_entity(translate({0.0f, 0.0f, 0.0f}));
+    REQUIRE(authored.set_entity_name(soldier, "Soldier"));
+    scene::AiAgentComponent agent{};
+    registry.add<scene::AiAgentComponent>(soldier, agent);
+    registry.add<scene::FactionComponent>(soldier, scene::FactionComponent{});
+
+    scene::detail::AlignedVector<u8> bytes;
+    std::string error;
+    REQUIRE(scene::save_scene_file(authored, {}, bytes, nullptr, &error));
+    REQUIRE(error.empty());
+
+    // Confirm the freshly cooked file DOES carry an SGAI chunk, then drop it.
+    scene::SceneFileView view{};
+    REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()}, view, &error));
+    REQUIRE(view.gameplay_ai.size() == 1u);
+
+    // Hand-strip: find the SGAI chunk descriptor, zero its byte count + retype it
+    // to Strings (a benign existing type). A real pre-v4 file simply never had
+    // the chunk; here we make the loader skip it the same way. We also rewrite
+    // the version to 3 (pre-SGAI) to exercise the older-version accept path.
+    auto* header = reinterpret_cast<scene::SceneFileHeader*>(bytes.data());
+    auto* chunks = reinterpret_cast<scene::SceneFileChunk*>(
+        bytes.data() + sizeof(scene::SceneFileHeader));
+    bool stripped = false;
+    for (u32 i = 0u; i < header->chunk_count; ++i) {
+        if (chunks[i].type == scene::SceneFileChunkType::GameplayAi) {
+            chunks[i].type = scene::SceneFileChunkType::Strings;  // benign skip
+            chunks[i].bytes = 0u;
+            chunks[i].stride = 0u;
+            stripped = true;
+        }
+    }
+    REQUIRE(stripped);
+    header->version = 3u;  // pretend this was written by a pre-v4 editor
+
+    scene::SceneFileView old_view{};
+    REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()},
+                                    old_view, &error));
+    REQUIRE(error.empty());
+    REQUIRE(old_view.header->version == 3u);
+    // No SGAI chunk => no gameplay/AI authoring records, but the scene still loads.
+    REQUIRE(old_view.gameplay_ai.empty());
+    REQUIRE(old_view.authoring_nodes.size() == 1u);
+
+    registry.clear();
+    registry.set_structural_deferred(false);
+    scene::Scene loaded{registry};
+    std::array<scene::SceneMeshBinding, 0> mesh_bindings{};
+    std::array<Entity, 0> out_mesh_entities{};
+    (void)scene::instantiate_scene_file(loaded, old_view, mesh_bindings, out_mesh_entities);
+    const Entity loaded_soldier = find_entity_named(loaded, "Soldier");
+    REQUIRE(loaded_soldier.valid());
+    // The gameplay/AI proxies were in the dropped chunk, so they are absent on
+    // load — exactly the pre-v4 behaviour, and the entity itself loaded fine.
+    REQUIRE(registry.get<scene::AiAgentComponent>(loaded_soldier) == nullptr);
+    REQUIRE(registry.get<scene::FactionComponent>(loaded_soldier) == nullptr);
+}

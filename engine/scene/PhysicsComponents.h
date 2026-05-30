@@ -48,6 +48,11 @@ enum class ColliderShape : u8 {
     Compound,
     Heightfield,
     TriangleMesh,
+    // Infinite ground half-space (mirrors physics::Shape::Plane). half_extent is
+    // ignored: the plane is the y=0 floor at the body's pose. Authoring a static
+    // (mass 0) RigidBody with this shape gives a designer an in-editor flat floor
+    // that does not tunnel (the #63 plane primitive handles the physics).
+    Plane,
 };
 
 // A rigid body attached to an entity. mass == 0 => static collider (floors,

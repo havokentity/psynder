@@ -142,6 +142,7 @@ struct SceneFileSaveScratch {
     std::vector<SceneFileAuthoringNode> authoring_nodes;
     std::vector<SceneFileGameplayEntity> gameplay_entities;
     std::vector<SceneFilePhysicsBody> physics_bodies;
+    std::vector<SceneFileGameplayAi> gameplay_ai;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
     std::unordered_map<u32, u32> material_slots;
@@ -158,6 +159,14 @@ constexpr u32 kSceneFileRigidBodyMask = 1u << 0u;
 constexpr u32 kSceneFileVehicleMask = 1u << 1u;
 constexpr u32 kSceneFileHelicopterMask = 1u << 2u;
 constexpr u32 kSceneFileCharacterMask = 1u << 3u;
+
+// SceneFileGameplayAi::component_mask selectors (which authoring payload is set).
+constexpr u32 kSceneFileFactionMask = 1u << 0u;
+constexpr u32 kSceneFileHitboxMask = 1u << 1u;
+constexpr u32 kSceneFileWeaponModeMask = 1u << 2u;
+constexpr u32 kSceneFileAiAgentMask = 1u << 3u;
+constexpr u32 kSceneFilePerceptionMask = 1u << 4u;
+constexpr u32 kSceneFilePatrolMask = 1u << 5u;
 
 [[nodiscard]] bool fail_save(std::string* error, std::string_view message) {
     if (error)
@@ -388,6 +397,55 @@ constexpr u32 kSceneFileCharacterMask = 1u << 3u;
             ++stats.physics_bodies;
         }
 
+        // Authoring gameplay + AI components (v4 SGAI). Persist ONLY the authoring
+        // fields from the scene-level proxies (scene/GameplayComponents.h); the
+        // live combat/AI runtime state is never serialized. Keyed by
+        // authoring_index, exactly like the gameplay + physics records above.
+        SceneFileGameplayAi gameplay_ai{};
+        gameplay_ai.authoring_node_index = authoring_index;
+        if (const auto* fac = registry.get<FactionComponent>(entity)) {
+            gameplay_ai.component_mask |= kSceneFileFactionMask;
+            gameplay_ai.faction.faction = fac->faction;
+        }
+        if (const auto* hb = registry.get<HitboxComponent>(entity)) {
+            gameplay_ai.component_mask |= kSceneFileHitboxMask;
+            gameplay_ai.hitbox.offset = hb->offset;
+            gameplay_ai.hitbox.half_extent = hb->half_extent;
+            gameplay_ai.hitbox.radius = hb->radius;
+            gameplay_ai.hitbox.enabled = hb->enabled;
+        }
+        if (const auto* wm = registry.get<WeaponModeComponent>(entity)) {
+            gameplay_ai.component_mask |= kSceneFileWeaponModeMask;
+            gameplay_ai.weapon_mode.kind = static_cast<u8>(wm->kind);
+            gameplay_ai.weapon_mode.projectile_speed = wm->projectile_speed;
+            gameplay_ai.weapon_mode.projectile_life = wm->projectile_life;
+        }
+        if (const auto* agent = registry.get<AiAgentComponent>(entity)) {
+            gameplay_ai.component_mask |= kSceneFileAiAgentMask;
+            gameplay_ai.ai_agent.state = static_cast<u8>(agent->state);
+            gameplay_ai.ai_agent.sight_range = agent->sight_range;
+            gameplay_ai.ai_agent.fov_cos = agent->fov_cos;
+            gameplay_ai.ai_agent.attack_range = agent->attack_range;
+            gameplay_ai.ai_agent.think_interval = agent->think_interval;
+            gameplay_ai.ai_agent.move_speed = agent->move_speed;
+        }
+        if (registry.get<PerceptionComponent>(entity) != nullptr) {
+            gameplay_ai.component_mask |= kSceneFilePerceptionMask;
+        }
+        if (const auto* patrol = registry.get<PatrolComponent>(entity)) {
+            gameplay_ai.component_mask |= kSceneFilePatrolMask;
+            const u32 count = std::min<u32>(patrol->count, PatrolComponent::kMaxWaypoints);
+            gameplay_ai.patrol.count = count;
+            for (u32 wp = 0u; wp < count; ++wp)
+                gameplay_ai.patrol.waypoints[wp] = patrol->waypoints[wp];
+            gameplay_ai.patrol.wait_time = patrol->wait_time;
+            gameplay_ai.patrol.arrive_radius = patrol->arrive_radius;
+        }
+        if (gameplay_ai.component_mask != 0u) {
+            saved.gameplay_ai.push_back(gameplay_ai);
+            ++stats.gameplay_ai;
+        }
+
         authoring_index_by_node[node_component->node.raw] = authoring_index;
         ++stats.authoring_nodes;
     }
@@ -553,7 +611,11 @@ template <class T>
 [[nodiscard]] bool write_save_blob(const SceneFileSaveScratch& scene,
                                    detail::AlignedVector<u8>& out,
                                    std::string* error) {
-    constexpr usize kSceneFileChunkCount = 16u;
+    // One descriptor slot per append_save_chunk call below. Bump this when adding
+    // a chunk: the header + chunk table are pre-sized here and the table is
+    // memcpy'd over this region last, so an undersized count overwrites the first
+    // chunk's data. v4 adds the GameplayAi (SGAI) chunk -> 17.
+    constexpr usize kSceneFileChunkCount = 17u;
     out.clear();
     out.resize(sizeof(SceneFileHeader) + kSceneFileChunkCount * sizeof(SceneFileChunk));
 
@@ -664,6 +726,13 @@ template <class T>
                            std::span<const SceneFilePhysicsBody>{scene.physics_bodies.data(),
                                                                  scene.physics_bodies.size()},
                            sizeof(SceneFilePhysicsBody),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::GameplayAi,
+                           std::span<const SceneFileGameplayAi>{scene.gameplay_ai.data(),
+                                                                scene.gameplay_ai.size()},
+                           sizeof(SceneFileGameplayAi),
                            error)) {
         out.clear();
         return false;
@@ -803,7 +872,11 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
         !load_span(SceneFileChunkType::PhysicsBodies,
                    sizeof(SceneFilePhysicsBody),
                    out.physics_bodies,
-                   "physics_bodies")) {
+                   "physics_bodies") ||
+        !load_span(SceneFileChunkType::GameplayAi,
+                   sizeof(SceneFileGameplayAi),
+                   out.gameplay_ai,
+                   "gameplay_ai")) {
         return false;
     }
 
@@ -993,6 +1066,61 @@ void attach_saved_physics_components(Scene& scene,
     }
 }
 
+// Recreate the authoring gameplay + AI proxy components on a loaded entity from
+// a saved SGAI record. Mirrors attach_saved_physics_components. Only authoring
+// fields are restored; combat/AI runtime state stays at the POD default until the
+// next Play session maps the proxy into the live gameplay::/ai:: component.
+void attach_saved_gameplay_ai_components(Scene& scene,
+                                         Entity entity,
+                                         const SceneFileGameplayAi& saved) {
+    if (!entity.valid())
+        return;
+    EcsRegistry& registry = scene.registry();
+    if ((saved.component_mask & kSceneFileFactionMask) != 0u) {
+        FactionComponent fac{};
+        fac.faction = saved.faction.faction;
+        registry.add<FactionComponent>(entity, fac);
+    }
+    if ((saved.component_mask & kSceneFileHitboxMask) != 0u) {
+        HitboxComponent hb{};
+        hb.offset = saved.hitbox.offset;
+        hb.half_extent = saved.hitbox.half_extent;
+        hb.radius = saved.hitbox.radius;
+        hb.enabled = saved.hitbox.enabled;
+        registry.add<HitboxComponent>(entity, sanitize_hitbox_component(hb));
+    }
+    if ((saved.component_mask & kSceneFileWeaponModeMask) != 0u) {
+        WeaponModeComponent wm{};
+        wm.kind = static_cast<WeaponFireKind>(saved.weapon_mode.kind);
+        wm.projectile_speed = saved.weapon_mode.projectile_speed;
+        wm.projectile_life = saved.weapon_mode.projectile_life;
+        registry.add<WeaponModeComponent>(entity, sanitize_weapon_mode_component(wm));
+    }
+    if ((saved.component_mask & kSceneFileAiAgentMask) != 0u) {
+        AiAgentComponent agent{};
+        agent.state = static_cast<AiState>(saved.ai_agent.state);
+        agent.sight_range = saved.ai_agent.sight_range;
+        agent.fov_cos = saved.ai_agent.fov_cos;
+        agent.attack_range = saved.ai_agent.attack_range;
+        agent.think_interval = saved.ai_agent.think_interval;
+        agent.move_speed = saved.ai_agent.move_speed;
+        registry.add<AiAgentComponent>(entity, sanitize_ai_agent_component(agent));
+    }
+    if ((saved.component_mask & kSceneFilePerceptionMask) != 0u) {
+        registry.add<PerceptionComponent>(entity, PerceptionComponent{});
+    }
+    if ((saved.component_mask & kSceneFilePatrolMask) != 0u) {
+        PatrolComponent patrol{};
+        const u32 count = std::min<u32>(saved.patrol.count, PatrolComponent::kMaxWaypoints);
+        patrol.count = count;
+        for (u32 wp = 0u; wp < count; ++wp)
+            patrol.waypoints[wp] = saved.patrol.waypoints[wp];
+        patrol.wait_time = saved.patrol.wait_time;
+        patrol.arrive_radius = saved.patrol.arrive_radius;
+        registry.add<PatrolComponent>(entity, sanitize_patrol_component(patrol));
+    }
+}
+
 [[nodiscard]] SceneFileInstantiateResult instantiate_authoring_scene_file(
     Scene& scene,
     const SceneFileView& scene_file,
@@ -1120,6 +1248,13 @@ void attach_saved_physics_components(Scene& scene,
         if (physics.authoring_node_index >= entities.size())
             continue;
         attach_saved_physics_components(scene, entities[physics.authoring_node_index], physics);
+    }
+
+    for (const SceneFileGameplayAi& gameplay_ai : scene_file.gameplay_ai) {
+        if (gameplay_ai.authoring_node_index >= entities.size())
+            continue;
+        attach_saved_gameplay_ai_components(
+            scene, entities[gameplay_ai.authoring_node_index], gameplay_ai);
     }
 
     return result;

@@ -74,6 +74,12 @@ const REMOVABLE_COMPONENTS: Readonly<Record<string, string>> = {
     HelicopterComponent: 'Helicopter',
     CharacterControllerComponent: 'CharacterController',
     LightComponent: 'Light',
+    FactionComponent: 'Faction',
+    HitboxComponent: 'Hitbox',
+    WeaponModeComponent: 'WeaponMode',
+    AiAgentComponent: 'AiAgent',
+    PerceptionComponent: 'Perception',
+    PatrolComponent: 'Patrol',
 };
 
 export function Inspector() {
@@ -519,6 +525,63 @@ export function Inspector() {
                                 title="Add a kinematic CharacterController capsule for walk-around play"
                             >
                                 CharacterController
+                            </button>
+                        </div>
+                        <div className="psy-add-component-title">Gameplay &amp; AI</div>
+                        <div className="psy-add-component-row">
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'FactionComponent' in selection.components}
+                                onClick={() => add_component('Faction')}
+                                title="Tag this entity's team id so combat knows friend from foe"
+                            >
+                                Faction
+                            </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'HitboxComponent' in selection.components}
+                                onClick={() => add_component('Hitbox')}
+                                title="Add a damage hitbox so weapons + projectiles can hit this entity in Play"
+                            >
+                                Hitbox
+                            </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'WeaponModeComponent' in selection.components}
+                                onClick={() => add_component('WeaponMode')}
+                                title="Set the weapon fire kind (hitscan / projectile) and projectile params"
+                            >
+                                WeaponMode
+                            </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'AiAgentComponent' in selection.components}
+                                onClick={() => add_component('AiAgent')}
+                                title="Make this entity an AI soldier that perceives, chases and fires in Play"
+                            >
+                                AI Agent
+                            </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'PerceptionComponent' in selection.components}
+                                onClick={() => add_component('Perception')}
+                                title="Add a perception sense (needed for an AI agent to acquire targets)"
+                            >
+                                Perception
+                            </button>
+                            <button
+                                type="button"
+                                className="psy-button"
+                                disabled={'PatrolComponent' in selection.components}
+                                onClick={() => add_component('Patrol')}
+                                title="Add a patrol route so an idle AI agent walks waypoints in Play"
+                            >
+                                Patrol
                             </button>
                         </div>
                         {add_status && (

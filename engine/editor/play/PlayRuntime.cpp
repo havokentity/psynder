@@ -25,6 +25,7 @@
 #include "ai/AiComponents.h"            // AiAgentComponent (gameplay AI phase)
 #include "gameplay/GameplayComponents.h"  // WeaponComponent / HealthComponent / ...
 #include "math/MathExt.h"               // inverse_affine (parenting writeback)
+#include "scene/GameplayComponents.h"   // scene-level gameplay/AI authoring proxies
 
 #include <algorithm>
 #include <array>
@@ -185,8 +186,146 @@ void PlayRuntime::clear_pools() noexcept {
     vehicle_entities_.clear();
     helicopter_entities_.clear();
     ai_entities_.clear();
+    authored_gameplay_entities_.clear();
     authored_.clear();
     body_count_ = 0u;
+}
+
+void PlayRuntime::synthesize_authored_gameplay(scene::Scene& scene) {
+    scene::EcsRegistry& reg = scene.registry();
+    // The host main loop runs with structural-deferred ON, which would QUEUE the
+    // adds below instead of applying them immediately — but the AI/physics scans
+    // later in begin() must SEE the synthesised live components this same frame.
+    // Force immediate structural mutation for this pass, then restore the host's
+    // mode (same discipline as the snapshot-restore path in the host).
+    const bool restore_deferred = reg.structural_deferred();
+    reg.set_structural_deferred(false);
+
+    const u32 total = reg.snapshot_live_entities(std::span<Entity>{});
+    std::vector<Entity> entities(total);
+    const u32 copied = reg.snapshot_live_entities(entities);
+    entities.resize(copied);
+
+    for (const Entity e : entities) {
+        bool synthesised = false;
+
+        // Faction proxy -> gameplay::FactionComponent.
+        if (const auto* fac = reg.get<scene::FactionComponent>(e);
+            fac != nullptr && reg.get<gameplay::FactionComponent>(e) == nullptr) {
+            gameplay::FactionComponent live{};
+            live.faction = fac->faction;
+            reg.add<gameplay::FactionComponent>(e, live);
+            synthesised = true;
+        }
+
+        // Hitbox proxy -> gameplay::HitboxComponent (what combat ray-tests).
+        if (const auto* hb = reg.get<scene::HitboxComponent>(e);
+            hb != nullptr && reg.get<gameplay::HitboxComponent>(e) == nullptr) {
+            gameplay::HitboxComponent live{};
+            live.offset = hb->offset;
+            live.half_extent = hb->half_extent;
+            live.radius = hb->radius;
+            live.enabled = hb->enabled;
+            reg.add<gameplay::HitboxComponent>(e, gameplay::sanitize_hitbox(live));
+            synthesised = true;
+        }
+
+        // Weapon-mode proxy -> gameplay::WeaponRuntimeComponent (fire kind +
+        // projectile params; the live cooldown starts at 0).
+        if (const auto* wm = reg.get<scene::WeaponModeComponent>(e);
+            wm != nullptr && reg.get<gameplay::WeaponRuntimeComponent>(e) == nullptr) {
+            gameplay::WeaponRuntimeComponent live{};
+            live.kind = (wm->kind == scene::WeaponFireKind::Projectile)
+                            ? gameplay::WeaponKind::Projectile
+                            : gameplay::WeaponKind::Hitscan;
+            live.cooldown = 0.0f;
+            live.projectile_speed = wm->projectile_speed;
+            live.projectile_life = wm->projectile_life;
+            reg.add<gameplay::WeaponRuntimeComponent>(
+                e, gameplay::sanitize_weapon_runtime(live));
+            synthesised = true;
+        }
+
+        // AI-agent proxy -> ai::AiAgentComponent (the FSM brain the AI scan +
+        // perceive/think/act consume). Runtime target/cooldown start cleared.
+        if (const auto* agent = reg.get<scene::AiAgentComponent>(e);
+            agent != nullptr && reg.get<ai::AiAgentComponent>(e) == nullptr) {
+            ai::AiAgentComponent live{};
+            live.state = static_cast<ai::AiState>(agent->state);
+            live.sight_range = agent->sight_range;
+            live.fov_cos = agent->fov_cos;
+            live.attack_range = agent->attack_range;
+            live.think_interval = agent->think_interval;
+            live.move_speed = agent->move_speed;
+            reg.add<ai::AiAgentComponent>(e, ai::sanitize_ai_agent(live));
+            synthesised = true;
+        }
+
+        // Perception proxy -> ai::PerceptionComponent (sense snapshot, starts
+        // at its POD default).
+        if (reg.get<scene::PerceptionComponent>(e) != nullptr &&
+            reg.get<ai::PerceptionComponent>(e) == nullptr) {
+            reg.add<ai::PerceptionComponent>(e, ai::PerceptionComponent{});
+            synthesised = true;
+        }
+
+        // Patrol proxy -> ai::PatrolComponent (waypoint ring; current/wait_timer
+        // start at 0).
+        if (const auto* patrol = reg.get<scene::PatrolComponent>(e);
+            patrol != nullptr && reg.get<ai::PatrolComponent>(e) == nullptr) {
+            ai::PatrolComponent live{};
+            const u32 count =
+                std::min<u32>(patrol->count, ai::PatrolComponent::kMaxWaypoints);
+            live.count = count;
+            for (u32 wp = 0u; wp < count; ++wp)
+                live.waypoints[wp] = patrol->waypoints[wp];
+            live.wait_time = patrol->wait_time;
+            live.arrive_radius = patrol->arrive_radius;
+            reg.add<ai::PatrolComponent>(e, ai::sanitize_patrol(live));
+            synthesised = true;
+        }
+
+        if (synthesised)
+            authored_gameplay_entities_.push_back(e);
+    }
+
+    reg.set_structural_deferred(restore_deferred);
+}
+
+void PlayRuntime::clear_authored_gameplay(scene::Scene& scene) {
+    scene::EcsRegistry& reg = scene.registry();
+    const bool restore_deferred = reg.structural_deferred();
+    reg.set_structural_deferred(false);
+    // Strip the live gameplay/AI components back off the entities we synthesised
+    // onto in begin(). We only ever recorded an entity if WE added at least one
+    // live component to it (a demo that added the live component directly is not
+    // in this list, so its components survive Stop). Removing a kind that is
+    // absent is harmless. Guarding each remove on the matching authoring proxy
+    // ensures we never strip a live component that did not come from a proxy.
+    for (const Entity e : authored_gameplay_entities_) {
+        if (!reg.alive(e))
+            continue;
+        if (reg.get<scene::FactionComponent>(e) != nullptr &&
+            reg.get<gameplay::FactionComponent>(e) != nullptr)
+            reg.remove<gameplay::FactionComponent>(e);
+        if (reg.get<scene::HitboxComponent>(e) != nullptr &&
+            reg.get<gameplay::HitboxComponent>(e) != nullptr)
+            reg.remove<gameplay::HitboxComponent>(e);
+        if (reg.get<scene::WeaponModeComponent>(e) != nullptr &&
+            reg.get<gameplay::WeaponRuntimeComponent>(e) != nullptr)
+            reg.remove<gameplay::WeaponRuntimeComponent>(e);
+        if (reg.get<scene::AiAgentComponent>(e) != nullptr &&
+            reg.get<ai::AiAgentComponent>(e) != nullptr)
+            reg.remove<ai::AiAgentComponent>(e);
+        if (reg.get<scene::PerceptionComponent>(e) != nullptr &&
+            reg.get<ai::PerceptionComponent>(e) != nullptr)
+            reg.remove<ai::PerceptionComponent>(e);
+        if (reg.get<scene::PatrolComponent>(e) != nullptr &&
+            reg.get<ai::PatrolComponent>(e) != nullptr)
+            reg.remove<ai::PatrolComponent>(e);
+    }
+
+    reg.set_structural_deferred(restore_deferred);
 }
 
 void PlayRuntime::begin(scene::Scene& scene) {
@@ -195,6 +334,12 @@ void PlayRuntime::begin(scene::Scene& scene) {
         end(scene);
 
     clear_pools();
+
+    // Map editor-authored gameplay/AI proxies into the live gameplay::/ai::
+    // components the combat + AI systems tick. MUST run before the scans below so
+    // the AI scan finds the synthesised ai::AiAgentComponent. Structural adds
+    // here are safe: they run before any query iteration this session.
+    synthesize_authored_gameplay(scene);
 
     // Start this session from a clean, empty world. Move-assigning a freshly
     // constructed World drops every body/vehicle/character from any prior
@@ -1080,6 +1225,10 @@ void PlayRuntime::end(scene::Scene& scene) {
     heli_pitch_ = 0.0f;
     heli_roll_ = 0.0f;
     heli_yaw_ = 0.0f;
+
+    // Strip the live gameplay/AI components we synthesised from the editor
+    // authoring proxies, restoring the scene to proxy-only state.
+    clear_authored_gameplay(scene);
 
     // Restore authored transforms (serial).
     for (const AuthoredTransform& a : authored_)

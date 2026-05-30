@@ -181,6 +181,16 @@ class PlayRuntime {
 
     void clear_pools() noexcept;
 
+    // Map every scene-level gameplay/AI authoring proxy onto an entity into the
+    // matching live gameplay::/ai:: component the combat + AI systems consume.
+    // Runs at the top of begin() BEFORE the physics + AI scans so the AI scan
+    // finds the synthesised ai::AiAgentComponent. Idempotent: skips a kind that
+    // is already present (a demo that added the live component directly).
+    void synthesize_authored_gameplay(scene::Scene& scene);
+    // Inverse: strip the live gameplay/AI components off the entities we
+    // synthesised onto in begin(), restoring the editor scene to proxy-only state.
+    void clear_authored_gameplay(scene::Scene& scene);
+
     // --- Gameplay phase (called from tick, in this order) ------------------
     // Combat: cooldowns -> projectile integration + hits -> damage flush ->
     // projectile cleanup -> death resolution. Reuses combat_ctx_ scratch.
@@ -237,6 +247,15 @@ class PlayRuntime {
     // the end of tick() pushes their (possibly moved) local into the graph so
     // the renderer sees AI motion. Reserved once.
     std::vector<Entity> ai_entities_;
+    // Entities that carry a scene-level gameplay/AI AUTHORING proxy
+    // (scene::FactionComponent / HitboxComponent / WeaponModeComponent /
+    // AiAgentComponent / PerceptionComponent / PatrolComponent). begin() maps the
+    // proxy into the matching live gameplay::/ai:: component the combat + AI
+    // systems tick; end() strips the live components back off so the editor scene
+    // returns to proxy-only state and a second Play session re-synthesises cleanly.
+    // Only entities WE synthesised onto are recorded (a demo that added the live
+    // component directly is left untouched). Reserved once.
+    std::vector<Entity> authored_gameplay_entities_;
 
     // --- Reused, alloc-free gameplay contexts ------------------------------
     // Combat scratch + policy. ctx scratch is reserve()d in begin() and only
