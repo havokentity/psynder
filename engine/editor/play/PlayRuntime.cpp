@@ -27,6 +27,7 @@
 #include "math/MathExt.h"               // inverse_affine (parenting writeback)
 #include "scene/GameplayComponents.h"   // scene-level gameplay/AI authoring proxies
 #include "scene/ScriptComponents.h"     // scene-level ScriptGraphComponent (authored graph link)
+#include "scene/TrackComponent.h"       // scene-level TrackComponent (Wave 11 racer track-follow)
 #include "script/psygraph/Graph.h"      // psygraph::Graph (deserialize target)
 #include "script/psygraph/Serialize.h"  // psygraph::deserialize_graph (blob -> graph)
 
@@ -171,6 +172,84 @@ struct WorldPose {
             std::max(kMin, half.z * std::fabs(scale.z))};
 }
 
+// ─── Track-follow Bezier math (Wave 11 racer DoD) ──────────────────────────
+// Ported from games/racer_demo/main.cpp (bezier_eval / bezier_tangent /
+// closest_on_track / advance_along / auto_drive) so PlayRuntime laps an authored
+// scene::TrackComponent with NO bespoke racer C++. Pure, deterministic, and
+// alloc-free: every helper reads the (pooled) component segments + a chassis pose
+// and returns by value. The control points are scene::TrackSegment quads (the
+// same cubic Bezier shape as world::outdoor::SplineRoadSegment), copied into the
+// scene layer so the runtime never reaches into engine/world.
+
+// Cubic Bezier evaluation of one segment at t in [0,1].
+[[nodiscard]] math::Vec3 track_bezier_eval(const scene::TrackSegment& s, f32 t) noexcept {
+    const f32 u = 1.0f - t;
+    const f32 b0 = u * u * u;
+    const f32 b1 = 3.0f * u * u * t;
+    const f32 b2 = 3.0f * u * t * t;
+    const f32 b3 = t * t * t;
+    return math::Vec3{b0 * s.p0.x + b1 * s.p1.x + b2 * s.p2.x + b3 * s.p3.x,
+                      b0 * s.p0.y + b1 * s.p1.y + b2 * s.p2.y + b3 * s.p3.y,
+                      b0 * s.p0.z + b1 * s.p1.z + b2 * s.p2.z + b3 * s.p3.z};
+}
+
+struct TrackPos {
+    u32 seg = 0u;
+    f32 t = 0.0f;
+    math::Vec3 p{};
+};
+
+// Closest sampled point on the closed track to query q (segment, t, position).
+// Fixed sample budget so the cost is constant + alloc-free.
+[[nodiscard]] TrackPos track_closest(const scene::TrackComponent& track,
+                                     math::Vec3 q) noexcept {
+    constexpr u32 kSamples = 48u;
+    TrackPos best{};
+    f32 best_d2 = 1e30f;
+    const u32 count = std::min(track.segment_count, scene::TrackComponent::kMaxSegments);
+    for (u32 si = 0u; si < count; ++si) {
+        for (u32 i = 0u; i <= kSamples; ++i) {
+            const f32 t = static_cast<f32>(i) / static_cast<f32>(kSamples);
+            const math::Vec3 p = track_bezier_eval(track.segments[si], t);
+            const math::Vec3 d = math::sub(p, q);
+            const f32 d2 = math::dot(d, d);
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best = TrackPos{si, t, p};
+            }
+        }
+    }
+    return best;
+}
+
+// Advance a (segment, t) cursor `advance_m` of arc along the closed loop.
+[[nodiscard]] TrackPos track_advance(const scene::TrackComponent& track,
+                                     u32 seg,
+                                     f32 t,
+                                     f32 advance_m) noexcept {
+    const u32 count = std::min(track.segment_count, scene::TrackComponent::kMaxSegments);
+    if (count == 0u)
+        return TrackPos{0u, 0.0f, math::Vec3{}};
+    constexpr f32 dt = 1.0f / 64.0f;
+    if (seg >= count)
+        seg = 0u;
+    f32 covered = 0.0f;
+    math::Vec3 prev = track_bezier_eval(track.segments[seg], t);
+    // Bound the walk so a degenerate (zero-length) track cannot spin forever.
+    const u32 max_steps = count * 64u + 64u;
+    for (u32 step = 0u; covered < advance_m && step < max_steps; ++step) {
+        t += dt;
+        while (t > 1.0f) {
+            t -= 1.0f;
+            seg = (seg + 1u) % count;
+        }
+        const math::Vec3 here = track_bezier_eval(track.segments[seg], t);
+        covered += math::length(math::sub(here, prev));
+        prev = here;
+    }
+    return TrackPos{seg, t, prev};
+}
+
 }  // namespace
 
 PlayRuntime::~PlayRuntime() {
@@ -201,6 +280,8 @@ void PlayRuntime::clear_pools() noexcept {
     vehicle_entities_.clear();
     vehicle_heightfields_.clear();
     helicopter_entities_.clear();
+    track_entities_.clear();
+    track_prev_pos_.clear();
     ai_entities_.clear();
     authored_gameplay_entities_.clear();
     authored_script_entities_.clear();
@@ -706,6 +787,38 @@ void PlayRuntime::begin(scene::Scene& scene) {
             ++body_count_;
     }
 
+    // --- Track-follow vehicles (Wave 11 racer DoD) ------------------------
+    // Gather every entity that carries BOTH a TrackComponent and a (already
+    // synthesised, above) VehicleComponent. Reset the authored track's runtime
+    // cursor + lap bookkeeping so the auto-driver starts the loop from the
+    // chassis' authored spawn, and seed the per-vehicle previous-position pool
+    // (index-aligned with track_entities_) from the live chassis position so the
+    // first tick's speed estimate is 0 (not a spurious jump). Reserve the pool up
+    // front so the steady-state track-follow tick allocates nothing. The serial
+    // get<TrackComponent> scan over vehicle entities is cheap (few vehicles).
+    track_entities_.clear();
+    track_prev_pos_.clear();
+    track_entities_.reserve(vehicle_entities_.size());
+    track_prev_pos_.reserve(vehicle_entities_.size());
+    for (const Entity e : vehicle_entities_) {
+        scene::TrackComponent* tc = reg.get<scene::TrackComponent>(e);
+        const scene::VehicleComponent* vc = reg.get<scene::VehicleComponent>(e);
+        if (tc == nullptr || vc == nullptr)
+            continue;
+        // Re-clamp + reset the runtime cursor/lap state for a clean session start.
+        *tc = scene::sanitize_track_component(*tc);
+        math::Vec3 chassis_pos{};
+        const physics::BodyId chassis{vc->runtime_chassis};
+        if (chassis.valid())
+            chassis_pos = world.get_position(chassis);
+        // Seed the driver cursor at the closest point on the loop to the chassis.
+        const TrackPos here = track_closest(*tc, chassis_pos);
+        tc->cursor_seg = here.seg;
+        tc->cursor_t = here.t;
+        track_entities_.push_back(e);
+        track_prev_pos_.push_back(chassis_pos);
+    }
+
     vehicle_throttle_ = 0.0f;
     vehicle_brake_ = 0.0f;
     vehicle_steer_ = 0.0f;
@@ -911,6 +1024,119 @@ bool PlayRuntime::bind_psygraph(scene::Scene& scene,
     return true;
 }
 
+// ─── Track-follow auto-driver (Wave 11 racer DoD) ──────────────────────────
+
+void PlayRuntime::tick_track_follow(scene::Scene& scene, f32 dt) {
+    if (track_entities_.empty())
+        return;
+    scene::EcsRegistry& reg = scene.registry();
+    physics::World& world = world_;
+
+    for (usize idx = 0u; idx < track_entities_.size(); ++idx) {
+        const Entity e = track_entities_[idx];
+        scene::TrackComponent* tc = reg.get<scene::TrackComponent>(e);
+        scene::VehicleComponent* vc = reg.get<scene::VehicleComponent>(e);
+        if (tc == nullptr || vc == nullptr)
+            continue;
+        const physics::vehicle::VehicleId vehicle{vc->runtime_vehicle};
+        const physics::BodyId chassis{vc->runtime_chassis};
+        if (!vehicle.valid() || !chassis.valid())
+            continue;
+        const u32 count =
+            std::min(tc->segment_count, scene::TrackComponent::kMaxSegments);
+        if (count == 0u)
+            continue;
+
+        // Current planar chassis pose. Speed is estimated from the per-tick
+        // displacement since the previous tick (the engine has no public linear-
+        // velocity reader); the seeded prev-pos makes the first tick read 0.
+        const math::Vec3 car_pos = world.get_position(chassis);
+        const math::Vec3 prev = track_prev_pos_[idx];
+        math::Vec3 dp = math::sub(car_pos, prev);
+        dp.y = 0.0f;
+        const f32 step_dist = math::length(dp);
+        const f32 car_speed = step_dist / dt;
+        track_prev_pos_[idx] = car_pos;
+
+        // Chassis HEADING = the body's local forward (PlayRuntime vehicles drive
+        // along local -Z: the steer axle is at -Z, the drive axle at +Z) projected
+        // to the ground plane. Steering against the heading (not the noisy velocity
+        // vector) is the controller's true plant input, exactly as in racer_demo.
+        const math::Quat rot = math::quat_normalize(world.get_rotation(chassis));
+        math::Vec3 heading = math::quat_rotate(rot, math::Vec3{0.0f, 0.0f, -1.0f});
+        heading.y = 0.0f;
+        const f32 hlen2 = math::dot(heading, heading);
+        if (hlen2 < 1e-6f) {
+            // Degenerate pose: fall back to the per-tick travel direction.
+            if (step_dist > 1e-4f)
+                heading = math::mul(dp, 1.0f / step_dist);
+            else
+                heading = math::Vec3{0.0f, 0.0f, -1.0f};
+        } else {
+            heading = math::mul(heading, 1.0f / std::sqrt(hlen2));
+        }
+
+        // Chase a look-ahead point on the spline from the cursor (re-seeded each
+        // tick to the closest point so the cursor never drifts off the loop).
+        const TrackPos here = track_closest(*tc, car_pos);
+        tc->cursor_seg = here.seg;
+        tc->cursor_t = here.t;
+        const TrackPos ahead =
+            track_advance(*tc, here.seg, here.t, tc->look_ahead);
+
+        // --- Steering: proportional on the chassis-relative aim error, clamped --
+        f32 steer = 0.0f;
+        math::Vec3 to_aim = math::sub(ahead.p, car_pos);
+        to_aim.y = 0.0f;
+        const f32 aim_len = math::length(to_aim);
+        if (aim_len > 0.001f) {
+            to_aim = math::mul(to_aim, 1.0f / aim_len);
+            const f32 dotv = math::dot(heading, to_aim);
+            // Signed turn angle about +Y (left positive), matching set_steer.
+            const f32 crossy = heading.z * to_aim.x - heading.x * to_aim.z;
+            const f32 ang = std::atan2(crossy, std::clamp(dotv, -1.0f, 1.0f));
+            steer = std::clamp(tc->steer_gain * ang, -tc->steer_clamp, tc->steer_clamp);
+        }
+
+        // --- Throttle PI on the speed error, with a firm overspeed brake --------
+        const f32 speed_err = tc->target_speed - car_speed;
+        f32 throttle = 0.0f;
+        f32 brake = 0.0f;
+        if (speed_err >= 0.0f)
+            throttle = std::min(1.0f, tc->throttle_kp * speed_err);
+        else
+            brake = std::min(1.0f, -tc->throttle_kp * speed_err);
+
+        physics::vehicle::set_throttle(vehicle, throttle, world);
+        physics::vehicle::set_brake(vehicle, brake, world);
+        physics::vehicle::set_steer(vehicle, steer, world);
+
+        // --- Lap timer: signed-side crossing of the start/finish gate plane -----
+        // A back->front crossing (prev<0 -> now>=0) while the car moves down-track,
+        // near the line laterally, closes a lap. The first crossing only ARMS the
+        // timer (so we count laps from the line, not the grid). Mirrors racer_demo.
+        const math::Vec3 rel = math::sub(car_pos, tc->lap_gate_point);
+        const f32 signed_d = math::dot(rel, tc->lap_gate_normal);
+        if (tc->gate_have_prev != 0u && step_dist > 1e-5f) {
+            const bool crossed_forward =
+                tc->prev_gate_signed < 0.0f && signed_d >= 0.0f;
+            const bool moving_down_track = math::dot(dp, tc->lap_gate_normal) > 0.0f;
+            const math::Vec3 lateral =
+                math::sub(rel, math::mul(tc->lap_gate_normal, signed_d));
+            const f32 gate_w = tc->segments[here.seg].half_width;
+            const f32 band = (gate_w * 2.0f) * (gate_w * 2.0f);
+            const bool near_line = math::dot(lateral, lateral) < band;
+            if (crossed_forward && moving_down_track && near_line) {
+                if (tc->gate_armed != 0u)
+                    ++tc->lap_count;
+                tc->gate_armed = 1u;
+            }
+        }
+        tc->prev_gate_signed = signed_d;
+        tc->gate_have_prev = 1u;
+    }
+}
+
 // ─── Gameplay phase passes ─────────────────────────────────────────────────
 
 void PlayRuntime::tick_combat(scene::Scene& scene, f32 dt) {
@@ -1007,6 +1233,14 @@ void PlayRuntime::tick(scene::Scene& scene, f32 dt) {
         physics::vehicle::set_brake(vehicle, vehicle_brake_, world);
         physics::vehicle::set_steer(vehicle, vehicle_steer_, world);
     }
+
+    // --- Track-follow auto-drive (serial; Wave 11 racer DoD) --------------
+    // Runs AFTER the shared-player-input pass so an authored TrackComponent
+    // OVERRIDES the shared intent for its own vehicle: the track-follow driver
+    // chases a spline look-ahead, steers against the chassis heading, and governs
+    // the throttle so the car laps the authored loop. Like the input pass above
+    // it only stashes controller values; the solver consumes them in world.step().
+    tick_track_follow(scene, dt);
 
     // --- Apply helicopter flight intent (serial) --------------------------
     // Body-relative arcade flight model, applied BEFORE the single step:
@@ -1315,6 +1549,18 @@ void PlayRuntime::end(scene::Scene& scene) {
             world.destroy_body(chassis);
         vc->runtime_vehicle = 0u;
         vc->runtime_chassis = 0u;
+    }
+
+    // Strip the track-follow runtime state off each authored TrackComponent so the
+    // editor scene returns to authoring-only and a second Play re-seeds cleanly.
+    // Only the runtime cursor + lap bookkeeping reset; the authored geometry +
+    // width + gate + tuning are left as authored (sanitize zeroes the runtime
+    // fields and leaves the rest, so re-sanitizing is the cleanest reset).
+    for (const Entity e : track_entities_) {
+        scene::TrackComponent* tc = reg.get<scene::TrackComponent>(e);
+        if (tc == nullptr)
+            continue;
+        *tc = scene::sanitize_track_component(*tc);
     }
 
     // Destroy helicopter chassis bodies and clear the handle column.

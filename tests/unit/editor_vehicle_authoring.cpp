@@ -121,7 +121,7 @@ TEST_CASE("VehicleComponent Wave 8 fields round-trip through the v6 SVHX chunk",
     scene::SceneFileView view{};
     REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()}, view, &error));
     REQUIRE(error.empty());
-    REQUIRE(view.header->version == 6u);  // v6 bump.
+    REQUIRE(view.header->version == scene::kPsySceneVersion);  // freshly saved => current
     REQUIRE(view.physics_bodies.size() == 1u);
     REQUIRE(view.vehicle_exts.size() == 1u);
 

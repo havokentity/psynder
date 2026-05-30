@@ -710,7 +710,7 @@ TEST_CASE("scene file roundtrips authoring gameplay + AI components (v4 SGAI)",
     REQUIRE(scene::parse_scene_file(std::span<const u8>{bytes.data(), bytes.size()}, view, &error));
     REQUIRE(error.empty());
     REQUIRE(view.header->version == scene::kPsySceneVersion);
-    REQUIRE(view.header->version == 6u);
+    REQUIRE(view.header->version == 7u);  // v7: the Tracks (STRK) chunk bump
     REQUIRE(view.gameplay_ai.size() == 1u);
 
     registry.clear();

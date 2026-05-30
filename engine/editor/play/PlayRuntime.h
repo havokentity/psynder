@@ -223,6 +223,17 @@ class PlayRuntime {
     // graph onto in begin(), restoring the editor scene to authoring-only state.
     void clear_authored_scripts(scene::Scene& scene);
 
+    // Track-follow auto-driver (Wave 11 racer DoD). For every entity carrying
+    // BOTH a TrackComponent and a VehicleComponent, read the chassis pose from the
+    // physics body, chase a look-ahead point on the authored Bezier loop, and set
+    // the vehicle throttle/brake/steer (governed) so it laps the track -- then
+    // advance the lap timer on the gate crossing. Runs at the TOP of tick(), BEFORE
+    // the single World::step() (the solver consumes the controller values during
+    // the step), and AFTER the shared player-input pass so an authored track
+    // overrides the shared intent for its own vehicle. Deterministic + alloc-free:
+    // the Bezier math is a pure read of the (pooled) TrackComponent + chassis pose.
+    void tick_track_follow(scene::Scene& scene, f32 dt);
+
     // --- Gameplay phase (called from tick, in this order) ------------------
     // Combat: cooldowns -> projectile integration + hits -> damage flush ->
     // projectile cleanup -> death resolution. Reuses combat_ctx_ scratch.
@@ -279,6 +290,18 @@ class PlayRuntime {
     std::vector<VehicleHeightField> vehicle_heightfields_;
     // Same for helicopter entities.
     std::vector<Entity> helicopter_entities_;
+    // Entities carrying BOTH a TrackComponent and a VehicleComponent (Wave 11
+    // racer DoD). begin() gathers them; tick() runs a deterministic, alloc-free
+    // TRACK-FOLLOW auto-driver each tick (chase a spline look-ahead, steer against
+    // the chassis heading, governed throttle -- the racer_demo auto_drive logic
+    // ported into the runtime) so the vehicle LAPS the authored track with NO
+    // bespoke racer C++. The previous planar chassis position is parked in
+    // track_prev_pos_ (one entry per track vehicle, index-aligned) so the driver
+    // can estimate speed from the per-tick displacement (the engine has no public
+    // linear-velocity reader). Both pools are reserved once and only cleared
+    // between sessions, so the track-follow tick allocates nothing.
+    std::vector<Entity> track_entities_;
+    std::vector<math::Vec3> track_prev_pos_;
     // Authored transforms captured in begin(), restored in end(). Reserved once.
     std::vector<AuthoredTransform> authored_;
     // Entities carrying an AiAgentComponent, gathered in begin(). The AI act()

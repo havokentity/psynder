@@ -146,6 +146,7 @@ struct SceneFileSaveScratch {
     std::vector<SceneFileGameplayAi> gameplay_ai;
     std::vector<SceneFileScriptGraph> script_graphs;
     std::vector<u8> script_graph_blobs;
+    std::vector<SceneFileTrack> tracks;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
     std::unordered_map<u32, u32> material_slots;
@@ -488,6 +489,33 @@ constexpr u32 kSceneFilePatrolMask = 1u << 5u;
             }
         }
 
+        // Authored race TRACK (v7 STRK). Persist ONLY the authoring fields of the
+        // TrackComponent (Bezier geometry + width + auto-driver tuning + lap gate);
+        // the runtime cursor + lap bookkeeping are RUNTIME-only and never saved.
+        // Keyed by authoring_index, exactly like the records above.
+        if (const auto* track = registry.get<TrackComponent>(entity)) {
+            const TrackComponent t = sanitize_track_component(*track);
+            SceneFileTrack record{};
+            record.authoring_node_index = authoring_index;
+            record.segment_count = t.segment_count;
+            record.target_speed = t.target_speed;
+            record.look_ahead = t.look_ahead;
+            record.steer_gain = t.steer_gain;
+            record.steer_clamp = t.steer_clamp;
+            record.throttle_kp = t.throttle_kp;
+            record.lap_gate_point = t.lap_gate_point;
+            record.lap_gate_normal = t.lap_gate_normal;
+            for (u32 si = 0u; si < TrackComponent::kMaxSegments; ++si) {
+                record.segments[si].p0 = t.segments[si].p0;
+                record.segments[si].p1 = t.segments[si].p1;
+                record.segments[si].p2 = t.segments[si].p2;
+                record.segments[si].p3 = t.segments[si].p3;
+                record.segments[si].half_width = t.segments[si].half_width;
+            }
+            saved.tracks.push_back(record);
+            ++stats.tracks;
+        }
+
         authoring_index_by_node[node_component->node.raw] = authoring_index;
         ++stats.authoring_nodes;
     }
@@ -658,8 +686,9 @@ template <class T>
     // memcpy'd over this region last, so an undersized count overwrites the first
     // chunk's data. v4 adds the GameplayAi (SGAI) chunk -> 17. v5 adds the
     // ScriptGraphs (SSCG) record chunk + the ScriptGraphBlobs (SCGB) byte pool
-    // -> 19. v6 adds the VehicleExt (SVHX) chunk -> 20.
-    constexpr usize kSceneFileChunkCount = 20u;
+    // -> 19. v6 adds the VehicleExt (SVHX) chunk -> 20. v7 adds the Tracks (STRK)
+    // chunk -> 21.
+    constexpr usize kSceneFileChunkCount = 21u;
     out.clear();
     out.resize(sizeof(SceneFileHeader) + kSceneFileChunkCount * sizeof(SceneFileChunk));
 
@@ -798,6 +827,13 @@ template <class T>
                            std::span<const u8>{scene.script_graph_blobs.data(),
                                                scene.script_graph_blobs.size()},
                            1u,
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::Tracks,
+                           std::span<const SceneFileTrack>{scene.tracks.data(),
+                                                           scene.tracks.size()},
+                           sizeof(SceneFileTrack),
                            error)) {
         out.clear();
         return false;
@@ -953,7 +989,11 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
         !load_span(SceneFileChunkType::ScriptGraphBlobs,
                    1u,
                    out.script_graph_blobs,
-                   "script_graph_blobs")) {
+                   "script_graph_blobs") ||
+        !load_span(SceneFileChunkType::Tracks,
+                   sizeof(SceneFileTrack),
+                   out.tracks,
+                   "tracks")) {
         return false;
     }
 
@@ -1168,6 +1208,34 @@ void attach_saved_vehicle_ext(Scene& scene, Entity entity, const SceneFileVehicl
     updated.hf_amplitude = saved.hf_amplitude;
     updated.hf_frequency = saved.hf_frequency;
     registry.add<VehicleComponent>(entity, sanitize_vehicle_component(updated));
+}
+
+// Recreate the authoring TrackComponent on a loaded entity from a saved v7 STRK
+// record (Wave 11 racer DoD). Only the authoring fields are restored; the runtime
+// cursor + lap bookkeeping stay at their POD defaults until the next Play session
+// drives the track-follow auto-driver. The restored component is re-sanitized so
+// an out-of-range authored value loads clamped. Mirrors attach_saved_vehicle_ext.
+void attach_saved_track_component(Scene& scene, Entity entity, const SceneFileTrack& saved) {
+    if (!entity.valid())
+        return;
+    EcsRegistry& registry = scene.registry();
+    TrackComponent t{};
+    t.segment_count = saved.segment_count;
+    t.target_speed = saved.target_speed;
+    t.look_ahead = saved.look_ahead;
+    t.steer_gain = saved.steer_gain;
+    t.steer_clamp = saved.steer_clamp;
+    t.throttle_kp = saved.throttle_kp;
+    t.lap_gate_point = saved.lap_gate_point;
+    t.lap_gate_normal = saved.lap_gate_normal;
+    for (u32 si = 0u; si < TrackComponent::kMaxSegments; ++si) {
+        t.segments[si].p0 = saved.segments[si].p0;
+        t.segments[si].p1 = saved.segments[si].p1;
+        t.segments[si].p2 = saved.segments[si].p2;
+        t.segments[si].p3 = saved.segments[si].p3;
+        t.segments[si].half_width = saved.segments[si].half_width;
+    }
+    registry.add<TrackComponent>(entity, sanitize_track_component(t));
 }
 
 // Recreate the authoring gameplay + AI proxy components on a loaded entity from
@@ -1390,6 +1458,13 @@ void attach_saved_script_graph(Scene& scene,
             continue;
         attach_saved_gameplay_ai_components(
             scene, entities[gameplay_ai.authoring_node_index], gameplay_ai);
+    }
+
+    // Authored race TRACK (v7 STRK). Attaches a TrackComponent each record keys to.
+    for (const SceneFileTrack& track : scene_file.tracks) {
+        if (track.authoring_node_index >= entities.size())
+            continue;
+        attach_saved_track_component(scene, entities[track.authoring_node_index], track);
     }
 
     for (const SceneFileScriptGraph& script_graph : scene_file.script_graphs) {

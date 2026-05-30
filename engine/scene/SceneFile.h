@@ -12,6 +12,7 @@
 #include "scene/PhysicsComponents.h"
 #include "scene/SceneEcs.h"
 #include "scene/ScriptComponents.h"
+#include "scene/TrackComponent.h"
 
 #include <functional>
 #include <memory>
@@ -48,7 +49,13 @@ inline constexpr u32 kPsySceneMagic = 0x4E435350u;  // "PSCN", little endian.
 // stride and breaking every existing scene. Older v1..v5 files have no SVHX chunk;
 // load_span treats a missing chunk as empty, so a pre-Wave-8 vehicle loads with
 // the governor off + Plane ground at y=0 -- bit-for-bit its old flat behaviour.
-inline constexpr u16 kPsySceneVersion = 6u;
+// v7 adds the Tracks (STRK) chunk (Wave 11 racer DoD): an authored closed-loop
+// race track (a fixed set of cubic Bezier segments + track half-width + the
+// start/finish lap gate) for a TrackComponent, keyed by authoring_node_index
+// exactly like SPHY / SGAI. Older v1..v6 files have no STRK chunk; load_span
+// treats a missing chunk as empty, so they load with no authored track attached
+// -- a pure addition that cannot change any pre-Wave-11 scene.
+inline constexpr u16 kPsySceneVersion = 7u;
 inline constexpr u32 kPsySceneAlignment = 64u;
 
 enum class SceneFileChunkType : u32 {
@@ -72,6 +79,7 @@ enum class SceneFileChunkType : u32 {
     ScriptGraphs = 0x47435353u,     // SSCG
     ScriptGraphBlobs = 0x42474353u,  // SCGB
     VehicleExt = 0x58485653u,        // SVHX
+    Tracks = 0x4B525453u,            // STRK
 };
 
 struct SceneFileHeader {
@@ -313,6 +321,40 @@ struct SceneFileVehicleExt {
     f32 hf_frequency = 0.05f;
 };
 
+// One cooked cubic Bezier track segment (v7 STRK chunk). Mirrors
+// scene::TrackSegment field-for-field (four control points + half-width). The
+// trailing pad keeps the serialized stride stable and the parent record a clean
+// fixed-size POD the chunk validator accepts.
+struct SceneFileTrackSegment {
+    math::Vec3 p0{0.0f, 0.0f, 0.0f};
+    math::Vec3 p1{0.0f, 0.0f, 0.0f};
+    math::Vec3 p2{0.0f, 0.0f, 0.0f};
+    math::Vec3 p3{0.0f, 0.0f, 0.0f};
+    f32 half_width = 6.0f;
+    u32 _pad = 0u;
+};
+
+// An authored closed-loop race TRACK persisted with the scene (v7 STRK chunk;
+// Wave 11 racer DoD). Keyed by authoring_node_index, mirroring SceneFilePhysicsBody
+// / SceneFileGameplayAi. Stores ONLY the authoring fields of scene::TrackComponent
+// (the Bezier geometry + width + auto-driver tuning + the start/finish lap gate);
+// the runtime cursor + lap bookkeeping are RUNTIME-only and never serialized (they
+// reset to their POD defaults on load). Older files have no STRK chunk, so they
+// load with no track attached.
+struct SceneFileTrack {
+    u32 authoring_node_index = 0u;
+    u32 segment_count = 0u;
+    f32 target_speed = 11.0f;
+    f32 look_ahead = 12.0f;
+    f32 steer_gain = 0.7f;
+    f32 steer_clamp = 0.22f;
+    f32 throttle_kp = 0.5f;
+    u32 _pad = 0u;
+    math::Vec3 lap_gate_point{0.0f, 0.0f, 0.0f};
+    math::Vec3 lap_gate_normal{1.0f, 0.0f, 0.0f};
+    SceneFileTrackSegment segments[TrackComponent::kMaxSegments] = {};
+};
+
 // Authoring gameplay + AI components persisted with the scene (v4 SGAI chunk).
 // Keyed by authoring_node_index (the SAUT entry it attaches to), mirroring
 // SceneFileGameplayEntity / SceneFilePhysicsBody. component_mask selects which of
@@ -406,6 +448,7 @@ struct SceneFileView {
     std::span<const SceneFileGameplayAi> gameplay_ai;
     std::span<const SceneFileScriptGraph> script_graphs;
     std::span<const u8> script_graph_blobs;
+    std::span<const SceneFileTrack> tracks;
 };
 
 struct SceneFileLoaded {
@@ -478,6 +521,7 @@ struct SceneFileSaveStats {
     u32 gameplay_ai = 0u;
     u32 script_graphs = 0u;
     u32 script_graph_blob_bytes = 0u;
+    u32 tracks = 0u;
 };
 
 [[nodiscard]] bool parse_scene_file(std::span<const u8> bytes,
@@ -663,5 +707,7 @@ static_assert(sizeof(SceneFileAiAgent) == 24u);
 static_assert(sizeof(SceneFileAiPatrol) == 112u);
 static_assert(sizeof(SceneFileGameplayAi) == 192u);
 static_assert(sizeof(SceneFileScriptGraph) == 16u);
+static_assert(sizeof(SceneFileTrackSegment) == 56u);
+static_assert(sizeof(SceneFileTrack) == 504u);
 
 }  // namespace psynder::scene

@@ -15,6 +15,7 @@
 #include "scene/GameplayComponents.h"
 #include "scene/PhysicsComponents.h"
 #include "scene/SceneEcs.h"
+#include "scene/TrackComponent.h"
 #include "ui/console/ConsoleOverlay.h"
 
 #include <algorithm>
@@ -423,7 +424,7 @@ std::vector<u8> encode_schema_catalog_envelope() {
     w.str("payload");
     w.map_header(1);
     w.str("components");
-    w.array_header(22);
+    w.array_header(23);
 
     write_component_schema_header(w, "EnvironmentComponent", "native-environment-v1", 10);
     write_field_schema(w, "clear_color_rgba8", "color", false);
@@ -671,6 +672,22 @@ std::vector<u8> encode_schema_catalog_envelope() {
     write_field_schema(w, "wait_time", "f32", false, 0.05f, "s");
     write_field_schema(w, "arrive_radius", "f32", false, 0.01f, "m");
 
+    // Authored closed-loop race TRACK (Wave 11 racer DoD). The Bezier segment
+    // geometry is bulk authoring data laid out by the track tool / public API, so
+    // the Inspector exposes the segment_count read-only and lets the designer tune
+    // the auto-driver (target speed / look-ahead / steer + throttle gains) and the
+    // start/finish lap gate. PlayRuntime runs a track-follow driver over these so
+    // a VehicleComponent on the same entity LAPS the loop with no bespoke racer C++.
+    write_component_schema_header(w, "TrackComponent", "native-track-v1", 8);
+    write_field_schema(w, "segment_count", "u32");
+    write_field_schema(w, "target_speed", "f32", false, 0.5f, "m/s");
+    write_field_schema(w, "look_ahead", "f32", false, 0.5f, "m");
+    write_field_schema(w, "steer_gain", "f32", false, 0.01f);
+    write_field_schema(w, "steer_clamp", "f32", false, 0.01f, "rad");
+    write_field_schema(w, "throttle_kp", "f32", false, 0.01f);
+    write_field_schema(w, "lap_gate_point", "vec3", false, 0.05f, "m");
+    write_field_schema(w, "lap_gate_normal", "vec3", false, 0.01f);
+
     return w.buffer();
 }
 
@@ -900,6 +917,25 @@ u64 selection_signature(scene::Scene& scene, Entity entity, u32 generation) {
         out = hash_f32(out, patrol->wait_time);
         out = hash_f32(out, patrol->arrive_radius);
     }
+    if (auto* track = registry.get<scene::TrackComponent>(entity)) {
+        out = hierarchy_hash_combine(out, track->segment_count);
+        out = hash_f32(out, track->target_speed);
+        out = hash_f32(out, track->look_ahead);
+        out = hash_f32(out, track->steer_gain);
+        out = hash_f32(out, track->steer_clamp);
+        out = hash_f32(out, track->throttle_kp);
+        out = hash_f32(out, track->lap_gate_point.x);
+        out = hash_f32(out, track->lap_gate_point.y);
+        out = hash_f32(out, track->lap_gate_point.z);
+        out = hash_f32(out, track->lap_gate_normal.x);
+        out = hash_f32(out, track->lap_gate_normal.y);
+        out = hash_f32(out, track->lap_gate_normal.z);
+        for (u32 si = 0u; si < scene::TrackComponent::kMaxSegments; ++si) {
+            out = hash_f32(out, track->segments[si].p0.x);
+            out = hash_f32(out, track->segments[si].p3.x);
+            out = hash_f32(out, track->segments[si].half_width);
+        }
+    }
     return out;
 }
 
@@ -1059,6 +1095,7 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
     const auto* ai_agent = registry.get<scene::AiAgentComponent>(entity);
     const auto* perception = registry.get<scene::PerceptionComponent>(entity);
     const auto* patrol = registry.get<scene::PatrolComponent>(entity);
+    const auto* track = registry.get<scene::TrackComponent>(entity);
     const bool has_material =
         renderable && scene.materials().valid(renderable->material);
     const usize component_count = (transform ? 1u : 0u) + (node ? 1u : 0u) +
@@ -1071,7 +1108,7 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
                                   (character ? 1u : 0u) + (faction ? 1u : 0u) +
                                   (hitbox ? 1u : 0u) + (weapon_mode ? 1u : 0u) +
                                   (ai_agent ? 1u : 0u) + (perception ? 1u : 0u) +
-                                  (patrol ? 1u : 0u);
+                                  (patrol ? 1u : 0u) + (track ? 1u : 0u);
 
     ipc::msgpack::Writer w;
     w.map_header(4);
@@ -1410,6 +1447,27 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
         w.f32_(patrol->wait_time);
         w.str("arrive_radius");
         w.f32_(patrol->arrive_radius);
+    }
+
+    if (track) {
+        w.str("TrackComponent");
+        w.map_header(8);
+        w.str("segment_count");
+        w.u32_(track->segment_count);
+        w.str("target_speed");
+        w.f32_(track->target_speed);
+        w.str("look_ahead");
+        w.f32_(track->look_ahead);
+        w.str("steer_gain");
+        w.f32_(track->steer_gain);
+        w.str("steer_clamp");
+        w.f32_(track->steer_clamp);
+        w.str("throttle_kp");
+        w.f32_(track->throttle_kp);
+        w.str("lap_gate_point");
+        write_vec3(w, track->lap_gate_point);
+        w.str("lap_gate_normal");
+        write_vec3(w, track->lap_gate_normal);
     }
 
     return w.buffer();
