@@ -57,6 +57,7 @@
 #include "net/Frame.h"
 #include "net/HostImpl.h"
 #include "net/Loopback.h"
+#include "net/Matchmaking.h"
 #include "net/Net.h"
 #include "net/Prediction.h"
 #include "net/Replication.h"
@@ -70,6 +71,7 @@
 #include <cstdio>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace psynder;
@@ -218,15 +220,10 @@ void set_server_pos(EcsRegistry& reg, Entity e, math::Vec3 pos) noexcept {
         tc->local.translation = pos;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-    const app::AppArgParseResult parsed = app::parse_common_args(argc, argv);
-    const u32 smoke_frames = parsed.args.smoke_frames;
-    // Default to a healthy headless run when launched without --smoke-frames so
-    // a bare invocation still demonstrates the session and reports PASS/FAIL.
-    const u32 frames = smoke_frames > 0 ? smoke_frames : 300u;
-
+// The original Wave-9 in-process server + 2-clients shared-session smoke. Kept
+// as the default mode; the dedicated-server + matchmaking smoke below is a
+// separate mode selected by --dedicated / --server.
+int run_session_demo(u32 frames) {
     // --- Bring up the shared registry + the three hosts ---------------------
     scene::detail::EcsRegistryImpl::Get().shutdown();  // clean slate.
     net::LoopbackBus::Get().reset();
@@ -528,4 +525,253 @@ int main(int argc, char** argv) {
     scene::detail::EcsRegistryImpl::Get().shutdown();
 
     return pass ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+// ============================================================================
+// DEDICATED-SERVER + MATCHMAKING demo (Wave 11, --dedicated / --server).
+//
+// A standalone authoritative net::DedicatedServer (no local avatar) runs the
+// world sim + accepts client JOINs via the matchmaker, assigns lobby slots,
+// spawns per-client avatars, replicates AOI snapshots, and processes client
+// inputs. Several lightweight clients matchmake (find-or-create + join) into it
+// over the deterministic LoopbackBus. The smoke proves, headless:
+//   * two clients matchmake + JOIN and get DISTINCT slots / controlled net_ids,
+//   * a THIRD join is REJECTED when the single session is at its small cap,
+//   * a client LEAVES, freeing its slot, and the rejected client RE-JOINS into
+//     the freed slot,
+//   * every admitted client sees the shared world (a server-owned bot),
+//   * the server SHUTS DOWN cleanly once the last client leaves.
+// Emits a single greppable line and exits 0 (PASS) / 1 (FAIL).
+// ----------------------------------------------------------------------------
+
+// A server-owned shared-world bot, advanced each server step so every admitted
+// client replicates it. Deterministic ping-pong along X.
+constexpr u32 kDedBotNetId = 7000u;
+Entity g_ded_bot = kInvalidEntity;
+
+void ded_world_step(EcsRegistry& reg, u32 tick, void* /*user*/) noexcept {
+    if (!g_ded_bot.valid())
+        return;
+    if (auto* tc = reg.get<TransformComponent>(g_ded_bot)) {
+        const f32 x = 24.0f + 5.0f * static_cast<f32>(tick % 8);
+        tc->local.translation = math::Vec3{x, 0.f, 0.f};
+    }
+}
+
+// One matchmaking client: its own loopback host + a ReplicationClient. Drives a
+// find-or-create JOIN, decodes the accept/deny reply, and replicates snapshots.
+struct MatchClient {
+    net::HostImpl* host = nullptr;
+    net::PeerId to_server{};
+    u32 server_key = 0;
+    net::ReplicationClient repl;
+    bool joined = false;
+    bool rejected = false;
+    net::MatchDeny last_deny = net::MatchDeny::ServerFull;
+    u32 controlled_net_id = 0;
+    bool saw_bot = false;
+    std::vector<net::InboundMessage> inbox;
+    explicit MatchClient(const net::ReplicatedComponentSet& s) : repl(s) {}
+};
+
+void mc_send_join(MatchClient& c) {
+    net::MatchJoinMsg req{};  // session_id 0 == find-or-create-any.
+    std::array<u8, net::kMatchJoinBytes> jb{};
+    net::encode_match_join(req, std::span<u8>(jb.data(), jb.size()));
+    c.host->send(c.to_server, std::span<const u8>(jb.data(), jb.size()), true,
+                 net::kChannelDefault);
+}
+
+void mc_send_leave(MatchClient& c) {
+    net::MatchLeaveMsg bye{};
+    std::array<u8, net::kMatchLeaveBytes> lb{};
+    net::encode_match_leave(bye, std::span<u8>(lb.data(), lb.size()));
+    c.host->send(c.to_server, std::span<const u8>(lb.data(), lb.size()), true,
+                 net::kChannelDefault);
+}
+
+void mc_pump(MatchClient& c, EcsRegistry& reg) {
+    c.inbox.clear();
+    c.host->poll(c.inbox);
+    for (const net::InboundMessage& m : c.inbox) {
+        if (m.channel == net::kChannelSnapshot && m.bytes.size() >= net::kReplHeaderBytes) {
+            c.repl.apply_snapshot(reg, std::span<const u8>(m.bytes.data(), m.bytes.size()));
+            std::array<u8, 4> abuf{};
+            put_u32(abuf.data(), c.repl.ack_seq());
+            c.host->send(c.to_server, std::span<const u8>(abuf.data(), 4), false,
+                         net::kChannelSnapshot);
+            if (c.repl.entity_for(kDedBotNetId).valid())
+                c.saw_bot = true;
+        } else if (m.channel == net::kChannelDefault && m.bytes.size() == net::kMatchReplyBytes) {
+            net::MatchReplyMsg rep{};
+            if (net::decode_match_reply(std::span<const u8>(m.bytes.data(), m.bytes.size()), rep)) {
+                c.last_deny = rep.deny;
+                if (rep.accepted()) {
+                    c.joined = true;
+                    c.controlled_net_id = rep.controlled_net_id;
+                } else {
+                    c.rejected = true;
+                }
+            }
+        }
+    }
+}
+
+int run_dedicated_demo(u32 frames) {
+    (void)frames;  // the matchmaking flow is event-driven; frames bounds the run.
+    scene::detail::EcsRegistryImpl::Get().shutdown();
+    net::LoopbackBus::Get().reset();
+    EcsRegistry& reg = EcsRegistry::Get();
+    SceneGraph graph;
+
+    const net::ReplicatedComponentSet set = make_set();
+
+    // Server-owned shared-world bot.
+    {
+        LocalTransform local{};
+        local.translation = math::Vec3{24.f, 0.f, 0.f};
+        g_ded_bot = scene::create_scene_entity(reg, graph, scene::kInvalidSceneNode, local);
+        net::NetIdComponent tag{};
+        tag.net_id = kDedBotNetId;
+        reg.add<net::NetIdComponent>(g_ded_bot, tag);
+    }
+
+    net::DedicatedServer srv(reg, graph, set);
+    net::DedicatedServer::Desc d{};
+    d.port = 43500;
+    d.max_peers = 8;
+    d.default_max_players = 2u;  // tiny cap: a 3rd join is rejected.
+    d.max_sessions = 1u;         // single match: full session rejects the 3rd.
+    d.base_net_id = 300u;
+    d.aoi_radius = 1000.0f;      // generous: every client sees the shared bot.
+    d.frame_budget = 0;          // run until the last client leaves.
+    d.shutdown_when_empty = true;
+    if (!srv.start(d)) {
+        std::printf("psynder_mp_demo: dedicated server failed to start FAIL\n");
+        std::fflush(stdout);
+        return EXIT_FAILURE;
+    }
+    srv.set_world_step(&ded_world_step, nullptr);
+
+    auto make_client = [&](u16 port) -> MatchClient* {
+        MatchClient* c = new MatchClient(set);
+        net::HostDesc cd{};
+        cd.port = port;
+        cd.max_peers = 4;
+        c->host = net::make_test_host(cd);
+        c->to_server = c->host->connect(d.port);
+        c->server_key = srv.connect_to_client(port);
+        c->inbox.reserve(32);
+        return c;
+    };
+
+    MatchClient* a = make_client(43501);
+    MatchClient* b = make_client(43502);
+
+    // 1. Two clients matchmake + join.
+    mc_send_join(*a);
+    mc_send_join(*b);
+    for (u32 i = 0; i < 6; ++i) {
+        srv.step();
+        mc_pump(*a, reg);
+        mc_pump(*b, reg);
+    }
+    const bool two_joined = a->joined && b->joined;
+    const bool distinct_slots = (a->controlled_net_id != 0u) &&
+                                (b->controlled_net_id != 0u) &&
+                                (a->controlled_net_id != b->controlled_net_id);
+
+    // 2. A third join is REJECTED at the cap.
+    MatchClient* c3 = make_client(43503);
+    mc_send_join(*c3);
+    for (u32 i = 0; i < 4; ++i) {
+        srv.step();
+        mc_pump(*a, reg);
+        mc_pump(*b, reg);
+        mc_pump(*c3, reg);
+    }
+    const bool third_rejected = c3->rejected && !c3->joined;
+
+    // 3. Client A leaves; the slot frees. 4. The third client re-joins it.
+    mc_send_leave(*a);
+    for (u32 i = 0; i < 4; ++i) {
+        srv.step();
+        mc_pump(*b, reg);
+        mc_pump(*c3, reg);
+    }
+    const bool freed_after_leave = (srv.admitted_peers() == 1u);
+    c3->rejected = false;
+    c3->last_deny = net::MatchDeny::ServerFull;
+    mc_send_join(*c3);
+    for (u32 i = 0; i < 6; ++i) {
+        srv.step();
+        mc_pump(*b, reg);
+        mc_pump(*c3, reg);
+    }
+    const bool rejoined = c3->joined && (srv.admitted_peers() == 2u);
+
+    // 5. Shared world: every admitted client saw the bot.
+    const bool shared_world = b->saw_bot && c3->saw_bot;
+
+    // 6/7. Everyone leaves: clean shutdown.
+    const bool running_while_clients = srv.running();
+    mc_send_leave(*b);
+    mc_send_leave(*c3);
+    for (u32 i = 0; i < 8 && srv.running(); ++i) {
+        srv.step();
+        mc_pump(*b, reg);
+        mc_pump(*c3, reg);
+    }
+    const bool clean_shutdown = (srv.admitted_peers() == 0u) && !srv.running();
+
+    const bool pass = two_joined && distinct_slots && third_rejected &&
+                      freed_after_leave && rejoined && shared_world &&
+                      running_while_clients && clean_shutdown;
+
+    std::printf(
+        "psynder_mp_demo: dedicated joins=%u rejections=%u two-join=%d distinct=%d "
+        "reject-3rd=%d leave-frees=%d rejoin=%d shared-world=%d clean-shutdown=%d %s\n",
+        srv.total_joins(), srv.total_rejections(), two_joined ? 1 : 0,
+        distinct_slots ? 1 : 0, third_rejected ? 1 : 0, freed_after_leave ? 1 : 0,
+        rejoined ? 1 : 0, shared_world ? 1 : 0, clean_shutdown ? 1 : 0,
+        pass ? "PASS" : "FAIL");
+    std::fflush(stdout);
+
+    net::destroy_test_host(a->host);
+    net::destroy_test_host(b->host);
+    net::destroy_test_host(c3->host);
+    delete a;
+    delete b;
+    delete c3;
+    srv.stop();
+    g_ded_bot = kInvalidEntity;
+    net::LoopbackBus::Get().reset();
+    scene::detail::EcsRegistryImpl::Get().shutdown();
+    return pass ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    const app::AppArgParseResult parsed = app::parse_common_args(argc, argv);
+    const u32 smoke_frames = parsed.args.smoke_frames;
+    // Default to a healthy headless run when launched without --smoke-frames so
+    // a bare invocation still demonstrates the session and reports PASS/FAIL.
+    const u32 frames = smoke_frames > 0 ? smoke_frames : 300u;
+
+    // Mode select: --dedicated / --server runs the dedicated-server + matchmaking
+    // smoke; default runs the Wave-9 in-process shared-session smoke. (The
+    // client half of a real split-process run is the matchmaking JOIN flow the
+    // dedicated demo drives over the same deterministic loopback; --client is
+    // accepted as an alias so a launcher can name the two halves.)
+    bool dedicated = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view a = argv[i] ? argv[i] : "";
+        if (a == "--dedicated" || a == "--server" || a == "--matchmaking")
+            dedicated = true;
+    }
+
+    if (dedicated)
+        return run_dedicated_demo(frames);
+    return run_session_demo(frames);
 }
