@@ -22,6 +22,7 @@
 #include "FpControl.h"
 #include "internal/Kernels.h"
 #include "internal/Raycast.h"
+#include "internal/IntegrateKernels.h"
 
 #include "jobs/JobSystem.h"
 
@@ -58,9 +59,12 @@ static void integrate_forces(WorldState& w, f32 dt) noexcept {
     for (Body& b : w.bodies) {
         if (b.alive == 0 || b.inv_mass == 0.0f || (b.flags & BodyFlags::Sleeping) != 0u)
             continue;
-        b.linear_velocity = math::add(b.linear_velocity, math::mul(w.gravity, dt));
+        // SIMD per-body linear update (Lane 4). Bit-identical to the two scalar
+        // component-wise adds it replaces: gravity*dt then force*(inv_mass*dt),
+        // each as an f32x4 vertical add/mul. See IntegrateKernels.h.
         // External forces accumulated via the public API in Wave B (apply_force).
-        b.linear_velocity = math::add(b.linear_velocity, math::mul(b.force, b.inv_mass * dt));
+        b.linear_velocity =
+            integrate::forces_linear_simd(b.linear_velocity, w.gravity, b.force, b.inv_mass, dt);
         // Angular: alpha = R * I_local^-1 * R^T * torque. Diagonal inertia is
         // stored in the body's LOCAL principal frame, so rotate world torque
         // into local, scale by the inverse diagonal, then rotate the result
@@ -79,9 +83,19 @@ static void integrate_positions(WorldState& w, f32 dt) noexcept {
     for (Body& b : w.bodies) {
         if (b.alive == 0 || b.inv_mass == 0.0f || (b.flags & BodyFlags::Sleeping) != 0u)
             continue;
-        b.position = math::add(b.position, math::mul(b.linear_velocity, dt));
+        // SIMD per-body linear update (Lane 4): position += linear_velocity*dt
+        // as an f32x4 vertical mul/add. Bit-identical to the scalar add/mul.
+        b.position = integrate::position_linear_simd(b.position, b.linear_velocity, dt);
 
         // Quaternion integration: q' = q + 0.5 * dt * w * q, then renormalise.
+        // KEPT SCALAR (Lane 4): the per-component `rotation.c + 0.5f*dt*dq.c`
+        // is FMA-contracted by the compiler (default -ffp-contract=on, which
+        // -fno-fast-math does NOT disable) into a single fused multiply-add.
+        // A separate-rounding SIMD mul+add would drop that fusion and drift by
+        // 1 ULP - so this stays byte-for-byte on the original scalar path. The
+        // linear updates above DON'T contract (proven 0-ULP at -O0 and -O2), so
+        // they are vectorised; this one is not. quat_mul / quat_normalize also
+        // stay scalar (cross terms; exact sqrt + reciprocal).
         math::Quat w_q{b.angular_velocity.x, b.angular_velocity.y, b.angular_velocity.z, 0.0f};
         math::Quat dq = math::quat_mul(w_q, b.rotation);
         b.rotation = math::quat_normalize({
@@ -134,7 +148,10 @@ static void rebuild_aabbs(WorldState& w, f32 dt) {
         // byte-for-byte unchanged. The expansion is one-sided per axis toward
         // the motion direction. Static bodies (inv_mass == 0) never sweep.
         if (b.inv_mass > 0.0f) {
-            const math::Vec3 disp = math::mul(b.linear_velocity, dt);
+            // SIMD per-body swept displacement (Lane 4): linear_velocity*dt as
+            // an f32x4 vertical mul. Bit-identical to math::mul. The per-axis
+            // sign-select expansion below stays scalar (branchy, already exact).
+            const math::Vec3 disp = integrate::swept_disp_simd(b.linear_velocity, dt);
             const f32 disp_len2 = math::dot(disp, disp);
             const f32 margin = detail::kernels::kSpeculativeMargin;
             if (disp_len2 > margin * margin) {
