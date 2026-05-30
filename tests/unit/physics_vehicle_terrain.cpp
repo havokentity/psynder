@@ -305,6 +305,47 @@ TEST_CASE("Steering authority turns the chassis at low speed and is stable at sp
     teardown(world, rig);
 }
 
+// ─── End-to-end: the lateral (cornering) tire force is RESTORING ───────────
+// Regression for the Pacejka lateral-force SIGN. A pure sideways slide (no
+// steer, no throttle) must be DAMPED by the tires: the lateral force opposes
+// the lateral slip. When it was instead applied along +tire_right (the SAME
+// sense as the slip) it was positive feedback — the slide grew without bound,
+// so any steer spun the light chassis and the racer/df demos had to drive a
+// straight line. Here the car is given a pure slide along its local +Z (front
+// axle is +X, so right = up x forward = -Z and +Z is the car's left); with no
+// throttle the tire lateral force is the only horizontal force, so its sign
+// alone decides whether the slide decays (restoring) or diverges.
+TEST_CASE("Lateral tire force opposes a sideways slide (restoring, not divergent)",
+          "[physics][vehicle][steer]") {
+    physics::World world;
+    Rig rig = make_car(world, /*start_com_y*/ 1.0f);
+    physics::vehicle::set_ground_plane(rig.veh, 0.0f, world);
+    physics::vehicle::set_steer(rig.veh, 0.0f, world);  // wheels straight
+    step_ticks(world, 90);                              // settle on the springs
+
+    world.set_body_velocity(rig.chassis, {0.0f, 0.0f, 6.0f});  // 6 m/s slide +Z
+    step_ticks(world, 2);  // warm up: let the injected velocity register
+
+    // Lateral speed = world +Z velocity, read by one-tick position difference.
+    // (Each call advances the world a single tick.)
+    auto lateral_speed = [&]() {
+        const math::Vec3 p0 = world.get_position(rig.chassis);
+        world.step(1.0f / 120.0f);
+        const math::Vec3 p1 = world.get_position(rig.chassis);
+        return (p1.z - p0.z) * 120.0f;
+    };
+
+    const f32 v_early = lateral_speed();  // slide just after injection
+    step_ticks(world, 30);                // 0.25 s of tire response
+    const f32 v_late = lateral_speed();
+
+    REQUIRE(v_early > 1.0f);            // it really was sliding +Z
+    REQUIRE(v_late < v_early - 1.0f);   // RESTORING: the slide clearly decayed
+    REQUIRE(v_late >= -0.5f);           // damped toward rest, did not reverse hard
+
+    teardown(world, rig);
+}
+
 // ─── End-to-end: determinism over the terrain + governor + steer path ──────
 
 TEST_CASE("Vehicle-on-terrain trajectory reproduces bit-for-bit across two runs",

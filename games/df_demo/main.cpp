@@ -79,14 +79,23 @@
 // occluder stays inactive and the same call renders plain raster + the sun -- so
 // the demo always shows a lit landscape.
 //
-// DEFERRED (engine gaps / scope): VEHICLES + a helicopter on the terrain are
-// deferred -- the physics vehicle module's per-wheel suspension contacts a
-// single FLAT ground plane (physics::vehicle::set_ground_plane takes one y, not
-// a heightfield; see racer_demo's note), so a drivable vehicle would float over
-// the hills until physics grows a heightfield ground query. Also deferred:
-// multi-objective mission flow, networked multiplayer, ragdolls, and tracer /
-// muzzle VFX. The first playable increment shipped here is: walk the terrain,
-// see + shoot AI soldiers at range, and they shoot back.
+//   * JEEP     - a player-DRIVABLE terrain vehicle. A Box chassis rigid body +
+//                physics::vehicle with four wheels whose per-wheel suspension
+//                probes the REAL terrain height through physics::vehicle::
+//                set_ground_heightfield (the HeightSampler bilinearly samples the
+//                SAME owning height array via TerrainField::height_at), so the
+//                chassis follows the hills instead of floating at a constant Y.
+//                `V` toggles between on-foot and driving; while driving WASD is
+//                throttle/brake/steer and the camera chases the jeep. A governor
+//                (VehicleDesc.max_speed) + speed-scaled steering authority keep
+//                it controllable across the relief.
+//
+// DEFERRED (engine gaps / scope): now that the jeep drives the terrain, what
+// remains deferred is a HELICOPTER on the terrain, NETWORKED multiplayer
+// vehicles, proper WHEEL meshes / tyre + dust VFX (the jeep uses scaled-cube
+// placeholders), multi-objective mission flow, and ragdolls. The playable
+// increment shipped here is: walk OR drive the terrain, see + shoot AI soldiers
+// at range, and they shoot back.
 //
 // CLI flags (shared app args):
 //   --smoke-frames=N         Headless CI run: scripted walk + auto-fire N frames.
@@ -148,6 +157,20 @@ constexpr f32 kEyeHeight = 1.7f;                       // soldier-eye above the 
 constexpr f32 kBodyHalfH = 0.85f;                      // actor occluder box half-height
 
 constexpr u32 kMaxEnemies = 6u;
+
+// --- Jeep config -----------------------------------------------------------
+// A light off-road runabout. Chassis half-extents (x = long axis the jeep
+// drives along, see Vehicle.cpp's wheel-layout-derived forward), wheel layout
+// in chassis-local space, suspension travel, and the governed cruise cap so the
+// auto-drive smoke holds a sane speed across the hills.
+constexpr f32 kJeepMass = 1100.0f;
+constexpr math::Vec3 kJeepHalf{2.0f, 0.45f, 1.2f};  // box chassis half-extents (wide, low)
+constexpr f32 kJeepWheelRadius = 0.42f;             // chunky off-road tyre
+constexpr f32 kJeepWheelX = 1.6f;                   // half-wheelbase (long axis)
+constexpr f32 kJeepWheelZ = 1.15f;                  // half-track (wide for roll stability)
+constexpr f32 kJeepWheelY = -0.30f;                 // wheel attach below COM (low CoM ride)
+constexpr f32 kJeepSuspension = 0.60f;              // long travel: keeps all wheels loaded
+constexpr f32 kJeepMaxSpeed = 8.0f;                 // m/s governed cap (~29 km/h)
 
 // Pack RGBA8 in the engine's 0xAABBGGRR layout (R in the low byte).
 constexpr u32 rgba8(u32 r, u32 g, u32 b, u32 a = 0xFFu) noexcept {
@@ -230,6 +253,20 @@ struct DfGame {
     std::array<physics::BodyId, kMaxEnemies> enemy_bodies{};
     u32 enemy_count = 0u;
 
+    // --- Drivable terrain jeep -------------------------------------------
+    // A Box chassis rigid body + a physics::vehicle with four wheels whose
+    // suspension probes the REAL terrain height (via set_ground_heightfield),
+    // so the chassis follows the hills instead of floating at a constant Y. The
+    // player toggles between on-foot (the CharacterController above) and driving
+    // this jeep; while driving WASD steers/throttles it and the camera chases.
+    physics::BodyId jeep_chassis{};
+    physics::vehicle::VehicleId jeep{};
+    Entity jeep_body_entity{};            // scaled cube chassis, re-posed per frame
+    std::array<Entity, 4> jeep_wheels{};  // scaled-cube wheels (visuals deferred)
+    bool driving = false;                 // on-foot (false) vs in the jeep (true)
+    bool prev_toggle = false;             // edge-trigger for the V mode toggle
+    math::Vec3 jeep_fwd = v3(0.0f, 0.0f, -1.0f);  // last good planar heading
+
     gameplay::CombatSystems combat{};
     ai::AiSystems ai{};
 
@@ -240,6 +277,19 @@ struct DfGame {
 // The AI LOS / FIRE / MOVE hooks all need the live game; stash a pointer so the
 // plain function-pointer hooks (no std::function heap alloc) can reach it.
 DfGame* g_game = nullptr;
+
+// physics::vehicle::HeightSampler callback. Each wheel's suspension probe calls
+// this with the wheel's world (x, z); we return the terrain surface Y there by
+// bilinearly sampling the SAME owning height array the mesh + the player use
+// (TerrainField::height_at, the world-space bilinear over desc.heights). A plain
+// function pointer + void* user (the TerrainField) keeps the 120 Hz suspension
+// loop heap-free, exactly as physics::vehicle::HeightSampler requires. Because
+// the sampler reproduces the rendered surface, every wheel contacts the real
+// hill under it and the chassis follows the relief instead of floating.
+f32 jeep_terrain_height(void* user, f32 x, f32 z) noexcept {
+    const auto* terrain = static_cast<const TerrainField*>(user);
+    return terrain ? terrain->height_at(x, z) : 0.0f;
+}
 
 // --- Terrain ---------------------------------------------------------------
 void build_terrain(DfGame& game) {
@@ -483,6 +533,165 @@ void spawn_enemies(DfGame& game) {
                 wp(ex * 0.45f, ez * 0.50f), wp(ex * 0.55f, ez * 0.50f));
 }
 
+// --- Drivable terrain jeep --------------------------------------------------
+// Spawn the jeep: a Box chassis rigid body + a four-wheel physics::vehicle whose
+// per-wheel suspension samples the terrain heightfield, plus the scaled-cube
+// render entities (chassis + four wheels) re-posed each frame. The chassis is
+// dropped a little above the surface and settles onto its suspension; from then
+// on the heightfield sampler keeps every corner on the real hill.
+void spawn_jeep(DfGame& game) {
+    // Park it just to the +X side of the player spawn, on the terrain, oriented to
+    // drive DOWN THE FALL LINE (world -Z). The demo terrain carries a central
+    // X-RIDGE, so height varies strongly along Z and only gently along X. Driving
+    // along -Z therefore keeps the LEFT and RIGHT wheels (separated along world X)
+    // at near-equal height — minimal side-slope, so the chassis pitches up the
+    // grade (stable) instead of rolling (which on a ray-cast vehicle couples into
+    // a yaw spin). The front/rear wheels straddle the Z-gradient, so the chassis Y
+    // climbs ~8 m over the run: a clean "chassis follows the hill" demonstration.
+    const f32 sx = 0.5f * game.terrain.world_extent_x() + 6.0f;
+    const f32 sz = game.terrain.world_extent_z() - 24.0f;
+    const f32 ground = game.terrain.height_at(sx, sz);
+    // Drop from a touch above the settled ride height so the springs catch it.
+    const math::Vec3 start = v3(sx, ground + 1.2f, sz);
+    // Yaw the chassis +90 deg about Y so its local +X (the derived drive-forward
+    // axis) points to world -Z.
+    const math::Quat heading = math::quat_from_axis_angle(v3(0.0f, 1.0f, 0.0f), math::kHalfPi);
+
+    physics::BodyDesc chassis_desc{};
+    chassis_desc.shape = physics::Shape::Box;
+    chassis_desc.mass = kJeepMass;
+    chassis_desc.position = start;
+    chassis_desc.rotation = heading;
+    chassis_desc.half_extent = kJeepHalf;
+    chassis_desc.friction = 0.6f;
+    game.jeep_chassis = game.world.create_body(chassis_desc);
+
+    // Four wheels in chassis-local space. Front (steer, non-drive) axle at +X,
+    // rear (drive) axle at -X so the module derives a +X forward axis (the long
+    // chassis axis), matching the racer_demo convention.
+    std::array<physics::vehicle::WheelDesc, 4> wheels{};
+    wheels[0].local_position = v3(kJeepWheelX, kJeepWheelY, kJeepWheelZ);    // front-left
+    wheels[1].local_position = v3(kJeepWheelX, kJeepWheelY, -kJeepWheelZ);   // front-right
+    wheels[2].local_position = v3(-kJeepWheelX, kJeepWheelY, kJeepWheelZ);   // rear-left  (drive)
+    wheels[3].local_position = v3(-kJeepWheelX, kJeepWheelY, -kJeepWheelZ);  // rear-right (drive)
+    for (auto& w : wheels) {
+        w.radius = kJeepWheelRadius;
+        w.suspension = kJeepSuspension;
+        w.stiffness = 26000.0f;  // soft springs: absorb per-wheel height steps, keep all loaded
+        w.damping = 6000.0f;     // heavy damping kills roll/pitch oscillation
+    }
+    physics::vehicle::VehicleDesc vd{};
+    vd.chassis = game.jeep_chassis;
+    vd.wheels = std::span<const physics::vehicle::WheelDesc>(wheels.data(), wheels.size());
+    vd.engine_max_torque = 220.0f;  // modest torque: enough to climb, not to spin out
+    vd.drag_coefficient = 0.45f;
+    // Governor + speed-scaled steering authority so the auto-drive smoke holds a
+    // sane cap on the hills instead of running away, and the front wheels keep
+    // enough angle at low speed to actually point the jeep across the slope.
+    vd.max_speed = kJeepMaxSpeed;
+    vd.steer_full_speed = 5.0f;
+    vd.steer_taper_speed = 14.0f;
+    vd.steer_min_authority = 0.45f;
+    game.jeep = physics::vehicle::create(vd, game.world);
+
+    // Terrain-following ground: each wheel's suspension probe samples the demo
+    // height array under that wheel's (x, z) via the borrowed HeightSampler, so
+    // the chassis rides the hills. The TerrainField (user pointer) outlives the
+    // vehicle (it lives in DfGame for the whole run), as the API requires.
+    physics::vehicle::HeightSampler sampler{};
+    sampler.fn = &jeep_terrain_height;
+    sampler.user = &game.terrain;
+    physics::vehicle::set_ground_heightfield(game.jeep, sampler, game.world);
+
+    // Render entities: a scaled cube chassis + four small scaled-cube wheels
+    // (proper wheel meshes/VFX deferred). Re-posed each frame from the body.
+    render::MeshId cube = game.renderer->builtin_mesh(render::BuiltInMesh::UnitCube);
+    render::MaterialDesc body_md{};
+    body_md.albedo_rgba8 = rgba8(74, 88, 60);  // olive-drab military jeep
+    body_md.winding = render::MaterialWinding::DoubleSided;
+    const render::MaterialId body_mat = game.scene->materials().create(body_md);
+    render::MaterialDesc wheel_md{};
+    wheel_md.albedo_rgba8 = rgba8(28, 28, 30);  // dark tyre
+    wheel_md.winding = render::MaterialWinding::DoubleSided;
+    const render::MaterialId wheel_mat = game.scene->materials().create(wheel_md);
+
+    game.jeep_fwd = v3(0.0f, 0.0f, -1.0f);  // initial heading: world -Z (the fall line)
+
+    scene::LocalTransform body_local{};
+    body_local.translation = start;
+    body_local.rotation = heading;
+    body_local.scale = v3(kJeepHalf.x * 2.0f, kJeepHalf.y * 2.0f, kJeepHalf.z * 2.0f);
+    game.jeep_body_entity =
+        game.scene->spawn_mesh_instance(cube, body_mat, body_local, scene::kInvalidSceneNode,
+                                        scene::RenderableFlags::Visible,
+                                        scene::ObjectMobility::Dynamic);
+    for (auto& we : game.jeep_wheels) {
+        scene::LocalTransform wl{};
+        wl.translation = start;
+        wl.scale = v3(kJeepWheelRadius * 2.0f, kJeepWheelRadius * 0.8f, kJeepWheelRadius * 2.0f);
+        we = game.scene->spawn_mesh_instance(cube, wheel_mat, wl, scene::kInvalidSceneNode,
+                                             scene::RenderableFlags::Visible,
+                                             scene::ObjectMobility::Dynamic);
+    }
+    PSY_LOG_INFO("df_demo: jeep spawned at ({:.1f},{:.1f},{:.1f}) ground={:.1f}, "
+                 "terrain-following suspension + governor {:.0f} m/s",
+                 static_cast<double>(start.x), static_cast<double>(start.y),
+                 static_cast<double>(start.z), static_cast<double>(ground),
+                 static_cast<double>(kJeepMaxSpeed));
+}
+
+// Push the jeep chassis + wheel poses into their scene mesh transforms from the
+// live physics body. The chassis cube uses the body rotation directly; the
+// wheels follow the chassis-local layout rotated into world by that rotation.
+void sync_jeep_transforms(DfGame& game) {
+    const math::Vec3 cp = game.world.get_position(game.jeep_chassis);
+    const math::Quat cq = game.world.get_rotation(game.jeep_chassis);
+    const math::Mat4 rot = math::rotate_quat(cq);
+
+    scene::LocalTransform body_local{};
+    body_local.translation = cp;
+    body_local.rotation = cq;
+    body_local.scale = v3(kJeepHalf.x * 2.0f, kJeepHalf.y * 2.0f, kJeepHalf.z * 2.0f);
+    (void)game.scene->set_transform(game.jeep_body_entity, body_local);
+
+    const std::array<math::Vec3, 4> wheel_local = {
+        v3(kJeepWheelX, kJeepWheelY, kJeepWheelZ),
+        v3(kJeepWheelX, kJeepWheelY, -kJeepWheelZ),
+        v3(-kJeepWheelX, kJeepWheelY, kJeepWheelZ),
+        v3(-kJeepWheelX, kJeepWheelY, -kJeepWheelZ),
+    };
+    for (usize i = 0; i < wheel_local.size(); ++i) {
+        const math::Vec4 wl4{wheel_local[i].x, wheel_local[i].y, wheel_local[i].z, 0.0f};
+        const math::Vec4 world_off = math::mul(rot, wl4);
+        scene::LocalTransform wl{};
+        wl.translation = v3(cp.x + world_off.x, cp.y + world_off.y, cp.z + world_off.z);
+        wl.rotation = cq;
+        wl.scale = v3(kJeepWheelRadius * 2.0f, kJeepWheelRadius * 0.8f, kJeepWheelRadius * 2.0f);
+        (void)game.scene->set_transform(game.jeep_wheels[i], wl);
+    }
+
+    // Cache the planar heading (chassis local +X rotated into world) for the
+    // chase camera; keep the last good value when nearly vertical.
+    const math::Vec4 fwd4 = math::mul(rot, math::Vec4{1.0f, 0.0f, 0.0f, 0.0f});
+    math::Vec3 fwd = v3(fwd4.x, 0.0f, fwd4.z);
+    if (math::dot(fwd, fwd) > 1e-4f)
+        game.jeep_fwd = math::normalize(fwd);
+}
+
+// Chase camera behind / above the jeep, looking at it (mirrors racer_demo).
+void update_jeep_camera(DfGame& game) {
+    const math::Vec3 cp = game.world.get_position(game.jeep_chassis);
+    const math::Vec3 fwd = game.jeep_fwd;
+    constexpr f32 kBack = 8.0f;
+    constexpr f32 kUp = 3.2f;
+    const math::Vec3 eye{cp.x - fwd.x * kBack, cp.y + kUp, cp.z - fwd.z * kBack};
+    const math::Vec3 target{cp.x, cp.y + 0.8f, cp.z};
+    scene::LocalTransform cam_local = game.scene->transform(game.camera);
+    cam_local.translation = eye;
+    cam_local.rotation = scene::camera_rotation_towards(eye, target, v3(0.0f, 1.0f, 0.0f));
+    (void)game.scene->set_transform(game.camera, cam_local);
+}
+
 // --- AI host hooks ---------------------------------------------------------
 
 // LOS: clear when NEITHER the terrain heightmap march NOR a physics raycast
@@ -600,10 +809,10 @@ void player_fire(DfGame& game, math::Vec3 dir) {
         PSY_LOG_INFO("df_demo: player hitscan struck a soldier at {:.1f}m", r.distance);
 }
 
-// Direction from the eye to the nearest still-alive soldier (for the headless
-// smoke path, which has no mouse to aim with). Returns false when every soldier
-// is dead.
-bool aim_at_nearest_enemy(DfGame& game, math::Vec3& out_dir) {
+// Direction from the eye to the nearest still-alive soldier. Retained as an
+// aim-assist helper for the on-foot path; the smoke run now drives the jeep
+// rather than walking + auto-firing, so it may be unused in some builds.
+[[maybe_unused]] bool aim_at_nearest_enemy(DfGame& game, math::Vec3& out_dir) {
     const math::Vec3 eye = game.controller.eye();
     f32 best = 1e30f;
     bool found = false;
@@ -662,7 +871,8 @@ void draw_hud(DfGame& game, render::Framebuffer& fb) {
                    health > 0.0f ? ui::imm::rgba(0xE6, 0xF0, 0xFF)
                                  : ui::imm::rgba(0xFF, 0x60, 0x50));
     ui::imm::label(math::Vec2{16.0f, fb.height - 18.0f},
-                   "WASD move  -  mouse look  -  LMB fire  -  ESC quit",
+                   game.driving ? "WASD drive  -  V on foot  -  ESC quit"
+                                : "WASD move  -  mouse look  -  LMB fire  -  V drive jeep  -  ESC quit",
                    ui::imm::rgba(0x90, 0xA0, 0xB8));
     ui::imm::end_frame();
 }
@@ -707,18 +917,19 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     // load, so size for the chunk churn to keep even the load phase alloc-quiet.
     game.scene->prewarm_capacity(scene::ScenePrewarmConfig{
         .scene_entities = 128u,
-        .renderables = 16u,
+        .renderables = 24u,  // terrain + 6 soldiers + jeep chassis + 4 wheels
         .cameras = 2u,
         .lights = 4u,
-        .render_items = 16u,
+        .render_items = 24u,
     });
-    app_host.reserve_scene_capacity(16u, 4u);
+    app_host.reserve_scene_capacity(24u, 4u);
 
     // Build the level + actors (load-time archetype migration; see header note).
     build_terrain(game);
     make_lighting(game);
     spawn_player(game);
     spawn_enemies(game);
+    spawn_jeep(game);
 
     // Reserve combat + AI scratch once (alloc-free per frame thereafter).
     game.combat.config.friendly_fire = gameplay::FriendlyFire::Off;  // factions matter
@@ -730,6 +941,21 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     PSY_LOG_INFO("df_demo: terrain built, {} soldiers, hybrid render + sun{}",
                  game.enemy_count,
                  smoke_frames > 0 ? std::string{" (smoke mode)"} : std::string{});
+
+    // The headless smoke DRIVES THE JEEP across a slope (the brief's terrain
+    // vehicle check): switch to driving immediately so the loop exercises the
+    // heightfield suspension, and accumulate the chassis-Y + under-chassis
+    // terrain-height span so we can ASSERT (via log) that the chassis tracks the
+    // relief while staying grounded.
+    if (smoke_frames > 0)
+        game.driving = true;
+    f32 jeep_y_min = 1e30f;
+    f32 jeep_y_max = -1e30f;
+    f32 jeep_terrain_min = 1e30f;
+    f32 jeep_terrain_max = -1e30f;
+    f32 jeep_clear_min = 1e30f;  // min (chassis_y - terrain_y): grounding floor
+    f32 jeep_clear_max = -1e30f;
+    bool jeep_settled = false;
 
     u64 last_ticks = platform::Clock::ticks_now();
     u32 frame = 0;
@@ -758,50 +984,111 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
         // every triangle. A sky-blue clear frames the open landscape.
         app_host.engine_frame_begin(app::FrameClear::color_depth(rgba8(120, 152, 196)));
 
-        // 1. Ground the controller on the terrain, then take input (or the
-        //    scripted smoke walk: stride inward toward the soldiers, aim + fire at
-        //    the nearest live one so the headless run exercises the full player ->
-        //    hitscan -> kill chain). The smoke walk uses the controller so its
-        //    Y is terrain-grounded each frame just like interactive play.
+        // 1. Ground the controller on the terrain, then take input. Two control
+        //    modes share the loop: ON-FOOT (the FPS CharacterController, terrain-
+        //    grounded each frame) and DRIVING (the terrain jeep; WASD becomes
+        //    throttle/brake/steer). `V` toggles between them interactively. The
+        //    headless smoke forces DRIVING and scripts a throttle-forward +
+        //    gentle steer auto-drive so the jeep crosses a slope.
         ground_controller(game);
         bool fire_pressed = false;
         math::Vec3 fire_dir = game.controller.forward();
+        f32 jeep_throttle = 0.0f, jeep_brake = 0.0f, jeep_steer = 0.0f;
+
         if (smoke_frames > 0) {
-            const f32 t01 = std::clamp(static_cast<f32>(frame) / static_cast<f32>(smoke_frames),
-                                       0.0f, 1.0f);
-            // Walk from the +Z spawn edge toward the soldier cluster near -Z.
-            const f32 sx = 0.5f * game.terrain.world_extent_x();
-            const f32 z0 = game.terrain.world_extent_z() - 24.0f;
-            const f32 z1 = game.terrain.world_extent_z() * 0.45f;
-            const f32 wz = z0 + (z1 - z0) * t01;
-            const f32 ground = game.terrain.height_at(sx, wz);
-            game.controller.set_position(v3(sx, ground + kEyeHeight, wz));
-            game.controller.set_look(0.0f, 0.0f);
-            if ((frame % 3u) == 0u && aim_at_nearest_enemy(game, fire_dir))
-                fire_pressed = true;
+            // Auto-drive the jeep: hold throttle (the governor caps the speed) and
+            // steer STRAIGHT down the fall line (world -Z). The demo terrain's
+            // central X-ridge varies height strongly along Z and only gently along
+            // X, so a straight -Z run keeps the left/right wheels (separated along
+            // X) at near-equal height -- minimal side-slope, so the chassis pitches
+            // up the grade (stable) instead of rolling, while its Y still climbs
+            // ~2 m over the run as the front/rear wheels straddle the Z-gradient: a
+            // clean "chassis follows the hill" demonstration. The steer authority +
+            // governor on the VehicleDesc keep a constant throttle holding the cap.
+            jeep_throttle = 1.0f;
+            jeep_steer = 0.0f;
             if (!smoke_grounded_logged) {
-                PSY_LOG_INFO("df_demo: player grounded on terrain at "
-                             "({:.1f},{:.1f},{:.1f}) ground={:.1f}",
-                             static_cast<double>(sx), static_cast<double>(ground + kEyeHeight),
-                             static_cast<double>(wz), static_cast<double>(ground));
+                const math::Vec3 cp = game.world.get_position(game.jeep_chassis);
+                PSY_LOG_INFO("df_demo: jeep auto-drive start chassis=({:.1f},{:.1f},{:.1f}) "
+                             "terrain_under={:.1f}",
+                             static_cast<double>(cp.x), static_cast<double>(cp.y),
+                             static_cast<double>(cp.z),
+                             static_cast<double>(game.terrain.height_at(cp.x, cp.z)));
                 smoke_grounded_logged = true;
             }
         } else if (edit_mode != editor::Mode::Edit && input && !editor::overlays_capturing()) {
-            game.controller.update(*input, dt);
-            const bool left = input->mouse().left;
-            fire_pressed = left && !game.prev_fire;  // edge-trigger
-            game.prev_fire = left;
-            fire_dir = game.controller.forward();
+            // V edge-toggles on-foot / driving.
+            const bool toggle = input->key_down(platform::KeyCode::V);
+            if (toggle && !game.prev_toggle) {
+                game.driving = !game.driving;
+                PSY_LOG_INFO("df_demo: {} the jeep", game.driving ? "entered" : "exited");
+            }
+            game.prev_toggle = toggle;
+
+            if (game.driving) {
+                if (input->key_down(platform::KeyCode::W))
+                    jeep_throttle = 1.0f;
+                if (input->key_down(platform::KeyCode::S))
+                    jeep_brake = 1.0f;
+                if (input->key_down(platform::KeyCode::A))
+                    jeep_steer += 0.5f;
+                if (input->key_down(platform::KeyCode::D))
+                    jeep_steer -= 0.5f;
+            } else {
+                game.controller.update(*input, dt);
+                const bool left = input->mouse().left;
+                fire_pressed = left && !game.prev_fire;  // edge-trigger
+                game.prev_fire = left;
+                fire_dir = game.controller.forward();
+            }
         }
 
-        // 2. Physics step (occluder bodies are static; matches the documented
-        //    per-frame order for when dynamic bodies are added).
+        // Feed the jeep controls every frame (zeros when on-foot, so it idles).
+        physics::vehicle::set_throttle(game.jeep, jeep_throttle, game.world);
+        physics::vehicle::set_brake(game.jeep, jeep_brake, game.world);
+        physics::vehicle::set_steer(game.jeep, jeep_steer, game.world);
+
+        // 2. Physics step. The jeep chassis is a dynamic body driven by the
+        //    vehicle module's per-wheel heightfield suspension; the occluder
+        //    bodies stay static.
         game.world.step(dt);
 
-        // 3. Sync the player eye -> camera + combat entity + occluder body, and
-        //    re-pose every live soldier's occluder body for LOS raycasts.
+        // 3. Sync the player eye -> camera + combat entity + occluder body, the
+        //    jeep chassis + wheel meshes, and re-pose every live soldier's
+        //    occluder body for LOS raycasts. While driving, the chase camera
+        //    follows the jeep instead of the FPS eye.
         sync_player_transform(game);
+        sync_jeep_transforms(game);
+        if (game.driving)
+            update_jeep_camera(game);
         sync_enemy_occluders(game);
+
+        // Smoke instrumentation: after a short settle window track the chassis Y,
+        // the terrain height directly under it, and the chassis-above-terrain
+        // clearance, so we can verify the chassis FOLLOWS the relief (Y span) and
+        // stays GROUNDED (clearance bounded, never sinking through the surface).
+        if (smoke_frames > 0) {
+            const math::Vec3 cp = game.world.get_position(game.jeep_chassis);
+            const f32 terr = game.terrain.height_at(cp.x, cp.z);
+            if (!jeep_settled && frame >= 30u)
+                jeep_settled = true;  // ignore the initial drop/settle transient
+            if (jeep_settled) {
+                jeep_y_min = std::min(jeep_y_min, cp.y);
+                jeep_y_max = std::max(jeep_y_max, cp.y);
+                jeep_terrain_min = std::min(jeep_terrain_min, terr);
+                jeep_terrain_max = std::max(jeep_terrain_max, terr);
+                const f32 clear = cp.y - terr;
+                jeep_clear_min = std::min(jeep_clear_min, clear);
+                jeep_clear_max = std::max(jeep_clear_max, clear);
+            }
+            if ((frame % 20u) == 0u) {
+                const math::Vec3 lv = game.world.get_position(game.jeep_chassis);
+                PSY_LOG_INFO("DBG jeep frame={} pos=({:.2f},{:.2f},{:.2f}) fwd=({:.2f},{:.2f})",
+                             frame, static_cast<double>(lv.x), static_cast<double>(lv.y),
+                             static_cast<double>(lv.z), static_cast<double>(game.jeep_fwd.x),
+                             static_cast<double>(game.jeep_fwd.z));
+            }
+        }
 
         // 4-6. Combat tick, ordered begin -> fire -> flush so the damage that AI
         //      `act` (soldier fire hook) and the player hitscan QUEUE this frame is
@@ -859,11 +1146,43 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
             for (u32 i = 0; i < game.enemy_count; ++i)
                 if (game.scene->registry().alive(game.enemies[i]))
                     ++alive;
+            // Chassis-Y-tracks-terrain assertion. The jeep drove across sloped
+            // terrain, so both the chassis Y and the terrain height under it must
+            // have a meaningful span, and the chassis must stay grounded: its
+            // clearance above the surface stays in a bounded band (it neither
+            // sinks through the ground nor flies off). A flat-floating chassis
+            // would show a near-zero terrain span; a sunk one a negative
+            // clearance. We log a single PASS/FAIL line the smoke harness greps.
+            const f32 y_span = (jeep_y_max > jeep_y_min) ? jeep_y_max - jeep_y_min : 0.0f;
+            const f32 terr_span =
+                (jeep_terrain_max > jeep_terrain_min) ? jeep_terrain_max - jeep_terrain_min : 0.0f;
+            constexpr f32 kMinSpan = 0.5f;      // metres of elevation change required
+            constexpr f32 kGroundFloor = 0.0f;  // chassis centre never below terrain
+            constexpr f32 kGroundCeil = 3.0f;   // nor implausibly far above it
+            const bool tracks = terr_span >= kMinSpan && y_span >= kMinSpan;
+            const bool grounded = jeep_clear_min >= kGroundFloor && jeep_clear_max <= kGroundCeil;
+            PSY_LOG_INFO("df_demo: jeep terrain-track chassis_y=[{:.2f},{:.2f}] span={:.2f}m  "
+                         "terrain_under=[{:.2f},{:.2f}] span={:.2f}m  clearance=[{:.2f},{:.2f}]m  "
+                         "{} {}",
+                         static_cast<double>(jeep_y_min), static_cast<double>(jeep_y_max),
+                         static_cast<double>(y_span), static_cast<double>(jeep_terrain_min),
+                         static_cast<double>(jeep_terrain_max), static_cast<double>(terr_span),
+                         static_cast<double>(jeep_clear_min), static_cast<double>(jeep_clear_max),
+                         tracks ? "TRACKS-TERRAIN" : "FLAT-OR-NO-SLOPE",
+                         grounded ? "GROUNDED" : "NOT-GROUNDED");
+            if (tracks && grounded)
+                PSY_LOG_INFO("df_demo: jeep terrain-follow PASS");
+            else
+                PSY_LOG_ERROR("df_demo: jeep terrain-follow FAIL (tracks={} grounded={})", tracks,
+                              grounded);
             PSY_LOG_INFO("df_demo: smoke target reached ({}); kills={} soldiers_left={}; exiting",
                          smoke_frames, game.player_kills, alive);
             break;
         }
     }
+
+    physics::vehicle::destroy(game.jeep, game.world);
+    game.world.destroy_body(game.jeep_chassis);
 
     g_game = nullptr;
     const bool capture_ok = app_host.write_capture_if_requested("df_demo");

@@ -284,10 +284,19 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
         auto tf =
             kernels::kernel_pacejka_combined(slip_long, slip_lat, wh.load_n, v.tire_friction, v.tire_coeffs);
 
-        // Project tire forces back into world frame: Fx along tire_fwd, Fy
-        // along tire_right. Both lie in the ground plane (perpendicular to
-        // suspension up).
-        math::Vec3 tire_force = math::add(math::mul(tire_fwd, tf.Fx), math::mul(tire_right, tf.Fy));
+        // Project tire forces back into world frame. Fx (drive/brake) acts
+        // along tire_fwd. The lateral (cornering) force must OPPOSE the lateral
+        // slip — a real tire's lateral force is restoring: it pushes the contact
+        // patch back against the slide. The Pacejka magic formula returns Fy
+        // with the SAME sign as the slip angle (and hence as v_lat), so applying
+        // it along +tire_right is positive feedback — any steer feeds a side-
+        // slide that grows without bound and spins the chassis. Negate it so it
+        // restores. The friction-ellipse clip uses |Fy|, so the sign flip here
+        // preserves the combined-slip magnitude. Both forces lie in the ground
+        // plane (perpendicular to suspension up).
+        const f32 lateral_restoring = -tf.Fy;
+        math::Vec3 tire_force =
+            math::add(math::mul(tire_fwd, tf.Fx), math::mul(tire_right, lateral_restoring));
         total_force = math::add(total_force, tire_force);
         total_torque = math::add(total_torque, math::cross(ra, tire_force));
 
