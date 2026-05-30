@@ -170,6 +170,36 @@ struct VehicleDesc {
     f32 engine_max_torque = 400.0f;  // N·m
     f32 drag_coefficient = 0.30f;
     f32 downforce_coefficient = 0.0f;
+    // ─── Speed governor + steering authority (additive; #58) ──────────────
+    // `max_speed` is the governed forward-speed cap in m/s. Engine drive
+    // torque tapers smoothly to zero as the chassis forward speed approaches
+    // this cap, so an auto-drive throttle of 1.0 holds AT the cap instead of
+    // running away. 0 (the default) disables the governor — existing callers
+    // that never set it keep the unclamped Wave-B behaviour bit-for-bit.
+    f32 max_speed = 0.0f;  // m/s; 0 = no governor (legacy)
+    // Steering authority scales the commanded front-wheel angle with speed:
+    // full (×1) authority at/below `steer_full_speed`, tapering to
+    // `steer_min_authority` at/above `steer_taper_speed`. This gives enough
+    // low-speed angle to actually turn while damping high-speed twitch. The
+    // defaults are a no-op identity (full authority everywhere) so existing
+    // callers are unaffected until they opt in.
+    f32 steer_full_speed = 0.0f;     // m/s; <= this → full authority
+    f32 steer_taper_speed = 0.0f;    // m/s; >= this → steer_min_authority
+    f32 steer_min_authority = 1.0f;  // 0..1 authority at high speed
+};
+
+// Borrowed terrain height source for the per-wheel suspension probe. The host
+// owns the heightfield (an editor sculpt grid, a sample-06 demo heightmap, a
+// nav mesh, …); it supplies a pure `height(user, x, z)` callback returning the
+// world-Y of the terrain surface under the (x, z) column. A plain function
+// pointer + void* (NOT std::function) keeps the 120 Hz suspension loop free of
+// heap allocation and virtual dispatch, and keeps the call deterministic. The
+// pointer is BORROWED — the host must keep the backing data alive for the
+// vehicle's lifetime (or call set_ground_heightfield again / set_ground_plane
+// to detach). A null `fn` falls back to the flat ground_y plane.
+struct HeightSampler {
+    f32 (*fn)(void* user, f32 x, f32 z) = nullptr;
+    void* user = nullptr;
 };
 struct VehicleTag {};
 using VehicleId = Handle<VehicleTag>;
@@ -185,7 +215,14 @@ void set_steer(VehicleId v, f32 angle, World& world = World::Get());  // radians
 // Flat ground-plane height (world Y) the suspension rays contact against.
 // Default 0. The oval test track in sample 04 is flat, so a single plane is
 // sufficient; elevated terrain would need a per-wheel height probe instead.
+// This stays the FLAT-Y FAST PATH and also DETACHES any prior heightfield.
 void set_ground_plane(VehicleId v, f32 ground_y, World& world = World::Get());
+// Heightfield ground path (elevated / sloped terrain). Each wheel's suspension
+// probe samples the terrain height under THAT wheel's (x, z) via the borrowed
+// `HeightSampler`, so the chassis follows the slope instead of floating over it
+// at a constant Y. Pass an empty/null sampler to detach and revert to the flat
+// `set_ground_plane` fast path. Deterministic + alloc-free in the tick.
+void set_ground_heightfield(VehicleId v, HeightSampler terrain, World& world = World::Get());
 }  // namespace vehicle
 
 // Character controller (DESIGN.md §10.1 character specialization)

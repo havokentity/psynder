@@ -1263,6 +1263,104 @@ inline DrivetrainOutput kernel_drivetrain_step(const DrivetrainParams& p,
     return out;
 }
 
+// ─── Speed governor + steering authority (#58) ────────────────────────────
+//
+// The racer auto-drive flagged two weaknesses: (a) at full throttle the car
+// runs away past any intended cruising speed (no governor), and (b) steering
+// is too weak to hold a line at low speed yet twitchy at high speed (flat
+// authority). Both are corrected by two pure, deterministic scalar kernels the
+// vehicle solver applies BEFORE the tire/drive forces — no RNG, no time, no
+// allocation, -fno-fast-math friendly.
+
+// Drive-torque governor multiplier in [0, 1]. As the chassis forward speed
+// `fwd_speed` (m/s, signed; only the forward/positive half is governed)
+// approaches `max_speed`, the returned scale tapers smoothly to 0 so engine
+// drive torque is cut at the cap. The taper begins at `taper_frac` of the cap
+// (default 0.85) and is a smooth Hermite (smoothstep) so there is no torque
+// discontinuity that would chatter the integrator. `max_speed <= 0` disables
+// the governor (returns 1 — exact legacy behaviour). Above the cap the scale
+// is exactly 0 (drive cut entirely; drag + rolling resistance bleed the
+// overspeed back down), which clamps runaway without ever reversing thrust.
+PSY_FORCEINLINE f32 kernel_speed_governor(f32 fwd_speed,
+                                          f32 max_speed,
+                                          f32 taper_frac = 0.85f) noexcept {
+    if (!(max_speed > 0.0f))
+        return 1.0f;  // governor disabled
+    // Only govern forward motion; reversing/standing is never throttled here.
+    if (fwd_speed <= 0.0f)
+        return 1.0f;
+    const f32 taper_start = max_speed * taper_frac;
+    if (fwd_speed <= taper_start)
+        return 1.0f;
+    if (fwd_speed >= max_speed)
+        return 0.0f;
+    // Smoothstep from 1 at taper_start down to 0 at max_speed.
+    const f32 denom = std::max(1e-3f, max_speed - taper_start);
+    const f32 t = (fwd_speed - taper_start) / denom;  // 0..1 across the band
+    const f32 s = t * t * (3.0f - 2.0f * t);          // smoothstep
+    return 1.0f - s;
+}
+
+// Steering-authority multiplier in [min_authority, 1]. The commanded
+// front-wheel angle is scaled by the returned factor so the effective steer
+// is full (×1) at/below `full_speed` and tapers (smoothstep) to
+// `min_authority` at/above `taper_speed`. This keeps enough angle to actually
+// turn the chassis at parking speed while damping the high-speed twitch that
+// made the auto-drive over-correct. A degenerate config (taper_speed <=
+// full_speed) or min_authority >= 1 returns 1 (identity — legacy behaviour).
+PSY_FORCEINLINE f32 kernel_steer_authority(f32 abs_speed,
+                                           f32 full_speed,
+                                           f32 taper_speed,
+                                           f32 min_authority) noexcept {
+    if (!(min_authority < 1.0f) || !(taper_speed > full_speed))
+        return 1.0f;  // identity
+    if (abs_speed <= full_speed)
+        return 1.0f;
+    if (abs_speed >= taper_speed)
+        return min_authority;
+    const f32 denom = std::max(1e-3f, taper_speed - full_speed);
+    const f32 t = (abs_speed - full_speed) / denom;  // 0..1
+    const f32 s = t * t * (3.0f - 2.0f * t);         // smoothstep
+    return 1.0f - s * (1.0f - min_authority);        // 1 → min_authority
+}
+
+// Bilinear sample of a regular grid heightfield (origin at cell (0,0), row-
+// major `iz*width + ix`, `spacing` metres per cell). Returns the interpolated
+// surface height at world (x, z). The (x, z) is clamped to the grid extent so
+// a wheel that overhangs the edge contacts the boundary cell rather than
+// reading out of bounds. Pure / branch-light / alloc-free — suitable as the
+// body of a host HeightSampler callback over an editor sculpt grid or a demo
+// heightmap. `heights` must hold `width*height` samples.
+PSY_FORCEINLINE f32 kernel_heightfield_bilinear(const f32* heights,
+                                                u32 width,
+                                                u32 height,
+                                                f32 spacing,
+                                                math::Vec3 origin,
+                                                f32 x,
+                                                f32 z) noexcept {
+    if (heights == nullptr || width == 0 || height == 0 || !(spacing > 0.0f))
+        return origin.y;
+    f32 fx = (x - origin.x) / spacing;
+    f32 fz = (z - origin.z) / spacing;
+    const f32 max_x = static_cast<f32>(width - 1);
+    const f32 max_z = static_cast<f32>(height - 1);
+    fx = std::clamp(fx, 0.0f, max_x);
+    fz = std::clamp(fz, 0.0f, max_z);
+    const u32 ix0 = static_cast<u32>(fx);
+    const u32 iz0 = static_cast<u32>(fz);
+    const u32 ix1 = (ix0 + 1 < width) ? ix0 + 1 : ix0;
+    const u32 iz1 = (iz0 + 1 < height) ? iz0 + 1 : iz0;
+    const f32 tx = fx - static_cast<f32>(ix0);
+    const f32 tz = fz - static_cast<f32>(iz0);
+    const f32 h00 = heights[static_cast<usize>(iz0) * width + ix0];
+    const f32 h10 = heights[static_cast<usize>(iz0) * width + ix1];
+    const f32 h01 = heights[static_cast<usize>(iz1) * width + ix0];
+    const f32 h11 = heights[static_cast<usize>(iz1) * width + ix1];
+    const f32 a = h00 + (h10 - h00) * tx;
+    const f32 b = h01 + (h11 - h01) * tx;
+    return a + (b - a) * tz + origin.y;
+}
+
 // ─── Aero (Wave B) ───────────────────────────────────────────────────────
 //
 // Standard rigid-body aero: drag force = ½ · ρ · v² · Cd · A applied opposite
