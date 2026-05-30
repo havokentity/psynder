@@ -106,8 +106,9 @@ std::string validate(const Graph& g) {
             return "node " + std::to_string(i) + " (" + info->name +
                    "): expected " + std::to_string(info->param_count) +
                    " params, got " + std::to_string(n.params.size());
-        // Variable slot bounds.
-        if (n.type == NodeTypeId::GetVar || n.type == NodeTypeId::SetVar) {
+        // Variable slot bounds. Once uses a var slot to remember it has fired.
+        if (n.type == NodeTypeId::GetVar || n.type == NodeTypeId::SetVar ||
+            n.type == NodeTypeId::Once) {
             if (n.params[0] >= g.variable_count)
                 return "node " + std::to_string(i) + ": variable slot out of range";
         }
@@ -276,15 +277,21 @@ u32 materialize_output(Ctx& ctx, NodeIndex node, u16 pin) {
         case NodeTypeId::Sub:
         case NodeTypeId::Mul:
         case NodeTypeId::Div:
+        case NodeTypeId::Min:
+        case NodeTypeId::Max:
+        case NodeTypeId::Mod:
         case NodeTypeId::Equal:
         case NodeTypeId::Less:
         case NodeTypeId::Greater:
+        case NodeTypeId::NotEqual:
+        case NodeTypeId::LessEqual:
+        case NodeTypeId::GreaterEqual:
         case NodeTypeId::And:
-        case NodeTypeId::Or: {
-            const ValueType in_t =
-                (n.type == NodeTypeId::And || n.type == NodeTypeId::Or)
-                    ? ValueType::Bool
-                    : ValueType::Float;
+        case NodeTypeId::Or:
+        case NodeTypeId::Xor: {
+            const bool bool_in = n.type == NodeTypeId::And || n.type == NodeTypeId::Or ||
+                                 n.type == NodeTypeId::Xor;
+            const ValueType in_t = bool_in ? ValueType::Bool : ValueType::Float;
             const u32 ra = read_input(ctx, node, 0, in_t);
             const u32 rb = read_input(ctx, node, 1, in_t);
             result = ctx.alloc_reg();
@@ -294,11 +301,18 @@ u32 materialize_output(Ctx& ctx, NodeIndex node, u16 pin) {
                 case NodeTypeId::Sub: op = Op::Sub; break;
                 case NodeTypeId::Mul: op = Op::Mul; break;
                 case NodeTypeId::Div: op = Op::Div; break;
+                case NodeTypeId::Min: op = Op::Min; break;
+                case NodeTypeId::Max: op = Op::Max; break;
+                case NodeTypeId::Mod: op = Op::Mod; break;
                 case NodeTypeId::Equal: op = Op::Equal; break;
                 case NodeTypeId::Less: op = Op::Less; break;
                 case NodeTypeId::Greater: op = Op::Greater; break;
+                case NodeTypeId::NotEqual: op = Op::NotEqual; break;
+                case NodeTypeId::LessEqual: op = Op::LessEqual; break;
+                case NodeTypeId::GreaterEqual: op = Op::GreaterEqual; break;
                 case NodeTypeId::And: op = Op::And; break;
                 case NodeTypeId::Or: op = Op::Or; break;
+                case NodeTypeId::Xor: op = Op::Xor; break;
                 default: break;
             }
             ctx.emit(op, result, ra, rb);
@@ -314,6 +328,79 @@ u32 materialize_output(Ctx& ctx, NodeIndex node, u16 pin) {
             const u32 ra = read_input(ctx, node, 0, ValueType::Bool);
             result = ctx.alloc_reg();
             ctx.emit(Op::Not, result, ra);
+            break;
+        }
+
+        // Unary float ops.
+        case NodeTypeId::Abs:
+        case NodeTypeId::Sign:
+        case NodeTypeId::Floor:
+        case NodeTypeId::Ceil:
+        case NodeTypeId::Sqrt: {
+            const u32 ra = read_input(ctx, node, 0, ValueType::Float);
+            result = ctx.alloc_reg();
+            Op op = Op::Abs;
+            switch (n.type) {
+                case NodeTypeId::Abs: op = Op::Abs; break;
+                case NodeTypeId::Sign: op = Op::Sign; break;
+                case NodeTypeId::Floor: op = Op::Floor; break;
+                case NodeTypeId::Ceil: op = Op::Ceil; break;
+                case NodeTypeId::Sqrt: op = Op::Sqrt; break;
+                default: break;
+            }
+            ctx.emit(op, result, ra);
+            break;
+        }
+
+        // Clamp(A, Min, Max) lowers to Min(Max(A, Min), Max) — no >2-input op.
+        case NodeTypeId::Clamp: {
+            const u32 ra = read_input(ctx, node, 0, ValueType::Float);
+            const u32 rlo = read_input(ctx, node, 1, ValueType::Float);
+            const u32 rhi = read_input(ctx, node, 2, ValueType::Float);
+            const u32 lo_clamped = ctx.alloc_reg();
+            ctx.emit(Op::Max, lo_clamped, ra, rlo);
+            result = ctx.alloc_reg();
+            ctx.emit(Op::Min, result, lo_clamped, rhi);
+            break;
+        }
+
+        // Lerp(A, B, T) lowers to A + (B - A) * T.
+        case NodeTypeId::Lerp: {
+            const u32 ra = read_input(ctx, node, 0, ValueType::Float);
+            const u32 rb = read_input(ctx, node, 1, ValueType::Float);
+            const u32 rt = read_input(ctx, node, 2, ValueType::Float);
+            const u32 diff = ctx.alloc_reg();
+            ctx.emit(Op::Sub, diff, rb, ra);  // B - A
+            const u32 scaled = ctx.alloc_reg();
+            ctx.emit(Op::Mul, scaled, diff, rt);  // (B - A) * T
+            result = ctx.alloc_reg();
+            ctx.emit(Op::Add, result, ra, scaled);  // A + ...
+            break;
+        }
+
+        // RandomRange(seed; Min, Max): hash01(seed) then Min + h*(Max-Min).
+        case NodeTypeId::RandomRange: {
+            const u32 rmin = read_input(ctx, node, 0, ValueType::Float);
+            const u32 rmax = read_input(ctx, node, 1, ValueType::Float);
+            const u32 seed_reg = ctx.alloc_reg();
+            ctx.emit(Op::LoadConst, seed_reg,
+                     ctx.add_const(Value::make_int(static_cast<i64>(n.params[0]))));
+            const u32 h = ctx.alloc_reg();
+            ctx.emit(Op::RandHash01, h, seed_reg);  // [0,1)
+            const u32 range = ctx.alloc_reg();
+            ctx.emit(Op::Sub, range, rmax, rmin);  // Max - Min
+            const u32 scaled = ctx.alloc_reg();
+            ctx.emit(Op::Mul, scaled, h, range);  // h * range
+            result = ctx.alloc_reg();
+            ctx.emit(Op::Add, result, rmin, scaled);  // Min + ...
+            break;
+        }
+
+        // GetHealth reads a component field back through the host getter.
+        case NodeTypeId::GetHealth: {
+            const u32 e = read_input(ctx, node, 0, ValueType::Entity);
+            result = ctx.alloc_reg();
+            ctx.emit(Op::LoadHealth, result, e);
             break;
         }
 
@@ -365,6 +452,31 @@ void emit_exec(Ctx& ctx, NodeIndex node) {
             emit_successor(ctx, node, 1);
             break;
         }
+        case NodeTypeId::Once: {
+            // Forward exec only the first time this node is reached per
+            // instance. var[slot] is 0 (Bool false) until we fire; on the first
+            // pass we run Then and set var[slot] = true so later passes skip.
+            //   if (var[slot]) goto end;
+            //   var[slot] = true; <Then...>
+            // end:
+            const u32 slot = static_cast<u32>(n.params[0]);
+            const u32 gate = ctx.alloc_reg();
+            ctx.emit(Op::LoadVar, gate, slot);
+            const usize jmp = ctx.program.code.size();
+            ctx.emit(Op::JumpIfFalse, gate, 0);  // if gate is FALSE, skip the Jump
+            // gate was true -> jump to end (patched below).
+            const usize skip = ctx.program.code.size();
+            ctx.emit(Op::Jump, 0);
+            // First pass lands here: JumpIfFalse target.
+            ctx.program.code[jmp].b = static_cast<u32>(ctx.program.code.size());
+            const u32 t = ctx.alloc_reg();
+            ctx.emit(Op::LoadConst, t, ctx.add_const(Value::make_bool(true)));
+            ctx.emit(Op::StoreVar, slot, t);
+            emit_successor(ctx, node, 0);
+            // end:
+            ctx.program.code[skip].a = static_cast<u32>(ctx.program.code.size());
+            break;
+        }
         case NodeTypeId::SetVar: {
             const u32 r = read_input(ctx, node, 0, ValueType::Any);
             ctx.emit(Op::StoreVar, static_cast<u32>(n.params[0]), r);
@@ -405,6 +517,26 @@ void emit_exec(Ctx& ctx, NodeIndex node) {
             const u32 e = read_input(ctx, node, 0, ValueType::Entity);
             const u32 a = read_input(ctx, node, 1, ValueType::Bool);
             ctx.emit(Op::SetActive, e, a);
+            emit_successor(ctx, node, 0);
+            break;
+        }
+        case NodeTypeId::SetVelocity: {
+            // x,y,z must land in three CONSECUTIVE registers so the VM can read
+            // r[b], r[b+1], r[b+2] from one instruction (Instr has no 4th slot).
+            // The producer registers may be anywhere, so copy them into a fresh
+            // back-to-back run allocated right here (alloc_reg is monotonic, so
+            // these three are contiguous with nothing emitted between them).
+            const u32 e = read_input(ctx, node, 0, ValueType::Entity);
+            const u32 sx = read_input(ctx, node, 1, ValueType::Float);
+            const u32 sy = read_input(ctx, node, 2, ValueType::Float);
+            const u32 sz = read_input(ctx, node, 3, ValueType::Float);
+            const u32 rx = ctx.alloc_reg();
+            const u32 ry = ctx.alloc_reg();
+            const u32 rz = ctx.alloc_reg();
+            ctx.emit(Op::Move, rx, sx);
+            ctx.emit(Op::Move, ry, sy);
+            ctx.emit(Op::Move, rz, sz);
+            ctx.emit(Op::SetVelocity, e, rx);  // VM reads rx, rx+1, rx+2
             emit_successor(ctx, node, 0);
             break;
         }

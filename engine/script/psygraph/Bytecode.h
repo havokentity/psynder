@@ -38,6 +38,8 @@ enum class Op : u16 {
     LoadOther = 6,         // r[a] = host.other_entity (Entity)
     LoadDamageAmount = 7,  // r[a] = host.damage_amount (Float)
     LoadDamageSource = 8,  // r[a] = host.damage_source (Entity)
+    // Wave 13: an ECS read through a host getter. r[a] = host.get_health(r[b]).
+    LoadHealth = 9,        // r[a] = host.get_health(r[b]=entity) (Float)
 
     // ─── arithmetic (float domain) ────────────────────────────────────────
     Add = 10,  // r[a] = r[b] + r[c]
@@ -45,6 +47,18 @@ enum class Op : u16 {
     Mul = 12,
     Div = 13,  // division by zero yields 0.0 (deterministic, no trap)
     Neg = 14,  // r[a] = -r[b]
+    // Wave 13: richer math. Clamp/Lerp/RandomRange are lowered to these in the
+    // compiler (no >2-input op is ever emitted, keeping Instr a flat triple).
+    Min = 15,    // r[a] = min(r[b], r[c])
+    Max = 16,    // r[a] = max(r[b], r[c])
+    Abs = 17,    // r[a] = |r[b]|
+    Sign = 18,   // r[a] = sign(r[b]) in {-1,0,+1}
+    Floor = 19,  // r[a] = floor(r[b])
+    // (20-29 are the compare/logic block below; math continues at 50)
+    Ceil = 50,         // r[a] = ceil(r[b])
+    Sqrt = 51,         // r[a] = sqrt(max(r[b],0))
+    Mod = 52,          // r[a] = fmod(r[b], r[c]) (0 if r[c]==0)
+    RandHash01 = 53,   // r[a] = hash01(seed=r[b]) in [0,1) (deterministic)
 
     // ─── compare / logic (result is Bool) ──────────────────────────────────
     Equal = 20,    // r[a] = (r[b] == r[c])
@@ -53,6 +67,11 @@ enum class Op : u16 {
     And = 23,
     Or = 24,
     Not = 25,  // r[a] = !r[b]
+    // Wave 13: more compares + xor.
+    NotEqual = 26,      // r[a] = (r[b] != r[c])
+    LessEqual = 27,     // r[a] = (r[b] <= r[c])
+    GreaterEqual = 28,  // r[a] = (r[b] >= r[c])
+    Xor = 29,           // r[a] = (bool(r[b]) != bool(r[c]))
 
     // ─── control flow ──────────────────────────────────────────────────────
     JumpIfFalse = 30,  // if (!r[a]) ip = b
@@ -66,6 +85,11 @@ enum class Op : u16 {
     SpawnEntity = 43,  // r[c] = host.spawn(string_const[a])
     SetActive = 44,    // host.set_active(r[a]=entity, r[b]=active)
     PlaySound = 45,    // host.play_sound(string_const[a])
+    // Wave 13: SetVelocity passes 4 register args via a/b/c + a chained second
+    // instruction is not needed: x/y/z are packed into a small contiguous reg
+    // run starting at r[b] (the compiler materializes X,Y,Z into 3 consecutive
+    // registers, then r[a]=entity, r[b]=first-of-XYZ).
+    SetVelocity = 46,  // host.set_velocity(r[a]=entity, r[b..b+2]=x,y,z)
 };
 
 // One instruction. Three operand slots cover every op above. 16 bytes.

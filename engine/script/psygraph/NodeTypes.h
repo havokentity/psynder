@@ -32,6 +32,9 @@ enum class NodeTypeId : u16 {
     // ─── Flow ─────────────────────────────────────────────────────────────
     Branch = 20,    // data-in: Condition (Bool); exec-out: True, False
     Sequence = 21,  // exec-out: Then0, Then1 (fired in order)
+    // Wave 13: a one-shot gate. param0 = var slot used to remember it fired;
+    // forwards exec to Then only the FIRST time it is reached per instance.
+    Once = 22,  // param0 = var slot; exec-out: Then
 
     // ─── Math (pure; no exec pins) ─────────────────────────────────────────
     Add = 40,  // in: A, B (Float); out: Result (Float)
@@ -39,6 +42,21 @@ enum class NodeTypeId : u16 {
     Mul = 42,
     Div = 43,
     Neg = 44,  // in: A (Float); out: Result (Float)
+    // Wave 13: richer math (all pure; no params unless noted).
+    Min = 45,    // in: A, B (Float); out: Result (Float)
+    Max = 46,    // in: A, B (Float); out: Result (Float)
+    Abs = 47,    // in: A (Float); out: Result (Float)
+    Sign = 48,   // in: A (Float); out: Result (Float) -> -1/0/+1
+    Floor = 49,  // in: A (Float); out: Result (Float)
+    Ceil = 50,   // in: A (Float); out: Result (Float)
+    Sqrt = 51,   // in: A (Float); out: Result (Float) -> sqrt(max(A,0))
+    Mod = 52,    // in: A, B (Float); out: Result (Float) -> A mod B (0 if B==0)
+    Clamp = 53,  // in: A, Min, Max (Float); out: Result (Float)
+    Lerp = 54,   // in: A, B, T (Float); out: Result (Float) -> A+(B-A)*T
+    // Wave 13: a SEEDED deterministic random in [Min, Max). param0 = u64 seed.
+    // Pure: the same (seed, Min, Max) always yields the same value (a hash, not
+    // a stateful stream) so the VM stays fully deterministic + reproducible.
+    RandomRange = 55,  // param0 = seed; in: Min, Max (Float); out: Result (Float)
 
     // ─── Compare (pure; no exec pins) ──────────────────────────────────────
     Equal = 60,    // in: A, B (Float); out: Result (Bool)
@@ -47,6 +65,11 @@ enum class NodeTypeId : u16 {
     And = 63,      // in: A, B (Bool); out: Result (Bool)
     Or = 64,
     Not = 65,  // in: A (Bool); out: Result (Bool)
+    // Wave 13: the remaining comparisons + logical XOR (all pure).
+    NotEqual = 66,      // in: A, B (Float); out: Result (Bool)
+    LessEqual = 67,     // in: A, B (Float); out: Result (Bool)
+    GreaterEqual = 68,  // in: A, B (Float); out: Result (Bool)
+    Xor = 69,           // in: A, B (Bool); out: Result (Bool)
 
     // ─── Variables (scoped per VM instance) ────────────────────────────────
     GetVar = 80,  // param0 = var slot; out: Value (Any)
@@ -65,6 +88,14 @@ enum class NodeTypeId : u16 {
     SpawnEntity = 103,  // exec; data-in: Prefab (String); out: Spawned (Entity)
     SetActive = 104,    // exec; data-in: Target (Entity), Active (Bool)
     PlaySound = 105,    // exec; data-in: Sound (String)
+    // Wave 13: two more ECS component bindings (through host hooks).
+    SetVelocity = 106,  // exec; data-in: Target (Entity), X, Y, Z (Float)
+
+    // ─── ECS reads (pure-style data nodes; resolved through a host getter) ──
+    // GetHealth reads a component field back into the data graph. It is not a
+    // constant-foldable pure node (it queries host state), so the compiler
+    // materializes it via a dedicated host-load op, like the event-data pins.
+    GetHealth = 120,  // in: Target (Entity); out: Health (Float)
 };
 
 // A single declared pin on a node type.

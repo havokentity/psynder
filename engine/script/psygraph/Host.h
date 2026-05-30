@@ -39,6 +39,11 @@ struct HostContext {
     std::function<u32(std::string_view prefab)> spawn_entity;  // returns new entity raw
     std::function<void(u32 entity, bool active)> set_active;
     std::function<void(std::string_view sound)> play_sound;
+    // Wave 13: two more ECS component bindings.
+    //   set_velocity writes a velocity field; get_health reads a component field
+    //   back into the data graph (an unset getter reads 0.0 deterministically).
+    std::function<void(u32 entity, f64 x, f64 y, f64 z)> set_velocity;
+    std::function<f64(u32 entity)> get_health;
 
     // ─── Event input data (filled by the caller before dispatch) ───────────
     // OnTick reads `delta_time`; OnTrigger reads `other_entity`; OnDamaged

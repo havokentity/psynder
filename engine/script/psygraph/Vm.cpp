@@ -10,7 +10,27 @@
 
 #include "NodeTypes.h"
 
+#include <cmath>
+
 namespace psynder::script::psygraph {
+
+namespace {
+
+// A deterministic, branch-free integer hash mapped into [0,1). This is the seed
+// -> uniform-double mixer behind the RandomRange node: a SplitMix64 finalizer
+// (fixed public-domain constants) gives a well-distributed 64-bit value from the
+// 64-bit seed; the top 53 bits become an exactly-representable double in [0,1).
+// It carries no state, so it is pure + reproducible: the VM stays deterministic.
+inline f64 hash01(u64 seed) noexcept {
+    u64 z = seed + 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z = z ^ (z >> 31);
+    // Top 53 bits -> [0,1). 2^53 as a double is exact.
+    return static_cast<f64>(z >> 11) * (1.0 / 9007199254740992.0);
+}
+
+}  // namespace
 
 void VmState::reset_for(const Program& program) {
     if (registers_.size() < program.register_count)
@@ -48,6 +68,11 @@ bool Vm::run(EventKind event, const Program& program, VmState& state, HostContex
             case Op::LoadOther: regs[in.a] = Value::make_entity(host.other_entity); break;
             case Op::LoadDamageAmount: regs[in.a] = Value::make_float(host.damage_amount); break;
             case Op::LoadDamageSource: regs[in.a] = Value::make_entity(host.damage_source); break;
+            case Op::LoadHealth: {
+                const u32 e = static_cast<u32>(regs[in.b].u);
+                regs[in.a] = Value::make_float(host.get_health ? host.get_health(e) : 0.0);
+                break;
+            }
 
             case Op::Add:
                 regs[in.a] = Value::make_float(regs[in.b].as_float() + regs[in.c].as_float());
@@ -64,6 +89,42 @@ bool Vm::run(EventKind event, const Program& program, VmState& state, HostContex
                 break;
             }
             case Op::Neg: regs[in.a] = Value::make_float(-regs[in.b].as_float()); break;
+            case Op::Min:
+                regs[in.a] = Value::make_float(
+                    std::fmin(regs[in.b].as_float(), regs[in.c].as_float()));
+                break;
+            case Op::Max:
+                regs[in.a] = Value::make_float(
+                    std::fmax(regs[in.b].as_float(), regs[in.c].as_float()));
+                break;
+            case Op::Abs:
+                regs[in.a] = Value::make_float(std::fabs(regs[in.b].as_float()));
+                break;
+            case Op::Sign: {
+                const f64 v = regs[in.b].as_float();
+                regs[in.a] = Value::make_float(v > 0.0 ? 1.0 : (v < 0.0 ? -1.0 : 0.0));
+                break;
+            }
+            case Op::Floor:
+                regs[in.a] = Value::make_float(std::floor(regs[in.b].as_float()));
+                break;
+            case Op::Ceil:
+                regs[in.a] = Value::make_float(std::ceil(regs[in.b].as_float()));
+                break;
+            case Op::Sqrt: {
+                const f64 v = regs[in.b].as_float();
+                regs[in.a] = Value::make_float(std::sqrt(v > 0.0 ? v : 0.0));
+                break;
+            }
+            case Op::Mod: {
+                const f64 d = regs[in.c].as_float();
+                regs[in.a] =
+                    Value::make_float(d != 0.0 ? std::fmod(regs[in.b].as_float(), d) : 0.0);
+                break;
+            }
+            case Op::RandHash01:
+                regs[in.a] = Value::make_float(hash01(regs[in.b].u));
+                break;
 
             case Op::Equal:
                 regs[in.a] = Value::make_bool(regs[in.b].as_float() == regs[in.c].as_float());
@@ -81,6 +142,18 @@ bool Vm::run(EventKind event, const Program& program, VmState& state, HostContex
                 regs[in.a] = Value::make_bool(regs[in.b].as_bool() || regs[in.c].as_bool());
                 break;
             case Op::Not: regs[in.a] = Value::make_bool(!regs[in.b].as_bool()); break;
+            case Op::NotEqual:
+                regs[in.a] = Value::make_bool(regs[in.b].as_float() != regs[in.c].as_float());
+                break;
+            case Op::LessEqual:
+                regs[in.a] = Value::make_bool(regs[in.b].as_float() <= regs[in.c].as_float());
+                break;
+            case Op::GreaterEqual:
+                regs[in.a] = Value::make_bool(regs[in.b].as_float() >= regs[in.c].as_float());
+                break;
+            case Op::Xor:
+                regs[in.a] = Value::make_bool(regs[in.b].as_bool() != regs[in.c].as_bool());
+                break;
 
             case Op::JumpIfFalse:
                 if (!regs[in.a].as_bool()) {
@@ -125,6 +198,15 @@ bool Vm::run(EventKind event, const Program& program, VmState& state, HostContex
             case Op::SetActive:
                 if (host.set_active)
                     host.set_active(static_cast<u32>(regs[in.a].u), regs[in.b].as_bool());
+                break;
+            case Op::SetVelocity:
+                if (host.set_velocity) {
+                    // x,y,z live in three consecutive registers from in.b.
+                    host.set_velocity(static_cast<u32>(regs[in.a].u),
+                                      regs[in.b].as_float(),
+                                      regs[in.b + 1].as_float(),
+                                      regs[in.b + 2].as_float());
+                }
                 break;
             case Op::PlaySound:
                 if (host.play_sound) {

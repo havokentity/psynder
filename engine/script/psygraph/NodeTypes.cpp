@@ -43,6 +43,19 @@ constexpr PinSpec kSpawnOut[] = {{"Spawned", ValueType::Entity}};
 constexpr PinSpec kSetActive_in[] = {{"Target", ValueType::Entity}, {"Active", ValueType::Bool}};
 constexpr PinSpec kPlaySound_in[] = {{"Sound", ValueType::String}};
 
+// Wave 13 pin tables.
+constexpr PinSpec kClamp_in[] = {
+    {"A", ValueType::Float}, {"Min", ValueType::Float}, {"Max", ValueType::Float}};
+constexpr PinSpec kLerp_in[] = {
+    {"A", ValueType::Float}, {"B", ValueType::Float}, {"T", ValueType::Float}};
+constexpr PinSpec kRand_in[] = {{"Min", ValueType::Float}, {"Max", ValueType::Float}};
+constexpr PinSpec kSetVel_in[] = {{"Target", ValueType::Entity},
+                                  {"X", ValueType::Float},
+                                  {"Y", ValueType::Float},
+                                  {"Z", ValueType::Float}};
+constexpr PinSpec kGetHealth_in[] = {{"Target", ValueType::Entity}};
+constexpr PinSpec kHealthOut[] = {{"Health", ValueType::Float}};
+
 // Helper to keep the table compact and readable.
 #define PSG_NODE(ID, NAME, EV, PURE, EIN, EOUT, DIN, DOUT, PARAMS) \
     NodeTypeInfo {                                                 \
@@ -59,6 +72,7 @@ const NodeTypeInfo kCatalog[] = {
     // Flow
     PSG_NODE(Branch, "Branch", false, false, 1, kBranchOut, kCond_in, {}, 0),
     PSG_NODE(Sequence, "Sequence", false, false, 1, kSeqOut, {}, {}, 0),
+    PSG_NODE(Once, "Once", false, false, 1, kExecOut1, {}, {}, 1),  // param0 = var slot
 
     // Math
     PSG_NODE(Add, "Add", false, true, 0, {}, kFF_in, kFloatOut, 0),
@@ -66,6 +80,17 @@ const NodeTypeInfo kCatalog[] = {
     PSG_NODE(Mul, "Mul", false, true, 0, {}, kFF_in, kFloatOut, 0),
     PSG_NODE(Div, "Div", false, true, 0, {}, kFF_in, kFloatOut, 0),
     PSG_NODE(Neg, "Neg", false, true, 0, {}, kF_in, kFloatOut, 0),
+    PSG_NODE(Min, "Min", false, true, 0, {}, kFF_in, kFloatOut, 0),
+    PSG_NODE(Max, "Max", false, true, 0, {}, kFF_in, kFloatOut, 0),
+    PSG_NODE(Abs, "Abs", false, true, 0, {}, kF_in, kFloatOut, 0),
+    PSG_NODE(Sign, "Sign", false, true, 0, {}, kF_in, kFloatOut, 0),
+    PSG_NODE(Floor, "Floor", false, true, 0, {}, kF_in, kFloatOut, 0),
+    PSG_NODE(Ceil, "Ceil", false, true, 0, {}, kF_in, kFloatOut, 0),
+    PSG_NODE(Sqrt, "Sqrt", false, true, 0, {}, kF_in, kFloatOut, 0),
+    PSG_NODE(Mod, "Mod", false, true, 0, {}, kFF_in, kFloatOut, 0),
+    PSG_NODE(Clamp, "Clamp", false, true, 0, {}, kClamp_in, kFloatOut, 0),
+    PSG_NODE(Lerp, "Lerp", false, true, 0, {}, kLerp_in, kFloatOut, 0),
+    PSG_NODE(RandomRange, "RandomRange", false, true, 0, {}, kRand_in, kFloatOut, 1),  // param0 = seed
 
     // Compare / logic
     PSG_NODE(Equal, "Equal", false, true, 0, {}, kFF_in, kBoolOut, 0),
@@ -74,6 +99,10 @@ const NodeTypeInfo kCatalog[] = {
     PSG_NODE(And, "And", false, true, 0, {}, kBB_in, kBoolOut, 0),
     PSG_NODE(Or, "Or", false, true, 0, {}, kBB_in, kBoolOut, 0),
     PSG_NODE(Not, "Not", false, true, 0, {}, kB_in, kBoolOut, 0),
+    PSG_NODE(NotEqual, "NotEqual", false, true, 0, {}, kFF_in, kBoolOut, 0),
+    PSG_NODE(LessEqual, "LessEqual", false, true, 0, {}, kFF_in, kBoolOut, 0),
+    PSG_NODE(GreaterEqual, "GreaterEqual", false, true, 0, {}, kFF_in, kBoolOut, 0),
+    PSG_NODE(Xor, "Xor", false, true, 0, {}, kBB_in, kBoolOut, 0),
 
     // Variables
     PSG_NODE(GetVar, "GetVar", false, true, 0, {}, {}, kAnyOut, 1),
@@ -92,6 +121,10 @@ const NodeTypeInfo kCatalog[] = {
     PSG_NODE(SpawnEntity, "SpawnEntity", false, false, 1, kExecOut1, kSpawn_in, kSpawnOut, 0),
     PSG_NODE(SetActive, "SetActive", false, false, 1, kExecOut1, kSetActive_in, {}, 0),
     PSG_NODE(PlaySound, "PlaySound", false, false, 1, kExecOut1, kPlaySound_in, {}, 0),
+    PSG_NODE(SetVelocity, "SetVelocity", false, false, 1, kExecOut1, kSetVel_in, {}, 0),
+
+    // ECS reads (data node materialized via a host getter, like the event pins)
+    PSG_NODE(GetHealth, "GetHealth", false, true, 0, {}, kGetHealth_in, kHealthOut, 0),
 };
 
 #undef PSG_NODE

@@ -23,12 +23,24 @@ export enum NodeTypeId {
 
     Branch = 20,
     Sequence = 21,
+    Once = 22,
 
     Add = 40,
     Sub = 41,
     Mul = 42,
     Div = 43,
     Neg = 44,
+    Min = 45,
+    Max = 46,
+    Abs = 47,
+    Sign = 48,
+    Floor = 49,
+    Ceil = 50,
+    Sqrt = 51,
+    Mod = 52,
+    Clamp = 53,
+    Lerp = 54,
+    RandomRange = 55,
 
     Equal = 60,
     Less = 61,
@@ -36,6 +48,10 @@ export enum NodeTypeId {
     And = 63,
     Or = 64,
     Not = 65,
+    NotEqual = 66,
+    LessEqual = 67,
+    GreaterEqual = 68,
+    Xor = 69,
 
     GetVar = 80,
     SetVar = 81,
@@ -51,6 +67,9 @@ export enum NodeTypeId {
     SpawnEntity = 103,
     SetActive = 104,
     PlaySound = 105,
+    SetVelocity = 106,
+
+    GetHealth = 120,
 }
 
 export const EDGE_EXEC = 0;
@@ -100,6 +119,29 @@ const BRANCH_OUT: PinSpec[] = [
     { name: 'True', type: PinType.Exec },
     { name: 'False', type: PinType.Exec },
 ];
+// Wave 13 pin shapes — MUST mirror engine/script/psygraph/NodeTypes.cpp.
+const CLAMP_IN: PinSpec[] = [
+    { name: 'A', type: PinType.Float },
+    { name: 'Min', type: PinType.Float },
+    { name: 'Max', type: PinType.Float },
+];
+const LERP_IN: PinSpec[] = [
+    { name: 'A', type: PinType.Float },
+    { name: 'B', type: PinType.Float },
+    { name: 'T', type: PinType.Float },
+];
+const RAND_IN: PinSpec[] = [
+    { name: 'Min', type: PinType.Float },
+    { name: 'Max', type: PinType.Float },
+];
+const SETVEL_IN: PinSpec[] = [
+    { name: 'Target', type: PinType.Entity },
+    { name: 'X', type: PinType.Float },
+    { name: 'Y', type: PinType.Float },
+    { name: 'Z', type: PinType.Float },
+];
+const GETHEALTH_IN: PinSpec[] = [{ name: 'Target', type: PinType.Entity }];
+const HEALTH_OUT: PinSpec[] = [{ name: 'Health', type: PinType.Float }];
 
 // The catalog, mirroring engine/script/psygraph/NodeTypes.cpp kCatalog.
 export const NODE_CATALOG: NodeTypeInfo[] = [
@@ -109,12 +151,24 @@ export const NODE_CATALOG: NodeTypeInfo[] = [
 
     { id: NodeTypeId.Branch, name: 'Branch', category: 'Flow', isEvent: false, isPure: false, execIn: 1, execOut: BRANCH_OUT, dataIn: [{ name: 'Condition', type: PinType.Bool }], dataOut: [], param: 'none' },
     { id: NodeTypeId.Sequence, name: 'Sequence', category: 'Flow', isEvent: false, isPure: false, execIn: 1, execOut: [{ name: 'Then0', type: PinType.Exec }, { name: 'Then1', type: PinType.Exec }], dataIn: [], dataOut: [], param: 'none' },
+    { id: NodeTypeId.Once, name: 'Once', category: 'Flow', isEvent: false, isPure: false, execIn: 1, execOut: EXEC_OUT, dataIn: [], dataOut: [], param: 'varSlot' },
 
     { id: NodeTypeId.Add, name: 'Add', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: FLOAT_OUT, param: 'none' },
     { id: NodeTypeId.Sub, name: 'Sub', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: FLOAT_OUT, param: 'none' },
     { id: NodeTypeId.Mul, name: 'Mul', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: FLOAT_OUT, param: 'none' },
     { id: NodeTypeId.Div, name: 'Div', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: FLOAT_OUT, param: 'none' },
     { id: NodeTypeId.Neg, name: 'Neg', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: F, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Min, name: 'Min', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Max, name: 'Max', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Abs, name: 'Abs', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: F, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Sign, name: 'Sign', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: F, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Floor, name: 'Floor', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: F, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Ceil, name: 'Ceil', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: F, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Sqrt, name: 'Sqrt', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: F, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Mod, name: 'Mod', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Clamp, name: 'Clamp', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: CLAMP_IN, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.Lerp, name: 'Lerp', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: LERP_IN, dataOut: FLOAT_OUT, param: 'none' },
+    { id: NodeTypeId.RandomRange, name: 'RandomRange', category: 'Math', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: RAND_IN, dataOut: FLOAT_OUT, param: 'int' },
 
     { id: NodeTypeId.Equal, name: 'Equal', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: BOOL_OUT, param: 'none' },
     { id: NodeTypeId.Less, name: 'Less', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: BOOL_OUT, param: 'none' },
@@ -122,6 +176,10 @@ export const NODE_CATALOG: NodeTypeInfo[] = [
     { id: NodeTypeId.And, name: 'And', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: BB, dataOut: BOOL_OUT, param: 'none' },
     { id: NodeTypeId.Or, name: 'Or', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: BB, dataOut: BOOL_OUT, param: 'none' },
     { id: NodeTypeId.Not, name: 'Not', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: B, dataOut: BOOL_OUT, param: 'none' },
+    { id: NodeTypeId.NotEqual, name: 'NotEqual', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: BOOL_OUT, param: 'none' },
+    { id: NodeTypeId.LessEqual, name: 'LessEqual', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: BOOL_OUT, param: 'none' },
+    { id: NodeTypeId.GreaterEqual, name: 'GreaterEqual', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: FF, dataOut: BOOL_OUT, param: 'none' },
+    { id: NodeTypeId.Xor, name: 'Xor', category: 'Compare', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: BB, dataOut: BOOL_OUT, param: 'none' },
 
     { id: NodeTypeId.GetVar, name: 'GetVar', category: 'Variable', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: [], dataOut: [{ name: 'Value', type: PinType.Any }], param: 'varSlot' },
     { id: NodeTypeId.SetVar, name: 'SetVar', category: 'Variable', isEvent: false, isPure: false, execIn: 1, execOut: EXEC_OUT, dataIn: [{ name: 'Value', type: PinType.Any }], dataOut: [], param: 'varSlot' },
@@ -137,6 +195,8 @@ export const NODE_CATALOG: NodeTypeInfo[] = [
     { id: NodeTypeId.SpawnEntity, name: 'SpawnEntity', category: 'Action', isEvent: false, isPure: false, execIn: 1, execOut: EXEC_OUT, dataIn: [{ name: 'Prefab', type: PinType.String }], dataOut: [{ name: 'Spawned', type: PinType.Entity }], param: 'none' },
     { id: NodeTypeId.SetActive, name: 'SetActive', category: 'Action', isEvent: false, isPure: false, execIn: 1, execOut: EXEC_OUT, dataIn: [{ name: 'Target', type: PinType.Entity }, { name: 'Active', type: PinType.Bool }], dataOut: [], param: 'none' },
     { id: NodeTypeId.PlaySound, name: 'PlaySound', category: 'Action', isEvent: false, isPure: false, execIn: 1, execOut: EXEC_OUT, dataIn: [{ name: 'Sound', type: PinType.String }], dataOut: [], param: 'none' },
+    { id: NodeTypeId.SetVelocity, name: 'SetVelocity', category: 'Action', isEvent: false, isPure: false, execIn: 1, execOut: EXEC_OUT, dataIn: SETVEL_IN, dataOut: [], param: 'none' },
+    { id: NodeTypeId.GetHealth, name: 'GetHealth', category: 'Action', isEvent: false, isPure: true, execIn: 0, execOut: [], dataIn: GETHEALTH_IN, dataOut: HEALTH_OUT, param: 'none' },
 ];
 
 export function node_info(id: NodeTypeId): NodeTypeInfo | undefined {
