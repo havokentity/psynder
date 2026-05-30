@@ -49,6 +49,18 @@ struct BodyDesc {
     math::Vec3 half_extent{0.5f, 0.5f, 0.5f};  // shape-dependent; ignored for Plane
     f32 friction = 0.5f;
     f32 restitution = 0.0f;
+
+    // ─── Per-pair collision filter (group + mask; ADR-020) ────────────────
+    // Two bodies A,B are allowed to collide iff EACH body's mask accepts the
+    // OTHER's group: (A.mask & B.group) && (B.mask & A.group). The broadphase
+    // pair-acceptance applies this BEFORE narrowphase, so a filtered-out pair
+    // never becomes a contact and costs nothing downstream. Both DEFAULT to
+    // all-ones (collide with everything), so a BodyDesc that leaves them alone
+    // behaves byte-for-byte as it did before the filter existed. To make a set
+    // of bodies skip each other but still hit the world, give them a common
+    // `collision_group` bit and clear that bit from each `collision_mask`.
+    u32 collision_group = 0xFFFFFFFFu;  // group bits this body belongs to
+    u32 collision_mask = 0xFFFFFFFFu;   // group bits this body collides with
 };
 
 class World {
@@ -150,6 +162,18 @@ class World {
     void apply_angular_impulse(BodyId id, math::Vec3 impulse);
     // Overwrite angular velocity (rad/s) about the world axes.
     void set_angular_velocity(BodyId id, math::Vec3 w);
+
+    // ─── Per-pair collision filter (group + mask; ADR-020) ────────────────
+    // Set the body's collision group + mask after creation (the same fields
+    // BodyDesc seeds at create time). Two bodies A,B collide iff each one's mask
+    // accepts the other's group: (A.mask & B.group) && (B.mask & A.group). The
+    // filter is applied in the broadphase pair-acceptance, BEFORE narrowphase,
+    // so a filtered-out pair never becomes a contact. No-op on a stale handle;
+    // unlike the velocity writers it is ALSO valid on a static body (a static
+    // collider may legitimately want to opt some dynamic bodies out). Passing
+    // the all-ones default for both restores "collide with everything". Pure
+    // field write -- deterministic, no RNG, no heap.
+    void set_collision_filter(BodyId id, u32 group, u32 mask);
 
    private:
     std::unique_ptr<detail::WorldImpl> impl_;

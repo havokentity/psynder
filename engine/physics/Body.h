@@ -108,6 +108,25 @@ struct Body {
     u8 shape = 0;  // matches public Shape enum
     math::Vec3 half_extent{0.5f, 0.5f, 0.5f};
 
+    // ─── Per-pair collision filter (group + mask; ADR-020) ────────────
+    // Standard two-channel filter: bodies A and B are ALLOWED to collide iff
+    //     (A.collision_mask & B.collision_group) != 0  AND
+    //     (B.collision_mask & A.collision_group) != 0
+    // i.e. EACH body's mask must accept the OTHER's group. The test is two
+    // integer ANDs per direction and is symmetric in A/B. The DEFAULT for both
+    // fields is all-ones (0xFFFFFFFF), which makes the predicate true for ANY
+    // pair, so a body that never sets a filter collides with everything exactly
+    // as before -- every existing body / test / demo is byte-for-byte unchanged.
+    //
+    // To make a SET of bodies skip each other but still collide with the world
+    // (ragdoll limbs, a vehicle + its wheels): give them all the same `group`
+    // bit and CLEAR that bit from each body's `mask`. Each then rejects the
+    // others (its mask lacks the shared group bit) while the world -- whose
+    // default all-ones group still contains that bit, and whose default all-ones
+    // mask still accepts the shared group -- keeps colliding with them.
+    u32 collision_group = 0xFFFFFFFFu;  // group bits THIS body belongs to
+    u32 collision_mask = 0xFFFFFFFFu;   // group bits this body collides WITH
+
     // ─── Bookkeeping ──────────────────────────────────────────────────
     // `gen` is the slot's CURRENT generation (1..255, never 0). It is bumped
     // on slot REUSE and is preserved across destroy so the next reuse can
@@ -120,5 +139,17 @@ struct Body {
     u8 alive = 0;  // 1 while the slot holds a live body, 0 for a hole
     u8 _pad[2] = {};
 };
+
+// Per-pair collision-filter predicate (ADR-020). Returns true when bodies A
+// and B are ALLOWED to collide: each body's mask must accept the OTHER's group.
+// Symmetric in A/B (the && commutes), a couple of integer ANDs, branch-free,
+// no memory access beyond the two filter words. Lives in the header so the
+// broadphase pair-acceptance and the unit tests share ONE definition. With the
+// all-ones default on both fields the result is unconditionally true, so a
+// world of default bodies pairs exactly as before (default behaviour unchanged).
+[[nodiscard]] constexpr bool collision_filter_allows(const Body& a, const Body& b) noexcept {
+    return (a.collision_mask & b.collision_group) != 0u &&
+           (b.collision_mask & a.collision_group) != 0u;
+}
 
 }  // namespace psynder::physics::detail

@@ -179,6 +179,23 @@ static void run_narrowphase(WorldState& w, f32 dt) {
     w.contact_scratch.reserve(w.pair_scratch.size());
     const f32 margin = detail::kernels::kSpeculativeMargin;
     for (const CandidatePair& p : w.pair_scratch) {
+        const Body& ba = w.bodies[p.a];
+        const Body& bb = w.bodies[p.b];
+
+        // Per-pair collision filter (ADR-020). EACH body's mask must accept the
+        // OTHER's group, or the pair is rejected here -- BEFORE narrowphase --
+        // so a filtered-out pair never spawns a contact and costs nothing in the
+        // island detect/solve downstream. The check is a couple of integer ANDs
+        // (collision_filter_allows), branch-predictable, and reads only the two
+        // filter words already in the Body. With the all-ones default on every
+        // body the predicate is unconditionally true, so the candidate set --
+        // and therefore every existing resting stack / vehicle / capsule
+        // manifold / golden -- is byte-for-byte unchanged. (Static-vs-static
+        // pairs were already inert: neither body moves, so the solver no-ops on
+        // them; this filter leaves that untouched.)
+        if (!collision_filter_allows(ba, bb))
+            continue;
+
         // Speculative-aware collide that may emit a resting MANIFOLD (ADR-016):
         // a near-parallel capsule (lying on a plane/box, or two stacked
         // parallel capsules) yields TWO contacts at the ends of the overlap so
@@ -189,8 +206,7 @@ static void run_narrowphase(WorldState& w, f32 dt) {
         // consumes many contacts per body pair (a box stack does so), so the
         // extra point flows through detect_islands / solve untouched.
         Contact mc[detail::kernels::kMaxManifoldContacts];
-        u32 n = detail::kernels::kernel_collide_pair_manifold(
-            w.bodies[p.a], w.bodies[p.b], dt, margin, mc);
+        u32 n = detail::kernels::kernel_collide_pair_manifold(ba, bb, dt, margin, mc);
         for (u32 k = 0; k < n; ++k) {
             mc[k].body_a = p.a;
             mc[k].body_b = p.b;
@@ -361,6 +377,12 @@ BodyId World::create_body(const BodyDesc& desc) {
     b.restitution = desc.restitution;
     b.shape = static_cast<u8>(desc.shape);
     b.half_extent = desc.half_extent;
+    // Per-pair collision filter (ADR-020). Copied EXPLICITLY (not left to the
+    // Body's default member init) because a REUSED slot keeps its prior fields;
+    // a desc that never touched the filter carries the all-ones default here, so
+    // the recycled body collides with everything exactly as a fresh one would.
+    b.collision_group = desc.collision_group;
+    b.collision_mask = desc.collision_mask;
     b.flags = (desc.mass <= 0.0f) ? detail::BodyFlags::Static : detail::BodyFlags::None;
 
     // Inertia
@@ -538,6 +560,19 @@ void World::set_angular_velocity(BodyId id, math::Vec3 angular) {
     if (b.inv_mass == 0.0f)
         return;
     b.angular_velocity = angular;
+}
+
+void World::set_collision_filter(BodyId id, u32 group, u32 mask) {
+    auto& w = impl_->state;
+    std::lock_guard<std::mutex> lock(w.mutate);
+    detail::Body* bp = detail::resolve_body(w, id);
+    if (bp == nullptr)
+        return;  // stale / freed handle: no-op
+    // Plain field writes. Unlike the velocity writers there is NO static-body
+    // early-out: a static collider may legitimately want to filter which dynamic
+    // bodies it accepts. Deterministic (no RNG / time), allocates nothing.
+    bp->collision_group = group;
+    bp->collision_mask = mask;
 }
 
 math::Vec3 World::get_position(BodyId id) const {

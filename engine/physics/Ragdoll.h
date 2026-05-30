@@ -42,6 +42,18 @@
 // caught at the extreme rather than inverting. Rope + ball-socket are both
 // stock joint kinds -- the ragdoll is purely a CONFIGURATION of the existing
 // solver, no new constraint math.
+//
+// -- Self-collision scheme (ADR-020) -----------------------------------------
+// Every segment of one rag is stamped with the SAME collision-filter group bit
+// (kRagdollSelfCollideGroup) and a mask that clears it, so the broadphase
+// pair-acceptance rejects all limb-vs-limb pairs within the rag while keeping
+// limb-vs-world collisions. This is why the segments can be placed
+// anatomically TIGHT (touching/overlapping at the joints): the contact solver
+// never sees a self-pair, so there is no contact-vs-joint fight to author gaps
+// around. The rag still settles on the ground because it DOES collide with the
+// world. (Earlier revisions authored artificial inter-segment surface gaps to
+// avoid that fight when the engine had no per-pair filter; the gaps are now
+// gone.)
 
 #pragma once
 
@@ -82,6 +94,18 @@ struct RagdollSegment {
 };
 
 inline constexpr u32 kRagdollRoot = 0xFFFFFFFFu;
+
+// Collision-filter group bit shared by every segment of ONE ragdoll (ADR-020).
+// build_ragdoll stamps each body with collision_group = this bit and
+// collision_mask = ~this bit, so the broadphase pair-acceptance rejects every
+// limb-vs-limb pair WITHIN the same rag (their masks reject the shared group)
+// while limb-vs-world pairs still collide (the world's default all-ones group
+// contains this bit and its default all-ones mask accepts it). This lets the
+// skeleton be authored anatomically TIGHT -- adjacent / overlapping segments no
+// longer need artificial surface gaps to avoid fighting the joint pins, because
+// the contact solver never sees a self-pair. Bit 30 is well clear of the low
+// bits a game would typically use for its own coarse layers.
+inline constexpr u32 kRagdollSelfCollideGroup = 1u << 30;
 
 // A skeleton template: an ordered list of segments. Index 0 should be the root
 // (parent == kRagdollRoot). Children must appear AFTER their parent so a single

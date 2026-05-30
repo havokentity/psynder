@@ -35,22 +35,24 @@ math::Quat compose(const math::Quat& parent, const math::Quat& child) noexcept {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Default humanoid template. Upright ~1.85 m figure with its pelvis hub centred
-// at y = 1.0. +Y is up; capsules run along their local +Y. Adjacent limb
-// segments are placed with a small POSITIVE surface gap at every joint so they
-// do NOT interpenetrate at spawn -- the narrowphase therefore generates no limb-
-// vs-limb contacts that would fight the joint pins (the engine has no per-pair
-// collision filtering, so non-overlap is how a ragdoll keeps its own segments
-// from shoving each other). Each joint's two anchors name the SAME world point
-// inside that gap, so the ball-socket pin starts exactly coincident. Cone limits
-// let the figure fold naturally while preventing a limb from inverting.
+// Default humanoid template. Upright ~1.89 m figure with its pelvis hub centred
+// at y = 1.0. +Y is up; capsules run along their local +Y. The skeleton is now
+// authored anatomically TIGHT: adjacent segments TOUCH at every joint (no
+// artificial surface gaps). This is safe because build_ragdoll stamps every
+// segment with the shared kRagdollSelfCollideGroup filter (ADR-020), so the
+// broadphase pair-acceptance rejects all limb-vs-limb pairs within the rag --
+// the contact solver never sees a self-pair, so there is no contact-vs-joint
+// fight that the old inter-segment gaps existed to avoid. Each joint's two
+// anchors still name the SAME world point (now ON the touching surface), so the
+// ball-socket pin starts exactly coincident. Cone limits let the figure fold
+// naturally while preventing a limb from inverting.
 //
 // Geometry book-keeping (world Y/X at identity; capsule reach = half_h + r):
 //   pelvis  box   he{0.14,0.10,0.10}     centre 1.00  -> top 1.10, bottom 0.90
-//   torso   caps  r0.11 hh0.14 reach0.25 centre 1.40  -> bottom tip 1.15 (gap .05)
-//   head    caps  r0.085 hh0.06 reach.145 centre 1.85 -> bottom tip 1.705(gap .055)
-//   arm     caps  r0.05 hh0.18 reach0.23  centre x0.30 -> 0.14 surf gap to torso
-//   leg     caps  r0.07 hh0.24 reach0.31  centre 0.55  -> top tip 0.86 (gap .04)
+//   torso   caps  r0.11 hh0.14 reach0.25 centre 1.35  -> bottom tip 1.10 (touch)
+//   head    caps  r0.085 hh0.06 reach.145 centre 1.745-> bottom tip 1.60 (touch)
+//   arm     caps  r0.05 hh0.18 reach0.23  centre x0.16 -> inner surf 0.11 (touch)
+//   leg     caps  r0.07 hh0.24 reach0.31  centre 0.59  -> top tip 0.90 (touch)
 // ---------------------------------------------------------------------------
 RagdollDesc default_humanoid() {
     RagdollDesc d;
@@ -69,48 +71,50 @@ RagdollDesc default_humanoid() {
         s.parent = kRagdollRoot;
         d.segments.push_back(s);
     }
-    // 1: torso. Bottom tip 1.15 sits 0.05 above the pelvis top (1.10); the spine
-    // joint is at world y = 1.125, inside the gap. Anchors coincide there.
+    // 1: torso. Bottom tip TOUCHES the pelvis top at world y = 1.10; the spine
+    // joint sits exactly on that shared surface. Anchors coincide there.
     {
         RagdollSegment s{};
         s.shape = Shape::Capsule;
         s.mass = 18.0f;
-        s.local_position = {0.0f, 1.40f, 0.0f};
+        s.local_position = {0.0f, 1.35f, 0.0f};
         s.local_rotation = kIdent;
         s.half_extent = {0.11f, 0.14f, 0.11f};  // radius, half-height
         s.parent = 0;
-        s.joint_local = {0.0f, 0.125f, 0.0f};        // pelvis top + gap  (world 1.125)
-        s.child_joint_local = {0.0f, -0.275f, 0.0f}; // below torso       (world 1.125)
-        s.cone_limit = 0.6f;                          // ~34 deg spine bend
+        s.joint_local = {0.0f, 0.10f, 0.0f};         // pelvis top   (world 1.10)
+        s.child_joint_local = {0.0f, -0.25f, 0.0f};  // torso btm tip(world 1.10)
+        s.cone_limit = 1.3f;                          // ~74 deg spine bend
         d.segments.push_back(s);
     }
-    // 2: head. Neck joint at world y = 1.677, inside the gap above the torso tip.
+    // 2: head. Bottom tip TOUCHES the torso top at world y = 1.60; the neck joint
+    // sits on that shared surface.
     {
         RagdollSegment s{};
         s.shape = Shape::Capsule;
         s.mass = 5.0f;
-        s.local_position = {0.0f, 1.85f, 0.0f};
+        s.local_position = {0.0f, 1.745f, 0.0f};
         s.local_rotation = kIdent;
         s.half_extent = {0.085f, 0.06f, 0.085f};
         s.parent = 1;
-        s.joint_local = {0.0f, 0.277f, 0.0f};        // above torso (world 1.677)
-        s.child_joint_local = {0.0f, -0.173f, 0.0f}; // below head  (world 1.677)
-        s.cone_limit = 0.5f;                          // ~28 deg neck
+        s.joint_local = {0.0f, 0.25f, 0.0f};         // torso top   (world 1.60)
+        s.child_joint_local = {0.0f, -0.145f, 0.0f}; // head btm tip(world 1.60)
+        s.cone_limit = 1.3f;                          // ~74 deg neck
         d.segments.push_back(s);
     }
-    // 3: left arm. Capsule held out at x=-0.30 (0.14 surface gap from the torso).
-    // The shoulder joint is at world (-0.20, 1.53, 0), between the two surfaces.
+    // 3: left arm. Inner surface TOUCHES the torso side: arm centre x = -0.16 so
+    // its inner surface (-0.11) meets the torso surface (-0.11). The shoulder
+    // joint is at world (-0.11, 1.45, 0), on that shared surface.
     {
         RagdollSegment s{};
         s.shape = Shape::Capsule;
         s.mass = 4.0f;
-        s.local_position = {-0.30f, 1.30f, 0.0f};
+        s.local_position = {-0.16f, 1.30f, 0.0f};
         s.local_rotation = kIdent;
         s.half_extent = {0.05f, 0.18f, 0.05f};
         s.parent = 1;
-        s.joint_local = {-0.20f, 0.13f, 0.0f};       // off the torso (world -0.20, 1.53)
-        s.child_joint_local = {0.10f, 0.23f, 0.0f};  // top of arm    (world -0.20, 1.53)
-        s.cone_limit = 1.2f;                          // ~69 deg shoulder
+        s.joint_local = {-0.11f, 0.10f, 0.0f};       // torso surf (world -0.11, 1.45)
+        s.child_joint_local = {0.05f, 0.15f, 0.0f};  // arm inner  (world -0.11, 1.45)
+        s.cone_limit = 1.6f;                          // ~92 deg shoulder
         d.segments.push_back(s);
     }
     // 4: right arm. Mirror of the left.
@@ -118,28 +122,28 @@ RagdollDesc default_humanoid() {
         RagdollSegment s{};
         s.shape = Shape::Capsule;
         s.mass = 4.0f;
-        s.local_position = {0.30f, 1.30f, 0.0f};
+        s.local_position = {0.16f, 1.30f, 0.0f};
         s.local_rotation = kIdent;
         s.half_extent = {0.05f, 0.18f, 0.05f};
         s.parent = 1;
-        s.joint_local = {0.20f, 0.13f, 0.0f};        // off the torso (world 0.20, 1.53)
-        s.child_joint_local = {-0.10f, 0.23f, 0.0f}; // top of arm    (world 0.20, 1.53)
-        s.cone_limit = 1.2f;
+        s.joint_local = {0.11f, 0.10f, 0.0f};        // torso surf (world 0.11, 1.45)
+        s.child_joint_local = {-0.05f, 0.15f, 0.0f}; // arm inner  (world 0.11, 1.45)
+        s.cone_limit = 1.6f;
         d.segments.push_back(s);
     }
-    // 5: left leg. Top tip 0.86 sits 0.04 below the pelvis bottom (0.90); the hip
-    // joint is at world (-0.08, 0.88, 0), inside that gap.
+    // 5: left leg. Top tip TOUCHES the pelvis bottom at world y = 0.90; the hip
+    // joint is at world (-0.08, 0.90, 0), on that shared surface.
     {
         RagdollSegment s{};
         s.shape = Shape::Capsule;
         s.mass = 9.0f;
-        s.local_position = {-0.08f, 0.55f, 0.0f};
+        s.local_position = {-0.08f, 0.59f, 0.0f};
         s.local_rotation = kIdent;
         s.half_extent = {0.07f, 0.24f, 0.07f};
         s.parent = 0;
-        s.joint_local = {-0.08f, -0.12f, 0.0f};      // pelvis bottom (world -0.08, 0.88)
-        s.child_joint_local = {0.0f, 0.33f, 0.0f};   // above leg tip (world -0.08, 0.88)
-        s.cone_limit = 0.9f;                          // ~52 deg hip
+        s.joint_local = {-0.08f, -0.10f, 0.0f};      // pelvis btm (world -0.08, 0.90)
+        s.child_joint_local = {0.0f, 0.31f, 0.0f};   // leg top tip(world -0.08, 0.90)
+        s.cone_limit = 1.4f;                          // ~80 deg hip
         d.segments.push_back(s);
     }
     // 6: right leg. Mirror of the left.
@@ -147,13 +151,13 @@ RagdollDesc default_humanoid() {
         RagdollSegment s{};
         s.shape = Shape::Capsule;
         s.mass = 9.0f;
-        s.local_position = {0.08f, 0.55f, 0.0f};
+        s.local_position = {0.08f, 0.59f, 0.0f};
         s.local_rotation = kIdent;
         s.half_extent = {0.07f, 0.24f, 0.07f};
         s.parent = 0;
-        s.joint_local = {0.08f, -0.12f, 0.0f};       // right hip
-        s.child_joint_local = {0.0f, 0.33f, 0.0f};   // above leg tip
-        s.cone_limit = 0.9f;
+        s.joint_local = {0.08f, -0.10f, 0.0f};       // right hip  (world 0.08, 0.90)
+        s.child_joint_local = {0.0f, 0.31f, 0.0f};   // leg top tip(world 0.08, 0.90)
+        s.cone_limit = 1.4f;
         d.segments.push_back(s);
     }
     return d;
@@ -190,6 +194,17 @@ RagdollId build_ragdoll(World& world,
         bd.half_extent = s.half_extent;
         bd.friction = s.friction;
         bd.restitution = s.restitution;
+        // Self-collision filter (ADR-020): every segment of a rag shares the
+        // kRagdollSelfCollideGroup bit and clears it from its mask, so the
+        // broadphase rejects all limb-vs-limb pairs (anatomically tight segments
+        // no longer fight the joint pins) while limb-vs-world pairs still collide
+        // -- the world's default all-ones group contains the bit and its default
+        // all-ones mask accepts it, so the rag still settles on the ground. NOTE:
+        // because all rags share this one bit, two SEPARATE rags also pass
+        // through each other (acceptable for death rags; a game that wants rag-
+        // vs-rag collision would give each rag its own group bit instead).
+        bd.collision_group = kRagdollSelfCollideGroup;
+        bd.collision_mask = ~kRagdollSelfCollideGroup;
 
         BodyId id = world.create_body(bd);
         out.bodies.push_back(id);
@@ -275,14 +290,25 @@ RagdollId build_ragdoll(World& world,
 void solve_ragdoll(World& world, const Ragdoll& rag, f32 dt, u32 iterations) {
     if (!rag.alive() || rag.joints.joints.empty() || dt <= 0.0f)
         return;
-    // Ragdoll-tuned params: a few extra position passes so the limb pins settle
+    // Ragdoll-tuned params: extra position passes so the limb pins settle
     // visibly connected, and the stock split-impulse velocity damping so the rag
-    // comes to rest rather than jittering. The solver re-resolves the gen-safe
-    // BodyId handles each call and skips any joint whose body was destroyed.
+    // comes to rest rather than jittering. The TIGHT skeleton (ADR-020) transmits
+    // ground-impact load straight through the pins (the old gaps used to absorb a
+    // little of it), so we run a couple more position passes to keep the worst
+    // transient joint stretch small at the moment of impact. The solver
+    // re-resolves the gen-safe BodyId handles each call and skips any joint whose
+    // body was destroyed.
     JointSolverParams params{};
-    params.position_iterations = 8;
+    params.position_iterations = 12;
     params.velocity_damping = 0.05f;
-    solve_joints(world, rag.joints, params, dt, iterations);
+    // Velocity-sweep floor. The TIGHT skeleton (ADR-020, gaps removed) rests with
+    // several segments AND the world plane all loading the distal pins at once
+    // (e.g. a head whose own ground contact fights the neck pin while the rag
+    // lies on its side), so we floor the Gauss-Seidel velocity sweeps at 16 to
+    // keep the worst transient pin stretch small at impact. Honour a caller
+    // asking for MORE, never fewer; pure integer clamp, deterministic.
+    const u32 vel_iters = iterations < 16u ? 16u : iterations;
+    solve_joints(world, rag.joints, params, dt, vel_iters);
 }
 
 // ---------------------------------------------------------------------------
