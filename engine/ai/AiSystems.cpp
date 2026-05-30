@@ -4,6 +4,7 @@
 #include "ai/AiSystems.h"
 
 #include "gameplay/GameplayComponents.h"
+#include "jobs/JobSystem.h"
 #include "scene/EcsRegistry.h"
 #include "scene/SceneEcs.h"
 
@@ -227,35 +228,215 @@ void think(EcsRegistry& registry, AiContext& ctx, f32 dt) {
         });
 }
 
+// ─── navigate ──────────────────────────────────────────────────────────────
+namespace {
+
+// Resolve the world goal an agent is heading for, given its FSM state. Returns
+// false when the agent has no movement goal this tick (Idle / Attack / Dead, or
+// a route-less Patrol). Chase heads for the last-seen position; Patrol heads for
+// its current waypoint.
+[[nodiscard]] bool resolve_goal(EcsRegistry& registry,
+                                Entity self,
+                                const AiAgentComponent& agent,
+                                const PerceptionComponent& sense,
+                                math::Vec3& out_goal) {
+    switch (agent.state) {
+        case AiState::Chase:
+            out_goal = sense.last_seen_pos;
+            return true;
+        case AiState::Patrol: {
+            const PatrolComponent* patrol = registry.get<PatrolComponent>(self);
+            if (patrol == nullptr || patrol->count == 0u)
+                return false;
+            const u32 cur = patrol->current < patrol->count ? patrol->current : 0u;
+            out_goal = patrol->waypoints[cur];
+            return true;
+        }
+        case AiState::Idle:
+        case AiState::Attack:
+        case AiState::Dead:
+        default:
+            return false;
+    }
+}
+
+// Map a job worker index (0..N-1, or ~0u for the main thread) to a NavQuery
+// pool slot, wrapping deterministically into the fixed pool.
+[[nodiscard]] u32 nav_slot_for_worker() noexcept {
+    const u32 w = jobs::JobSystem::Get().current_worker();
+    const u32 slot = (w == ~0u) ? 0u : (w + 1u);
+    return slot % AiContext::kNavQueryPool;
+}
+
+}  // namespace
+
+void navigate(EcsRegistry& registry, AiContext& ctx, f32 dt) {
+    if (ctx.nav_grid == nullptr)
+        return;  // navigation disabled — straight-line steer in act() (unchanged).
+    const NavGrid& grid = *ctx.nav_grid;
+
+    registry.query<reads<SceneNodeComponent, TransformComponent, PerceptionComponent>,
+                   writes<AiAgentComponent, NavAgentComponent>>(
+        [&](std::span<const SceneNodeComponent> nodes,
+            std::span<const TransformComponent> xforms,
+            std::span<const PerceptionComponent> senses,
+            std::span<AiAgentComponent> agents,
+            std::span<NavAgentComponent> navs) {
+            const usize n = std::min(
+                {nodes.size(), xforms.size(), senses.size(), agents.size(), navs.size()});
+            if (n == 0)
+                return;
+            // One scratch slot per worker (see header) — claimed once per chunk
+            // body, reused across this body's rows. No allocation.
+            NavQuery& query = ctx.nav_query[nav_slot_for_worker()];
+            for (usize i = 0; i < n; ++i) {
+                AiAgentComponent& agent = agents[i];
+                NavAgentComponent& nav = navs[i];
+                // Snapshot the agent's position every tick so the parallel act()
+                // separation step reads a stable neighbour position rather than a
+                // value another worker is mid-write on. Done before any early-out.
+                nav.last_pos = xforms[i].local.translation;
+                if (agent.state == AiState::Dead) {
+                    nav.has_path = 0u;
+                    nav.count = 0u;
+                    continue;
+                }
+
+                math::Vec3 goal{};
+                if (!resolve_goal(registry, nodes[i].entity, agent, senses[i], goal)) {
+                    // No movement goal this tick — drop any stale path.
+                    nav.has_path = 0u;
+                    continue;
+                }
+
+                if (nav.repath_cooldown > 0.0f)
+                    nav.repath_cooldown -= dt;
+
+                // Decide whether to repath: no path yet, the cooldown elapsed, or
+                // the goal drifted past repath_dist from what we planned for.
+                const math::Vec3 drift = math::sub(goal, nav.planned_goal);
+                const f32 drift2 = math::dot(drift, drift);
+                const f32 rd2 = nav.repath_dist * nav.repath_dist;
+                const bool need =
+                    nav.has_path == 0u || nav.repath_cooldown <= 0.0f || drift2 > rd2;
+                if (!need)
+                    continue;
+
+                nav.repath_cooldown = nav.repath_interval;
+                ctx.repaths.fetch_add(1u, std::memory_order_relaxed);
+
+                const math::Vec3 pos = xforms[i].local.translation;
+                const NavCell start = grid.world_to_cell(pos);
+                const NavCell gcell = grid.world_to_cell(goal);
+
+                NavPath path;
+                const bool ok = query.find_path(grid, start, gcell, path);
+                if (ok && path.count > 0u) {
+                    smooth_path(grid, path);
+                    const u32 keep = path.count < NavAgentComponent::kMaxWaypoints
+                                         ? path.count
+                                         : NavAgentComponent::kMaxWaypoints;
+                    for (u32 k = 0; k < keep; ++k)
+                        nav.waypoints[k] = path.points[k];
+                    nav.count = keep;
+                    // Start walking toward the first waypoint that is not the
+                    // cell we already stand in (index 0 is the start cell).
+                    nav.cursor = (keep > 1u) ? 1u : 0u;
+                    nav.has_path = 1u;
+                    nav.planned_goal = goal;
+                } else {
+                    // No route (goal walled off / off-grid): clear the path so
+                    // act() falls back to the straight-line steer + LOS nudge
+                    // rather than freezing. Clean, alloc-free, no crash.
+                    nav.has_path = 0u;
+                    nav.count = 0u;
+                    nav.planned_goal = goal;
+                }
+            }
+        });
+}
+
 // ─── act ─────────────────────────────────────────────────────────────────
 namespace {
 
+// Light, deterministic local-avoidance separation. Sums a push away from every
+// other agent within `nav.separation_radius`, reading NEIGHBOURS' position
+// SNAPSHOTS (NavAgentComponent::last_pos, captured in the serial-ordered
+// navigate pass) rather than their live Transform — so this never races the
+// Transform writes act() makes from other workers. Alloc-free (a nested
+// read-only query, same pattern perceive uses), deterministic (sum is
+// commutative + order-independent; the snapshot is fixed for the whole pass).
+// Returns a world-space offset to add to the agent's desired step.
+[[nodiscard]] math::Vec3 separation_nudge(EcsRegistry& registry,
+                                          Entity self,
+                                          math::Vec3 pos,
+                                          f32 radius,
+                                          f32 weight,
+                                          f32 dt) {
+    if (!(radius > 0.0f) || !(weight > 0.0f) || !(dt > 0.0f))
+        return math::Vec3{0.0f, 0.0f, 0.0f};
+    const f32 r2 = radius * radius;
+    math::Vec3 push{0.0f, 0.0f, 0.0f};
+    registry.query<reads<SceneNodeComponent, NavAgentComponent>, writes<>>(
+        [&](std::span<const SceneNodeComponent> nnodes,
+            std::span<const NavAgentComponent> nnavs) {
+            const usize m = std::min(nnodes.size(), nnavs.size());
+            for (usize j = 0; j < m; ++j) {
+                if (nnodes[j].entity == self)
+                    continue;
+                const math::Vec3 other = nnavs[j].last_pos;
+                math::Vec3 away = math::sub(pos, other);
+                away.y = 0.0f;  // separate in the ground plane only
+                const f32 d2 = math::dot(away, away);
+                if (d2 >= r2 || !(d2 > 1e-8f))
+                    continue;
+                // Linear falloff: stronger the closer they are. 1 - d/radius.
+                const f32 d = std::sqrt(d2);
+                const f32 falloff = 1.0f - d / radius;
+                push = math::add(push, math::mul(away, falloff / d));
+            }
+        });
+    return math::mul(push, weight * dt);
+}
+
 // Apply one kinematic step toward `goal`, honouring move_speed*dt and stopping
-// at the goal. When the straight path is blocked (LOS hook reports an
-// obstruction), sidestep perpendicular instead of burrowing into the wall —
-// navigation v1's "simple obstacle-avoid". Writes through ctx.apply_move when
-// set, else straight into the Transform. Returns nothing (mutates xform).
+// at the goal, plus an optional separation offset. When the straight path is
+// blocked (LOS hook reports an obstruction) AND the agent is NOT following a
+// routed nav path, sidestep perpendicular instead of burrowing into the wall —
+// the original navigation-v1 fallback. When a nav path IS being followed the
+// route already goes around geometry, so we do not perpendicular-nudge (that
+// would fight the path). Writes through ctx.apply_move when set, else straight
+// into the Transform.
 void steer_toward(EcsRegistry& registry,
                   AiContext& ctx,
                   Entity self,
                   TransformComponent& xform,
                   const AiAgentComponent& agent,
                   math::Vec3 goal,
+                  math::Vec3 separation,
+                  bool on_nav_path,
                   f32 dt) {
     (void)registry;
     const math::Vec3 pos = xform.local.translation;
     math::Vec3 to = math::sub(goal, pos);
     const f32 dist = math::length(to);
-    if (!(dist > 1e-4f) || !(agent.move_speed > 0.0f) || !(dt > 0.0f))
+    if (!(dist > 1e-4f) || !(agent.move_speed > 0.0f) || !(dt > 0.0f)) {
+        // Even when "arrived" at the (sub)goal, still apply separation so a
+        // stacked cluster spreads out instead of freezing on top of each other.
+        if (math::dot(separation, separation) > 0.0f) {
+            const math::Vec3 d = math::add(pos, separation);
+            xform.local.translation =
+                ctx.apply_move ? ctx.apply_move(ctx.move_user, self, d) : d;
+        }
         return;
+    }
     math::Vec3 dir = math::mul(to, 1.0f / dist);
 
-    // Obstacle-avoid v1: if the direct line to the goal is blocked, steer
-    // perpendicular (in the horizontal plane) so the agent slides along cover
-    // rather than walking into it. No navmesh — a grid/navmesh path is a
-    // follow-up wave (see header).
-    if (ctx.los != nullptr && !ctx.los(ctx.los_user, pos, goal)) {
-        // Perpendicular in XZ: rotate the heading 90 deg about +Y.
+    // Obstacle-avoid v1 (only off-path): if the direct line to the goal is
+    // blocked, steer perpendicular so the agent slides along cover rather than
+    // walking into it. With a routed nav path this is unnecessary (and would
+    // fight the route), so it is suppressed.
+    if (!on_nav_path && ctx.los != nullptr && !ctx.los(ctx.los_user, pos, goal)) {
         math::Vec3 side{dir.z, 0.0f, -dir.x};
         const f32 sl = math::length(side);
         if (sl > 0.0f)
@@ -263,10 +444,40 @@ void steer_toward(EcsRegistry& registry,
     }
 
     const f32 step = std::min(agent.move_speed * dt, dist);
-    const math::Vec3 desired = math::add(pos, math::mul(dir, step));
+    const math::Vec3 desired =
+        math::add(math::add(pos, math::mul(dir, step)), separation);
     const math::Vec3 reached =
         ctx.apply_move ? ctx.apply_move(ctx.move_user, self, desired) : desired;
     xform.local.translation = reached;
+}
+
+// Pick the world goal an agent should steer toward this tick. When it owns a
+// NavAgentComponent with a live route, follow the smoothed waypoint at the
+// cursor, advancing the cursor as each is reached; the LAST waypoint is the real
+// goal. Returns the sub-goal and whether the agent is currently on a nav path
+// (so steer_toward can skip the perpendicular wall-nudge). `fallback` is the
+// straight-line goal used when there is no route.
+[[nodiscard]] math::Vec3 follow_goal(EcsRegistry& registry,
+                                     Entity self,
+                                     math::Vec3 pos,
+                                     math::Vec3 fallback,
+                                     bool& out_on_path) {
+    NavAgentComponent* nav = registry.get<NavAgentComponent>(self);
+    out_on_path = false;
+    if (nav == nullptr || nav->has_path == 0u || nav->count == 0u)
+        return fallback;
+    if (nav->cursor >= nav->count)
+        nav->cursor = nav->count - 1u;
+    // Advance the cursor past any waypoints already reached.
+    while (nav->cursor < nav->count - 1u) {
+        const math::Vec3 wp = nav->waypoints[nav->cursor];
+        if (math::length(math::sub(wp, pos)) <= nav->arrive_radius)
+            ++nav->cursor;
+        else
+            break;
+    }
+    out_on_path = true;
+    return nav->waypoints[nav->cursor];
 }
 
 }  // namespace
@@ -290,6 +501,17 @@ void act(EcsRegistry& registry, AiContext& ctx, f32 dt) {
                 AiAgentComponent& agent = agents[i];
                 const Entity self = nodes[i].entity;
 
+                // Separation snapshot offset (zero unless the agent has a
+                // NavAgentComponent with separation enabled). Read once per row;
+                // uses neighbour position snapshots => race-free.
+                math::Vec3 sep{0.0f, 0.0f, 0.0f};
+                if (const NavAgentComponent* nav = registry.get<NavAgentComponent>(self);
+                    nav != nullptr && nav->separation_radius > 0.0f) {
+                    sep = separation_nudge(registry, self, xforms[i].local.translation,
+                                           nav->separation_radius, nav->separation_weight,
+                                           dt);
+                }
+
                 switch (agent.state) {
                     case AiState::Patrol: {
                         PatrolComponent* patrol = registry.get<PatrolComponent>(self);
@@ -309,16 +531,27 @@ void act(EcsRegistry& registry, AiContext& ctx, f32 dt) {
                                 patrol->wait_timer = patrol->wait_time;
                             }
                         } else {
-                            steer_toward(registry, ctx, self, xforms[i], agent, wp, dt);
+                            // Follow the routed nav path toward the patrol
+                            // waypoint when one exists, else straight-line.
+                            bool on_path = false;
+                            const math::Vec3 goal =
+                                follow_goal(registry, self, pos, wp, on_path);
+                            steer_toward(registry, ctx, self, xforms[i], agent, goal,
+                                         sep, on_path, dt);
                         }
                         break;
                     }
                     case AiState::Chase: {
-                        // Move toward the last place the target was seen. The
+                        // Move toward the last place the target was seen, routed
+                        // around geometry via the nav path when available. The
                         // PerceptionComponent memory means a chase continues even
                         // after the target slips behind cover.
-                        steer_toward(registry, ctx, self, xforms[i], agent,
-                                     senses[i].last_seen_pos, dt);
+                        const math::Vec3 pos = xforms[i].local.translation;
+                        bool on_path = false;
+                        const math::Vec3 goal = follow_goal(
+                            registry, self, pos, senses[i].last_seen_pos, on_path);
+                        steer_toward(registry, ctx, self, xforms[i], agent, goal, sep,
+                                     on_path, dt);
                         break;
                     }
                     case AiState::Attack: {

@@ -34,6 +34,7 @@
 #pragma once
 
 #include "ai/AiComponents.h"
+#include "ai/NavGrid.h"
 #include "core/Types.h"
 #include "math/Math.h"
 #include "scene/EcsRegistry.h"
@@ -94,7 +95,35 @@ struct AiContext {
     // atomic keeps the act() body lock-free + race-free without an allocation.
     std::atomic<u32> shots_fired{0u};
 
-    void begin_tick() noexcept { shots_fired.store(0u, std::memory_order_relaxed); }
+    // ── Navigation (optional) ───────────────────────────────────────────────
+    // When `nav_grid` is set, the `navigate` pass routes Chase/Patrol movement
+    // around blocked cells with A* (writing each agent's NavAgentComponent
+    // waypoint buffer); `act` then FOLLOWS those waypoints instead of
+    // straight-lining toward the goal. When `nav_grid` is null (the default —
+    // every existing host + test), navigation is a no-op and `act` keeps its
+    // original straight-line steer-toward behaviour. The host owns the grid and
+    // feeds it via the NavGrid builder API (NavGrid.h), exactly like it owns the
+    // LOS / fire hooks.
+    const NavGrid* nav_grid = nullptr;
+
+    // A* scratch is alloc-free but mutated in place, so it cannot be shared
+    // across the worker threads `navigate` runs its query on. We keep a small
+    // fixed POOL — one NavQuery per worker slot (+1 for the main thread, mapped
+    // to slot 0). `navigate` picks its slot by jobs::current_worker(); chunks on
+    // one worker run sequentially (safe reuse), distinct workers use distinct
+    // slots (no race). kNavQueryPool comfortably exceeds any realistic core
+    // count; an out-of-range worker index wraps into the pool deterministically.
+    static constexpr u32 kNavQueryPool = 64u;
+    NavQuery nav_query[kNavQueryPool];
+
+    // Repaths run this tick (telemetry / tests). Multiple workers may bump it
+    // from the navigate pass, so it is atomic-relaxed like shots_fired.
+    std::atomic<u32> repaths{0u};
+
+    void begin_tick() noexcept {
+        shots_fired.store(0u, std::memory_order_relaxed);
+        repaths.store(0u, std::memory_order_relaxed);
+    }
 };
 
 // ─── perceive ────────────────────────────────────────────────────────────
@@ -122,18 +151,44 @@ void perceive(scene::EcsRegistry& registry, AiContext& ctx, f32 dt);
 // Query: reads<SceneNodeComponent, PerceptionComponent>, writes<AiAgentComponent>.
 void think(scene::EcsRegistry& registry, AiContext& ctx, f32 dt);
 
+// ─── navigate ──────────────────────────────────────────────────────────────
+// Planning pass (between think and act). For each non-Dead agent that owns a
+// NavAgentComponent, when ctx.nav_grid is set it (re)plans an A* route to the
+// agent's current goal (the Chase last-seen position or the active Patrol
+// waypoint), THROTTLED: a fresh A* only runs when the per-agent repath cooldown
+// elapses OR the goal drifted more than repath_dist from the planned goal. The
+// routed + string-pull-smoothed waypoints are written into the agent's own
+// NavAgentComponent; no cross-row state is touched.
+//
+// Parallel-safe + alloc-free: A* needs the in-place NavQuery scratch, which
+// cannot be shared across the worker threads the query body runs on, so each
+// chunk body borrows its own slot from ctx.nav_query[] keyed by the current
+// worker index (chunks on one worker run sequentially => safe reuse; distinct
+// workers => distinct slots => no race). Each agent writes only its own
+// NavAgentComponent, and A* is deterministic per (grid, start, goal), so the
+// routed waypoint list is identical regardless of how chunks are scheduled.
+// When ctx.nav_grid is null this pass is a no-op (the default for every existing
+// host / test).
+//
+// Query: reads<SceneNodeComponent, TransformComponent, PerceptionComponent>,
+//        writes<AiAgentComponent, NavAgentComponent>.
+void navigate(scene::EcsRegistry& registry, AiContext& ctx, f32 dt);
+
 // ─── act ─────────────────────────────────────────────────────────────────
 // Action pass. Drives the world from the FSM state:
-//   Patrol  -> steer toward the current waypoint; dwell + advance on arrival.
-//   Chase   -> steer toward PerceptionComponent::last_seen_pos.
+//   Patrol  -> follow the routed nav path (if any) toward the current waypoint;
+//              dwell + advance the patrol ring on arrival.
+//   Chase   -> follow the routed nav path toward PerceptionComponent::last_seen_pos.
 //   Attack  -> call ctx.fire(agent, target) (no movement).
 //   Idle/Dead -> nothing.
-// Movement is navigation v1: a kinematic steer-toward (move_speed * dt clamped to
-// the remaining distance) plus a cheap LOS-based obstacle nudge — when the path
-// to the goal is blocked, the agent sidesteps perpendicular instead of walking
-// into the wall. No full navmesh yet (documented; a grid/navmesh nav is a
-// follow-up wave). Movement is applied via ctx.apply_move when set, else written
-// straight into TransformComponent.
+// Movement: when the agent owns a NavAgentComponent with a path (planned by the
+// `navigate` pass), `act` steers toward the NEXT smoothed waypoint and advances
+// the cursor as each is reached — so the agent routes AROUND walls/cover instead
+// of into them. Without a nav path it falls back to the original navigation v1
+// kinematic steer-toward (move_speed * dt clamped to the remaining distance plus
+// a cheap LOS-based perpendicular obstacle nudge). A light, deterministic
+// separation nudge keeps co-pathing agents from stacking. Movement is applied
+// via ctx.apply_move when set, else written straight into TransformComponent.
 //
 // Because fire is a shared side effect, `act` runs the Attack branch through the
 // host's (thread-safe) fire hook; everything else is per-row Transform writes.
@@ -152,11 +207,14 @@ void act(scene::EcsRegistry& registry, AiContext& ctx, f32 dt);
 struct AiSystems {
     AiContext ctx{};
 
-    // One full AI step. dt in seconds.
+    // One full AI step. dt in seconds. The serial `navigate` pass sits between
+    // `think` (decides the goal) and `act` (follows the route); it is a no-op
+    // unless a host has wired ctx.nav_grid, so the default tick is unchanged.
     void update(scene::EcsRegistry& registry, f32 dt) {
         ctx.begin_tick();
         perceive(registry, ctx, dt);
         think(registry, ctx, dt);
+        navigate(registry, ctx, dt);
         act(registry, ctx, dt);
     }
 };

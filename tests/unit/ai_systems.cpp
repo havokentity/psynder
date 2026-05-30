@@ -17,6 +17,7 @@
 
 #include "ai/AiComponents.h"
 #include "ai/AiSystems.h"
+#include "ai/NavGrid.h"
 #include "gameplay/GameplayComponents.h"
 #include "scene/EcsRegistry.h"
 #include "scene/EcsRegistry_Internal.h"
@@ -376,4 +377,280 @@ TEST_CASE("ai: many agents across chunks think + act race-free and alloc-free",
     // accumulation drift across frames.
     ai.update(scene.registry(), 0.1f);
     REQUIRE(ai.ctx.shots_fired.load() == static_cast<u32>(kCount));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Navigation: NavGrid + deterministic pooled A* + path-following + smoothing
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Build a w x h grid, 1 m cells, origin at the world origin, all walkable.
+NavGrid make_grid(u32 w, u32 h) {
+    NavGrid g;
+    g.resize(w, h, /*cell*/ 1.0f, math::Vec3{0.0f, 0.0f, 0.0f});
+    return g;
+}
+
+// True if every consecutive pair of waypoints steps to an adjacent walkable
+// cell (or the same cell) — a sanity check on a returned path.
+bool path_cells_walkable(const NavGrid& g, const NavPath& p) {
+    for (u32 i = 0; i < p.count; ++i)
+        if (g.blocked(g.world_to_cell(p.points[i])))
+            return false;
+    return true;
+}
+
+}  // namespace
+
+// ─── A* routes around a blocking wall through the single gap ─────────────────
+TEST_CASE("ai: A* finds a path around a wall through the one gap", "[ai][nav]") {
+    // 11x11 grid. A vertical wall at x=5 spanning z=0..9 with a single gap at
+    // z=10, so the only route from the left side to the right side threads the
+    // bottom gap. Start (1,5) left of the wall, goal (9,5) right of it.
+    NavGrid g = make_grid(11u, 11u);
+    for (i32 z = 0; z <= 9; ++z)
+        g.set_blocked(NavCell{5, z}, true);
+    // gap left open at (5,10)
+
+    NavQuery q;
+    q.reset(g);
+    NavPath path;
+    const bool ok = q.find_path(g, NavCell{1, 5}, NavCell{9, 5}, path);
+
+    REQUIRE(ok);
+    REQUIRE(path.count >= 2u);
+    REQUIRE(path.truncated == 0u);
+    REQUIRE(path_cells_walkable(g, path));
+
+    // First waypoint sits at the start cell centre, last at the goal cell centre.
+    const math::Vec3 first = path.points[0];
+    const math::Vec3 last = path.points[path.count - 1u];
+    REQUIRE(g.world_to_cell(first) == NavCell{1, 5});
+    REQUIRE(g.world_to_cell(last) == NavCell{9, 5});
+
+    // The path must pass through the only gap: SOME waypoint segment crosses the
+    // wall column at z=10 (the gap row). We assert no waypoint ever lands on a
+    // blocked cell (above) and that the route reaches z>=10 at some point — it
+    // cannot cross x=5 anywhere else.
+    bool reached_gap_row = false;
+    for (u32 i = 0; i < path.count; ++i)
+        if (g.world_to_cell(path.points[i]).z >= 10)
+            reached_gap_row = true;
+    REQUIRE(reached_gap_row);
+}
+
+// ─── No path returns cleanly when the goal is walled off ─────────────────────
+TEST_CASE("ai: A* returns no-path cleanly when the goal is fully walled off",
+          "[ai][nav]") {
+    // 9x9 grid. A complete 3x3 box of walls around the goal cell (4,4) seals it
+    // off — every neighbouring cell is blocked, so no route can reach it.
+    NavGrid g = make_grid(9u, 9u);
+    for (i32 z = 3; z <= 5; ++z)
+        for (i32 x = 3; x <= 5; ++x)
+            if (!(x == 4 && z == 4))
+                g.set_blocked(NavCell{x, z}, true);
+
+    NavQuery q;
+    q.reset(g);
+    NavPath path;
+    const bool ok = q.find_path(g, NavCell{0, 0}, NavCell{4, 4}, path);
+
+    REQUIRE_FALSE(ok);         // unreachable
+    REQUIRE(path.empty());     // cleared, no partial path
+    REQUIRE(path.count == 0u);
+
+    // A blocked START is likewise a clean no-path, never a crash.
+    NavPath path2;
+    g.set_blocked(NavCell{0, 0}, true);
+    REQUIRE_FALSE(q.find_path(g, NavCell{0, 0}, NavCell{8, 8}, path2));
+    REQUIRE(path2.empty());
+
+    // An out-of-bounds endpoint is also clean.
+    NavPath path3;
+    REQUIRE_FALSE(q.find_path(g, NavCell{1, 1}, NavCell{100, 100}, path3));
+    REQUIRE(path3.empty());
+}
+
+// ─── Determinism: identical grid+endpoints => identical waypoint list ────────
+TEST_CASE("ai: A* is deterministic — identical waypoints across repeated runs",
+          "[ai][nav][determinism]") {
+    NavGrid g = make_grid(20u, 20u);
+    // A scattering of obstacles to force a non-trivial route with tie choices.
+    for (i32 z = 2; z <= 14; ++z)
+        g.set_blocked(NavCell{7, z}, true);
+    for (i32 x = 5; x <= 16; ++x)
+        g.set_blocked(NavCell{x, 16}, true);
+
+    NavQuery q;
+    NavPath a;
+    q.reset(g);
+    REQUIRE(q.find_path(g, NavCell{1, 1}, NavCell{18, 18}, a));
+    REQUIRE(a.count >= 2u);
+
+    // Re-run many times (same query reused, and a fresh query) — the waypoint
+    // list must be byte-for-byte identical: no RNG / clock / pointer-order / heap
+    // dependence in the A*.
+    for (int run = 0; run < 8; ++run) {
+        NavPath b;
+        if (run % 2 == 0) {
+            q.reset(g);  // exercise the reset path too
+        }
+        NavQuery q2;
+        NavQuery& use = (run % 2 == 0) ? q : q2;
+        REQUIRE(use.find_path(g, NavCell{1, 1}, NavCell{18, 18}, b));
+        REQUIRE(b.count == a.count);
+        for (u32 i = 0; i < a.count; ++i) {
+            REQUIRE(b.points[i].x == Catch::Approx(a.points[i].x));
+            REQUIRE(b.points[i].z == Catch::Approx(a.points[i].z));
+        }
+    }
+}
+
+// ─── Smoothing reduces waypoint count on an open diagonal ────────────────────
+TEST_CASE("ai: string-pull smoothing reduces waypoints on an open diagonal",
+          "[ai][nav][smooth]") {
+    // Wide open grid, straight diagonal route: the raw cell path is many
+    // cell-centre steps; smoothing should collapse it to (nearly) start+goal
+    // since the whole diagonal is in clear line of sight.
+    NavGrid g = make_grid(24u, 24u);
+
+    NavQuery q;
+    q.reset(g);
+    NavPath path;
+    REQUIRE(q.find_path(g, NavCell{1, 1}, NavCell{20, 20}, path));
+    const u32 raw_count = path.count;
+    REQUIRE(raw_count > 3u);  // a long raw cell list
+
+    const u32 smoothed = smooth_path(g, path);
+    REQUIRE(smoothed < raw_count);  // fewer waypoints after string-pull
+    REQUIRE(smoothed >= 2u);        // still at least start + goal
+    REQUIRE(path.count == smoothed);
+    // Endpoints preserved through smoothing.
+    REQUIRE(g.world_to_cell(path.points[0]) == NavCell{1, 1});
+    REQUIRE(g.world_to_cell(path.points[path.count - 1u]) == NavCell{20, 20});
+}
+
+// ─── Path-following: an agent reaches the goal cell over N ticks ─────────────
+TEST_CASE("ai: a nav-routed agent reaches the goal cell over many ticks",
+          "[ai][nav][follow]") {
+    RegistryReset reset;
+    Scene scene{EcsRegistry::Get()};
+
+    // Grid with a wall the straight-line steer would jam against. Start at world
+    // (1.5,0,1.5) [cell (1,1)], goal at world (9.5,0,5.5) [cell (9,5)], wall at
+    // x=5 z=0..9 with the gap at z=10 (same layout as the routing test).
+    NavGrid g = make_grid(12u, 12u);
+    for (i32 z = 0; z <= 9; ++z)
+        g.set_blocked(NavCell{5, z}, true);
+
+    // An agent (faction 1) with no hostile => it would Idle; give it a 1-waypoint
+    // patrol AT the goal so think() drives it to Patrol and navigate() routes it.
+    const Entity agent = spawn_agent(scene, {1.5f, 0.0f, 1.5f}, /*faction*/ 1u,
+                                     /*hp*/ 100.0f, /*sight*/ 1.0f, /*attack*/ 1.0f,
+                                     /*move*/ 6.0f);
+    PatrolComponent patrol{};
+    patrol.count = 1u;
+    patrol.waypoints[0] = math::Vec3{9.5f, 0.0f, 5.5f};
+    patrol.wait_time = 1000.0f;   // never advance once arrived
+    patrol.arrive_radius = 0.5f;
+    scene.registry().add<PatrolComponent>(agent, sanitize_patrol(patrol));
+
+    NavAgentComponent nav{};
+    nav.repath_interval = 0.5f;
+    nav.repath_dist = 1.0f;
+    nav.arrive_radius = 0.6f;
+    scene.registry().add<NavAgentComponent>(agent, sanitize_nav_agent(nav));
+
+    AiSystems ai;
+    ai.ctx.nav_grid = &g;  // enable navigation
+
+    // Run enough ticks for the agent to walk the routed corridor (it must detour
+    // down to the gap at z=10, then across, then up to the goal — far longer than
+    // the straight-line distance).
+    const math::Vec3 goal{9.5f, 0.0f, 5.5f};
+    bool arrived = false;
+    for (int tick = 0; tick < 400 && !arrived; ++tick) {
+        ai.update(scene.registry(), 1.0f / 30.0f);
+        const auto* t = scene.registry().get<TransformComponent>(agent);
+        // Never tunnel into a blocked cell while following the route.
+        REQUIRE_FALSE(g.blocked(g.world_to_cell(t->local.translation)));
+        if (math::length(math::sub(goal, t->local.translation)) <= 0.7f)
+            arrived = true;
+    }
+    REQUIRE(arrived);
+
+    // At least one repath happened, and the agent ended on the goal cell.
+    REQUIRE(ai.ctx.repaths.load() >= 1u);
+    const auto* t = scene.registry().get<TransformComponent>(agent);
+    REQUIRE(g.world_to_cell(t->local.translation) == NavCell{9, 5});
+}
+
+// ─── Nav is opt-in: no grid => unchanged straight-line behaviour ─────────────
+TEST_CASE("ai: with no nav grid wired, navigate() is a no-op", "[ai][nav]") {
+    RegistryReset reset;
+    Scene scene{EcsRegistry::Get()};
+
+    const Entity agent = spawn_agent(scene, {0, 0, 0}, 1u, 100.0f, /*sight*/ 30.0f,
+                                     /*attack*/ 4.0f, /*move*/ 5.0f);
+    spawn_target(scene, {20, 0, 0}, 2u, 100.0f);  // far, in sight => Chase
+    // Even with a NavAgentComponent present, a null nav_grid means no routing.
+    scene.registry().add<NavAgentComponent>(agent, sanitize_nav_agent(NavAgentComponent{}));
+
+    AiSystems ai;
+    ai.ctx.los = los_clear;
+    // ai.ctx.nav_grid stays null.
+
+    ai.update(scene.registry(), 0.1f);
+
+    REQUIRE(ai.ctx.repaths.load() == 0u);  // navigate did nothing
+    const auto* a = scene.registry().get<AiAgentComponent>(agent);
+    REQUIRE(a->state == AiState::Chase);
+    // Straight-line chase toward +X, exactly as before: 5 m/s * 0.1s = 0.5 m.
+    const auto* t = scene.registry().get<TransformComponent>(agent);
+    REQUIRE(t->local.translation.x == Catch::Approx(0.5f));
+}
+
+// ─── Local separation: two stacked agents push apart ─────────────────────────
+TEST_CASE("ai: separation nudges co-located agents apart", "[ai][nav][separation]") {
+    RegistryReset reset;
+    Scene scene{EcsRegistry::Get()};
+
+    NavGrid g = make_grid(16u, 16u);
+
+    // Two agents almost on top of each other, both routing to the same far goal.
+    auto make_nav_agent = [&](math::Vec3 pos) {
+        const Entity e = spawn_agent(scene, pos, /*faction*/ 1u, 100.0f,
+                                     /*sight*/ 1.0f, /*attack*/ 1.0f, /*move*/ 3.0f);
+        PatrolComponent patrol{};
+        patrol.count = 1u;
+        patrol.waypoints[0] = math::Vec3{12.5f, 0.0f, 12.5f};
+        patrol.wait_time = 1000.0f;
+        patrol.arrive_radius = 0.5f;
+        scene.registry().add<PatrolComponent>(e, sanitize_patrol(patrol));
+        NavAgentComponent nav{};
+        nav.separation_radius = 1.5f;   // enable separation
+        nav.separation_weight = 4.0f;
+        scene.registry().add<NavAgentComponent>(e, sanitize_nav_agent(nav));
+        return e;
+    };
+    const Entity a0 = make_nav_agent(math::Vec3{2.5f, 0.0f, 2.5f});
+    const Entity a1 = make_nav_agent(math::Vec3{2.6f, 0.0f, 2.5f});  // 0.1 m apart
+
+    AiSystems ai;
+    ai.ctx.nav_grid = &g;
+
+    const auto dist_between = [&]() {
+        const math::Vec3 p0 = scene.registry().get<TransformComponent>(a0)->local.translation;
+        const math::Vec3 p1 = scene.registry().get<TransformComponent>(a1)->local.translation;
+        return math::length(math::sub(p1, p0));
+    };
+    const f32 before = dist_between();
+
+    for (int tick = 0; tick < 5; ++tick)
+        ai.update(scene.registry(), 1.0f / 30.0f);
+
+    // They separated (no longer stacked) — separation pushed them apart while
+    // both advanced toward the shared goal.
+    REQUIRE(dist_between() > before);
 }

@@ -119,7 +119,69 @@ PSYNDER_COMPONENT(PatrolComponent) {
     u32 _pad = 0u;
 };
 
+// ─── Navigation follower ───────────────────────────────────────────────────
+// OPTIONAL per-agent path-following state, used by `act` when the host has wired
+// a NavGrid into the AiContext (see AiSystems.h / NavGrid.h). Holds the agent's
+// current routed path (a small fixed waypoint buffer — NO heap), the waypoint it
+// is walking toward, a repath throttle (so a moving target does not trigger an
+// A* every tick), and the goal the path was last planned to (to detect when the
+// target has drifted far enough to warrant a repath). Trivially copyable; an
+// agent without this component simply falls back to straight-line steering, so
+// nothing here is required and adding it never changes the host-hook shape.
+PSYNDER_COMPONENT(NavAgentComponent) {
+    static constexpr u32 kMaxWaypoints = 64u;
+    // Routed waypoints (world-space cell centres, post-smoothing). points[0] is
+    // the next step; the agent advances `cursor` as it reaches each.
+    math::Vec3 waypoints[kMaxWaypoints] = {};
+    u32 count = 0u;     // valid waypoints in the buffer
+    u32 cursor = 0u;    // index of the waypoint currently being walked toward
+    // The world goal the current path was planned to reach. A repath is forced
+    // when the live goal moves more than repath_dist from this.
+    math::Vec3 planned_goal{0.0f, 0.0f, 0.0f};
+    // Seconds until the agent is allowed to repath again (counts down in `act`).
+    f32 repath_cooldown = 0.0f;
+    // Throttle: minimum seconds between repaths for this agent.
+    f32 repath_interval = 0.5f;
+    // Goal-drift (metres) beyond which the cooldown is bypassed and we repath
+    // immediately (the target jumped / rounded a corner).
+    f32 repath_dist = 2.0f;
+    // Radius (metres) at which a waypoint counts as reached and the cursor
+    // advances to the next.
+    f32 arrive_radius = 0.4f;
+    // Agent world position snapshotted at the top of the `navigate` pass (which
+    // runs BEFORE the parallel `act`). Local separation in `act` reads NEIGHBOURS'
+    // snapshots — never their live Transform, which `act` is concurrently
+    // writing — so the avoidance nudge is race-free + deterministic.
+    math::Vec3 last_pos{0.0f, 0.0f, 0.0f};
+    // Separation radius (metres): co-pathing agents inside this push apart.
+    f32 separation_radius = 0.0f;  // 0 => separation off (default)
+    // Separation push strength (metres/sec equivalent, scaled by dt in act).
+    f32 separation_weight = 1.0f;
+    u32 has_path = 0u;  // 1 => waypoints/cursor are valid this tick
+    u32 _pad = 0u;
+};
+
 // ─── Sanitizers ──────────────────────────────────────────────────────────
+[[nodiscard]] inline NavAgentComponent sanitize_nav_agent(NavAgentComponent n) noexcept {
+    if (n.count > NavAgentComponent::kMaxWaypoints)
+        n.count = NavAgentComponent::kMaxWaypoints;
+    if (n.count == 0u) {
+        n.cursor = 0u;
+        n.has_path = 0u;
+    } else if (n.cursor >= n.count) {
+        n.cursor = n.count - 1u;
+    }
+    if (!(n.repath_cooldown >= 0.0f)) n.repath_cooldown = 0.0f;
+    if (!(n.repath_interval >= 0.0f)) n.repath_interval = 0.5f;
+    if (!(n.repath_dist >= 0.0f)) n.repath_dist = 2.0f;
+    if (!(n.arrive_radius > 0.0f)) n.arrive_radius = 0.4f;
+    if (!(n.separation_radius >= 0.0f)) n.separation_radius = 0.0f;
+    if (!(n.separation_weight >= 0.0f)) n.separation_weight = 1.0f;
+    n.has_path = (n.has_path != 0u && n.count > 0u) ? 1u : 0u;
+    n._pad = 0u;
+    return n;
+}
+
 [[nodiscard]] inline AiAgentComponent sanitize_ai_agent(AiAgentComponent a) noexcept {
     a.state = sanitize_ai_state(a.state);
     a._pad[0] = a._pad[1] = a._pad[2] = 0u;
