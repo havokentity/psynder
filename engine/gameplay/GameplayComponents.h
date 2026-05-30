@@ -21,6 +21,8 @@
 #include "scene/EcsRegistry.h"
 #include "scene/SceneEcs.h"
 
+#include <cmath>
+
 namespace psynder::gameplay {
 
 using ::psynder::Entity;
@@ -143,6 +145,95 @@ struct DamageEvent {
     u32 _pad = 0u;
 };
 
+// ─── TriggerVolume ───────────────────────────────────────────────────────────
+// An invisible volume that EDGE-fires once when a tagged actor ENTERS it and
+// re-arms only after every actor has left. Shape: sphere when radius > 0, else
+// an axis-aligned box (center = entity TransformComponent translation + offset,
+// extents = half_extent). `fire_faction` filters which actors count (0 = any).
+// On a fresh entry the system bumps `fire_count`, sets `fired = 1` for that
+// tick, and (when `target` is valid + `open_target_door != 0`) requests the
+// linked Door to open — the data-driven "switch opens a door" wiring with no
+// callbacks. `inside` latches occupancy so a body that stays inside does NOT
+// re-fire (edge, not level).
+PSYNDER_COMPONENT(TriggerVolumeComponent) {
+    math::Vec3 offset{0.0f, 0.0f, 0.0f};
+    math::Vec3 half_extent{1.0f, 1.0f, 1.0f};
+    f32 radius = 0.0f;          // > 0 selects sphere; <= 0 selects the AABB.
+    u32 fire_faction = 0u;      // 0 => any faction triggers; else exact match.
+    Entity target{};           // optional Door (or any) entity to drive.
+    u32 open_target_door = 1u;  // when set, a fresh entry calls open() on target.
+    u32 enabled = 1u;
+    // ── runtime latch (system-owned) ────────────────────────────────────────
+    u32 inside = 0u;     // 1 while >=1 actor is in the volume (occupancy latch).
+    u32 fired = 0u;      // 1 only on the tick a fresh entry happened (edge).
+    u32 fire_count = 0u; // total distinct entries observed (monotonic).
+    Entity last_actor{}; // the actor that caused the most recent entry.
+};
+
+// ─── Door ────────────────────────────────────────────────────────────────────
+// A sliding slab with two authored endpoints (closed_pos / open_pos) it lerps
+// between over `move_time` seconds. The door's BLOCKING is expressed through its
+// own HitboxComponent: tick_doors sets HitboxComponent::enabled = 1 while the
+// door is anything but fully Open, so a combat raycast (LOS / bullet) is blocked
+// when closed and passes when open. A host that also wants a physics slab moved
+// reads `position` each tick (the showcase drives a physics body from it). State
+// advances Closed -> Opening -> Open -> Closing -> Closed; `open_request` /
+// `close_request` are one-shot intents a trigger (or direct open()/close())
+// sets, consumed by tick_doors. `instant != 0` snaps with no animation.
+enum class DoorState : u8 {
+    Closed = 0,
+    Opening = 1,
+    Open = 2,
+    Closing = 3,
+};
+
+PSYNDER_COMPONENT(DoorComponent) {
+    math::Vec3 closed_pos{0.0f, 0.0f, 0.0f};
+    math::Vec3 open_pos{0.0f, 0.0f, 0.0f};
+    f32 move_time = 1.0f;     // seconds for a full closed<->open traversal.
+    f32 t = 0.0f;             // 0 = fully closed, 1 = fully open (lerp param).
+    math::Vec3 position{0.0f, 0.0f, 0.0f};  // current slab centre (system write).
+    DoorState state = DoorState::Closed;
+    u8 instant = 0u;          // 1 => snap (no animation).
+    u8 _pad[2] = {};
+    u32 open_request = 0u;    // one-shot: request transition toward Open.
+    u32 close_request = 0u;   // one-shot: request transition toward Closed.
+    Entity hitbox_entity{};   // entity whose HitboxComponent gates LOS (often self).
+};
+
+// ─── Pickup ──────────────────────────────────────────────────────────────────
+// A touchable item: on overlap with a tagged actor it grants its effect ONCE
+// (edge-triggered via `consumed`) then is collected for despawn. Sphere overlap
+// of `radius` about the entity TransformComponent translation (+offset). `kind`
+// selects what the grant mutates on the actor:
+//   Health  -> actor HealthComponent::current_health += amount (clamped to max)
+//   Ammo    -> actor WeaponComponent::ammo += (u32)amount
+//   Weapon  -> actor WeaponComponent stats set from {amount=damage, weapon_*}
+// `pickup_faction` filters who may grab it (0 = any). `consumed` latches so a
+// second overlap never double-grants even before the despawn lands.
+enum class PickupKind : u8 {
+    Health = 0,
+    Ammo = 1,
+    Weapon = 2,
+};
+
+PSYNDER_COMPONENT(PickupComponent) {
+    math::Vec3 offset{0.0f, 0.0f, 0.0f};
+    f32 radius = 0.75f;
+    f32 amount = 25.0f;         // heal HP / ammo rounds / weapon damage by kind.
+    PickupKind kind = PickupKind::Health;
+    u8 _pad[3] = {};
+    u32 pickup_faction = 0u;    // 0 => any actor may grab; else exact match.
+    u32 enabled = 1u;
+    // Weapon-kind authored stats (ignored for Health/Ammo).
+    f32 weapon_range = 60.0f;
+    f32 weapon_fire_rate = 6.0f;
+    u32 weapon_ammo = 60u;
+    // ── runtime latch (system-owned) ────────────────────────────────────────
+    u32 consumed = 0u;          // 1 once granted (prevents double-grant).
+    Entity grabbed_by{};        // actor that consumed it (0 until grabbed).
+};
+
 // ─── Sanitizers ──────────────────────────────────────────────────────────────
 [[nodiscard]] inline WeaponRuntimeComponent sanitize_weapon_runtime(
     WeaponRuntimeComponent w) noexcept {
@@ -161,6 +252,64 @@ struct DamageEvent {
     if (!(h.radius >= 0.0f)) h.radius = 0.0f;
     h.enabled = h.enabled != 0u ? 1u : 0u;
     return h;
+}
+
+[[nodiscard]] inline TriggerVolumeComponent sanitize_trigger_volume(
+    TriggerVolumeComponent t) noexcept {
+    if (!(t.half_extent.x > 0.0f)) t.half_extent.x = 1.0f;
+    if (!(t.half_extent.y > 0.0f)) t.half_extent.y = 1.0f;
+    if (!(t.half_extent.z > 0.0f)) t.half_extent.z = 1.0f;
+    if (!(t.radius >= 0.0f)) t.radius = 0.0f;
+    t.open_target_door = t.open_target_door != 0u ? 1u : 0u;
+    t.enabled = t.enabled != 0u ? 1u : 0u;
+    t.inside = t.inside != 0u ? 1u : 0u;
+    t.fired = t.fired != 0u ? 1u : 0u;
+    return t;
+}
+
+[[nodiscard]] inline DoorComponent sanitize_door(DoorComponent d) noexcept {
+    d.move_time = (d.move_time > 0.0f) ? d.move_time : 1.0f;
+    if (!(d.t >= 0.0f)) d.t = 0.0f;
+    if (d.t > 1.0f) d.t = 1.0f;
+    switch (d.state) {
+        case DoorState::Closed:
+        case DoorState::Opening:
+        case DoorState::Open:
+        case DoorState::Closing:
+            break;
+        default:
+            d.state = DoorState::Closed;
+            break;
+    }
+    d.instant = d.instant != 0u ? 1u : 0u;
+    d._pad[0] = d._pad[1] = 0u;
+    d.open_request = d.open_request != 0u ? 1u : 0u;
+    d.close_request = d.close_request != 0u ? 1u : 0u;
+    // Initialise the rendered/queried position to the lerp of the endpoints so a
+    // door authored at t!=0 starts visually consistent before the first tick.
+    d.position = math::add(d.closed_pos,
+                           math::mul(math::sub(d.open_pos, d.closed_pos), d.t));
+    return d;
+}
+
+[[nodiscard]] inline PickupComponent sanitize_pickup(PickupComponent p) noexcept {
+    if (!(p.radius > 0.0f)) p.radius = 0.75f;
+    if (!std::isfinite(p.amount) || p.amount < 0.0f) p.amount = 0.0f;
+    switch (p.kind) {
+        case PickupKind::Health:
+        case PickupKind::Ammo:
+        case PickupKind::Weapon:
+            break;
+        default:
+            p.kind = PickupKind::Health;
+            break;
+    }
+    p._pad[0] = p._pad[1] = p._pad[2] = 0u;
+    p.enabled = p.enabled != 0u ? 1u : 0u;
+    p.weapon_range = (p.weapon_range > 0.0f) ? p.weapon_range : 60.0f;
+    p.weapon_fire_rate = (p.weapon_fire_rate > 0.0f) ? p.weapon_fire_rate : 6.0f;
+    p.consumed = p.consumed != 0u ? 1u : 0u;
+    return p;
 }
 
 }  // namespace psynder::gameplay

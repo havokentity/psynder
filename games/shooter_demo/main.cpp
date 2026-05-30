@@ -67,6 +67,7 @@
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
 #include "gameplay/CombatSystems.h"
+#include "gameplay/DoorTriggerPickup.h"
 #include "gameplay/GameplayComponents.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
@@ -144,6 +145,25 @@ struct ShooterGame {
 
     bool prev_fire = false;  // edge-trigger for left-click
     u32 player_kills = 0u;
+
+    // --- W10-3 door / trigger / pickup showcase ----------------------------
+    Entity health_pickup{};   // a +HP item on the player's path.
+    Entity door{};            // a sliding slab the trigger opens.
+    Entity door_trigger{};    // volume that opens `door` on player entry.
+    physics::BodyId door_body{};  // the door's static collision slab (LOS block).
+    math::Vec3 door_closed_pos{};
+    bool door_opened_logged = false;  // one-shot "door opened" log latch.
+
+    // Actor view fed to tick_triggers / tick_pickups (player + enemies). Sized
+    // once; rebuilt in place each frame (no per-frame heap).
+    std::array<gameplay::Actor, 1u + kMaxEnemies> actors{};
+    u32 actor_count = 0u;
+
+    // Pre-reserved scratch for the door/trigger/pickup tick (alloc-free output
+    // buffers; the systems append into these capacity-bounded spans).
+    std::array<gameplay::TriggerEvent, 8u> trigger_events{};
+    std::array<gameplay::PickupEvent, 8u> pickup_events{};
+    std::array<Entity, 8u> pickup_despawn{};
 };
 
 // The AI LOS / FIRE / MOVE hooks all need the live game; stash a pointer so the
@@ -379,6 +399,158 @@ void spawn_enemies(ShooterGame& game) {
                 {{{-3.0f, ey, -8.0f}, {3.0f, ey, -8.0f}}});
 }
 
+// --- W10-3 mechanics showcase: a health pickup + a trigger-opened door --------
+// Built once at load. The smoke player walks the room centre from z=+7 toward
+// z=-1; it crosses the trigger volume (opening the door) and overlaps the health
+// pickup, so the headless run logs both the "trigger fired -> door opened" and
+// "picked up health A->B" events the smoke gate looks for.
+void build_mechanics(ShooterGame& game) {
+    render::MeshId cube = game.renderer->builtin_mesh(render::BuiltInMesh::UnitCube);
+
+    // -- Health pickup: a small green box at chest height on the player path. --
+    const render::MaterialId pickup_mat = make_material(*game.scene, rgba8(80, 220, 120));
+    const math::Vec3 pickup_pos{0.0f, kFloorY + 1.0f, 3.0f};
+    {
+        scene::LocalTransform local{};
+        local.translation = pickup_pos;
+        local.scale = {0.4f, 0.4f, 0.4f};
+        game.health_pickup =
+            game.scene->spawn_mesh_instance(cube, pickup_mat, local, scene::kInvalidSceneNode,
+                                            scene::RenderableFlags::Visible,
+                                            scene::ObjectMobility::Dynamic);
+        gameplay::PickupComponent pk{};
+        pk.kind = gameplay::PickupKind::Health;
+        pk.amount = 25.0f;          // heals 25 HP
+        pk.radius = 1.6f;           // generous so the smoke path overlaps it
+        pk.pickup_faction = kFactionPlayer;  // only the player grabs it
+        game.scene->registry().add<gameplay::PickupComponent>(
+            game.health_pickup, gameplay::sanitize_pickup(pk));
+    }
+
+    // -- Door: a sliding slab in front of the rear alcove. Closed it blocks the
+    //    centre lane (LOS + bullets via its physics slab + combat hitbox); the
+    //    trigger slides it up out of the way so the path / sight-line opens. --
+    const render::MaterialId door_mat = make_material(*game.scene, rgba8(150, 110, 60));
+    const f32 door_h = 2.0f;
+    const math::Vec3 door_closed{0.0f, kFloorY + 0.5f * door_h, -3.0f};
+    const math::Vec3 door_open = math::add(door_closed, math::Vec3{0.0f, door_h + 0.2f, 0.0f});
+    const math::Vec3 door_half{1.6f, 0.5f * door_h, 0.3f};
+    {
+        scene::LocalTransform local{};
+        local.translation = door_closed;
+        local.scale = {2.0f * door_half.x, 2.0f * door_half.y, 2.0f * door_half.z};
+        game.door =
+            game.scene->spawn_mesh_instance(cube, door_mat, local, scene::kInvalidSceneNode,
+                                            scene::RenderableFlags::Visible,
+                                            scene::ObjectMobility::Dynamic);
+        game.door_closed_pos = door_closed;
+
+        // Combat hitbox so a gameplay raycast (player hitscan / probe) is blocked
+        // when closed; tick_doors disables it when fully open.
+        gameplay::HitboxComponent hb{};
+        hb.radius = 0.0f;  // AABB
+        hb.half_extent = door_half;
+        hb.enabled = 1u;
+        game.scene->registry().add<gameplay::HitboxComponent>(
+            game.door, gameplay::sanitize_hitbox(hb));
+
+        gameplay::DoorComponent dc{};
+        dc.closed_pos = door_closed;
+        dc.open_pos = door_open;
+        dc.move_time = 0.6f;          // slides open in ~0.6s
+        dc.hitbox_entity = game.door;  // gate its own hitbox
+        game.scene->registry().add<gameplay::DoorComponent>(
+            game.door, gameplay::sanitize_door(dc));
+
+        // A static physics slab co-located with the door so the AI LOS raycast
+        // (engine/physics) is also blocked when closed. We move it with the door.
+        physics::BodyDesc desc{};
+        desc.shape = physics::Shape::Box;
+        desc.mass = 0.0f;  // static
+        desc.position = door_closed;
+        desc.half_extent = door_half;
+        game.door_body = game.world.create_body(desc);
+    }
+
+    // -- Trigger: a volume on the player's path (z=+4) that opens the door. --
+    {
+        scene::LocalTransform local{};
+        local.translation = {0.0f, kFloorY + 1.0f, 4.0f};
+        game.door_trigger = game.scene->create_entity(local);
+        gameplay::TriggerVolumeComponent tv{};
+        tv.radius = 2.2f;
+        tv.fire_faction = kFactionPlayer;  // the player opens it
+        tv.target = game.door;
+        tv.open_target_door = 1u;
+        game.scene->registry().add<gameplay::TriggerVolumeComponent>(
+            game.door_trigger, gameplay::sanitize_trigger_volume(tv));
+    }
+}
+
+// Rebuild the actor view (player + live enemies) fed to the trigger / pickup
+// systems. In-place into the pre-sized array => no per-frame heap.
+void refresh_actors(ShooterGame& game) {
+    game.actor_count = 0u;
+    game.actors[game.actor_count++] = gameplay::Actor{game.player, kFactionPlayer};
+    for (u32 i = 0; i < game.enemy_count; ++i) {
+        if (game.scene->registry().alive(game.enemies[i]))
+            game.actors[game.actor_count++] = gameplay::Actor{game.enemies[i], kFactionEnemy};
+    }
+}
+
+// One tick of the W10-3 mechanics: triggers -> doors -> pickups, plus driving
+// the door's physics slab + mesh from the DoorComponent and logging the events
+// the smoke gate looks for. Alloc-free (fixed-capacity output spans).
+void tick_mechanics(ShooterGame& game, f32 dt) {
+    scene::EcsRegistry& registry = game.scene->registry();
+    refresh_actors(game);
+    const std::span<const gameplay::Actor> actors{game.actors.data(), game.actor_count};
+
+    // Triggers: a player entry opens the linked door (sets open_request).
+    u32 tev = 0u;
+    (void)gameplay::tick_triggers(registry, actors, game.trigger_events, &tev);
+    for (u32 i = 0; i < tev; ++i) {
+        const gameplay::TriggerEvent& e = game.trigger_events[i];
+        PSY_LOG_INFO("shooter_demo: trigger fired (entry #{}) -> door opening",
+                     e.fire_count);
+    }
+
+    // Doors: advance the slab animation + gate the combat hitbox.
+    gameplay::tick_doors(registry, dt);
+
+    // Push the door's animated position into BOTH the rendered mesh and the
+    // physics slab so LOS + bullets track the moving door.
+    if (const auto* d = registry.get<gameplay::DoorComponent>(game.door)) {
+        if (auto* t = registry.get<scene::TransformComponent>(game.door)) {
+            scene::LocalTransform local = t->local;
+            local.translation = d->position;
+            (void)game.scene->set_transform(game.door, local);
+        }
+        if (game.door_body.valid())
+            game.world.set_body_position(game.door_body, d->position);
+        if (d->state == gameplay::DoorState::Open && !game.door_opened_logged) {
+            game.door_opened_logged = true;
+            PSY_LOG_INFO("shooter_demo: trigger fired -> door opened (LOS + path clear)");
+        }
+    }
+
+    // Pickups: grant on overlap, then despawn the spent items.
+    u32 pev = 0u;
+    u32 desp = 0u;
+    (void)gameplay::tick_pickups(registry, actors, game.pickup_despawn, &desp,
+                                 game.pickup_events, &pev);
+    for (u32 i = 0; i < pev; ++i) {
+        const gameplay::PickupEvent& e = game.pickup_events[i];
+        const char* kind = (e.kind == gameplay::PickupKind::Health) ? "health"
+                           : (e.kind == gameplay::PickupKind::Ammo)  ? "ammo"
+                                                                     : "weapon";
+        PSY_LOG_INFO("shooter_demo: picked up {} {:.0f}->{:.0f}", kind,
+                     static_cast<double>(e.before), static_cast<double>(e.after));
+    }
+    for (u32 i = 0; i < desp; ++i)
+        (void)game.scene->despawn_entity(game.pickup_despawn[i]);
+}
+
 // --- AI host hooks ----------------------------------------------------------
 
 // LOS: clear when the physics raycast from `origin` to `target` is NOT blocked
@@ -561,11 +733,11 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
 
     // Pre-size the ECS + render pools so nothing grows in the steady state.
     game.scene->prewarm_capacity(scene::ScenePrewarmConfig{
-        .scene_entities = 64u,
-        .renderables = 32u,
+        .scene_entities = 80u,  // + pickup / door / trigger entities (W10-3)
+        .renderables = 40u,
         .cameras = 2u,
         .lights = 4u,
-        .render_items = 32u,
+        .render_items = 40u,
     });
     app_host.reserve_scene_capacity(32u, 8u);
 
@@ -580,6 +752,7 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     make_lights(game);
     spawn_player(game);
     spawn_enemies(game);
+    build_mechanics(game);  // W10-3: health pickup + trigger-opened door
 
     // Reserve combat + AI scratch once (alloc-free per frame thereafter).
     game.combat.config.friendly_fire = gameplay::FriendlyFire::Off;  // factions matter
@@ -673,6 +846,12 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
         gameplay::flush_damage_events(registry, cctx, ccfg);
         gameplay::cleanup_projectiles(*game.scene, cctx);
         (void)gameplay::resolve_deaths(*game.scene, /*despawn*/ true, &on_death, &game);
+
+        // 6b. W10-3 mechanics: triggers -> doors -> pickups (player grabs the
+        //     health item; crossing the trigger slides the door open, clearing
+        //     LOS + the path). Drives the door's mesh + physics slab + logs the
+        //     pickup/door events the smoke gate looks for.
+        tick_mechanics(game, dt);
 
         // 7. Render: build the hybrid shadow occluder (Hybrid mode) then raster.
         if (app_host.active_scene()) {
