@@ -62,6 +62,7 @@
 #include "common/CharacterController.h"
 #include "ai/AiComponents.h"
 #include "ai/AiSystems.h"
+#include "ai/NavBuild.h"
 #include "asset/Vault.h"
 #include "core/AppArgs.h"
 #include "core/Log.h"
@@ -69,6 +70,7 @@
 #include "editor/core/Editor.h"
 #include "editor/core/SampleHook.h"
 #include "gameplay/CombatSystems.h"
+#include "gameplay/DoorTriggerPickup.h"
 #include "gameplay/GameplayComponents.h"
 #include "math/Math.h"
 #include "physics/Physics.h"
@@ -89,6 +91,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -229,6 +232,45 @@ struct DukeGame {
 
     std::array<RoomMeshes, kClusterCount> rooms{};
 
+    // --- AI NAVIGATION (W11-2) ---
+    // A NavGrid over the whole level interior, built ONCE from the static room /
+    // corridor / wall geometry. Cells inside a room or corridor are walkable;
+    // solid space (and the cover pillars) is blocked, so an A* over this grid
+    // routes a chasing soldier THROUGH the corridors / around the pillars toward
+    // the player instead of straight-lining into a wall. The grid is host-owned;
+    // ai.ctx.nav_grid points at it (opt-in). The corridor-gating door re-stamps
+    // its own cells when it opens (carve walkable) so AI can advance past it.
+    ai::NavGrid nav_grid{};
+    f32 nav_agent_radius = 0.45f;
+    bool nav_path_followed = false;   // an enemy followed a >=3-waypoint route.
+    u32 nav_best_waypoints = 0u;      // longest routed path observed (HUD/log).
+    bool logged_nav = false;          // one-shot "nav path followed" log.
+
+    // --- DOOR / TRIGGER / PICKUP (W11-2) ---
+    // A sliding slab on the HUB<->EAST corridor (C1). Closed it blocks the EAST
+    // soldiers' LOS + nav path to the player; a TriggerVolume the player crosses
+    // in the HUB opens it, clearing LOS + (re-carving) the nav so they advance.
+    Entity corridor_door{};
+    Entity corridor_trigger{};
+    physics::BodyId door_body{};       // door's static LOS/bullet slab (moves w/ door).
+    math::Vec3 door_closed_pos{};
+    math::Vec3 door_half{};
+    bool door_opened_logged = false;   // one-shot "door opened" log.
+    bool door_nav_carved = false;      // true once the open door's cells are carved.
+    bool trigger_fired = false;        // latched once the corridor trigger fires.
+
+    Entity health_pickup{};            // +HP item on the player's spine path.
+    Entity ammo_pickup{};              // +ammo item on the player's spine path.
+    bool pickup_taken = false;         // latched once any pickup is granted.
+
+    // Actor view (player + live enemies) fed to tick_triggers / tick_pickups.
+    // Sized once; rebuilt in place each frame (no per-frame heap).
+    std::array<gameplay::Actor, 1u + kMaxEnemies> actors{};
+    u32 actor_count = 0u;
+    std::array<gameplay::TriggerEvent, 8u> trigger_events{};
+    std::array<gameplay::PickupEvent, 8u> pickup_events{};
+    std::array<Entity, 8u> pickup_despawn{};
+
     bool prev_fire = false;
     u32 player_kills = 0u;
     bool logged_cull = false;  // one-shot "PVS culled" log for the smoke harness
@@ -328,6 +370,107 @@ void build_shell(DukeGame& game, render::MeshId cube) {
         add_slab(game, {cx, cy, v.lo.z - kWallT}, {hx, 0.5f * sy, kWallT});  // -Z
         add_slab(game, {cx, cy, v.hi.z + kWallT}, {hx, 0.5f * sy, kWallT});  // +Z
     }
+}
+
+// --- AI navigation grid (W11-2) --------------------------------------------
+// Build a uniform NavGrid over the whole level interior so chasing soldiers
+// route THROUGH the corridors / around the cover pillars + the corridor door
+// instead of straight-lining into walls. NavGrid starts all-walkable and the
+// builder only OR-s blocked cells, so we invert: block the entire grid bounds,
+// then carve every room/corridor interior back to walkable (shrunk by the agent
+// radius so an agent keeps clearance from the walls), then re-block the cover
+// pillars via build_nav_occupancy. The result: walkable == room/corridor space.
+//
+// Pillar obstacles, in the exact terms build_shell spawns them (see below). Kept
+// as a named list so the door-carve + the pillar-stamp share one source.
+constexpr std::array<math::Vec3, 2> kPillarCenters{{{0.5f, 0.0f, 0.0f}, {9.5f, 0.0f, 1.5f}}};
+constexpr math::Vec3 kPillarHalf{0.45f, 1.5f, 0.45f};
+
+// Carve a room/corridor interior to WALKABLE, shrunk inward by `inset` so an
+// agent keeps clearance from the walls. Operates per-cell over the grid.
+void nav_carve_walkable(ai::NavGrid& grid, math::Vec3 lo, math::Vec3 hi, f32 inset) {
+    const f32 x0 = lo.x + inset;
+    const f32 x1 = hi.x - inset;
+    const f32 z0 = lo.z + inset;
+    const f32 z1 = hi.z - inset;
+    if (!(x1 > x0) || !(z1 > z0))
+        return;
+    const ai::NavCell c0 = grid.world_to_cell(math::Vec3{x0, 0.0f, z0});
+    const ai::NavCell c1 = grid.world_to_cell(math::Vec3{x1, 0.0f, z1});
+    for (i32 z = c0.z; z <= c1.z; ++z) {
+        for (i32 x = c0.x; x <= c1.x; ++x) {
+            const ai::NavCell c{x, z};
+            // Only carve cells whose CENTRE actually lies inside the shrunk box,
+            // so the walkable region matches the room interior exactly.
+            const math::Vec3 wc = grid.cell_to_world(c);
+            if (wc.x >= x0 && wc.x <= x1 && wc.z >= z0 && wc.z <= z1)
+                grid.set_blocked(c, false);
+        }
+    }
+}
+
+void build_nav_grid(DukeGame& game) {
+    using namespace ai;
+    // Level bounds = union of all volumes, with a one-cell margin.
+    f32 minx = 1e30f, minz = 1e30f, maxx = -1e30f, maxz = -1e30f;
+    for (const Volume& v : kVolumes) {
+        minx = std::min(minx, v.lo.x);
+        minz = std::min(minz, v.lo.z);
+        maxx = std::max(maxx, v.hi.x);
+        maxz = std::max(maxz, v.hi.z);
+    }
+    constexpr f32 kCell = 0.5f;
+    const math::Vec3 origin{minx - kCell, kFloorY + 0.85f, minz - kCell};
+    const u32 w = static_cast<u32>(std::ceil((maxx - minx) / kCell)) + 2u;
+    const u32 h = static_cast<u32>(std::ceil((maxz - minz) / kCell)) + 2u;
+    game.nav_grid.resize(w, h, kCell, origin);
+
+    // 1. Block the entire grid (everything starts solid).
+    for (u32 z = 0; z < h; ++z)
+        for (u32 x = 0; x < w; ++x)
+            game.nav_grid.set_blocked(NavCell{static_cast<i32>(x), static_cast<i32>(z)}, true);
+
+    // 2. Carve each room/corridor interior back to walkable. NO inset here: an
+    //    inset on adjacent volumes would pull BOTH sides of a portal mouth away
+    //    from the shared edge and leave a blocked gap at every junction, severing
+    //    connectivity. We instead carve the full interior (solid space stays
+    //    blocked from step 1) and get wall/cover clearance from the radius-grown
+    //    pillar + door occupancy in steps 3-4.
+    for (const Volume& v : kVolumes)
+        nav_carve_walkable(game.nav_grid, v.lo, v.hi, 0.0f);
+
+    // 3. Re-block the cover pillars so AI routes AROUND them (agent-radius grown).
+    std::array<NavBox, kPillarCenters.size()> pillars{};
+    for (usize i = 0; i < kPillarCenters.size(); ++i)
+        pillars[i] = NavBox{kPillarCenters[i], kPillarHalf, 0.0f};
+    (void)build_nav_occupancy(game.nav_grid, std::span<const NavBox>{pillars.data(), pillars.size()},
+                              game.nav_agent_radius);
+
+    // 4. Block the CLOSED corridor door's cells so the EAST soldiers cannot route
+    //    to the player until the player's HUB trigger opens it (then nav_open_door
+    //    re-carves these cells walkable). The door is authored before this call.
+    if (game.corridor_door.valid()) {
+        const NavBox dbox{game.door_closed_pos,
+                          math::Vec3{game.door_half.x, kPillarHalf.y, game.door_half.z}, 0.0f};
+        (void)build_nav_occupancy(game.nav_grid, dbox, game.nav_agent_radius);
+    }
+
+    PSY_LOG_INFO("duke_demo: nav grid {}x{} cells @ {:.2f}m (agent r={:.2f})", w, h, kCell,
+                 static_cast<double>(game.nav_agent_radius));
+}
+
+// Re-carve the corridor-door cells to WALKABLE once the door opens, so a chasing
+// soldier can route past it. Alloc-free (per-cell writes into the host grid).
+void nav_open_door(DukeGame& game) {
+    if (game.door_nav_carved)
+        return;
+    const math::Vec3 lo{game.door_closed_pos.x - game.door_half.x, kFloorY,
+                        game.door_closed_pos.z - game.door_half.z};
+    const math::Vec3 hi{game.door_closed_pos.x + game.door_half.x, kCeilY,
+                        game.door_closed_pos.z + game.door_half.z};
+    // Carve with no inset (the corridor is already narrow) so the full mouth opens.
+    nav_carve_walkable(game.nav_grid, lo, hi, 0.0f);
+    game.door_nav_carved = true;
 }
 
 // --- BSP + portal authoring ------------------------------------------------
@@ -723,9 +866,13 @@ void spawn_enemy(DukeGame& game,
 
     ai::AiAgentComponent agent{};
     agent.state = ai::AiState::Patrol;
-    agent.sight_range = 36.0f;
+    // Room-scale sight so a soldier only acquires the player when genuinely close
+    // (clear LOS in the same room/corridor). Far rooms PATROL until then, so the
+    // navigate pass routes their multi-room patrol around the cover pillars rather
+    // than chasing a never-seen target toward a degenerate last-seen origin.
+    agent.sight_range = 13.0f;
     agent.fov_cos = -1.0f;
-    agent.attack_range = 26.0f;
+    agent.attack_range = 11.0f;
     agent.think_interval = 0.12f;
     agent.move_speed = 2.6f;
     game.scene->registry().add<ai::AiAgentComponent>(e, ai::sanitize_ai_agent(agent));
@@ -739,6 +886,17 @@ void spawn_enemy(DukeGame& game,
     route.arrive_radius = 0.6f;
     game.scene->registry().add<ai::PatrolComponent>(e, ai::sanitize_patrol(route));
 
+    // W11-2: a NavAgentComponent makes this soldier FOLLOW an A* route (planned by
+    // ai::navigate against game.nav_grid) instead of straight-line steering. The
+    // navigate pass routes around walls / the cover pillars / the corridor door.
+    ai::NavAgentComponent nav{};
+    nav.repath_interval = 0.35f;
+    nav.repath_dist = 1.5f;
+    nav.arrive_radius = 0.5f;
+    nav.separation_radius = 0.8f;
+    nav.separation_weight = 1.0f;
+    game.scene->registry().add<ai::NavAgentComponent>(e, ai::sanitize_nav_agent(nav));
+
     game.enemies[game.enemy_count++] = e;
 }
 
@@ -748,11 +906,16 @@ void spawn_enemies(DukeGame& game) {
     const f32 ey = kFloorY + 0.85f;
     const Volume& east = volume_for(kCluEast);
     const Volume& hub = volume_for(kCluHub);
-    // Two in EAST, one in HUB, one in VAULT (revealed after the door opens).
-    spawn_enemy(game, cube, enemy_mat, {east.lo.x + 1.5f, ey, -2.0f},
-                {{{east.lo.x + 1.5f, ey, -2.0f}, {east.lo.x + 1.5f, ey, 2.0f}}});
-    spawn_enemy(game, cube, enemy_mat, {east.hi.x - 1.5f, ey, 2.0f},
-                {{{east.hi.x - 1.5f, ey, 2.0f}, {east.hi.x - 1.5f, ey, -2.0f}}});
+    // Two in EAST, one in HUB, one in VAULT (revealed after the door opens). The
+    // EAST soldiers patrol corner-to-corner ACROSS the EAST cover pillar (at
+    // {9.5,1.5}); since their patrol line is blocked by the pillar, the navigate
+    // pass must route an A* path AROUND it -> a genuine multi-waypoint route the
+    // soldier follows, even before the player is in sight. (Once the player
+    // reaches EAST through the opened door they additionally Chase him.)
+    spawn_enemy(game, cube, enemy_mat, {east.lo.x + 1.0f, ey, -2.5f},
+                {{{east.lo.x + 1.0f, ey, -2.5f}, {east.hi.x - 1.0f, ey, 2.5f}}});
+    spawn_enemy(game, cube, enemy_mat, {east.hi.x - 1.0f, ey, -2.5f},
+                {{{east.hi.x - 1.0f, ey, -2.5f}, {east.lo.x + 1.0f, ey, 2.5f}}});
     spawn_enemy(game, cube, enemy_mat, {2.0f, ey, -2.5f},
                 {{{2.0f, ey, -2.5f}, {2.0f, ey, 2.5f}}});
     const Volume& vault = volume_for(kCluVault);
@@ -761,6 +924,216 @@ void spawn_enemies(DukeGame& game) {
                 {{{vault.lo.x + 1.0f, ey, vault.hi.z - 1.5f},
                   {vault.hi.x - 1.0f, ey, vault.hi.z - 1.5f}}});
     (void)hub;
+}
+
+// --- DOOR / TRIGGER / PICKUP authoring (W11-2) ------------------------------
+// A trigger-opened door on the HUB<->EAST corridor (C1) plus a health and an
+// ammo pickup on the player's spine path. The smoke player walks START -> HUB ->
+// EAST along z=0; crossing the HUB trigger opens the C1 door (clearing the EAST
+// soldiers' LOS + nav route to the player) and the spine overlaps both pickups.
+void build_mechanics(DukeGame& game) {
+    render::MeshId cube = game.renderer->builtin_mesh(render::BuiltInMesh::UnitCube);
+
+    // -- Corridor door: a sliding slab spanning the C1 corridor mouth (x~5, z=0).
+    //    Closed it blocks LOS + bullets (combat hitbox) + the EAST nav route; the
+    //    HUB trigger slides it up out of the way. --
+    const render::MaterialId door_mat = make_material(*game.scene, rgba8(150, 110, 60));
+    const f32 door_h = kCeilY - kFloorY;
+    const math::Vec3 door_closed{5.0f, kFloorY + 0.5f * door_h, 0.0f};
+    const math::Vec3 door_open = math::add(door_closed, math::Vec3{0.0f, door_h + 0.2f, 0.0f});
+    const math::Vec3 door_half{0.3f, 0.5f * door_h, 1.2f};  // spans the C1 width (z +/-1.2)
+    game.door_closed_pos = door_closed;
+    game.door_half = door_half;
+    {
+        scene::LocalTransform local{};
+        local.translation = door_closed;
+        local.scale = {2.0f * door_half.x, 2.0f * door_half.y, 2.0f * door_half.z};
+        game.corridor_door =
+            game.scene->spawn_mesh_instance(cube, door_mat, local, scene::kInvalidSceneNode,
+                                            scene::RenderableFlags::Visible,
+                                            scene::ObjectMobility::Dynamic);
+        // Record the door under the C1 room so the PVS pass shows/hides it with C1.
+        RoomMeshes& c1 = game.rooms[kCluC1];
+        if (c1.count < c1.entities.size())
+            c1.entities[c1.count++] = game.corridor_door;
+
+        // Combat hitbox: a gameplay raycast (player hitscan / probe) is blocked when
+        // closed; tick_doors disables it when fully open.
+        gameplay::HitboxComponent hb{};
+        hb.radius = 0.0f;  // AABB
+        hb.half_extent = door_half;
+        hb.enabled = 1u;
+        game.scene->registry().add<gameplay::HitboxComponent>(game.corridor_door,
+                                                              gameplay::sanitize_hitbox(hb));
+
+        gameplay::DoorComponent dc{};
+        dc.closed_pos = door_closed;
+        dc.open_pos = door_open;
+        dc.move_time = 0.5f;
+        dc.hitbox_entity = game.corridor_door;
+        game.scene->registry().add<gameplay::DoorComponent>(game.corridor_door,
+                                                           gameplay::sanitize_door(dc));
+
+        // Static physics slab so the AI physics-raycast LOS is blocked when closed;
+        // moved with the door each tick (set_body_position) so LOS tracks it.
+        physics::BodyDesc desc{};
+        desc.shape = physics::Shape::Box;
+        desc.mass = 0.0f;
+        desc.position = door_closed;
+        desc.half_extent = door_half;
+        game.door_body = game.world.create_body(desc);
+    }
+
+    // -- Trigger: a volume at the HUB centre the player crosses, opening the door. --
+    {
+        scene::LocalTransform local{};
+        local.translation = {0.5f, kFloorY + 1.0f, 0.0f};
+        game.corridor_trigger = game.scene->create_entity(local);
+        gameplay::TriggerVolumeComponent tv{};
+        tv.radius = 1.8f;
+        tv.fire_faction = kFactionPlayer;  // the player opens it
+        tv.target = game.corridor_door;
+        tv.open_target_door = 1u;
+        game.scene->registry().add<gameplay::TriggerVolumeComponent>(
+            game.corridor_trigger, gameplay::sanitize_trigger_volume(tv));
+    }
+
+    // -- Health pickup: a green box on the START->HUB spine (x=-4, z=0). --
+    {
+        const render::MaterialId hp_mat = make_material(*game.scene, rgba8(80, 220, 120));
+        scene::LocalTransform local{};
+        local.translation = {-4.0f, kFloorY + 1.0f, 0.0f};
+        local.scale = {0.4f, 0.4f, 0.4f};
+        game.health_pickup =
+            game.scene->spawn_mesh_instance(cube, hp_mat, local, scene::kInvalidSceneNode,
+                                            scene::RenderableFlags::Visible,
+                                            scene::ObjectMobility::Dynamic);
+        RoomMeshes& c0 = game.rooms[kCluC0];
+        if (c0.count < c0.entities.size())
+            c0.entities[c0.count++] = game.health_pickup;
+        gameplay::PickupComponent pk{};
+        pk.kind = gameplay::PickupKind::Health;
+        pk.amount = 25.0f;
+        pk.radius = 1.6f;
+        pk.pickup_faction = kFactionPlayer;
+        game.scene->registry().add<gameplay::PickupComponent>(game.health_pickup,
+                                                             gameplay::sanitize_pickup(pk));
+    }
+
+    // -- Ammo pickup: a yellow box on the HUB->EAST spine (x=4, z=0), past the door. --
+    {
+        const render::MaterialId am_mat = make_material(*game.scene, rgba8(230, 210, 70));
+        scene::LocalTransform local{};
+        local.translation = {2.0f, kFloorY + 1.0f, 0.0f};
+        local.scale = {0.4f, 0.4f, 0.4f};
+        game.ammo_pickup =
+            game.scene->spawn_mesh_instance(cube, am_mat, local, scene::kInvalidSceneNode,
+                                            scene::RenderableFlags::Visible,
+                                            scene::ObjectMobility::Dynamic);
+        RoomMeshes& hub = game.rooms[kCluHub];
+        if (hub.count < hub.entities.size())
+            hub.entities[hub.count++] = game.ammo_pickup;
+        gameplay::PickupComponent pk{};
+        pk.kind = gameplay::PickupKind::Ammo;
+        pk.amount = 30.0f;
+        pk.radius = 1.6f;
+        pk.pickup_faction = kFactionPlayer;
+        game.scene->registry().add<gameplay::PickupComponent>(game.ammo_pickup,
+                                                             gameplay::sanitize_pickup(pk));
+    }
+}
+
+// Rebuild the actor view (player + live enemies) for the trigger / pickup ticks.
+void refresh_actors(DukeGame& game) {
+    game.actor_count = 0u;
+    game.actors[game.actor_count++] = gameplay::Actor{game.player, kFactionPlayer};
+    for (u32 i = 0; i < game.enemy_count; ++i) {
+        if (game.scene->registry().alive(game.enemies[i]))
+            game.actors[game.actor_count++] = gameplay::Actor{game.enemies[i], kFactionEnemy};
+    }
+}
+
+// One tick of the door/trigger/pickup mechanics: triggers -> doors -> pickups,
+// driving the door's physics slab + mesh + re-carving the nav when it opens, and
+// logging the events the smoke gate looks for. Alloc-free (fixed-capacity spans).
+void tick_mechanics(DukeGame& game, f32 dt) {
+    scene::EcsRegistry& registry = game.scene->registry();
+    refresh_actors(game);
+    const std::span<const gameplay::Actor> actors{game.actors.data(), game.actor_count};
+
+    // Triggers: a player entry opens the linked door (sets open_request).
+    u32 tev = 0u;
+    (void)gameplay::tick_triggers(registry, actors, game.trigger_events, &tev);
+    for (u32 i = 0; i < tev; ++i) {
+        const gameplay::TriggerEvent& e = game.trigger_events[i];
+        game.trigger_fired = true;
+        PSY_LOG_INFO("duke_demo: trigger fired (entry #{}) -> corridor door opening", e.fire_count);
+    }
+
+    // Doors: advance the slab animation + gate the combat hitbox.
+    gameplay::tick_doors(registry, dt);
+
+    // Drive the door's animated position into the mesh + physics slab, and once it
+    // is fully open re-carve its nav cells so the EAST soldiers can route through.
+    if (const auto* d = registry.get<gameplay::DoorComponent>(game.corridor_door)) {
+        if (auto* t = registry.get<scene::TransformComponent>(game.corridor_door)) {
+            scene::LocalTransform local = t->local;
+            local.translation = d->position;
+            (void)game.scene->set_transform(game.corridor_door, local);
+        }
+        if (game.door_body.valid())
+            game.world.set_body_position(game.door_body, d->position);
+        if (d->state == gameplay::DoorState::Open) {
+            nav_open_door(game);  // carve the corridor cells walkable (one-shot).
+            if (!game.door_opened_logged) {
+                game.door_opened_logged = true;
+                PSY_LOG_INFO("duke_demo: corridor door opened (LOS + nav path clear to EAST)");
+            }
+        }
+    }
+
+    // Pickups: grant on overlap, then despawn the spent items.
+    u32 pev = 0u;
+    u32 desp = 0u;
+    (void)gameplay::tick_pickups(registry, actors, game.pickup_despawn, &desp, game.pickup_events,
+                                 &pev);
+    for (u32 i = 0; i < pev; ++i) {
+        const gameplay::PickupEvent& e = game.pickup_events[i];
+        game.pickup_taken = true;
+        const char* kind = (e.kind == gameplay::PickupKind::Health) ? "health"
+                           : (e.kind == gameplay::PickupKind::Ammo)  ? "ammo"
+                                                                     : "weapon";
+        PSY_LOG_INFO("duke_demo: picked up {} {:.0f}->{:.0f}", kind,
+                     static_cast<double>(e.before), static_cast<double>(e.after));
+    }
+    for (u32 i = 0; i < desp; ++i)
+        (void)game.scene->despawn_entity(game.pickup_despawn[i]);
+}
+
+// Poll the enemies' routed nav state: latch nav_path_followed once any soldier is
+// actually FOLLOWING a multi-waypoint A* route (has_path with >=3 waypoints and a
+// cursor that has advanced past the start cell). Proves the AI navigates rather
+// than steers straight. Read-only over the NavAgentComponent the navigate pass
+// wrote; alloc-free.
+void poll_nav_stat(DukeGame& game) {
+    for (u32 i = 0; i < game.enemy_count; ++i) {
+        const Entity e = game.enemies[i];
+        if (!game.scene->registry().alive(e))
+            continue;
+        const auto* nav = game.scene->registry().get<ai::NavAgentComponent>(e);
+        if (nav == nullptr || nav->has_path == 0u)
+            continue;
+        if (nav->count > game.nav_best_waypoints)
+            game.nav_best_waypoints = nav->count;
+        if (nav->count >= 3u && nav->cursor > 0u) {
+            if (!game.nav_path_followed) {
+                game.nav_path_followed = true;
+                PSY_LOG_INFO("duke_demo: AI followed a multi-waypoint nav route - {} waypoints, "
+                             "cursor {} (enemy {})",
+                             nav->count, nav->cursor, i);
+            }
+        }
+    }
 }
 
 // --- AI host hooks ---------------------------------------------------------
@@ -861,17 +1234,17 @@ void draw_hud(DukeGame& game, render::Framebuffer& fb) {
         if (game.scene->registry().alive(game.enemies[i]))
             ++alive;
     }
-    char line[160];
+    char line[200];
     std::snprintf(line, sizeof(line),
-                  "HP %3.0f  ENEMIES %u  KILLS %u  PVS %u/%u  FACES %u/%u  VAULT %s",
+                  "HP %3.0f  ENEMIES %u  KILLS %u  PVS %u/%u  FACES %u/%u  NAV %u  DOOR %s",
                   static_cast<double>(health), alive, game.player_kills, game.visible_leaves,
-                  game.total_leaves, game.visible_faces, game.total_faces,
-                  game.vault_open ? "OPEN" : "SEALED");
+                  game.total_leaves, game.visible_faces, game.total_faces, game.nav_best_waypoints,
+                  game.door_opened_logged ? "OPEN" : "SHUT");
 
     ui::imm::begin_frame(fb);
-    ui::imm::filled_rect(math::Vec2{8.0f, 8.0f}, math::Vec2{480.0f, 22.0f},
+    ui::imm::filled_rect(math::Vec2{8.0f, 8.0f}, math::Vec2{520.0f, 22.0f},
                          ui::imm::rgba(0x0B, 0x10, 0x18, 0xC0));
-    ui::imm::rect_outline(math::Vec2{8.0f, 8.0f}, math::Vec2{480.0f, 22.0f},
+    ui::imm::rect_outline(math::Vec2{8.0f, 8.0f}, math::Vec2{520.0f, 22.0f},
                           ui::imm::rgba(0x60, 0x70, 0x88));
     ui::imm::label(math::Vec2{16.0f, 14.0f}, line,
                    health > 0.0f ? ui::imm::rgba(0xE6, 0xF0, 0xFF)
@@ -937,13 +1310,13 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     app_host.set_scene_lighting_enabled(true);
 
     game.scene->prewarm_capacity(scene::ScenePrewarmConfig{
-        .scene_entities = 96u,
-        .renderables = 48u,
+        .scene_entities = 112u,  // + door / trigger / health+ammo pickups (W11-2)
+        .renderables = 56u,
         .cameras = 2u,
         .lights = 6u,
-        .render_items = 48u,
+        .render_items = 56u,
     });
-    app_host.reserve_scene_capacity(48u, 12u);
+    app_host.reserve_scene_capacity(56u, 12u);
     game.walk_volumes.reserve(kClusterCount);
 
     // --- Level geometry (visual rooms + physics shell) ---
@@ -954,6 +1327,8 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     make_lights(game);
     spawn_player(game);
     spawn_enemies(game);
+    build_mechanics(game);  // W11-2: corridor door + trigger + health/ammo pickups
+    build_nav_grid(game);   // W11-2: nav grid over the interior (after the door)
 
     // --- BSP + portals + PVS ---
     // PRIMARY PATH: load the REAL on-disk .psybsp built offline by lm_qbsp from
@@ -974,6 +1349,7 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     game.ai.ctx.los = los_hook;
     game.ai.ctx.fire = fire_hook;
     game.ai.ctx.apply_move = apply_move_hook;
+    game.ai.ctx.nav_grid = &game.nav_grid;  // W11-2: opt-in A* path navigation
 
     PSY_LOG_INFO("duke_demo: {} rooms, {} enemies, hybrid render{}",
                  static_cast<u32>(kClusterCount), game.enemy_count,
@@ -1076,6 +1452,13 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
         gameplay::cleanup_projectiles(*game.scene, cctx);
         (void)gameplay::resolve_deaths(*game.scene, true, &on_death, &game);
 
+        // 7b. W11-2 mechanics: triggers -> doors -> pickups (player grabs the
+        //     health/ammo items; crossing the HUB trigger slides the C1 door open,
+        //     clearing LOS + re-carving the nav so the EAST soldiers advance), then
+        //     poll the soldiers' routed nav state for the multi-waypoint stat.
+        tick_mechanics(game, dt);
+        poll_nav_stat(game);
+
         // 8. Render: hybrid shadow occluder build (Hybrid mode) then raster.
         if (app_host.active_scene()) {
             const scene::RenderSettings rs =
@@ -1109,22 +1492,29 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
             }
             // The smoke harness greps these lines. We assert (via the exit code
             // below) that the REAL on-disk map loaded, the PVS genuinely culled
-            // at least one leaf at some point, the player scored a kill, AND the
-            // level renders FROM the loaded BSP faces with the PVS visibly culling
-            // some of them (visible_faces < total_faces > 0).
+            // at least one leaf, the level renders FROM the loaded BSP faces with
+            // the PVS visibly culling some (visible_faces < total_faces > 0), the
+            // AI NAVIGATED a multi-waypoint route, the corridor TRIGGER fired (door
+            // opened), a PICKUP was taken, AND the player scored a kill.
             const bool map_ok = game.map_loaded;
             const bool pvs_ok = game.logged_cull;
             const bool kill_ok = game.player_kills > 0u;
             const bool faces_ok = game.bsp_geom_loaded && game.total_faces > 0u &&
                                   game.visible_faces > 0u && game.logged_faces;
+            const bool nav_ok = game.nav_path_followed;
+            const bool trig_ok = game.trigger_fired && game.door_opened_logged;
+            const bool pickup_ok = game.pickup_taken;
+            const bool pass = map_ok && pvs_ok && kill_ok && faces_ok && nav_ok && trig_ok &&
+                              pickup_ok;
             PSY_LOG_INFO(
                 "duke_demo: smoke target reached ({}); map_loaded={} kills={} enemies_left={} "
-                "vault_open={} pvs_culled={} bsp_faces={}/{} -> {}",
+                "vault_open={} pvs_culled={} bsp_faces={}/{} nav_path_followed={} (max_wp={}) "
+                "trigger_fired={} pickup_taken={} -> {}",
                 smoke_frames, map_ok ? 1 : 0, game.player_kills, alive, game.vault_open ? 1 : 0,
-                pvs_ok ? 1 : 0, game.visible_faces, game.total_faces,
-                (map_ok && pvs_ok && kill_ok && faces_ok) ? "PASS" : "FAIL");
+                pvs_ok ? 1 : 0, game.visible_faces, game.total_faces, nav_ok ? 1 : 0,
+                game.nav_best_waypoints, trig_ok ? 1 : 0, pickup_ok ? 1 : 0, pass ? "PASS" : "FAIL");
             g_game = nullptr;
-            if (!map_ok || !pvs_ok || !kill_ok || !faces_ok)
+            if (!pass)
                 return EXIT_FAILURE;
             const bool capture_ok = app_host.write_capture_if_requested("duke_demo");
             return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;
