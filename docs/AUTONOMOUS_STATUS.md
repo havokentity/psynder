@@ -39,9 +39,9 @@ First playable FPS demo (games/shooter_demo): BSP room + hybrid shadows + combat
 - DEMO GAME 2 9e43de2: NFS2SE-style racer (games/racer_demo) — spline track + vehicle physics + chase cam + lap timing. Deferred: vehicle speed-governor/steering-authority weak under auto-drive; terrain elevation (flat track only).
 
 ## Wave 5 (in flight)
-- DEMO GAME 3: Delta Force-style terrain tactical shooter (games/df_demo) — heightmap terrain + grounded FP player + ranged AI soldiers + hybrid sun/terrain shadows + headless combat smoke.
-- Netcode hardening (engine/net): real localhost UDP transport + entity-despawn replication + client prediction & server reconciliation over the M-NET layer.
-- AI navigation (engine/ai): NavGrid + deterministic pooled-A* + path-following/smoothing + light local avoidance, replacing steer-v1 straight-line chase (host supplies world sampling via hooks).
+- DEMO GAME 3: Delta Force-style terrain tactical shooter (games/df_demo) — heightmap terrain + grounded FP player + ranged AI soldiers + hybrid sun/terrain shadows + headless combat smoke. [IN FLIGHT]
+- Netcode hardening (engine/net): real localhost UDP transport + entity-despawn replication + client prediction & server reconciliation over the M-NET layer. [LANDED 08eeb99 — UDP socket (pooled recv) + PRP2 despawn set + Predictor/ServerInputProcessor; 3 [net] tests + real-socket UDP smoke; release-green. Next: AOI per-peer, handshake/lobby, jitter buffer.]
+- AI navigation (engine/ai): NavGrid + deterministic pooled-A* + path-following/smoothing + light local avoidance, replacing steer-v1 straight-line chase (host supplies world sampling via hooks). [IN FLIGHT]
 
 ## Wave 5+ (planned)
 First demo GAME (indoor BSP shooter: combat + lights + hybrid shadows + AI + a level) under games/ — orchestrator wires it (root CMake + host). Then NFS racer demo, Delta Force terrain demo. Plus: wire PsyGraph tick + AI + combat into the editor play runtime; deferred render fidelity (soft penumbra, terrain-march shadows); anti-tunneling #63; editor graph-panel for PsyGraph.
