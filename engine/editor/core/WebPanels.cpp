@@ -583,7 +583,11 @@ std::vector<u8> encode_schema_catalog_envelope() {
     write_field_schema(w, "restitution", "f32", false, 0.01f);
     write_field_schema(w, "runtime_body", "u32");
 
-    write_component_schema_header(w, "VehicleComponent", "native-vehicle-v1", 11);
+    constexpr std::array<EnumOption, 2> kVehicleGroundOptions{{
+        {"Plane", static_cast<u32>(scene::VehicleGroundMode::Plane)},
+        {"Heightfield", static_cast<u32>(scene::VehicleGroundMode::Heightfield)},
+    }};
+    write_component_schema_header(w, "VehicleComponent", "native-vehicle-v2", 20);
     write_field_schema(w, "half_extent", "vec3", false, 0.01f, "m");
     write_field_schema(w, "mass", "f32", false, 1.0f, "kg");
     write_field_schema(w, "engine_max_torque", "f32", false, 1.0f, "N.m");
@@ -592,6 +596,15 @@ std::vector<u8> encode_schema_catalog_envelope() {
     write_field_schema(w, "suspension", "f32", false, 0.01f, "m");
     write_field_schema(w, "stiffness", "f32", false, 100.0f, "N/m");
     write_field_schema(w, "damping", "f32", false, 10.0f, "N.s/m");
+    write_field_schema(w, "max_speed", "f32", false, 0.5f, "m/s");
+    write_field_schema(w, "steer_full_speed", "f32", false, 0.5f, "m/s");
+    write_field_schema(w, "steer_taper_speed", "f32", false, 0.5f, "m/s");
+    write_field_schema(w, "steer_min_authority", "f32", false, 0.01f);
+    write_field_schema(w, "ground_mode", "enum", false, {}, {}, kVehicleGroundOptions);
+    write_field_schema(w, "plane_y", "f32", false, 0.05f, "m");
+    write_field_schema(w, "hf_base_y", "f32", false, 0.05f, "m");
+    write_field_schema(w, "hf_amplitude", "f32", false, 0.05f, "m");
+    write_field_schema(w, "hf_frequency", "f32", false, 0.005f, "rad/m");
     write_field_schema(w, "is_player", "bool", false);
     write_field_schema(w, "runtime_vehicle", "u32");
     write_field_schema(w, "runtime_chassis", "u32");
@@ -820,6 +833,15 @@ u64 selection_signature(scene::Scene& scene, Entity entity, u32 generation) {
         out = hash_f32(out, vehicle->suspension);
         out = hash_f32(out, vehicle->stiffness);
         out = hash_f32(out, vehicle->damping);
+        out = hash_f32(out, vehicle->max_speed);
+        out = hash_f32(out, vehicle->steer_full_speed);
+        out = hash_f32(out, vehicle->steer_taper_speed);
+        out = hash_f32(out, vehicle->steer_min_authority);
+        out = hierarchy_hash_combine(out, static_cast<u32>(vehicle->ground_mode));
+        out = hash_f32(out, vehicle->plane_y);
+        out = hash_f32(out, vehicle->hf_base_y);
+        out = hash_f32(out, vehicle->hf_amplitude);
+        out = hash_f32(out, vehicle->hf_frequency);
         out = hierarchy_hash_combine(out, vehicle->is_player);
         out = hierarchy_hash_combine(out, vehicle->runtime_vehicle);
         out = hierarchy_hash_combine(out, vehicle->runtime_chassis);
@@ -1247,7 +1269,7 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
 
     if (vehicle) {
         w.str("VehicleComponent");
-        w.map_header(11);
+        w.map_header(20);
         w.str("half_extent");
         write_vec3(w, vehicle->half_extent);
         w.str("mass");
@@ -1264,6 +1286,24 @@ std::vector<u8> encode_selection_state_envelope(scene::Scene& scene, Entity enti
         w.f32_(vehicle->stiffness);
         w.str("damping");
         w.f32_(vehicle->damping);
+        w.str("max_speed");
+        w.f32_(vehicle->max_speed);
+        w.str("steer_full_speed");
+        w.f32_(vehicle->steer_full_speed);
+        w.str("steer_taper_speed");
+        w.f32_(vehicle->steer_taper_speed);
+        w.str("steer_min_authority");
+        w.f32_(vehicle->steer_min_authority);
+        w.str("ground_mode");
+        w.u32_(static_cast<u32>(vehicle->ground_mode));
+        w.str("plane_y");
+        w.f32_(vehicle->plane_y);
+        w.str("hf_base_y");
+        w.f32_(vehicle->hf_base_y);
+        w.str("hf_amplitude");
+        w.f32_(vehicle->hf_amplitude);
+        w.str("hf_frequency");
+        w.f32_(vehicle->hf_frequency);
         w.str("is_player");
         w.boolean(vehicle->is_player != 0u);
         w.str("runtime_vehicle");

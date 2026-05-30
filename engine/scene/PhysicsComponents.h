@@ -35,6 +35,9 @@
 #include "math/Math.h"
 #include "scene/EcsRegistry.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace psynder::scene {
 
 // Scene-level collider shape. The value order MIRRORS physics::Shape so the
@@ -69,15 +72,43 @@ PSYNDER_COMPONENT(RigidBodyComponent) {
     u32 runtime_body = 0u;  // physics BodyId.raw; 0 when not playing (not saved)
 };
 
+// How a drivable vehicle's per-wheel suspension probe finds the ground (Wave 8,
+// no-code terrain-on-vehicle authoring). Value order MIRRORS the physics ground
+// binding the PlayRuntime selects: Plane => physics::vehicle::set_ground_plane
+// (a flat world-Y half-space, the legacy default), Heightfield =>
+// physics::vehicle::set_ground_heightfield (each wheel samples a procedural
+// terrain surface so the chassis rides the relief instead of floating at a
+// constant Y). Stored as a u8 in the component + the cooked SVHX chunk; 0 stays
+// Plane so every pre-Wave-8 vehicle keeps its bit-for-bit flat-ground behaviour.
+enum class VehicleGroundMode : u8 {
+    Plane = 0,
+    Heightfield = 1,
+};
+
+[[nodiscard]] constexpr VehicleGroundMode sanitize_vehicle_ground_mode(
+    VehicleGroundMode m) noexcept {
+    return (m == VehicleGroundMode::Heightfield) ? VehicleGroundMode::Heightfield
+                                                 : VehicleGroundMode::Plane;
+}
+
 // A drivable vehicle attached to an entity. The chassis is an ordinary rigid
 // box body; the vehicle solver runs inside World::step() and writes the chassis
 // pose. Authored fields (half_extent / mass / engine torque / drag / wheel
-// params / is_player) persist with the scene; the four wheels are auto-placed
-// at the corners of half_extent in begin() (front pair = steer/non-drive, rear
-// pair = drive, RWD). runtime_vehicle (VehicleId.raw) + runtime_chassis
-// (BodyId.raw) are runtime-only handle values filled by PlayRuntime::begin() and
-// cleared by PlayRuntime::end(). is_player marks the car the WASD input drives
-// and the chase camera follows.
+// params / governor + steer authority / ground binding / is_player) persist with
+// the scene; the four wheels are auto-placed at the corners of half_extent in
+// begin() (front pair = steer/non-drive, rear pair = drive, RWD). runtime_vehicle
+// (VehicleId.raw) + runtime_chassis (BodyId.raw) are runtime-only handle values
+// filled by PlayRuntime::begin() and cleared by PlayRuntime::end(). is_player
+// marks the car the WASD input drives and the chase camera follows.
+//
+// Ground binding (Wave 8): ground_mode selects how PlayRuntime grounds the four
+// wheels. Plane (default) binds a flat plane at plane_y, identical to the legacy
+// behaviour. Heightfield binds a procedural terrain surface the wheels probe per
+// tick, so a designer can author a car that climbs hills with NO C++: the
+// surface is fully described by the compact hf_* fields below (amplitude +
+// spatial frequency + base height), evaluated by the pure, alloc-free
+// vehicle_terrain_height() helper. Keeping the surface ON the component means the
+// height source round-trips with the scene and needs no terrain subsystem.
 PSYNDER_COMPONENT(VehicleComponent) {
     math::Vec3 half_extent{1.0f, 0.4f, 2.0f};  // chassis box half-extent (m)
     f32 mass = 1200.0f;                         // kg
@@ -87,11 +118,70 @@ PSYNDER_COMPONENT(VehicleComponent) {
     f32 suspension = 0.35f;                     // rest length (m)
     f32 stiffness = 35000.0f;                   // N/m
     f32 damping = 4500.0f;                      // N.s/m
-    u8 is_player = 1u;                           // WASD-driven + chase-cam target
-    u8 _pad[3] = {};
+    // --- Speed governor + speed-scaled steering authority (Wave 8) --------
+    // Mirror physics::vehicle::VehicleDesc. max_speed == 0 disables the
+    // governor (legacy uncapped). The steer-authority trio defaults to a no-op
+    // identity (full authority everywhere) so an un-authored car is unchanged.
+    f32 max_speed = 0.0f;            // m/s governed forward cap; 0 = no governor
+    f32 steer_full_speed = 0.0f;     // m/s; <= this -> full steering authority
+    f32 steer_taper_speed = 0.0f;    // m/s; >= this -> steer_min_authority
+    f32 steer_min_authority = 1.0f;  // 0..1 authority at/above the taper speed
+    // --- Ground binding (Wave 8 terrain-on-vehicle) -----------------------
+    VehicleGroundMode ground_mode = VehicleGroundMode::Plane;
+    u8 is_player = 1u;  // WASD-driven + chase-cam target
+    u8 _pad[2] = {};
+    f32 plane_y = 0.0f;  // flat-ground world Y (Plane mode; also the hf fallback)
+    // Procedural Heightfield surface (used only when ground_mode==Heightfield).
+    // height(x,z) = hf_base_y + hf_amplitude * 0.5 * (sin(x*hf_frequency) +
+    // sin(z*hf_frequency)). A compact, deterministic, alloc-free rolling-hills
+    // field a designer tunes with two sliders; PlayRuntime feeds it to the
+    // suspension probe via a borrowed HeightSampler.
+    f32 hf_base_y = 0.0f;      // world Y the rolling surface oscillates about (m)
+    f32 hf_amplitude = 4.0f;   // peak-to-trough half-height of the hills (m)
+    f32 hf_frequency = 0.05f;  // spatial frequency (rad/m); larger = tighter hills
     u32 runtime_vehicle = 0u;  // physics VehicleId.raw; 0 when not playing (not saved)
     u32 runtime_chassis = 0u;  // physics BodyId.raw;    0 when not playing (not saved)
 };
+
+// Pure, deterministic, alloc-free procedural terrain height for a Heightfield-
+// mode vehicle. Returns the world-Y of the authored rolling-hills surface under
+// world column (x, z). Lives here (not in physics, which scene must not depend
+// on) so PlayRuntime can wrap it in a physics::vehicle::HeightSampler. No RNG, no
+// wall-clock, -fno-fast-math friendly, so a scripted drive reproduces bit-for-bit.
+[[nodiscard]] inline f32 vehicle_terrain_height(const VehicleComponent& vc,
+                                                f32 x,
+                                                f32 z) noexcept {
+    return vc.hf_base_y +
+           vc.hf_amplitude * 0.5f *
+               (std::sin(x * vc.hf_frequency) + std::sin(z * vc.hf_frequency));
+}
+
+// Clamp an authored VehicleComponent to sane ranges. Mirrors the gameplay/AI
+// proxy sanitizers: idempotent, leaves the runtime handles untouched, zeroes pad.
+[[nodiscard]] inline VehicleComponent sanitize_vehicle_component(VehicleComponent vc) noexcept {
+    if (!(vc.half_extent.x > 0.0f)) vc.half_extent.x = 1.0f;
+    if (!(vc.half_extent.y > 0.0f)) vc.half_extent.y = 0.4f;
+    if (!(vc.half_extent.z > 0.0f)) vc.half_extent.z = 2.0f;
+    if (!(vc.mass > 0.0f)) vc.mass = 1200.0f;
+    if (!(vc.engine_max_torque >= 0.0f)) vc.engine_max_torque = 0.0f;
+    if (!(vc.drag >= 0.0f)) vc.drag = 0.0f;
+    if (!(vc.wheel_radius > 0.0f)) vc.wheel_radius = 0.34f;
+    if (!(vc.suspension >= 0.0f)) vc.suspension = 0.0f;
+    if (!(vc.stiffness >= 0.0f)) vc.stiffness = 0.0f;
+    if (!(vc.damping >= 0.0f)) vc.damping = 0.0f;
+    if (!(vc.max_speed >= 0.0f)) vc.max_speed = 0.0f;
+    if (!(vc.steer_full_speed >= 0.0f)) vc.steer_full_speed = 0.0f;
+    if (!(vc.steer_taper_speed >= 0.0f)) vc.steer_taper_speed = 0.0f;
+    vc.steer_min_authority = std::clamp(vc.steer_min_authority, 0.0f, 1.0f);
+    vc.ground_mode = sanitize_vehicle_ground_mode(vc.ground_mode);
+    vc.is_player = vc.is_player != 0u ? 1u : 0u;
+    vc._pad[0] = vc._pad[1] = 0u;
+    if (!std::isfinite(vc.plane_y)) vc.plane_y = 0.0f;
+    if (!std::isfinite(vc.hf_base_y)) vc.hf_base_y = 0.0f;
+    if (!(vc.hf_amplitude >= 0.0f)) vc.hf_amplitude = 0.0f;
+    if (!(vc.hf_frequency >= 0.0f)) vc.hf_frequency = 0.0f;
+    return vc;
+}
 
 // A flyable arcade helicopter attached to an entity. The chassis is an ordinary
 // dynamic box body; PlayRuntime applies a simple body-relative flight model each

@@ -39,7 +39,16 @@ inline constexpr u32 kPsySceneMagic = 0x4E435350u;  // "PSCN", little endian.
 // concatenated psygraph serialized blobs each record slices into. Older v1..v4
 // files have neither chunk; load_span treats a missing chunk as empty, so they
 // load with no authored graphs attached.
-inline constexpr u16 kPsySceneVersion = 5u;
+// v6 adds the VehicleExt (SVHX) chunk (Wave 8 terrain-on-vehicle authoring): the
+// speed governor + speed-scaled steering authority + the ground binding (Plane /
+// Heightfield + the procedural rolling-hills surface) for a VehicleComponent.
+// These are NEW VehicleComponent fields that did not exist when the SPHY chunk's
+// fixed-stride SceneFilePhysicsVehicle was frozen, so they ride a SEPARATE chunk
+// (keyed by authoring_node_index, exactly like SPHY) rather than growing the SPHY
+// stride and breaking every existing scene. Older v1..v5 files have no SVHX chunk;
+// load_span treats a missing chunk as empty, so a pre-Wave-8 vehicle loads with
+// the governor off + Plane ground at y=0 -- bit-for-bit its old flat behaviour.
+inline constexpr u16 kPsySceneVersion = 6u;
 inline constexpr u32 kPsySceneAlignment = 64u;
 
 enum class SceneFileChunkType : u32 {
@@ -62,6 +71,7 @@ enum class SceneFileChunkType : u32 {
     GameplayAi = 0x49414753u,       // SGAI
     ScriptGraphs = 0x47435353u,     // SSCG
     ScriptGraphBlobs = 0x42474353u,  // SCGB
+    VehicleExt = 0x58485653u,        // SVHX
 };
 
 struct SceneFileHeader {
@@ -280,6 +290,29 @@ struct SceneFilePhysicsBody {
     SceneFilePhysicsCharacter character{};
 };
 
+// VehicleComponent EXTENSION fields persisted with the scene (v6 SVHX chunk;
+// Wave 8 terrain-on-vehicle authoring). Keyed by authoring_node_index, mirroring
+// SceneFilePhysicsBody. These are the VehicleComponent fields added AFTER the
+// SPHY chunk's SceneFilePhysicsVehicle stride was frozen (speed governor, speed-
+// scaled steering authority, and the ground binding: Plane vs Heightfield + the
+// procedural rolling-hills surface). A record is emitted ONLY for an entity that
+// already has a VehicleComponent in SPHY; on load the matching SPHY vehicle is
+// patched with these fields. Older files have no SVHX chunk, so the vehicle keeps
+// the defaults below (governor off, full steering authority, Plane ground at 0).
+struct SceneFileVehicleExt {
+    u32 authoring_node_index = 0u;
+    f32 max_speed = 0.0f;
+    f32 steer_full_speed = 0.0f;
+    f32 steer_taper_speed = 0.0f;
+    f32 steer_min_authority = 1.0f;
+    u8 ground_mode = 0u;  // scene::VehicleGroundMode (Plane=0, Heightfield=1)
+    u8 _pad[3] = {};
+    f32 plane_y = 0.0f;
+    f32 hf_base_y = 0.0f;
+    f32 hf_amplitude = 4.0f;
+    f32 hf_frequency = 0.05f;
+};
+
 // Authoring gameplay + AI components persisted with the scene (v4 SGAI chunk).
 // Keyed by authoring_node_index (the SAUT entry it attaches to), mirroring
 // SceneFileGameplayEntity / SceneFilePhysicsBody. component_mask selects which of
@@ -369,6 +402,7 @@ struct SceneFileView {
     std::span<const SceneFileAuthoringNode> authoring_nodes;
     std::span<const SceneFileGameplayEntity> gameplay_entities;
     std::span<const SceneFilePhysicsBody> physics_bodies;
+    std::span<const SceneFileVehicleExt> vehicle_exts;
     std::span<const SceneFileGameplayAi> gameplay_ai;
     std::span<const SceneFileScriptGraph> script_graphs;
     std::span<const u8> script_graph_blobs;
@@ -440,6 +474,7 @@ struct SceneFileSaveStats {
     u32 authoring_nodes = 0u;
     u32 gameplay_entities = 0u;
     u32 physics_bodies = 0u;
+    u32 vehicle_exts = 0u;
     u32 gameplay_ai = 0u;
     u32 script_graphs = 0u;
     u32 script_graph_blob_bytes = 0u;
@@ -620,6 +655,7 @@ static_assert(sizeof(SceneFilePhysicsVehicle) == 44u);
 static_assert(sizeof(SceneFilePhysicsHelicopter) == 40u);
 static_assert(sizeof(SceneFilePhysicsCharacter) == 12u);
 static_assert(sizeof(SceneFilePhysicsBody) == 132u);
+static_assert(sizeof(SceneFileVehicleExt) == 40u);
 static_assert(sizeof(SceneFileGameplayFaction) == 4u);
 static_assert(sizeof(SceneFileGameplayHitbox) == 32u);
 static_assert(sizeof(SceneFileGameplayWeaponMode) == 12u);

@@ -142,6 +142,7 @@ struct SceneFileSaveScratch {
     std::vector<SceneFileAuthoringNode> authoring_nodes;
     std::vector<SceneFileGameplayEntity> gameplay_entities;
     std::vector<SceneFilePhysicsBody> physics_bodies;
+    std::vector<SceneFileVehicleExt> vehicle_exts;
     std::vector<SceneFileGameplayAi> gameplay_ai;
     std::vector<SceneFileScriptGraph> script_graphs;
     std::vector<u8> script_graph_blobs;
@@ -375,6 +376,23 @@ constexpr u32 kSceneFilePatrolMask = 1u << 5u;
             physics.vehicle.stiffness = vc->stiffness;
             physics.vehicle.damping = vc->damping;
             physics.vehicle.is_player = vc->is_player;
+            // Wave 8 VehicleComponent extension fields (governor + steering
+            // authority + ground binding) ride the separate v6 SVHX chunk so the
+            // frozen SPHY stride stays byte-stable. Keyed by the same authoring
+            // index as the SPHY record above.
+            SceneFileVehicleExt ext{};
+            ext.authoring_node_index = authoring_index;
+            ext.max_speed = vc->max_speed;
+            ext.steer_full_speed = vc->steer_full_speed;
+            ext.steer_taper_speed = vc->steer_taper_speed;
+            ext.steer_min_authority = vc->steer_min_authority;
+            ext.ground_mode = static_cast<u8>(vc->ground_mode);
+            ext.plane_y = vc->plane_y;
+            ext.hf_base_y = vc->hf_base_y;
+            ext.hf_amplitude = vc->hf_amplitude;
+            ext.hf_frequency = vc->hf_frequency;
+            saved.vehicle_exts.push_back(ext);
+            ++stats.vehicle_exts;
         }
         if (const auto* hc = registry.get<HelicopterComponent>(entity)) {
             physics.component_mask |= kSceneFileHelicopterMask;
@@ -640,8 +658,8 @@ template <class T>
     // memcpy'd over this region last, so an undersized count overwrites the first
     // chunk's data. v4 adds the GameplayAi (SGAI) chunk -> 17. v5 adds the
     // ScriptGraphs (SSCG) record chunk + the ScriptGraphBlobs (SCGB) byte pool
-    // -> 19.
-    constexpr usize kSceneFileChunkCount = 19u;
+    // -> 19. v6 adds the VehicleExt (SVHX) chunk -> 20.
+    constexpr usize kSceneFileChunkCount = 20u;
     out.clear();
     out.resize(sizeof(SceneFileHeader) + kSceneFileChunkCount * sizeof(SceneFileChunk));
 
@@ -752,6 +770,13 @@ template <class T>
                            std::span<const SceneFilePhysicsBody>{scene.physics_bodies.data(),
                                                                  scene.physics_bodies.size()},
                            sizeof(SceneFilePhysicsBody),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::VehicleExt,
+                           std::span<const SceneFileVehicleExt>{scene.vehicle_exts.data(),
+                                                                scene.vehicle_exts.size()},
+                           sizeof(SceneFileVehicleExt),
                            error) ||
         !append_save_chunk(out,
                            chunks,
@@ -913,6 +938,10 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
                    sizeof(SceneFilePhysicsBody),
                    out.physics_bodies,
                    "physics_bodies") ||
+        !load_span(SceneFileChunkType::VehicleExt,
+                   sizeof(SceneFileVehicleExt),
+                   out.vehicle_exts,
+                   "vehicle_exts") ||
         !load_span(SceneFileChunkType::GameplayAi,
                    sizeof(SceneFileGameplayAi),
                    out.gameplay_ai,
@@ -1112,6 +1141,33 @@ void attach_saved_physics_components(Scene& scene,
         cc.move_speed = saved.character.move_speed;
         registry.add<CharacterControllerComponent>(entity, cc);
     }
+}
+
+// Patch a loaded VehicleComponent with the Wave 8 extension fields from a saved
+// v6 SVHX record (governor + steering authority + ground binding). Runs AFTER
+// attach_saved_physics_components has added the base VehicleComponent from SPHY;
+// a record whose entity has no VehicleComponent (corrupt / mismatched key) is a
+// no-op. The patched component is re-sanitized so an out-of-range authored value
+// loads clamped. Older files have no SVHX records, so the vehicle keeps the
+// component defaults (governor off, full steering authority, Plane ground at 0).
+void attach_saved_vehicle_ext(Scene& scene, Entity entity, const SceneFileVehicleExt& saved) {
+    if (!entity.valid())
+        return;
+    EcsRegistry& registry = scene.registry();
+    auto* vc = registry.get<VehicleComponent>(entity);
+    if (vc == nullptr)
+        return;
+    VehicleComponent updated = *vc;
+    updated.max_speed = saved.max_speed;
+    updated.steer_full_speed = saved.steer_full_speed;
+    updated.steer_taper_speed = saved.steer_taper_speed;
+    updated.steer_min_authority = saved.steer_min_authority;
+    updated.ground_mode = static_cast<VehicleGroundMode>(saved.ground_mode);
+    updated.plane_y = saved.plane_y;
+    updated.hf_base_y = saved.hf_base_y;
+    updated.hf_amplitude = saved.hf_amplitude;
+    updated.hf_frequency = saved.hf_frequency;
+    registry.add<VehicleComponent>(entity, sanitize_vehicle_component(updated));
 }
 
 // Recreate the authoring gameplay + AI proxy components on a loaded entity from
@@ -1318,6 +1374,15 @@ void attach_saved_script_graph(Scene& scene,
         if (physics.authoring_node_index >= entities.size())
             continue;
         attach_saved_physics_components(scene, entities[physics.authoring_node_index], physics);
+    }
+
+    // Wave 8 VehicleComponent extension (v6 SVHX). Patches the vehicle each
+    // record attaches to with the governor + steering authority + ground binding.
+    // Runs AFTER the SPHY loop so the base VehicleComponent already exists.
+    for (const SceneFileVehicleExt& ext : scene_file.vehicle_exts) {
+        if (ext.authoring_node_index >= entities.size())
+            continue;
+        attach_saved_vehicle_ext(scene, entities[ext.authoring_node_index], ext);
     }
 
     for (const SceneFileGameplayAi& gameplay_ai : scene_file.gameplay_ai) {

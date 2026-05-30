@@ -183,10 +183,23 @@ PlayRuntime::~PlayRuntime() {
     playing_ = false;
 }
 
+// Pure terrain-height callback for a Heightfield-mode vehicle. Mirrors
+// scene::vehicle_terrain_height exactly (the proxy's authored rolling-hills
+// surface) so the suspension probe reads the SAME surface a designer tuned. No
+// heap, no RNG, no wall-clock - the 120 Hz suspension loop stays deterministic.
+f32 PlayRuntime::VehicleHeightField::sample(void* user, f32 x, f32 z) noexcept {
+    const auto* hf = static_cast<const VehicleHeightField*>(user);
+    if (hf == nullptr)
+        return 0.0f;
+    return hf->base_y +
+           hf->amplitude * 0.5f * (std::sin(x * hf->frequency) + std::sin(z * hf->frequency));
+}
+
 void PlayRuntime::clear_pools() noexcept {
     rigid_entities_.clear();
     character_entities_.clear();
     vehicle_entities_.clear();
+    vehicle_heightfields_.clear();
     helicopter_entities_.clear();
     ai_entities_.clear();
     authored_gameplay_entities_.clear();
@@ -581,6 +594,13 @@ void PlayRuntime::begin(scene::Scene& scene) {
     // are auto-placed at the corners of half_extent. Front pair (-Z, the car's
     // forward is -Z to match the camera convention) = steer/non-drive, rear pair
     // (+Z) = drive (RWD: the solver treats wheels[2],[3] as the drive axle).
+    //
+    // Reserve the heightfield-backing pool to the worst case (every vehicle is
+    // Heightfield-mode) BEFORE the loop. set_ground_heightfield BORROWS the
+    // address of a pool entry for the vehicle's lifetime, so the pool must NOT
+    // reallocate while playing; reserving up front guarantees stable addresses.
+    vehicle_heightfields_.clear();
+    vehicle_heightfields_.reserve(vehicle_entities_.size());
     for (const Entity e : vehicle_entities_) {
         scene::VehicleComponent* vc = reg.get<scene::VehicleComponent>(e);
         if (vc == nullptr)
@@ -622,17 +642,41 @@ void PlayRuntime::begin(scene::Scene& scene) {
             wheels[w].damping = vc->damping;
         }
 
+        // Clamp the authored params once for the desc (the stored component is
+        // left as-authored save for the runtime handles written above/below).
+        const scene::VehicleComponent params = scene::sanitize_vehicle_component(*vc);
+
         physics::vehicle::VehicleDesc vd{};
         vd.chassis = chassis;
         vd.wheels = std::span<const physics::vehicle::WheelDesc>{wheels.data(), wheels.size()};
-        vd.engine_max_torque = vc->engine_max_torque;
-        vd.drag_coefficient = vc->drag;
+        vd.engine_max_torque = params.engine_max_torque;
+        vd.drag_coefficient = params.drag;
         vd.downforce_coefficient = 0.0f;
+        // Speed governor + speed-scaled steering authority (Wave 8). Defaults
+        // (max_speed 0, identity steer trio) leave an un-authored car uncapped /
+        // full-authority - bit-for-bit the pre-Wave-8 behaviour.
+        vd.max_speed = params.max_speed;
+        vd.steer_full_speed = params.steer_full_speed;
+        vd.steer_taper_speed = params.steer_taper_speed;
+        vd.steer_min_authority = params.steer_min_authority;
         // Store the opaque VehicleId.raw back into the component.
         const physics::vehicle::VehicleId vehicle = physics::vehicle::create(vd, world);
         vc->runtime_vehicle = vehicle.raw;
-        // Flat ground plane at y=0 (no terrain yet; KNOWN follow-up).
-        physics::vehicle::set_ground_plane(vehicle, 0.0f, world);
+
+        // Ground binding (Wave 8 terrain-on-vehicle). Heightfield mode probes the
+        // authored procedural rolling-hills surface per wheel (chassis rides the
+        // relief); Plane mode (and the fallback) binds the flat plane at plane_y.
+        // The HeightSampler BORROWS a pool record that outlives the vehicle.
+        if (params.ground_mode == scene::VehicleGroundMode::Heightfield) {
+            vehicle_heightfields_.push_back(VehicleHeightField{
+                params.hf_base_y, params.hf_amplitude, params.hf_frequency});
+            physics::vehicle::HeightSampler sampler{};
+            sampler.fn = &VehicleHeightField::sample;
+            sampler.user = &vehicle_heightfields_.back();
+            physics::vehicle::set_ground_heightfield(vehicle, sampler, world);
+        } else {
+            physics::vehicle::set_ground_plane(vehicle, params.plane_y, world);
+        }
     }
 
     // Helicopters (serial; create_body mutates the shared World). The chassis is

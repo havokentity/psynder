@@ -179,6 +179,25 @@ class PlayRuntime {
         scene::LocalTransform local{};
     };
 
+    // Borrowed terrain-height backing for a Heightfield-mode vehicle (Wave 8).
+    // physics::vehicle::set_ground_heightfield takes a plain (fn, void* user)
+    // pair and BORROWS the user pointer for the vehicle's lifetime, so the
+    // backing data MUST outlive the vehicle. We store one record per heightfield
+    // vehicle in a PlayRuntime-owned pool (reserved once, cleared between
+    // sessions) and hand its address as the user pointer. The record is a flat
+    // copy of the component's procedural-surface params, so the sampler stays
+    // alloc-free, deterministic, and independent of any later component edit.
+    // The pool is reserved up front and never reallocated within a session
+    // (capacity >= vehicle count), so the addresses stay stable while playing.
+    struct VehicleHeightField {
+        f32 base_y = 0.0f;
+        f32 amplitude = 0.0f;
+        f32 frequency = 0.0f;
+        // Pure HeightSampler callback: world-Y of the authored rolling-hills
+        // surface under column (x, z). Mirrors scene::vehicle_terrain_height.
+        static f32 sample(void* user, f32 x, f32 z) noexcept;
+    };
+
     void clear_pools() noexcept;
 
     // Map every scene-level gameplay/AI authoring proxy onto an entity into the
@@ -251,6 +270,13 @@ class PlayRuntime {
     std::vector<Entity> character_entities_;
     // Same for vehicle entities.
     std::vector<Entity> vehicle_entities_;
+    // Borrowed terrain-height backing for the Heightfield-mode vehicles created
+    // this session (Wave 8). One entry per heightfield vehicle; its address is
+    // handed to physics::vehicle::set_ground_heightfield as the user pointer and
+    // must stay stable + alive while playing. reserve()d to vehicle_entities_'
+    // size in begin() BEFORE any emplace so the vector never reallocates (which
+    // would dangle the borrowed pointers); cleared (capacity kept) in end().
+    std::vector<VehicleHeightField> vehicle_heightfields_;
     // Same for helicopter entities.
     std::vector<Entity> helicopter_entities_;
     // Authored transforms captured in begin(), restored in end(). Reserved once.

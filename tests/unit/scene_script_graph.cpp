@@ -140,7 +140,7 @@ TEST_CASE("scene authored PsyGraph round-trips through the SSCG/SCGB chunks",
     REQUIRE(error.empty());
     REQUIRE(view.header != nullptr);
     REQUIRE(view.header->version == scene::kPsySceneVersion);
-    REQUIRE(view.header->version == 5u);
+    REQUIRE(view.header->version == 6u);
     REQUIRE(view.script_graphs.size() == 1u);
     const scene::SceneFileScriptGraph& record = view.script_graphs[0];
     REQUIRE(record.blob_bytes == static_cast<u32>(blob.size()));
@@ -219,7 +219,7 @@ TEST_CASE("older v4 scene without the SSCG/SCGB chunk still loads (backward comp
     // and treat the missing chunks as empty.
     std::vector<u8> v4(v5_bytes.begin(), v5_bytes.end());
     auto* header = reinterpret_cast<scene::SceneFileHeader*>(v4.data());
-    REQUIRE(header->version == 5u);
+    REQUIRE(header->version == 6u);
     const u32 chunk_count = header->chunk_count;
     REQUIRE(chunk_count >= 2u);
     auto* chunks = reinterpret_cast<scene::SceneFileChunk*>(v4.data() + sizeof(scene::SceneFileHeader));
