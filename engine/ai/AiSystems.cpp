@@ -3,6 +3,7 @@
 
 #include "ai/AiSystems.h"
 
+#include "ai/SquadCoord.h"
 #include "gameplay/GameplayComponents.h"
 #include "jobs/JobSystem.h"
 #include "scene/EcsRegistry.h"
@@ -268,6 +269,38 @@ namespace {
     return slot % AiContext::kNavQueryPool;
 }
 
+// Apply the optional squad / flank layer to a resolved Chase goal. With the
+// layer off (or a non-Chase goal) this returns the goal UNCHANGED, so the default
+// single-agent path is bit-for-bit preserved. With it on, a Chase goal is offset
+// to the agent's distinct flank-slot position around the target (its last-seen
+// position is the ring anchor, so flanking continues even after the target hides).
+// When `count` is set AND the offset actually moved the goal (a flanker, not a
+// head-on suppressor / lone agent), the ctx.flankers telemetry is bumped — only
+// `act` passes count=true so the tally is exactly one per flanking agent even
+// when `navigate` also offsets the same agent's routed goal. Deterministic +
+// alloc-free (SquadCoord scans the engaging set read-only, reducing onto the
+// stack).
+[[nodiscard]] math::Vec3 apply_squad_offset(EcsRegistry& registry,
+                                            AiContext& ctx,
+                                            Entity self,
+                                            const AiAgentComponent& agent,
+                                            math::Vec3 self_pos,
+                                            math::Vec3 goal,
+                                            bool count) {
+    if (!ctx.squad.enabled || agent.state != AiState::Chase)
+        return goal;
+    const math::Vec3 flank =
+        squad_flank_goal(registry, ctx.squad, self, agent, goal, self_pos);
+    if (count) {
+        // Count this agent as a flanker only when the slot actually displaced its
+        // goal (a head-on suppressor / lone engager gets goal back unchanged).
+        const math::Vec3 d = math::sub(flank, goal);
+        if (math::dot(d, d) > 1e-6f)
+            ctx.flankers.fetch_add(1u, std::memory_order_relaxed);
+    }
+    return flank;
+}
+
 }  // namespace
 
 void navigate(EcsRegistry& registry, AiContext& ctx, f32 dt) {
@@ -323,6 +356,13 @@ void navigate(EcsRegistry& registry, AiContext& ctx, f32 dt) {
                     nav.has_path = 0u;
                     continue;
                 }
+                // Squad / flank layer (opt-in): offset a Chase goal to this
+                // agent's distinct slot around the target so the squad surrounds
+                // instead of stacking. No-op (goal unchanged) when squad.enabled
+                // is off => the existing routed behaviour is preserved exactly.
+                goal = apply_squad_offset(registry, ctx, nodes[i].entity, agent,
+                                          xforms[i].local.translation, goal,
+                                          /*count*/ false);
 
                 if (nav.repath_cooldown > 0.0f)
                     nav.repath_cooldown -= dt;
@@ -562,9 +602,20 @@ void act(EcsRegistry& registry, AiContext& ctx, f32 dt) {
                         // PerceptionComponent memory means a chase continues even
                         // after the target slips behind cover.
                         const math::Vec3 pos = xforms[i].local.translation;
+                        // Squad / flank layer (opt-in): when no routed nav path is
+                        // followed (the straight-line steer case — e.g. df_demo's
+                        // terrain soldiers), offset the straight-line fallback goal
+                        // to this agent's flank slot so the squad surrounds the
+                        // target. With a nav path the navigate pass already routed
+                        // to the same offset goal, so follow_goal walks the routed
+                        // corridor and the fallback is unused. `count`=true makes
+                        // act the single owner of the ctx.flankers tally.
+                        const math::Vec3 fallback = apply_squad_offset(
+                            registry, ctx, self, agent, pos,
+                            senses[i].last_seen_pos, /*count*/ true);
                         bool on_path = false;
-                        const math::Vec3 goal = follow_goal(
-                            registry, self, pos, senses[i].last_seen_pos, on_path);
+                        const math::Vec3 goal =
+                            follow_goal(registry, self, pos, fallback, on_path);
                         steer_toward(registry, ctx, self, xforms[i], agent, goal, sep,
                                      on_path, dt);
                         break;

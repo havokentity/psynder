@@ -105,6 +105,7 @@
 #include "common/CharacterController.h"
 #include "ai/AiComponents.h"
 #include "ai/AiSystems.h"
+#include "ai/SquadCoord.h"
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
@@ -483,7 +484,13 @@ void spawn_enemy(DfGame& game,
     agent.state = ai::AiState::Patrol;
     agent.sight_range = 140.0f;  // long sightlines
     agent.fov_cos = -1.0f;       // omnidirectional senses (no head-turn model yet)
-    agent.attack_range = 130.0f;
+    // CLOSE-IN attack range: a soldier that spots the distant player CHASES to get
+    // inside this ring before it stops to fire. That Chase window is where the
+    // W13-3 squad layer kicks in — the soldiers fan out to DISTINCT flank slots
+    // around the player while closing, surrounding instead of bunching, then drop
+    // to Attack once inside the ring. (With the old 130 m range they fired from
+    // spawn without ever moving, so flanking never engaged.)
+    agent.attack_range = 28.0f;
     agent.think_interval = 0.12f;
     agent.move_speed = 3.2f;
     game.scene->registry().add<ai::AiAgentComponent>(e, ai::sanitize_ai_agent(agent));
@@ -888,6 +895,56 @@ void on_death(void* user, const gameplay::DeathInfo& info) {
         ++game->player_kills;
 }
 
+// W13-3 squad coordination stat. Walk the live soldiers; for each one currently
+// CHASING (the Chase window where the squad layer steers it to a flank slot),
+// recompute its assigned flank GOAL via ai::squad_flank_goal and collect those
+// goals. Returns the number of distinct-slot flankers (goal displaced from the
+// raw player position) and their mean pairwise XZ separation — the "the squad
+// fanned out to surround the player" measure the smoke logs. Read-only, no alloc.
+u32 squad_flank_stat(DfGame& game, f32& out_mean_sep) {
+    out_mean_sep = 0.0f;
+    scene::EcsRegistry& reg = game.scene->registry();
+    const ai::SquadConfig& cfg = game.ai.ctx.squad;
+
+    std::array<math::Vec3, kMaxEnemies> goals{};
+    u32 flankers = 0u;
+    for (u32 i = 0; i < game.enemy_count; ++i) {
+        const Entity e = game.enemies[i];
+        if (!reg.alive(e))
+            continue;
+        const auto* a = reg.get<ai::AiAgentComponent>(e);
+        if (a == nullptr || a->state != ai::AiState::Chase || !a->target_entity.valid())
+            continue;
+        math::Vec3 self{};
+        math::Vec3 tpos{};
+        if (!gameplay::entity_position(reg, e, self) ||
+            !gameplay::entity_position(reg, a->target_entity, tpos))
+            continue;
+        const math::Vec3 goal = ai::squad_flank_goal(reg, cfg, e, *a, tpos, self);
+        // A flanker is one whose slot actually displaced its goal off the player
+        // (head-on suppressors / lone chasers keep the raw target).
+        const math::Vec3 d = math::sub(goal, tpos);
+        if (math::dot(d, d) > 1.0f) {
+            goals[flankers] = goal;
+            ++flankers;
+        }
+    }
+    if (flankers >= 2u) {
+        f32 sum = 0.0f;
+        u32 pairs = 0u;
+        for (u32 i = 0; i < flankers; ++i)
+            for (u32 j = i + 1u; j < flankers; ++j) {
+                const f32 dx = goals[i].x - goals[j].x;
+                const f32 dz = goals[i].z - goals[j].z;
+                sum += std::sqrt(dx * dx + dz * dz);
+                ++pairs;
+            }
+        if (pairs > 0u)
+            out_mean_sep = sum / static_cast<f32>(pairs);
+    }
+    return flankers;
+}
+
 }  // namespace
 
 platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
@@ -938,6 +995,17 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     game.ai.ctx.fire = fire_hook;
     game.ai.ctx.apply_move = apply_move_hook;
 
+    // W13-3 SQUAD / FLANKING (opt-in): soldiers chasing the SAME player are handed
+    // DISTINCT approach slots around it (deterministic from their stable ids) so
+    // they fan out and surround instead of single-filing down one line. The lowest-
+    // id soldier holds head-on (the suppressor) while the rest ring out to flank
+    // slots flank_radius metres around the player. Off => the unchanged path.
+    game.ai.ctx.squad = ai::sanitize_squad_config(game.ai.ctx.squad);
+    game.ai.ctx.squad.enabled = true;
+    game.ai.ctx.squad.flank_radius = 16.0f;  // metres: a wide arc across the open terrain
+    game.ai.ctx.squad.spread = 1.30f;        // ~75 deg half-spread (near-encirclement)
+    game.ai.ctx.squad.suppressors = 1u;      // one pins head-on, the rest flank
+
     PSY_LOG_INFO("df_demo: terrain built, {} soldiers, hybrid render + sun{}",
                  game.enemy_count,
                  smoke_frames > 0 ? std::string{" (smoke mode)"} : std::string{});
@@ -956,6 +1024,14 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     f32 jeep_clear_min = 1e30f;  // min (chassis_y - terrain_y): grounding floor
     f32 jeep_clear_max = -1e30f;
     bool jeep_settled = false;
+
+    // W13-3 squad coordination instrumentation. Per tick the AI reports how many
+    // soldiers were handed a DISTINCT flank slot (ai.ctx.flankers); we track the
+    // peak and, on the tick it peaks, snapshot the mean pairwise XZ separation of
+    // the flanking soldiers' GOAL positions around the player so the smoke can log
+    // a single "squad: N agents flanking, mean pairwise separation X m" line.
+    u32 squad_peak_flankers = 0u;
+    f32 squad_peak_mean_sep = 0.0f;
 
     u64 last_ticks = platform::Clock::ticks_now();
     u32 frame = 0;
@@ -1098,8 +1174,27 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
         gameplay::tick_projectiles(registry, dt, cctx, ccfg);
 
         // 4. AI: perceive -> think -> act. The Attack branch routes through the
-        //    fire hook -> gameplay::fire_weapon, queueing damage into cctx.
+        //    fire hook -> gameplay::fire_weapon, queueing damage into cctx. The
+        //    W13-3 squad layer (enabled above) offsets each chasing soldier's goal
+        //    to its distinct flank slot, so the squad fans out around the player.
         game.ai.update(registry, dt);
+
+        // Track the peak squad coordination this run: the most soldiers ever
+        // assigned distinct flank slots in one tick + their goal spread. Logged
+        // once at smoke end as the coordination stat the brief asks for.
+        if (smoke_frames > 0) {
+            const u32 live_flankers = game.ai.ctx.flankers.load();
+            if (live_flankers > squad_peak_flankers ||
+                (live_flankers == squad_peak_flankers && squad_peak_mean_sep == 0.0f)) {
+                f32 mean_sep = 0.0f;
+                const u32 cnt = squad_flank_stat(game, mean_sep);
+                if (cnt > squad_peak_flankers ||
+                    (cnt == squad_peak_flankers && mean_sep > squad_peak_mean_sep)) {
+                    squad_peak_flankers = cnt;
+                    squad_peak_mean_sep = mean_sep;
+                }
+            }
+        }
 
         // 5. Player hitscan on a fresh left-click / scripted pulse (queues into cctx).
         if (fire_pressed)
@@ -1168,6 +1263,27 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
             else
                 PSY_LOG_ERROR("df_demo: jeep terrain-follow FAIL (tracks={} grounded={})", tracks,
                               grounded);
+
+            // W13-3 squad coordination stat. The soldiers that chased the player
+            // were handed DISTINCT flank slots around it; report the peak number
+            // assigned + how far apart their flank goals fanned out (mean pairwise
+            // separation). A bunched single-file approach would show 0 flankers /
+            // 0 separation; a flanking squad shows >=2 spread metres apart.
+            if (squad_peak_flankers >= 2u) {
+                PSY_LOG_INFO("df_demo: squad: {} agents assigned distinct flank slots, "
+                             "mean pairwise separation {:.1f} m  FLANKING",
+                             squad_peak_flankers,
+                             static_cast<double>(squad_peak_mean_sep));
+                PSY_LOG_INFO("df_demo: squad-flank PASS");
+            } else {
+                // Not a failure of the run (the smoke drives the jeep, so the
+                // engagement window varies), but flag it so the showcase is visible.
+                PSY_LOG_INFO("df_demo: squad: peak {} flankers (mean sep {:.1f} m) "
+                             "- squad layer enabled, fewer than 2 chasing at peak",
+                             squad_peak_flankers,
+                             static_cast<double>(squad_peak_mean_sep));
+            }
+
             PSY_LOG_INFO("df_demo: smoke target reached ({}); kills={} soldiers_left={}; exiting",
                          smoke_frames, game.player_kills, alive);
             break;

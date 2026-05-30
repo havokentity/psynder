@@ -35,6 +35,7 @@
 
 #include "ai/AiComponents.h"
 #include "ai/NavGrid.h"
+#include "ai/SquadCoord.h"
 #include "core/Types.h"
 #include "math/Math.h"
 #include "scene/EcsRegistry.h"
@@ -127,9 +128,25 @@ struct AiContext {
     // from the navigate pass, so it is atomic-relaxed like shots_fired.
     std::atomic<u32> repaths{0u};
 
+    // ── Squad / flanking (optional, OPT-IN) ──────────────────────────────────
+    // When squad.enabled is set, agents engaging a COMMON target are handed
+    // DISTINCT approach slots around it (see SquadCoord.h): each Chase goal is
+    // offset to its flank-slot position so the squad SURROUNDS the target instead
+    // of stacking single-file. The slot is a deterministic function of the
+    // engaging agents' stable ids (no RNG / time), recomputed each tick as the
+    // engaging set changes. When squad.enabled is false (the default — every
+    // existing host + test), the goal resolver returns the raw target position and
+    // behaviour is bit-for-bit the old single-agent path. Set once, like the hooks.
+    SquadConfig squad{};
+
+    // Agents handed a distinct (non-head-on) flank slot this tick (telemetry /
+    // tests). Bumped from the navigate pass across workers => atomic-relaxed.
+    std::atomic<u32> flankers{0u};
+
     void begin_tick() noexcept {
         shots_fired.store(0u, std::memory_order_relaxed);
         repaths.store(0u, std::memory_order_relaxed);
+        flankers.store(0u, std::memory_order_relaxed);
     }
 };
 
