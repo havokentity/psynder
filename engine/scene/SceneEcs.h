@@ -14,6 +14,7 @@
 #include "scene/RenderSettings.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneRuntime.h"
+#include "scene/ScriptComponents.h"
 
 #include <algorithm>
 #include <array>
@@ -1066,6 +1067,46 @@ class Scene {
     [[nodiscard]] SceneRuntime& runtime() noexcept { return runtime_; }
     [[nodiscard]] const SceneRuntime& runtime() const noexcept { return runtime_; }
 
+    // --- Scene-level visual-script graph storage (no-code authoring) --------
+    // An authored PsyGraph is stored as an OPAQUE serialized blob (the bytes
+    // produced by psygraph::serialize_graph). The scene owns these blobs in a
+    // side table; an entity's ScriptGraphComponent (scene/ScriptComponents.h)
+    // carries the slot index into this table. The scene never interprets the
+    // bytes; that happens only at the Play boundary (editor/play/PlayRuntime)
+    // and in the SceneFile serializer (v5 SSCG/SCGB chunks). Keeping the
+    // variable-length blob OUT of the ECS column preserves the POD-component
+    // contract while keeping graph storage scene-level + serializable.
+
+    // Append a new authored-graph blob, returning its slot index.
+    [[nodiscard]] u32 add_script_graph(std::span<const u8> blob) {
+        const u32 slot = static_cast<u32>(script_graphs_.size());
+        script_graphs_.emplace_back(blob.begin(), blob.end());
+        return slot;
+    }
+
+    // Replace the blob at an existing slot (used by the IPC author flow when a
+    // designer re-edits an entity's graph). Grows the table with empty blobs if
+    // the slot is past the current end so a freshly loaded slot index stays valid.
+    void set_script_graph(u32 slot, std::span<const u8> blob) {
+        if (slot == kInvalidScriptGraphSlot)
+            return;
+        if (slot >= script_graphs_.size())
+            script_graphs_.resize(static_cast<usize>(slot) + 1u);
+        script_graphs_[slot].assign(blob.begin(), blob.end());
+    }
+
+    [[nodiscard]] std::span<const u8> script_graph(u32 slot) const noexcept {
+        if (slot >= script_graphs_.size())
+            return {};
+        return std::span<const u8>{script_graphs_[slot].data(), script_graphs_[slot].size()};
+    }
+
+    [[nodiscard]] u32 script_graph_count() const noexcept {
+        return static_cast<u32>(script_graphs_.size());
+    }
+
+    void clear_script_graphs() noexcept { script_graphs_.clear(); }
+
     void bind_mesh_spawner(void* user,
                            SpawnMeshFn fn,
                            SpawnMeshInstanceFn instance_fn = nullptr,
@@ -1537,6 +1578,7 @@ class Scene {
         groups_ = std::move(other.groups_);
         spin_behaviors_ = std::move(other.spin_behaviors_);
         translate_behaviors_ = std::move(other.translate_behaviors_);
+        script_graphs_ = std::move(other.script_graphs_);
 
         other.registry_ = &EcsRegistry::Get();
         other.environment_.bind_runtime(other.runtime_.environment);
@@ -1553,6 +1595,7 @@ class Scene {
         other.groups_.clear();
         other.spin_behaviors_ = {};
         other.translate_behaviors_ = {};
+        other.script_graphs_.clear();
     }
 
     void record_pool_watermark() noexcept {
@@ -1642,6 +1685,9 @@ class Scene {
     std::vector<SceneGroupStorage> groups_{};
     SpinBehaviorSoA spin_behaviors_{};
     TranslateBehaviorSoA translate_behaviors_{};
+    // Authored visual-script graph blobs (opaque psygraph serialized bytes);
+    // index = ScriptGraphComponent::graph_slot. See add_script_graph above.
+    std::vector<std::vector<u8>> script_graphs_{};
 };
 
 using CachedSceneGroup = Scene::CachedSceneGroup;

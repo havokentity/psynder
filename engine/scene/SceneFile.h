@@ -11,6 +11,7 @@
 #include "scene/GameplayComponents.h"
 #include "scene/PhysicsComponents.h"
 #include "scene/SceneEcs.h"
+#include "scene/ScriptComponents.h"
 
 #include <functional>
 #include <memory>
@@ -33,7 +34,12 @@ inline constexpr u32 kPsySceneMagic = 0x4E435350u;  // "PSCN", little endian.
 // WeaponMode + the AI trio AiAgent / Perception / Patrol). Older v1..v3 files
 // have no SGAI chunk; load_span treats a missing chunk as empty, so they load
 // with no gameplay/AI authoring components attached.
-inline constexpr u16 kPsySceneVersion = 4u;
+// v5 adds the visual-scripting pair: ScriptGraphs (SSCG) records keyed by
+// authoring_node_index + a raw byte pool ScriptGraphBlobs (SCGB) holding the
+// concatenated psygraph serialized blobs each record slices into. Older v1..v4
+// files have neither chunk; load_span treats a missing chunk as empty, so they
+// load with no authored graphs attached.
+inline constexpr u16 kPsySceneVersion = 5u;
 inline constexpr u32 kPsySceneAlignment = 64u;
 
 enum class SceneFileChunkType : u32 {
@@ -54,6 +60,8 @@ enum class SceneFileChunkType : u32 {
     PhysicsBodies = 0x59485053u,    // SPHY
     RenderSettings = 0x444E5253u,   // SRND
     GameplayAi = 0x49414753u,       // SGAI
+    ScriptGraphs = 0x47435353u,     // SSCG
+    ScriptGraphBlobs = 0x42474353u,  // SCGB
 };
 
 struct SceneFileHeader {
@@ -328,6 +336,21 @@ struct SceneFileGameplayAi {
     // carried purely by the component_mask bit, so it needs no payload struct.
 };
 
+// Authored visual-script graph record (v5 SSCG chunk). Keyed by
+// authoring_node_index (the SAUT entry the entity's ScriptGraphComponent
+// attaches to), mirroring SceneFileGameplayAi / SceneFilePhysicsBody. The graph
+// itself is an opaque psygraph serialized blob; this fixed-stride record slices
+// it out of the ScriptGraphBlobs (SCGB) byte pool by [blob_offset, blob_bytes).
+// Storing the variable-length bytes in a separate pool keeps SSCG a clean POD
+// array the chunk validator accepts (every chunk must be a whole array of a
+// fixed-size type).
+struct SceneFileScriptGraph {
+    u32 authoring_node_index = 0u;
+    u32 blob_offset = 0u;  // byte offset into the SCGB blob pool
+    u32 blob_bytes = 0u;   // length of this graph's blob in the SCGB pool
+    u32 reserved = 0u;
+};
+
 struct SceneFileView {
     const SceneFileHeader* header = nullptr;
     std::span<const char> strings;
@@ -347,6 +370,8 @@ struct SceneFileView {
     std::span<const SceneFileGameplayEntity> gameplay_entities;
     std::span<const SceneFilePhysicsBody> physics_bodies;
     std::span<const SceneFileGameplayAi> gameplay_ai;
+    std::span<const SceneFileScriptGraph> script_graphs;
+    std::span<const u8> script_graph_blobs;
 };
 
 struct SceneFileLoaded {
@@ -416,6 +441,8 @@ struct SceneFileSaveStats {
     u32 gameplay_entities = 0u;
     u32 physics_bodies = 0u;
     u32 gameplay_ai = 0u;
+    u32 script_graphs = 0u;
+    u32 script_graph_blob_bytes = 0u;
 };
 
 [[nodiscard]] bool parse_scene_file(std::span<const u8> bytes,
@@ -599,5 +626,6 @@ static_assert(sizeof(SceneFileGameplayWeaponMode) == 12u);
 static_assert(sizeof(SceneFileAiAgent) == 24u);
 static_assert(sizeof(SceneFileAiPatrol) == 112u);
 static_assert(sizeof(SceneFileGameplayAi) == 192u);
+static_assert(sizeof(SceneFileScriptGraph) == 16u);
 
 }  // namespace psynder::scene

@@ -143,6 +143,8 @@ struct SceneFileSaveScratch {
     std::vector<SceneFileGameplayEntity> gameplay_entities;
     std::vector<SceneFilePhysicsBody> physics_bodies;
     std::vector<SceneFileGameplayAi> gameplay_ai;
+    std::vector<SceneFileScriptGraph> script_graphs;
+    std::vector<u8> script_graph_blobs;
     std::vector<char> strings{'\0'};
     std::unordered_map<std::string, u32> string_offsets;
     std::unordered_map<u32, u32> material_slots;
@@ -446,6 +448,28 @@ constexpr u32 kSceneFilePatrolMask = 1u << 5u;
             ++stats.gameplay_ai;
         }
 
+        // Authored visual-script graph (v5 SSCG/SCGB). The ScriptGraphComponent
+        // carries a slot index into the scene's opaque graph-blob side table;
+        // copy that blob into the SCGB byte pool and emit a fixed-stride SSCG
+        // record slicing it, keyed by authoring_index. A slot that points past
+        // the table (stale) or an empty blob is skipped (no record emitted).
+        if (const auto* sg = registry.get<ScriptGraphComponent>(entity)) {
+            const std::span<const u8> blob = scene.script_graph(sg->graph_slot);
+            if (!blob.empty()) {
+                if (!fits_u32(saved.script_graph_blobs.size() + blob.size()))
+                    return fail_save(error, "psyscene save: script-graph blob pool exceeds 4 GiB");
+                SceneFileScriptGraph record{};
+                record.authoring_node_index = authoring_index;
+                record.blob_offset = static_cast<u32>(saved.script_graph_blobs.size());
+                record.blob_bytes = static_cast<u32>(blob.size());
+                saved.script_graph_blobs.insert(
+                    saved.script_graph_blobs.end(), blob.begin(), blob.end());
+                saved.script_graphs.push_back(record);
+                ++stats.script_graphs;
+                stats.script_graph_blob_bytes += record.blob_bytes;
+            }
+        }
+
         authoring_index_by_node[node_component->node.raw] = authoring_index;
         ++stats.authoring_nodes;
     }
@@ -614,8 +638,10 @@ template <class T>
     // One descriptor slot per append_save_chunk call below. Bump this when adding
     // a chunk: the header + chunk table are pre-sized here and the table is
     // memcpy'd over this region last, so an undersized count overwrites the first
-    // chunk's data. v4 adds the GameplayAi (SGAI) chunk -> 17.
-    constexpr usize kSceneFileChunkCount = 17u;
+    // chunk's data. v4 adds the GameplayAi (SGAI) chunk -> 17. v5 adds the
+    // ScriptGraphs (SSCG) record chunk + the ScriptGraphBlobs (SCGB) byte pool
+    // -> 19.
+    constexpr usize kSceneFileChunkCount = 19u;
     out.clear();
     out.resize(sizeof(SceneFileHeader) + kSceneFileChunkCount * sizeof(SceneFileChunk));
 
@@ -733,6 +759,20 @@ template <class T>
                            std::span<const SceneFileGameplayAi>{scene.gameplay_ai.data(),
                                                                 scene.gameplay_ai.size()},
                            sizeof(SceneFileGameplayAi),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::ScriptGraphs,
+                           std::span<const SceneFileScriptGraph>{scene.script_graphs.data(),
+                                                                 scene.script_graphs.size()},
+                           sizeof(SceneFileScriptGraph),
+                           error) ||
+        !append_save_chunk(out,
+                           chunks,
+                           SceneFileChunkType::ScriptGraphBlobs,
+                           std::span<const u8>{scene.script_graph_blobs.data(),
+                                               scene.script_graph_blobs.size()},
+                           1u,
                            error)) {
         out.clear();
         return false;
@@ -876,7 +916,15 @@ bool parse_scene_file(std::span<const u8> bytes, SceneFileView& out, std::string
         !load_span(SceneFileChunkType::GameplayAi,
                    sizeof(SceneFileGameplayAi),
                    out.gameplay_ai,
-                   "gameplay_ai")) {
+                   "gameplay_ai") ||
+        !load_span(SceneFileChunkType::ScriptGraphs,
+                   sizeof(SceneFileScriptGraph),
+                   out.script_graphs,
+                   "script_graphs") ||
+        !load_span(SceneFileChunkType::ScriptGraphBlobs,
+                   1u,
+                   out.script_graph_blobs,
+                   "script_graph_blobs")) {
         return false;
     }
 
@@ -1121,6 +1169,28 @@ void attach_saved_gameplay_ai_components(Scene& scene,
     }
 }
 
+// Recreate the authored visual-script link on a loaded entity from a saved SSCG
+// record (v5). Slices the opaque graph blob out of the SCGB byte pool, stores it
+// into the scene's graph side table, and attaches a ScriptGraphComponent pointing
+// at the new slot. The bytes stay opaque to scene; PlayRuntime deserializes +
+// compiles them when a Play session begins. A record whose slice falls outside
+// the blob pool (corrupt) is skipped.
+void attach_saved_script_graph(Scene& scene,
+                               Entity entity,
+                               const SceneFileScriptGraph& saved,
+                               std::span<const u8> blob_pool) {
+    if (!entity.valid() || saved.blob_bytes == 0u)
+        return;
+    const usize begin = static_cast<usize>(saved.blob_offset);
+    const usize end = begin + static_cast<usize>(saved.blob_bytes);
+    if (end > blob_pool.size() || end < begin)
+        return;
+    const u32 slot = scene.add_script_graph(blob_pool.subspan(begin, saved.blob_bytes));
+    ScriptGraphComponent comp{};
+    comp.graph_slot = slot;
+    scene.registry().add<ScriptGraphComponent>(entity, comp);
+}
+
 [[nodiscard]] SceneFileInstantiateResult instantiate_authoring_scene_file(
     Scene& scene,
     const SceneFileView& scene_file,
@@ -1255,6 +1325,15 @@ void attach_saved_gameplay_ai_components(Scene& scene,
             continue;
         attach_saved_gameplay_ai_components(
             scene, entities[gameplay_ai.authoring_node_index], gameplay_ai);
+    }
+
+    for (const SceneFileScriptGraph& script_graph : scene_file.script_graphs) {
+        if (script_graph.authoring_node_index >= entities.size())
+            continue;
+        attach_saved_script_graph(scene,
+                                  entities[script_graph.authoring_node_index],
+                                  script_graph,
+                                  scene_file.script_graph_blobs);
     }
 
     return result;

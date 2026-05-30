@@ -24,6 +24,9 @@
 #include "render/TextureGenerators.h"
 #include "render/hybrid/ShadowScene.h"
 #include "scene/SceneFile.h"
+#include "script/psygraph/Compiler.h"  // validate an authored graph blob before storing it
+#include "script/psygraph/Graph.h"
+#include "script/psygraph/Serialize.h"
 #include "ui/imm/Imm.h"
 #include "ui/imm/Overlay.h"
 #include "ui/imm/detail/Font.h"
@@ -82,6 +85,9 @@ bool world_new_active_arcade_indoor();
 bool world_new_active_arcade_terrain();
 bool rename_active_arcade_entity(Entity entity, std::string_view name);
 bool delete_active_arcade_entity(Entity entity);
+bool set_active_arcade_script_graph(Entity entity, std::span<const u8> blob, std::string* error);
+bool clear_active_arcade_script_graph(Entity entity);
+u32 active_arcade_script_graph_count();
 Entity duplicate_active_arcade_entity(Entity entity);
 bool reparent_active_arcade_entity(Entity entity, Entity parent);
 bool set_active_arcade_component_field(Entity entity,
@@ -99,6 +105,7 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
 void apply_active_arcade_component_remove(const editor::ipc::SelectionComponentRemove& remove);
 std::optional<Entity> parse_entity_arg(std::string_view text);
 std::string joined_name_args(std::span<const std::string_view> args, usize first);
+bool decode_hex_blob(std::string_view hex, std::vector<u8>& out);
 std::string_view material_preset_arg(std::span<const std::string_view> args);
 std::optional<scene::LightKind> parse_light_kind_arg(std::string_view text);
 std::optional<scene::GameplayRole> parse_gameplay_role_arg(std::string_view text);
@@ -601,6 +608,60 @@ void register_arcade_console_commands() {
             out.FormatLine("scene_save: wrote {}", args[0]);
         });
     console_ref.RegisterCommand(
+        "psygraph_set",
+        "Author the visual-script graph on an entity: psygraph_set <entity> <hexblob>.",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            if (args.size() < 2u) {
+                out.PrintLine("psygraph_set: expected <entity> <hexblob>");
+                return;
+            }
+            const std::optional<Entity> entity = parse_entity_arg(args[0]);
+            if (!entity) {
+                out.PrintLine("psygraph_set: bad entity id");
+                return;
+            }
+            std::vector<u8> blob;
+            if (!decode_hex_blob(args[1], blob)) {
+                out.PrintLine("psygraph_set: bad hex blob");
+                return;
+            }
+            std::string error;
+            if (!set_active_arcade_script_graph(*entity, blob, &error)) {
+                out.FormatLine("psygraph_set: failed: {}",
+                               error.empty() ? "unknown error" : error);
+                return;
+            }
+            out.FormatLine("psygraph_set: bound {} byte graph to entity {}",
+                           blob.size(),
+                           entity->raw);
+        });
+    console_ref.RegisterCommand(
+        "psygraph_clear",
+        "Remove the visual-script graph from an entity: psygraph_clear <entity>.",
+        [](std::span<const std::string_view> args, console::Output& out) {
+            if (args.empty()) {
+                out.PrintLine("psygraph_clear: expected <entity>");
+                return;
+            }
+            const std::optional<Entity> entity = parse_entity_arg(args[0]);
+            if (!entity) {
+                out.PrintLine("psygraph_clear: bad entity id");
+                return;
+            }
+            if (!clear_active_arcade_script_graph(*entity)) {
+                out.PrintLine("psygraph_clear: entity had no graph");
+                return;
+            }
+            out.FormatLine("psygraph_clear: removed graph from entity {}", entity->raw);
+        });
+    console_ref.RegisterCommand(
+        "psygraph_list",
+        "Print how many entities carry an authored visual-script graph.",
+        [](std::span<const std::string_view>, console::Output& out) {
+            out.FormatLine("psygraph_list: {} authored graph(s)",
+                           active_arcade_script_graph_count());
+        });
+    console_ref.RegisterCommand(
         "scene_dirty",
         "Print the backend scene dirty state.",
         [](std::span<const std::string_view>, console::Output& out) {
@@ -678,6 +739,40 @@ std::optional<Entity> parse_entity_arg(std::string_view text) {
     if (ec != std::errc{} || ptr != end || raw == 0u)
         return std::nullopt;
     return Entity{raw};
+}
+
+// Decode a lower/upper-case hex string ("0a1b...") into raw bytes. Returns false
+// on an odd length or any non-hex digit. The web graph panel hex-encodes the
+// psygraph serialized blob to ship it over the text console-command channel
+// (binary-safe, no msgpack-bin framing needed).
+bool decode_hex_blob(std::string_view hex, std::vector<u8>& out) {
+    if ((hex.size() & 1u) != 0u)
+        return false;
+    out.clear();
+    out.reserve(hex.size() / 2u);
+    const auto nibble = [](char c, u8& v) -> bool {
+        if (c >= '0' && c <= '9') {
+            v = static_cast<u8>(c - '0');
+            return true;
+        }
+        if (c >= 'a' && c <= 'f') {
+            v = static_cast<u8>(c - 'a' + 10);
+            return true;
+        }
+        if (c >= 'A' && c <= 'F') {
+            v = static_cast<u8>(c - 'A' + 10);
+            return true;
+        }
+        return false;
+    };
+    for (usize i = 0; i < hex.size(); i += 2u) {
+        u8 hi = 0u;
+        u8 lo = 0u;
+        if (!nibble(hex[i], hi) || !nibble(hex[i + 1u], lo))
+            return false;
+        out.push_back(static_cast<u8>((hi << 4) | lo));
+    }
+    return true;
 }
 
 std::string joined_name_args(std::span<const std::string_view> args, usize first) {
@@ -1641,6 +1736,93 @@ struct PlayerApp {
                 });
         }
         return true;
+    }
+
+    // Author (create / replace) the visual-script graph on an entity from a
+    // serialized psygraph blob (the byte output of psygraph::serialize_graph).
+    // Validates the blob (deserialize + compile) so a malformed or invalid graph
+    // never lands in the scene, then stores it in the scene's graph side table
+    // and attaches/updates the entity's scene::ScriptGraphComponent slot. This is
+    // the main-thread IPC author flow: the web panel sends the blob as a console
+    // command, drained by Server::pump() on the engine main thread. `error` (if
+    // provided) carries the compile diagnostic on failure.
+    bool set_entity_script_graph(Entity entity, std::span<const u8> blob, std::string* error) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !scene->registry().alive(entity)) {
+            if (error)
+                *error = "no active scene or dead entity";
+            return false;
+        }
+        if (blob.empty()) {
+            if (error)
+                *error = "empty graph blob";
+            return false;
+        }
+        // Validate: the blob must deserialize AND compile to bytecode so we never
+        // persist a graph the Play runtime cannot run.
+        script::psygraph::Graph graph;
+        std::string derr;
+        if (!script::psygraph::deserialize_graph(blob, graph, derr)) {
+            if (error)
+                *error = "deserialize failed: " + derr;
+            return false;
+        }
+        const script::psygraph::CompileResult compiled =
+            script::psygraph::compile_graph(graph);
+        if (!compiled.ok) {
+            if (error)
+                *error = "compile failed: " + compiled.diagnostic;
+            return false;
+        }
+
+        scene::EcsRegistry& registry = scene->registry();
+        auto* link = registry.get<scene::ScriptGraphComponent>(entity);
+        if (link != nullptr && link->graph_slot != scene::kInvalidScriptGraphSlot) {
+            // Re-edit: overwrite the existing slot in place (keeps the slot index
+            // stable so a save persists exactly one graph for this entity).
+            scene->set_script_graph(link->graph_slot, blob);
+        } else {
+            const u32 slot = scene->add_script_graph(blob);
+            scene::ScriptGraphComponent comp{};
+            comp.graph_slot = slot;
+            registry.add<scene::ScriptGraphComponent>(entity, comp);
+        }
+        mark_authoring_dirty();
+        return true;
+    }
+
+    // Remove the authored visual-script graph from an entity (the stored blob is
+    // left in the scene side table; the slot is simply orphaned and not saved,
+    // since save only emits a record for entities that still carry the component).
+    bool clear_entity_script_graph(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !scene->registry().alive(entity))
+            return false;
+        scene::EcsRegistry& registry = scene->registry();
+        if (registry.get<scene::ScriptGraphComponent>(entity) == nullptr)
+            return false;
+        registry.remove<scene::ScriptGraphComponent>(entity);
+        mark_authoring_dirty();
+        return true;
+    }
+
+    // Count entities that carry an authored visual-script graph (for the
+    // psygraph_list console command + the headless IPC author-flow test).
+    u32 script_graph_entity_count() {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene)
+            return 0u;
+        scene::EcsRegistry& reg = scene->registry();
+        const u32 total = reg.snapshot_live_entities(std::span<Entity>{});
+        std::vector<Entity> entities(total);
+        const u32 copied = reg.snapshot_live_entities(entities);
+        entities.resize(copied);
+        u32 count = 0u;
+        for (const Entity e : entities) {
+            if (reg.get<scene::ScriptGraphComponent>(e) != nullptr)
+                ++count;
+        }
+        return count;
     }
 
     bool delete_entity(Entity entity) {
@@ -5157,6 +5339,23 @@ bool rename_active_arcade_entity(Entity entity, std::string_view name) {
 
 bool delete_active_arcade_entity(Entity entity) {
     return g_active_arcade && g_active_arcade->delete_entity(entity);
+}
+
+bool set_active_arcade_script_graph(Entity entity, std::span<const u8> blob, std::string* error) {
+    if (!g_active_arcade) {
+        if (error)
+            *error = "no active arcade";
+        return false;
+    }
+    return g_active_arcade->set_entity_script_graph(entity, blob, error);
+}
+
+bool clear_active_arcade_script_graph(Entity entity) {
+    return g_active_arcade && g_active_arcade->clear_entity_script_graph(entity);
+}
+
+u32 active_arcade_script_graph_count() {
+    return g_active_arcade ? g_active_arcade->script_graph_entity_count() : 0u;
 }
 
 Entity duplicate_active_arcade_entity(Entity entity) {

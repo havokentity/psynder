@@ -26,6 +26,9 @@
 #include "gameplay/GameplayComponents.h"  // WeaponComponent / HealthComponent / ...
 #include "math/MathExt.h"               // inverse_affine (parenting writeback)
 #include "scene/GameplayComponents.h"   // scene-level gameplay/AI authoring proxies
+#include "scene/ScriptComponents.h"     // scene-level ScriptGraphComponent (authored graph link)
+#include "script/psygraph/Graph.h"      // psygraph::Graph (deserialize target)
+#include "script/psygraph/Serialize.h"  // psygraph::deserialize_graph (blob -> graph)
 
 #include <algorithm>
 #include <array>
@@ -187,6 +190,7 @@ void PlayRuntime::clear_pools() noexcept {
     helicopter_entities_.clear();
     ai_entities_.clear();
     authored_gameplay_entities_.clear();
+    authored_script_entities_.clear();
     authored_.clear();
     body_count_ = 0u;
 }
@@ -325,6 +329,61 @@ void PlayRuntime::clear_authored_gameplay(scene::Scene& scene) {
             reg.remove<ai::PatrolComponent>(e);
     }
 
+    reg.set_structural_deferred(restore_deferred);
+}
+
+void PlayRuntime::synthesize_authored_scripts(scene::Scene& scene) {
+    scene::EcsRegistry& reg = scene.registry();
+    // Same structural-deferred discipline as synthesize_authored_gameplay: force
+    // immediate adds so the PsyGraph tick this session sees the bound component.
+    const bool restore_deferred = reg.structural_deferred();
+    reg.set_structural_deferred(false);
+
+    const u32 total = reg.snapshot_live_entities(std::span<Entity>{});
+    std::vector<Entity> entities(total);
+    const u32 copied = reg.snapshot_live_entities(entities);
+    entities.resize(copied);
+
+    // One reused Graph for the deserialize+compile of each entity's blob. The
+    // compile (inside bind_psygraph) is a one-time per-session cost; the per-tick
+    // VM run is alloc-free. We never touch the graph after binding.
+    script::psygraph::Graph graph;
+    std::string err;
+    for (const Entity e : entities) {
+        const auto* link = reg.get<scene::ScriptGraphComponent>(e);
+        if (link == nullptr || link->graph_slot == scene::kInvalidScriptGraphSlot)
+            continue;
+        // A demo that bound a live psygraph::PsyGraphComponent directly is left
+        // untouched (bind_psygraph also rejects an already-bound entity).
+        if (reg.get<script::psygraph::PsyGraphComponent>(e) != nullptr)
+            continue;
+        const std::span<const u8> blob = scene.script_graph(link->graph_slot);
+        if (blob.empty())
+            continue;
+        if (!script::psygraph::deserialize_graph(blob, graph, err))
+            continue;  // corrupt blob: skip this entity, keep the session alive
+        if (bind_psygraph(scene, e, graph))
+            authored_script_entities_.push_back(e);
+    }
+
+    reg.set_structural_deferred(restore_deferred);
+}
+
+void PlayRuntime::clear_authored_scripts(scene::Scene& scene) {
+    scene::EcsRegistry& reg = scene.registry();
+    const bool restore_deferred = reg.structural_deferred();
+    reg.set_structural_deferred(false);
+    // Strip the psygraph::PsyGraphComponent off the entities WE bound a graph
+    // onto in begin(), restoring the scene to authoring-only state so a second
+    // Play session re-binds cleanly. The compiled programs + VmState pool stay
+    // owned by psygraph_runtime_ (re-registered next session); removing a kind
+    // that is absent is harmless.
+    for (const Entity e : authored_script_entities_) {
+        if (!reg.alive(e))
+            continue;
+        if (reg.get<script::psygraph::PsyGraphComponent>(e) != nullptr)
+            reg.remove<script::psygraph::PsyGraphComponent>(e);
+    }
     reg.set_structural_deferred(restore_deferred);
 }
 
@@ -610,6 +669,14 @@ void PlayRuntime::begin(scene::Scene& scene) {
     heli_pitch_ = 0.0f;
     heli_roll_ = 0.0f;
     heli_yaw_ = 0.0f;
+
+    // Compile + bind every editor-authored visual-script graph for this session.
+    // MUST run before the OnStart re-arm below so a newly bound PsyGraphComponent
+    // is included in the latch reset, and before reset_gameplay() is irrelevant
+    // (bind just registers the program + reserves a VmState; the host hooks the
+    // VM calls are bound in reset_gameplay). Structural adds are forced immediate
+    // inside the helper, like synthesize_authored_gameplay.
+    synthesize_authored_scripts(scene);
 
     // Reset the reused gameplay contexts for this session (clears combat scratch,
     // re-binds the alloc-free AI host hooks, zeroes the AI clock + shot tally).
@@ -1225,6 +1292,11 @@ void PlayRuntime::end(scene::Scene& scene) {
     heli_pitch_ = 0.0f;
     heli_roll_ = 0.0f;
     heli_yaw_ = 0.0f;
+
+    // Strip the psygraph::PsyGraphComponent we bound from each entity's authored
+    // graph, restoring the scene to authoring-only state (the scene-level
+    // ScriptGraphComponent + the graph blob stay; we re-bind next session).
+    clear_authored_scripts(scene);
 
     // Strip the live gameplay/AI components we synthesised from the editor
     // authoring proxies, restoring the scene to proxy-only state.

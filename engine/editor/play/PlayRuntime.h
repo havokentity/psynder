@@ -191,6 +191,19 @@ class PlayRuntime {
     // synthesised onto in begin(), restoring the editor scene to proxy-only state.
     void clear_authored_gameplay(scene::Scene& scene);
 
+    // Compile + bind every entity's editor-authored visual-script graph for this
+    // Play session. Scans the scene's scene::ScriptGraphComponent entities,
+    // deserializes the opaque graph blob from the scene's side table (Scene::
+    // script_graph), and binds it onto the entity via bind_psygraph (one-time
+    // compile + VmState alloc). Runs in begin() AFTER synthesize_authored_gameplay
+    // so a graph's actions can reach the synthesised gameplay components. The
+    // resulting psygraph::PsyGraphComponent is stripped again in end() so a
+    // second session re-binds cleanly. Records which entities we bound onto.
+    void synthesize_authored_scripts(scene::Scene& scene);
+    // Inverse: strip the psygraph::PsyGraphComponent off the entities we bound a
+    // graph onto in begin(), restoring the editor scene to authoring-only state.
+    void clear_authored_scripts(scene::Scene& scene);
+
     // --- Gameplay phase (called from tick, in this order) ------------------
     // Combat: cooldowns -> projectile integration + hits -> damage flush ->
     // projectile cleanup -> death resolution. Reuses combat_ctx_ scratch.
@@ -256,6 +269,13 @@ class PlayRuntime {
     // Only entities WE synthesised onto are recorded (a demo that added the live
     // component directly is left untouched). Reserved once.
     std::vector<Entity> authored_gameplay_entities_;
+    // Entities that carry a scene-level scene::ScriptGraphComponent (an editor-
+    // authored visual-script graph). begin() compiles + binds each graph onto the
+    // entity via bind_psygraph; end() strips the psygraph::PsyGraphComponent back
+    // off so a second Play session re-binds cleanly. Only entities WE bound onto
+    // are recorded (a demo that added a PsyGraphComponent directly is untouched).
+    // Reserved once.
+    std::vector<Entity> authored_script_entities_;
 
     // --- Reused, alloc-free gameplay contexts ------------------------------
     // Combat scratch + policy. ctx scratch is reserve()d in begin() and only
