@@ -68,11 +68,12 @@ PSY_FORCEINLINE f32 plane_offset_world(math::Vec3 normal, math::Vec3 position) n
 PSY_FORCEINLINE math::Vec3 apply_inv_inertia_world(math::Quat rotation,
                                                    math::Vec3 inv_local,
                                                    math::Vec3 v_world) noexcept {
-    const math::Vec3 v_local = quat_rotate(quat_conjugate(rotation), v_world);
+    // Qualified to dodge the math/physics quat_rotate ADL ambiguity (see above).
+    const math::Vec3 v_local = detail::quat_rotate(detail::quat_conjugate(rotation), v_world);
     const math::Vec3 a_local{v_local.x * inv_local.x,
                              v_local.y * inv_local.y,
                              v_local.z * inv_local.z};
-    return quat_rotate(rotation, a_local);
+    return detail::quat_rotate(rotation, a_local);
 }
 
 inline math::Aabb aabb_world(u8 shape,
