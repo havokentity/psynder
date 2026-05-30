@@ -14,7 +14,7 @@ endif()
 # Common link set for every bench TU.
 set(BENCH_COMMON_LINKS
     psynder_core psynder_math psynder_simd psynder_jobs
-    psynder_render_raster psynder_scene psynder_physics
+    psynder_render_raster psynder_render_rt psynder_scene psynder_physics
 )
 
 foreach(_src IN LISTS BENCH_SOURCES)
