@@ -4,6 +4,15 @@
 Read `docs/AUTONOMOUS_MISSION.md` for the operating loop. This file is the
 running ledger: update it every wake-up. Newest entries on top.
 
+## >>> RESUME HERE (fresh session after restart, 2026-05-30) <<<
+HEAD = `7ad28f6` on `integration/wave-hybrid-material-shadows`, pushed + in sync, working tree CLEAN. Gated checks GREEN at HEAD: release `psynder_unit` 0-failed (914 cases), goldens 4/4, debug+release builds 0 error, full web build green. Waves 5 + 6 COMPLETE. Wave 7: AOI netcode (f63d848) + PsyGraph no-code scripting (5b262e3) LANDED. 
+
+TWO open items for the next session, in priority order:
+1. **[HIGH BUG] Demo teardown SIGABRT (exit 134).** `psynder_df_demo` (and likely racer/shooter — any demo that builds a shadow TLAS) completes its gameplay then ABORTS during process teardown. NOT caught by the unit suite/goldens (they exit 0). Did NOT exist in Wave 5 (df_demo smoke exited 0 then); a Wave-6/7 ENGINE change regressed it. PRIME SUSPECT: the RT telemetry fix `76fd68c` made `Bvh8`/`Tlas` non-copyable + added dtors that erase from a `this`-keyed `StateRegistry` (engine/render/rt/Bvh.cpp) under a mutex — at process exit the registry (function-local static / global) can be destroyed BEFORE a late-destroyed Tlas, so the dtor touches torn-down state -> abort (static-destruction-order fiasco). FIX: make the StateRegistry a leak-on-exit Meyers singleton (heap, never destroyed) OR guard the dtor erase against a destroyed registry (alive flag). VERIFY: df_demo `--smoke-frames=90` exits 0 (no 134), unit suite still 0-failed, goldens 4/4. CHECK the arcade too (run + quit) since the user runs release arcade. Repro: build games, run any demo smoke, observe exit 134 after "smoke target reached".
+2. **[DEFERRED] Wave 7 vehicle-on-terrain demo wiring (#80).** WIP preserved on branch `wip/vehicle-on-terrain` (@ `7e4a0e5`, games/ only). Status: df_demo drivable jeep terrain-follow LOGIC works ("TRACKS-TERRAIN GROUNDED ... PASS", 2.29m chassis-Y span over slope) BUT the demo aborts on exit (same bug #1) AND the racer governor is over-tuned (UNDER-CAP STALLED: peak 10.4 m/s vs 12 cap, 32.7m, 0 laps). Needs: fix #1 first, then a fresh lane to retune the racer governor (it swung from runaway to stalled) and re-verify both smokes exit 0. The Wave-6 ENGINE physics for this (set_ground_heightfield + governor, #58) is DONE + shipped (452bb3a); only the demo wiring is pending.
+
+Then resume Wave 8 (from the heartbeat plan): ECS query kernelization (engine/scene, bench-gated), physics solver SIMD (engine/physics, bench-gated, goldens bit-identical), editor vehicle-on-terrain authoring. One games/ lane at a time. Prune agent worktrees after each wave (they re-accumulate ~1GB each; `git worktree remove -f -f`).
+
 ## Current branch
 `integration/wave-hybrid-material-shadows` (push to origin every cycle).
 
