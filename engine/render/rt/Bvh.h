@@ -31,6 +31,18 @@ struct Triangle {
 
 class Bvh8 {
    public:
+    // Runtime state lives in an address-keyed side table (this class stays
+    // field-free per the frozen ABI). The ctor clears any stale entry left
+    // by a prior object at this address; the dtor releases the entry. Both
+    // are out-of-line so the table stays internal. Non-copyable/movable: the
+    // state is bound to the object address, so relocating would orphan it.
+    Bvh8() noexcept;
+    ~Bvh8();
+    Bvh8(const Bvh8&) = delete;
+    Bvh8& operator=(const Bvh8&) = delete;
+    Bvh8(Bvh8&&) = delete;
+    Bvh8& operator=(Bvh8&&) = delete;
+
     void build(const Triangle* tris, u32 count);
     void refit();  // for dynamic meshes
     Hit intersect(const Ray& ray) const;
@@ -45,6 +57,18 @@ class Tlas {
         const Bvh8* blas;
         math::Mat4 transform;
     };
+
+    // See Bvh8: runtime state is address-keyed in an internal side table.
+    // The ctor clears any stale same-address entry, the dtor releases it,
+    // and the type is non-copyable/movable because relocating the object
+    // would orphan its state.
+    Tlas() noexcept;
+    ~Tlas();
+    Tlas(const Tlas&) = delete;
+    Tlas& operator=(const Tlas&) = delete;
+    Tlas(Tlas&&) = delete;
+    Tlas& operator=(Tlas&&) = delete;
+
     void reserve(u32 count);
     void build(const InstanceDesc* instances, u32 count);
     bool update_instance_transform(u32 instance, const math::Mat4& transform);

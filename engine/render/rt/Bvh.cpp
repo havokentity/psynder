@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <mutex>
@@ -478,8 +479,23 @@ namespace detail {
 // covers create/erase; the state structs themselves are not synchronized
 // (callers must serialize build/refit against intersect, which DESIGN.md
 // §9.4 already requires — refit runs in its own job).
+//
+// Because the key is `this`, an entry MUST be torn down when the owning
+// object is destroyed: otherwise a later object allocated at the SAME
+// address inherits the dead object's stale state (telemetry counters,
+// cached trees). The owning public types (Bvh8/Tlas) declare an explicit
+// out-of-line ctor/dtor below: the ctor erases any stale same-address entry
+// so a reused address always starts fresh, and the dtor erases the entry so
+// the slot is released. `erase` bumps a global generation so the per-thread
+// `find` caches (which hold raw `T*`) cannot hand back a freed pointer when
+// an address is reused.
 
 namespace {
+
+// Bumped on every registry erase. The per-thread find caches store the
+// generation they were filled at and discard themselves if it moved, so a
+// reused `this` address can never resolve to a freed state pointer.
+std::atomic<u64> g_registry_generation{0};
 
 template <typename T>
 struct StateRegistry {
@@ -507,16 +523,38 @@ struct StateRegistry {
         return *s;
     }
 
+    // Drop the entry for `key` (called from the owning object's ctor/dtor).
+    // Bumps the global generation so stale per-thread find caches self-evict.
+    void erase(const void* key) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = map.find(key);
+        if (it == map.end())
+            return;
+        delete it->second;
+        map.erase(it);
+        g_registry_generation.fetch_add(1u, std::memory_order_release);
+    }
+
     T* find(const void* key) const {
         // Hot intersect paths repeatedly ask for the same few TLAS/BLAS
         // states from each worker. Keep a tiny per-thread direct cache so
         // parallel traversal does not serialize on this mutex after the
-        // first lookup on a thread.
+        // first lookup on a thread. The cache is discarded whenever a global
+        // erase has happened since it was filled, so a recycled address can
+        // never resolve to a freed state pointer.
         static thread_local CacheEntry cache[4];
         static thread_local u32 next_slot = 0;
-        for (const CacheEntry& e : cache) {
-            if (e.key == key)
-                return e.value;
+        static thread_local u64 cache_generation = 0;
+        const u64 generation = g_registry_generation.load(std::memory_order_acquire);
+        if (cache_generation != generation) {
+            for (CacheEntry& e : cache)
+                e = CacheEntry{};
+            cache_generation = generation;
+        } else {
+            for (const CacheEntry& e : cache) {
+                if (e.key == key)
+                    return e.value;
+            }
         }
 
         auto& self = const_cast<StateRegistry<T>&>(*this);
@@ -561,6 +599,16 @@ const TlasState& state_of(const Tlas& t) noexcept {
     if (s)
         return *s;
     return tlas_registry().get_or_create(&t);
+}
+
+// Drop the registry slot keyed by an object's address. Called from the
+// owning type's ctor (clear a stale same-address entry -> fresh start) and
+// dtor (release the slot). Idempotent: erasing an absent key is a no-op.
+void erase_state(const Bvh8& b) noexcept {
+    bvh_registry().erase(&b);
+}
+void erase_state(const Tlas& t) noexcept {
+    tlas_registry().erase(&t);
 }
 
 // ─── Affine helpers (translation + rotation + non-uniform scale) ────────
@@ -632,6 +680,17 @@ math::Mat4 affine_inverse(const math::Mat4& m) noexcept {
 
 }  // namespace detail
 
+// Address-keyed lifetime hooks. The ctor erases any state slot left behind
+// by a prior object that lived at this same address (the registry never
+// hands a recycled address stale state); the next state_of() then lazily
+// creates a fresh, zeroed entry. The dtor releases this object's slot.
+Bvh8::Bvh8() noexcept {
+    detail::erase_state(*this);
+}
+Bvh8::~Bvh8() {
+    detail::erase_state(*this);
+}
+
 void Bvh8::build(const Triangle* tris, u32 count) {
     auto& s = detail::state_of(*this);
     s.triangles.assign(tris, tris + count);
@@ -701,6 +760,17 @@ bool Bvh8::occluded(const Ray& ray) const {
 // ───────────────────────────────────────────────────────────────────────
 // TLAS — top-level over BLAS instances
 // ───────────────────────────────────────────────────────────────────────
+
+// See Bvh8 ctor/dtor: clear any stale same-address slot on construct, release
+// this object's slot on destruct. This is what keeps the telemetry counters
+// (build/refit/transform-update) of a brand-new Tlas at zero even when the
+// allocator reuses a freed address.
+Tlas::Tlas() noexcept {
+    detail::erase_state(*this);
+}
+Tlas::~Tlas() {
+    detail::erase_state(*this);
+}
 
 void Tlas::reserve(u32 count) {
     auto& s = detail::state_of(*this);

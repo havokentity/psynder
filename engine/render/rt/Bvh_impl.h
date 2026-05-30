@@ -50,6 +50,12 @@ const Bvh8State& state_of(const Bvh8& b) noexcept;
 TlasState& state_of(Tlas& t) noexcept;
 const TlasState& state_of(const Tlas& t) noexcept;
 
+// Defined in Bvh.cpp. Drops the address-keyed state slot for an object so a
+// later object reusing the same address does not inherit stale state.
+// Called from Bvh8/Tlas ctor (clear stale) and dtor (release).
+void erase_state(const Bvh8& b) noexcept;
+void erase_state(const Tlas& t) noexcept;
+
 // Heuristic: refit_cost > 1.3× as_built_cost → kick async rebuild (§9.4).
 bool bvh_should_async_rebuild(const Bvh8State& s) noexcept;
 bool tlas_should_async_rebuild(const TlasState& s) noexcept;
