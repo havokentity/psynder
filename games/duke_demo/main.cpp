@@ -62,6 +62,7 @@
 #include "common/CharacterController.h"
 #include "ai/AiComponents.h"
 #include "ai/AiSystems.h"
+#include "asset/Vault.h"
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
@@ -208,7 +209,8 @@ struct DukeGame {
     world::bsp::BspPortalSet portals{};
     world::bsp::PvsBuildScratch pvs_scratch{};
     u32 pvs_row_bytes = 0u;
-    bool vault_open = false;   // trigger toggles this -> rebuilds PVS
+    bool map_loaded = false;   // true => game.bsp came from the on-disk .psybsp
+    bool vault_open = false;   // trigger toggles this -> rebuilds PVS (in-memory only)
     i32 cam_cluster = kCluStart;
     u32 visible_leaves = 0u;   // last frame's PVS-visible leaf count (HUD)
     u32 total_leaves = 0u;
@@ -344,6 +346,64 @@ void build_bsp(DukeGame& game) {
     game.total_leaves = kClusterCount;
 }
 
+// Mount the asset roots that hold the baked .psybsp. We try the build-tree dir
+// first (where the CMake bake step writes via lm_qbsp --rooms), then the source
+// tree (so a hand-run `lm_qbsp --rooms` also resolves). Idempotent: mounting a
+// missing dir is a no-op. Defined via the duke CMakeLists compile definitions.
+void mount_bsp_assets() {
+#if defined(DUKE_BSP_ASSET_DIR)
+    (void)asset::Vault::Get().mount_directory(DUKE_BSP_ASSET_DIR);
+#endif
+#if defined(DUKE_BSP_SOURCE_DIR)
+    (void)asset::Vault::Get().mount_directory(DUKE_BSP_SOURCE_DIR);
+#endif
+}
+
+// Load the REAL on-disk BSP asset (engine PBSP v1: leaves + clusters + portals
+// + baked PVS) into game.bsp via the runtime loader. On success the demo uses
+// the loaded leaves/clusters/PVS for culling (no in-memory build, no runtime
+// flood). Returns true if the map loaded; false leaves game.bsp untouched so
+// the caller can fall back to the in-memory authoring path.
+bool load_bsp_asset(DukeGame& game) {
+    using namespace world::bsp;
+    mount_bsp_assets();
+
+#if defined(DUKE_BSP_VPATH)
+    constexpr std::string_view kVPath = DUKE_BSP_VPATH;
+#else
+    constexpr std::string_view kVPath = "maps/duke_e1m1.psybsp";
+#endif
+
+    BspMap loaded{};
+    if (!load(kVPath, loaded)) {
+        PSY_LOG_WARN("duke_demo: on-disk BSP '{}' not found/invalid - falling back to in-memory map",
+                     kVPath);
+        return false;
+    }
+
+    game.bsp = std::move(loaded);
+    game.map_loaded = true;
+    game.total_leaves = static_cast<u32>(game.bsp.leaves.size());
+
+    // Derive the PVS row width from the baked table: row_bytes == ceil(C/8),
+    // and pvs.size() == clusters * row_bytes. Recover clusters from max leaf
+    // cluster id (matches the loader's own walk_visible_leaves derivation).
+    i32 max_cluster = 0;
+    for (const BspLeaf& l : game.bsp.leaves) {
+        if (l.cluster > max_cluster)
+            max_cluster = l.cluster;
+    }
+    const u32 cluster_count = static_cast<u32>(max_cluster + 1);
+    game.pvs_row_bytes =
+        (cluster_count > 0u && !game.bsp.pvs.empty())
+            ? static_cast<u32>(game.bsp.pvs.size()) / cluster_count
+            : 0u;
+
+    PSY_LOG_INFO("duke_demo: loaded on-disk BSP '{}' - {} leaves, {} clusters, {} pvs bytes/row",
+                 kVPath, game.bsp.leaves.size(), cluster_count, game.pvs_row_bytes);
+    return true;
+}
+
 // Build the portal set: an edge per open corridor mouth. front_leaf/back_leaf are
 // LEAF INDICES (== cluster id here, since we laid leaves out one-per-cluster).
 // The polygon windings are left default - the coarse PVS flood only reads the
@@ -383,11 +443,35 @@ void rebuild_pvs(DukeGame& game) {
                  clusters, game.pvs_row_bytes, game.vault_open ? 1 : 0);
 }
 
-// Locate the camera's leaf/cluster by AABB containment (a tiny skin lets the eye
-// height + wall thickness not eject us). Falls back to the nearest-centre leaf so
-// a point in a doorway still resolves. Integer-deterministic.
+// Locate the camera's leaf/cluster. When the map was loaded from disk we resolve
+// against the LOADED leaf bounds + cluster ids (the on-disk asset is the source
+// of truth); otherwise we use the in-memory kVolumes. A tiny skin lets the eye
+// height + wall thickness not eject us; a nearest-centre fallback keeps a point
+// in a doorway resolving. Integer-deterministic.
 i32 camera_cluster(const DukeGame& game, math::Vec3 eye) {
     constexpr f32 kSkin = 0.6f;
+    if (game.map_loaded) {
+        i32 best = kCluStart;
+        f32 best_d = 1e30f;
+        for (const world::bsp::BspLeaf& l : game.bsp.leaves) {
+            if (l.cluster < 0)
+                continue;  // skip solid leaves
+            if (eye.x >= l.bounds.min.x - kSkin && eye.x <= l.bounds.max.x + kSkin &&
+                eye.z >= l.bounds.min.z - kSkin && eye.z <= l.bounds.max.z + kSkin) {
+                return l.cluster;
+            }
+            const f32 cx = 0.5f * (l.bounds.min.x + l.bounds.max.x);
+            const f32 cz = 0.5f * (l.bounds.min.z + l.bounds.max.z);
+            const f32 dx = eye.x - cx;
+            const f32 dz = eye.z - cz;
+            const f32 d = dx * dx + dz * dz;
+            if (d < best_d) {
+                best_d = d;
+                best = l.cluster;
+            }
+        }
+        return best;
+    }
     for (const Volume& v : kVolumes) {
         if (eye.x >= v.lo.x - kSkin && eye.x <= v.hi.x + kSkin && eye.z >= v.lo.z - kSkin &&
             eye.z <= v.hi.z + kSkin) {
@@ -718,15 +802,23 @@ void on_death(void* user, const gameplay::DeathInfo& info) {
 }
 
 // The vault-door trigger: when the player stands inside the HUB volume, open the
-// vault (rebuild portals + PVS once). Returns true the frame the door opens.
+// vault. In the in-memory fallback path this rebuilds the portal set + floods a
+// fresh PVS so the sealed vault becomes visible. With the on-disk map the PVS is
+// statically baked (the .rooms source seals the vault chain on purpose so the
+// loaded PVS culls it), so we only flag the door open for the HUD; dynamic re-
+// baking of a loaded PVS is deferred (see file notes). Returns true the frame
+// the door opens.
 bool check_vault_trigger(DukeGame& game, math::Vec3 eye) {
     if (game.vault_open)
         return false;
     if (camera_cluster(game, eye) == kCluHub) {
         game.vault_open = true;
-        build_portals(game);
-        rebuild_pvs(game);
-        PSY_LOG_INFO("duke_demo: HUB trigger reached - VAULT door opened");
+        if (!game.map_loaded) {
+            build_portals(game);
+            rebuild_pvs(game);
+        }
+        PSY_LOG_INFO("duke_demo: HUB trigger reached - VAULT door opened{}",
+                     game.map_loaded ? " (HUD only; baked PVS keeps vault sealed)" : "");
         return true;
     }
     return false;
@@ -774,12 +866,19 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     spawn_player(game);
     spawn_enemies(game);
 
-    // --- BSP + portals + PVS (vault starts sealed) ---
-    build_bsp(game);
-    build_portals(game);
-    game.pvs_scratch.reserve_for(game.bsp.leaves.size(), kClusterCount,
-                                 /*max portals*/ 6u);
-    rebuild_pvs(game);
+    // --- BSP + portals + PVS ---
+    // PRIMARY PATH: load the REAL on-disk .psybsp built offline by lm_qbsp from
+    // assets/maps/duke_e1m1.rooms. It carries the leaves/clusters/portals and a
+    // BAKED PVS, so we use them directly - no in-memory authoring, no runtime
+    // flood. FALLBACK: if the asset is missing, assemble the in-memory map +
+    // flood the PVS at runtime (the pre-W9-1 behaviour) so the demo still runs.
+    if (!load_bsp_asset(game)) {
+        build_bsp(game);
+        build_portals(game);
+        game.pvs_scratch.reserve_for(game.bsp.leaves.size(), kClusterCount,
+                                     /*max portals*/ 6u);
+        rebuild_pvs(game);
+    }
 
     game.combat.config.friendly_fire = gameplay::FriendlyFire::Off;
     game.combat.reserve(32u, 8u, 16u);
@@ -904,17 +1003,18 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
                     ++alive;
             }
             // The smoke harness greps these lines. We assert (via the exit code
-            // below) that the PVS genuinely culled at least one leaf at some
-            // point and that the player scored at least one kill.
+            // below) that the REAL on-disk map loaded, the PVS genuinely culled
+            // at least one leaf at some point, and the player scored a kill.
+            const bool map_ok = game.map_loaded;
             const bool pvs_ok = game.logged_cull;
             const bool kill_ok = game.player_kills > 0u;
             PSY_LOG_INFO(
-                "duke_demo: smoke target reached ({}); kills={} enemies_left={} "
+                "duke_demo: smoke target reached ({}); map_loaded={} kills={} enemies_left={} "
                 "vault_open={} pvs_culled={} -> {}",
-                smoke_frames, game.player_kills, alive, game.vault_open ? 1 : 0,
-                pvs_ok ? 1 : 0, (pvs_ok && kill_ok) ? "PASS" : "FAIL");
+                smoke_frames, map_ok ? 1 : 0, game.player_kills, alive, game.vault_open ? 1 : 0,
+                pvs_ok ? 1 : 0, (map_ok && pvs_ok && kill_ok) ? "PASS" : "FAIL");
             g_game = nullptr;
-            if (!pvs_ok || !kill_ok)
+            if (!map_ok || !pvs_ok || !kill_ok)
                 return EXIT_FAILURE;
             const bool capture_ok = app_host.write_capture_if_requested("duke_demo");
             return capture_ok ? EXIT_SUCCESS : EXIT_FAILURE;

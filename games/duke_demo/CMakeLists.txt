@@ -30,3 +30,37 @@ target_link_libraries(psynder_duke_demo PRIVATE
     psynder_samples_common
     psynder_ui_imm psynder_editor_core
 )
+
+# ─── Offline BSP asset bake (W9-1) ──────────────────────────────────────────
+# Author the indoor level as an on-disk `.rooms` source (assets/maps/) and
+# compile it OFFLINE at build time with the lm_qbsp tool into an engine-format
+# `.psybsp` (PBSP v1: leaves + clusters + portals + a BAKED leaf-portal-flood
+# PVS) that the runtime loader `world::bsp::Bsp::load` consumes. This proves the
+# full BSP asset pipeline (source -> qbsp -> .psybsp -> runtime load + PVS cull)
+# end to end, replacing the demo's old in-memory BspMap authoring.
+#
+# Bake-at-build (not checked in): the .psybsp is a derived binary, so we follow
+# the repo's established asset-bake convention (tools/lm_pak cooks fixtures into
+# ${CMAKE_BINARY_DIR}/assets) and emit it under the build tree. The exe mounts
+# that directory at startup via the DUKE_BSP_ASSET_DIR compile definition, with
+# a source-tree fallback so a hand-run lm_qbsp also works.
+set(_duke_rooms_src "${CMAKE_SOURCE_DIR}/assets/maps/duke_e1m1.rooms")
+set(_duke_bsp_dir   "${CMAKE_BINARY_DIR}/assets/maps")
+set(_duke_bsp_out   "${_duke_bsp_dir}/duke_e1m1.psybsp")
+
+add_custom_command(
+    OUTPUT  "${_duke_bsp_out}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_duke_bsp_dir}"
+    COMMAND $<TARGET_FILE:lm_qbsp> --rooms "${_duke_rooms_src}" "${_duke_bsp_out}"
+    DEPENDS lm_qbsp "${_duke_rooms_src}"
+    COMMENT "Baking duke_e1m1.rooms -> ${_duke_bsp_out} (engine PBSP v1 + PVS)"
+    VERBATIM
+)
+add_custom_target(psynder_duke_bsp ALL DEPENDS "${_duke_bsp_out}")
+add_dependencies(psynder_duke_demo psynder_duke_bsp)
+
+target_compile_definitions(psynder_duke_demo PRIVATE
+    DUKE_BSP_ASSET_DIR="${CMAKE_BINARY_DIR}/assets"
+    DUKE_BSP_SOURCE_DIR="${CMAKE_SOURCE_DIR}/assets"
+    DUKE_BSP_VPATH="maps/duke_e1m1.psybsp"
+)

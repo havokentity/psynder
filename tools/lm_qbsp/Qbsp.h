@@ -136,6 +136,64 @@ bool compile_bsp(const MapFile& map, CompiledBsp& out, std::string* err = nullpt
 void write_psybsp(const CompiledBsp& bsp, std::vector<u8>& out);
 bool read_psybsp(std::span<const u8> bytes, CompiledBsp& out, std::string* err = nullptr);
 
+// ─── Additive: `.rooms` source + engine-format (PBSP v1) emitter ─────────────
+//
+// The Wave-A/B path above compiles a Quake `.map` brush list into the tool's own
+// `PSBP` v2 blob (planes/nodes/leaves/brushes/portals, NO faces and NO baked
+// PVS). The engine runtime loader `world::bsp::Bsp::load` reads a *different*
+// on-disk format — `PBSP` v1 (BspFormat.h): nodes / leaves / faces / vertices /
+// indices + a **baked PVS bit-vector table**. So the brush path could not feed
+// the runtime end-to-end (it emits neither the loader's magic/layout nor a PVS).
+//
+// This block closes that gap additively, without touching the existing brush
+// pipeline or its format:
+//   * a small, deterministic `.rooms` source format (axis-aligned room volumes
+//     + explicit portals) that authors a clean multi-room indoor level — the
+//     on-disk authoring of what games/duke_demo assembled in code;
+//   * `compile_rooms`, which builds a leafy BSP (one leaf/cluster per room, a
+//     median-split kd-tree of nodes so `Bsp::locate` descends correctly) and a
+//     portal table from the explicit portal list;
+//   * `write_psybsp_engine`, which BAKES the PVS (Quake-style leaf-portal flood,
+//     reusing engine `world::bsp::build_pvs`) and serialises the engine `PBSP`
+//     v1 layout that `Bsp::load` validates and consumes.
+//
+// Faces/vertices/indices are emitted EMPTY: the runtime renders its own scene
+// meshes and uses the BSP purely for leaf / cluster / PVS visibility culling
+// (mirroring the in-memory demo, whose BspMap also carried zero faces).
+
+struct RoomVolume {
+    i32 cluster = 0;
+    math::Aabb bounds{};
+    std::string name;
+};
+
+struct RoomPortal {
+    i32 cluster_a = 0;
+    i32 cluster_b = 0;
+};
+
+struct RoomsFile {
+    std::vector<RoomVolume> rooms;
+    std::vector<RoomPortal> portals;
+};
+
+// Parse a `.rooms` source (see assets/maps/duke_e1m1.rooms for the grammar).
+bool parse_rooms(std::string_view text, RoomsFile& out, std::string* err = nullptr);
+
+// Compile rooms -> a leafy CompiledBsp: leaves carry the room bounds + cluster,
+// nodes form a median-split kd-tree over the leaf boxes (so `Bsp::locate`
+// resolves an arbitrary point to its room leaf), portals mirror the explicit
+// open connections (front_leaf/back_leaf are LEAF indices == room order).
+bool compile_rooms(const RoomsFile& rooms, CompiledBsp& out, std::string* err = nullptr);
+
+// Bake the PVS from the compiled portal graph and write the engine `PBSP` v1
+// blob (world::bsp::BspFormat.h) that `Bsp::load` consumes. `out_clusters` and
+// `out_pvs_row_bytes` (when non-null) receive the baked PVS dimensions.
+void write_psybsp_engine(const CompiledBsp& bsp,
+                         std::vector<u8>& out,
+                         u32* out_clusters = nullptr,
+                         u32* out_pvs_row_bytes = nullptr);
+
 int cli_main(int argc, char** argv);
 void print_help();
 

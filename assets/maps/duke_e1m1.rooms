@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: MIT
+// Psynder - duke_e1m1: source for the psynder_duke_demo indoor BSP level.
+//
+// This is a `.rooms` source consumed by the offline `lm_qbsp` compiler
+// (tools/lm_qbsp, `--rooms` mode). It is the on-disk authoring of the
+// multi-room indoor level that games/duke_demo used to assemble in code:
+// axis-aligned room/corridor volumes + the open portals between them.
+//
+// lm_qbsp compiles this to a leafy BSP (one leaf/cluster per room), bakes a
+// Quake-style leaf-portal-flood PVS, and emits an engine-format `.psybsp`
+// (PBSP v1) that `world::bsp::Bsp::load` consumes at runtime. The runtime then
+// uses the loaded leaves / clusters / PVS to cull rooms the camera cannot see.
+//
+// Coordinate convention matches the demo (metres; x right, z north, y up):
+//
+//        [VAULT] clu4         (sealed in the baked PVS -> culled)
+//           |
+//        (C2) clu5            (sealed)
+//           |
+//   [START]--(C0)--[HUB]--(C1)--[EAST]
+//    clu0    clu1  clu2   clu3   clu6
+//
+// FORMAT
+//   `rooms <N>`            number of room records that follow.
+//   `room <cluster> <minx> <miny> <minz> <maxx> <maxy> <maxz> [name]`
+//                         one axis-aligned interior volume = one BSP leaf with
+//                         that cluster id. `name` is an optional bare label.
+//   `portals <M>`         number of portal records that follow.
+//   `portal <clusterA> <clusterB>`
+//                         an open connection between two rooms (bidirectional;
+//                         the PVS flood treats portals as mutual). Omit a
+//                         connection to seal it (its cluster becomes a PVS
+//                         island and is culled).
+//
+// `//` line comments and blank lines are ignored. Tokens are whitespace
+// separated. Cluster ids must be unique per room and dense enough that
+// max(cluster)+1 == room count is NOT required (PVS rows are sized to
+// max(cluster)+1; gaps are allowed but waste a row).
+
+rooms 7
+//     clu   minx   miny  minz    maxx  maxy   maxz   name
+room   0    -12.0   0.0  -3.0    -6.0   3.0    3.0    START
+room   1     -6.0   0.0  -1.2    -2.0   3.0    1.2    C0
+room   2     -2.0   0.0  -3.5     3.0   3.0    3.5    HUB
+room   3      3.0   0.0  -1.2     7.0   3.0    1.2    C1
+room   4     -2.0   0.0   7.0     3.0   3.0   12.0    VAULT
+room   5     -0.6   0.0   3.5     1.6   3.0    7.0    C2
+room   6      7.0   0.0  -3.5    12.0   3.0    3.5    EAST
+
+// Open corridors along the START<->HUB<->EAST spine. The VAULT chain
+// (HUB<->C2<->VAULT) is intentionally NOT linked here, so clusters 4 and 5
+// are PVS islands and the baked PVS culls them from the spine -> a smoke run
+// observes visible < total leaves. (The in-engine vault-door reveal that
+// re-opens that chain at runtime is a separate dynamic-PVS concern; see the
+// duke_demo notes.)
+portals 4
+//      a  b
+portal  0  1
+portal  1  2
+portal  2  3
+portal  3  6

@@ -3,6 +3,15 @@
 
 #include "Qbsp.h"
 
+// Engine BSP runtime format + PVS builder. lm_qbsp_lib already links
+// psynder_world_bsp (see tools/lm_qbsp/CMakeLists.txt), so the offline compiler
+// can reuse the exact on-disk layout and the exact leaf-portal-flood PVS the
+// runtime consumes — no duplicated format/algorithm to drift.
+#include "world/bsp/Bsp.h"
+#include "world/bsp/BspFormat.h"
+#include "world/bsp/Portal.h"
+#include "world/bsp/PvsBuild.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -761,18 +770,462 @@ bool read_psybsp(std::span<const u8> bytes, CompiledBsp& out, std::string* err) 
     return true;
 }
 
+// ─── `.rooms` source: parse + compile + engine-format emit ───────────────────
+
+namespace {
+
+// Whitespace / comment-skipping word tokenizer for `.rooms` (reuses the same
+// comment + delimiter rules as MapTok but yields bare words only — `.rooms` has
+// no parens/braces/quotes).
+class RoomsTok {
+   public:
+    explicit RoomsTok(std::string_view s) : src_(s), pos_(0) {}
+    bool next(std::string& out) {
+        skip_ws();
+        if (pos_ >= src_.size())
+            return false;
+        usize start = pos_;
+        while (pos_ < src_.size() && !std::isspace(static_cast<unsigned char>(src_[pos_])))
+            ++pos_;
+        out.assign(src_.data() + start, src_.data() + pos_);
+        return start != pos_;
+    }
+    bool next_i32(i32& out) {
+        std::string s;
+        if (!next(s))
+            return false;
+        char* e = nullptr;
+        long v = std::strtol(s.c_str(), &e, 10);
+        if (e == s.c_str())
+            return false;
+        out = static_cast<i32>(v);
+        return true;
+    }
+    bool next_f32(f32& out) {
+        std::string s;
+        if (!next(s))
+            return false;
+        char* e = nullptr;
+        out = std::strtof(s.c_str(), &e);
+        return e != s.c_str();
+    }
+    usize line_no() const {
+        usize n = 1;
+        for (usize i = 0; i < pos_ && i < src_.size(); ++i)
+            if (src_[i] == '\n')
+                ++n;
+        return n;
+    }
+
+   private:
+    void skip_ws() {
+        while (pos_ < src_.size()) {
+            char c = src_[pos_];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                ++pos_;
+                continue;
+            }
+            if (c == '/' && pos_ + 1 < src_.size() && src_[pos_ + 1] == '/') {
+                while (pos_ < src_.size() && src_[pos_] != '\n')
+                    ++pos_;
+                continue;
+            }
+            break;
+        }
+    }
+    std::string_view src_;
+    usize pos_;
+};
+
+}  // namespace
+
+bool parse_rooms(std::string_view text, RoomsFile& out, std::string* err) {
+    out = {};
+    RoomsTok t(text);
+    auto fail = [&](const std::string& msg) {
+        if (err)
+            *err = "rooms: " + msg + " (line " + std::to_string(t.line_no()) + ")";
+        return false;
+    };
+
+    std::string kw;
+    if (!t.next(kw) || kw != "rooms")
+        return fail("expected 'rooms <N>' header");
+    i32 room_count = 0;
+    if (!t.next_i32(room_count) || room_count < 0)
+        return fail("bad room count");
+
+    out.rooms.reserve(static_cast<usize>(room_count));
+    for (i32 i = 0; i < room_count; ++i) {
+        if (!t.next(kw) || kw != "room")
+            return fail("expected 'room' record");
+        RoomVolume rv;
+        if (!t.next_i32(rv.cluster) || rv.cluster < 0)
+            return fail("bad cluster id");
+        f32 v[6];
+        for (f32& f : v) {
+            if (!t.next_f32(f))
+                return fail("expected room bounds (6 floats)");
+        }
+        rv.bounds.min = {v[0], v[1], v[2]};
+        rv.bounds.max = {v[3], v[4], v[5]};
+        if (rv.bounds.min.x > rv.bounds.max.x || rv.bounds.min.y > rv.bounds.max.y ||
+            rv.bounds.min.z > rv.bounds.max.z)
+            return fail("room bounds min > max");
+        // Optional trailing bare-word name (not 'room'/'portals'/'portal').
+        // Peek: only consume if the next token is not a known keyword.
+        RoomsTok save = t;
+        std::string maybe_name;
+        if (save.next(maybe_name) && maybe_name != "room" && maybe_name != "portals" &&
+            maybe_name != "portal") {
+            rv.name = maybe_name;
+            t = save;
+        }
+        out.rooms.push_back(std::move(rv));
+    }
+
+    // Reject duplicate cluster ids (each room is one PVS cluster row).
+    for (usize i = 0; i < out.rooms.size(); ++i) {
+        for (usize j = i + 1; j < out.rooms.size(); ++j) {
+            if (out.rooms[i].cluster == out.rooms[j].cluster)
+                return fail("duplicate cluster id " + std::to_string(out.rooms[i].cluster));
+        }
+    }
+
+    // Portals are optional (a single-room map has none).
+    std::string tok;
+    if (!t.next(tok))
+        return true;
+    if (tok != "portals")
+        return fail("expected 'portals <M>' after rooms");
+    i32 portal_count = 0;
+    if (!t.next_i32(portal_count) || portal_count < 0)
+        return fail("bad portal count");
+    out.portals.reserve(static_cast<usize>(portal_count));
+    for (i32 i = 0; i < portal_count; ++i) {
+        if (!t.next(kw) || kw != "portal")
+            return fail("expected 'portal' record");
+        RoomPortal rp;
+        if (!t.next_i32(rp.cluster_a) || !t.next_i32(rp.cluster_b))
+            return fail("portal needs two cluster ids");
+        out.portals.push_back(rp);
+    }
+    return true;
+}
+
+namespace {
+
+// Recursively split a set of room leaves into a median-split kd-tree. `order`
+// holds room indices; we split on the axis of largest centroid spread at the
+// median, emitting an internal node whose plane separates the two halves. A
+// node child is encoded BspFormat-style: child < 0 => leaf (~leaf_index),
+// child >= 0 => node index. Leaf index == room index (1 leaf per room).
+//
+// The split plane is axis-aligned (normal = +axis unit, d = split coordinate).
+// `Bsp::locate` evaluates dot(n,p) - d >= 0 => front child. We place rooms whose
+// centroid coordinate >= split on the FRONT side so a point inside a room lands
+// in that room's half.
+i32 build_kd(CompiledBsp& bsp,
+             const RoomsFile& rooms,
+             std::vector<u32>& order,
+             u32 lo,
+             u32 hi) {
+    const u32 n = hi - lo;
+    if (n == 1) {
+        return ~static_cast<i32>(order[lo]);  // leaf reference
+    }
+
+    // Pick split axis = largest spread of room-centre coordinates in [lo,hi).
+    f32 cmin[3] = {1e30f, 1e30f, 1e30f};
+    f32 cmax[3] = {-1e30f, -1e30f, -1e30f};
+    auto centre = [&](u32 ri, int ax) {
+        const math::Aabb& b = rooms.rooms[ri].bounds;
+        const f32 lo3[3] = {b.min.x, b.min.y, b.min.z};
+        const f32 hi3[3] = {b.max.x, b.max.y, b.max.z};
+        return 0.5f * (lo3[ax] + hi3[ax]);
+    };
+    for (u32 i = lo; i < hi; ++i) {
+        for (int ax = 0; ax < 3; ++ax) {
+            const f32 c = centre(order[i], ax);
+            if (c < cmin[ax])
+                cmin[ax] = c;
+            if (c > cmax[ax])
+                cmax[ax] = c;
+        }
+    }
+    int axis = 0;
+    f32 best = cmax[0] - cmin[0];
+    for (int ax = 1; ax < 3; ++ax) {
+        const f32 spread = cmax[ax] - cmin[ax];
+        if (spread > best) {
+            best = spread;
+            axis = ax;
+        }
+    }
+
+    // Sort [lo,hi) by centre on the chosen axis (deterministic stable sort).
+    std::stable_sort(order.begin() + lo, order.begin() + hi, [&](u32 a, u32 b) {
+        const f32 ca = centre(a, axis);
+        const f32 cb = centre(b, axis);
+        if (ca != cb)
+            return ca < cb;
+        return a < b;  // tie-break by room index for determinism
+    });
+    const u32 mid = lo + n / 2;
+    // Split plane sits midway between the two straddling room centres so every
+    // room on the FRONT (>= split) side resolves to a front-subtree leaf.
+    const f32 split = 0.5f * (centre(order[mid - 1], axis) + centre(order[mid], axis));
+
+    math::Vec3 normal{0, 0, 0};
+    (&normal.x)[axis] = 1.0f;
+
+    BspPlane plane{};
+    plane.normal = normal;
+    plane.d = split;
+    bsp.planes.push_back(plane);
+    const i32 plane_idx = static_cast<i32>(bsp.planes.size() - 1);
+
+    const u32 node_idx = static_cast<u32>(bsp.nodes.size());
+    bsp.nodes.push_back(BspNode{plane_idx, 0, 0});
+
+    // FRONT = rooms with centre >= split = upper half [mid,hi); BACK = [lo,mid).
+    const i32 front = build_kd(bsp, rooms, order, mid, hi);
+    const i32 back = build_kd(bsp, rooms, order, lo, mid);
+    bsp.nodes[node_idx].front = front;
+    bsp.nodes[node_idx].back = back;
+    return static_cast<i32>(node_idx);
+}
+
+}  // namespace
+
+bool compile_rooms(const RoomsFile& rooms, CompiledBsp& out, std::string* err) {
+    out = {};
+    if (rooms.rooms.empty()) {
+        if (err)
+            *err = "rooms: no rooms to compile";
+        return false;
+    }
+
+    // One leaf per room, in room order, carrying the room bounds + cluster.
+    out.leaves.reserve(rooms.rooms.size());
+    for (const RoomVolume& rv : rooms.rooms) {
+        BspLeaf leaf{};
+        leaf.cluster = rv.cluster;
+        leaf.flags = kLeafFlagEmpty;
+        leaf.bounds = rv.bounds;
+        out.leaves.push_back(leaf);
+    }
+
+    // Median-split kd-tree of nodes over the leaf boxes so locate() descends.
+    std::vector<u32> order(rooms.rooms.size());
+    for (u32 i = 0; i < order.size(); ++i)
+        order[i] = i;
+    const i32 root = build_kd(out, rooms, order, 0, static_cast<u32>(order.size()));
+
+    // Ensure nodes[0] is the root (build_kd appends the root last). For a single
+    // room there are no nodes; synthesize a degenerate root pointing at leaf 0 on
+    // both sides so the runtime walker always lands somewhere.
+    if (out.nodes.empty()) {
+        BspPlane p{};
+        p.normal = {0, 0, 1};
+        p.d = 0;
+        out.planes.push_back(p);
+        out.nodes.push_back(BspNode{0, ~0, ~0});  // both children -> leaf 0
+    } else if (root >= 0 && static_cast<usize>(root) != out.nodes.size() - 1) {
+        // build_kd returns the root as the LAST appended node. Move it to slot 0.
+        const i32 root_idx = root;
+        std::swap(out.nodes[0], out.nodes[static_cast<usize>(root_idx)]);
+        for (BspNode& nd : out.nodes) {
+            if (nd.front == 0)
+                nd.front = root_idx;
+            else if (nd.front == root_idx)
+                nd.front = 0;
+            if (nd.back == 0)
+                nd.back = root_idx;
+            else if (nd.back == root_idx)
+                nd.back = 0;
+        }
+    } else if (root >= 0 && static_cast<usize>(root) == out.nodes.size() - 1 && root != 0) {
+        // Root is the last node and != 0: swap into slot 0 and patch refs.
+        const i32 root_idx = root;
+        std::swap(out.nodes[0], out.nodes[static_cast<usize>(root_idx)]);
+        for (BspNode& nd : out.nodes) {
+            if (nd.front == 0)
+                nd.front = root_idx;
+            else if (nd.front == root_idx)
+                nd.front = 0;
+            if (nd.back == 0)
+                nd.back = root_idx;
+            else if (nd.back == root_idx)
+                nd.back = 0;
+        }
+    }
+
+    // Portals: map cluster id -> leaf index (== room order). front_leaf/back_leaf
+    // are LEAF indices to match BspPortalSet semantics consumed by build_pvs.
+    auto leaf_for_cluster = [&](i32 cluster) -> i32 {
+        for (usize i = 0; i < out.leaves.size(); ++i)
+            if (out.leaves[i].cluster == cluster)
+                return static_cast<i32>(i);
+        return -1;
+    };
+    for (const RoomPortal& rp : rooms.portals) {
+        const i32 a = leaf_for_cluster(rp.cluster_a);
+        const i32 b = leaf_for_cluster(rp.cluster_b);
+        if (a < 0 || b < 0) {
+            if (err)
+                *err = "rooms: portal references unknown cluster";
+            return false;
+        }
+        BspPortal portal{};
+        portal.front_leaf = a;
+        portal.back_leaf = b;
+        portal.first_vertex = static_cast<u32>(out.portal_vertices.size());
+        portal.vertex_count = 0u;  // PVS flood needs only adjacency, not windings
+        // Plane: the shared boundary between the two room boxes (informational;
+        // the coarse flood ignores it). Use the midplane on the axis of contact.
+        portal.plane_normal = {0, 0, 1};
+        portal.plane_d = 0.0f;
+        out.portals.push_back(portal);
+    }
+    return true;
+}
+
+void write_psybsp_engine(const CompiledBsp& bsp,
+                         std::vector<u8>& out,
+                         u32* out_clusters,
+                         u32* out_pvs_row_bytes) {
+    namespace wb = ::psynder::world::bsp;
+
+    // 1. Build a runtime BspMap + BspPortalSet from the compiled data so we can
+    //    bake the PVS with the SAME flood the runtime uses for in-memory maps.
+    wb::BspMap map;
+    map.nodes.reserve(bsp.nodes.size());
+    for (const BspNode& n : bsp.nodes) {
+        wb::BspNode rn{};
+        if (n.plane >= 0 && static_cast<usize>(n.plane) < bsp.planes.size()) {
+            rn.plane_normal = bsp.planes[static_cast<usize>(n.plane)].normal;
+            rn.plane_d = bsp.planes[static_cast<usize>(n.plane)].d;
+        }
+        rn.front_child = n.front;
+        rn.back_child = n.back;
+        map.nodes.push_back(rn);
+    }
+    map.leaves.reserve(bsp.leaves.size());
+    for (const BspLeaf& l : bsp.leaves) {
+        wb::BspLeaf rl{};
+        rl.cluster = l.cluster;
+        rl.first_face = 0u;
+        rl.face_count = 0u;
+        rl.bounds = l.bounds;
+        map.leaves.push_back(rl);
+    }
+
+    wb::BspPortalSet portal_set;
+    portal_set.portals.reserve(bsp.portals.size());
+    for (const BspPortal& p : bsp.portals) {
+        wb::BspPortal rp{};
+        rp.front_leaf = p.front_leaf;
+        rp.back_leaf = p.back_leaf;
+        rp.first_vertex = 0u;
+        rp.vertex_count = 0u;
+        rp.plane_normal = p.plane_normal;
+        rp.plane_d = p.plane_d;
+        portal_set.portals.push_back(rp);
+    }
+
+    wb::PvsBuildScratch scratch;
+    std::vector<u8> pvs;
+    u32 row_bytes = 0u;
+    const u32 clusters = wb::build_pvs(map, portal_set, scratch, pvs, row_bytes);
+    if (out_clusters)
+        *out_clusters = clusters;
+    if (out_pvs_row_bytes)
+        *out_pvs_row_bytes = row_bytes;
+
+    // 2. Serialise the engine PBSP v1 layout (BspFormat.h). Header is 96 bytes;
+    //    chunks (nodes/leaves/faces/vertices/indices/pvs) follow 4-byte aligned.
+    //    faces/vertices/indices are empty — the runtime renders its own meshes.
+    constexpr u32 kHeaderBytes = static_cast<u32>(sizeof(wb::BspFileHeader));
+    static_assert(kHeaderBytes == 96u, "engine BSP header must be 96 bytes");
+
+    const u32 node_count = static_cast<u32>(map.nodes.size());
+    const u32 leaf_count = static_cast<u32>(map.leaves.size());
+
+    auto align4 = [](u32 v) { return (v + 3u) & ~3u; };
+
+    const u32 nodes_off = kHeaderBytes;
+    const u32 nodes_bytes = node_count * static_cast<u32>(sizeof(wb::BspFileNode));
+    const u32 leaves_off = align4(nodes_off + nodes_bytes);
+    const u32 leaves_bytes = leaf_count * static_cast<u32>(sizeof(wb::BspFileLeaf));
+    const u32 faces_off = align4(leaves_off + leaves_bytes);  // zero faces
+    const u32 vertices_off = faces_off;                       // zero vertices
+    const u32 indices_off = vertices_off;                     // zero indices
+    const u32 pvs_off = align4(indices_off);
+    const u32 pvs_bytes = static_cast<u32>(pvs.size());
+    const u32 total_bytes = align4(pvs_off + pvs_bytes);
+
+    wb::BspFileHeader header{};
+    header.magic = wb::kBspFileMagic;
+    header.version = wb::kBspFileVersion;
+    header.flags = 0u;
+    header.total_bytes = total_bytes;
+    header.cluster_count = clusters;
+    header.pvs_row_bytes = row_bytes;
+    header.nodes = {nodes_off, node_count};
+    header.leaves = {leaves_off, leaf_count};
+    header.faces = {faces_off, 0u};
+    header.vertices = {vertices_off, 0u};
+    header.indices = {indices_off, 0u};
+    header.pvs = {pvs_off, pvs_bytes};
+
+    out.assign(total_bytes, 0u);
+    std::memcpy(out.data(), &header, kHeaderBytes);
+
+    for (u32 i = 0; i < node_count; ++i) {
+        wb::BspFileNode fn{};
+        fn.nx = map.nodes[i].plane_normal.x;
+        fn.ny = map.nodes[i].plane_normal.y;
+        fn.nz = map.nodes[i].plane_normal.z;
+        fn.d = map.nodes[i].plane_d;
+        fn.front_child = map.nodes[i].front_child;
+        fn.back_child = map.nodes[i].back_child;
+        std::memcpy(out.data() + nodes_off + i * sizeof(wb::BspFileNode), &fn, sizeof(fn));
+    }
+    for (u32 i = 0; i < leaf_count; ++i) {
+        wb::BspFileLeaf fl{};
+        fl.cluster = map.leaves[i].cluster;
+        fl.first_face = 0u;
+        fl.face_count = 0u;
+        fl.bbox_min_x = map.leaves[i].bounds.min.x;
+        fl.bbox_min_y = map.leaves[i].bounds.min.y;
+        fl.bbox_min_z = map.leaves[i].bounds.min.z;
+        fl.bbox_max_x = map.leaves[i].bounds.max.x;
+        fl.bbox_max_y = map.leaves[i].bounds.max.y;
+        fl.bbox_max_z = map.leaves[i].bounds.max.z;
+        std::memcpy(out.data() + leaves_off + i * sizeof(wb::BspFileLeaf), &fl, sizeof(fl));
+    }
+    if (pvs_bytes > 0u) {
+        std::memcpy(out.data() + pvs_off, pvs.data(), pvs_bytes);
+    }
+}
+
 void print_help() {
     std::fprintf(stdout,
                  "lm_qbsp — Psynder BSP compiler (id-inspired)\n"
                  "\n"
                  "Usage:\n"
-                 "  lm_qbsp <input.map> <output.psybsp>\n"
+                 "  lm_qbsp <input.map> <output.psybsp>            (brush .map -> PSBP v2)\n"
+                 "  lm_qbsp --rooms <input.rooms> <output.psybsp>  (rooms -> engine PBSP v1 + baked PVS)\n"
                  "  lm_qbsp --help\n"
                  "\n"
-                 "Accepts brush-list .map files in Quake / TrenchBroom format and\n"
-                 "compiles a leafy BSP. Wave-B output (.psybsp v2) carries a portal\n"
-                 "table connecting non-solid leaves on every splitter plane; PVS\n"
-                 "bit-vector generation still lives in lane 10's loader.\n");
+                 "Brush mode accepts Quake / TrenchBroom .map files and compiles a leafy\n"
+                 "BSP into the tool's PSBP v2 blob (planes/nodes/leaves/brushes/portals).\n"
+                 "\n"
+                 "--rooms mode accepts a `.rooms` source (axis-aligned room volumes +\n"
+                 "explicit portals; see assets/maps/duke_e1m1.rooms), compiles a leaf-per-\n"
+                 "room BSP, BAKES a Quake-style leaf-portal-flood PVS, and emits the engine\n"
+                 "PBSP v1 format that world::bsp::Bsp::load consumes at runtime.\n");
 }
 
 namespace {
@@ -815,6 +1268,51 @@ int cli_main(int argc, char** argv) {
         print_help();
         return 0;
     }
+
+    // --rooms <input.rooms> <output.psybsp>: compile the room/portal source into
+    // the engine PBSP v1 format with a baked PVS (loader-consumable).
+    if (a == "--rooms") {
+        if (argc < 4) {
+            print_help();
+            return 1;
+        }
+        std::string rtext;
+        std::string rerr;
+        if (!read_file(fs::path(argv[2]), rtext, rerr)) {
+            std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
+            return 1;
+        }
+        RoomsFile rooms;
+        if (!parse_rooms(rtext, rooms, &rerr)) {
+            std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
+            return 1;
+        }
+        CompiledBsp rbsp;
+        if (!compile_rooms(rooms, rbsp, &rerr)) {
+            std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
+            return 1;
+        }
+        std::vector<u8> rbytes;
+        u32 clusters = 0u, row_bytes = 0u;
+        write_psybsp_engine(rbsp, rbytes, &clusters, &row_bytes);
+        if (!write_file(fs::path(argv[3]), rbytes, rerr)) {
+            std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
+            return 1;
+        }
+        std::fprintf(stdout,
+                     "lm_qbsp: %s -> %s (engine PBSP v1: nodes=%u leaves=%u portals=%u "
+                     "clusters=%u pvs_row_bytes=%u bytes=%u)\n",
+                     argv[2],
+                     argv[3],
+                     static_cast<u32>(rbsp.nodes.size()),
+                     static_cast<u32>(rbsp.leaves.size()),
+                     static_cast<u32>(rbsp.portals.size()),
+                     clusters,
+                     row_bytes,
+                     static_cast<u32>(rbytes.size()));
+        return 0;
+    }
+
     if (argc < 3) {
         print_help();
         return 1;
