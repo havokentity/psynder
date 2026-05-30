@@ -43,9 +43,14 @@ First playable FPS demo (games/shooter_demo): BSP room + hybrid shadows + combat
 - DEMO GAME 3 c917163 (games/df_demo): Delta Force-style terrain tactical shooter. 256x256 heightmap terrain (loader MeshLibrary patch), bilinear-grounded FP player + 6 ranged AI soldiers (Health/Faction/Hitbox/AiAgent/Perception/Patrol/Weapon), Hybrid render w/ sun + WIRED terrain heightmap-march shadow occluder (long ridge shadows), LOS = terrain march + World::raycast body occlusion, fire = gameplay::fire_weapon. Alloc-free frame loop. Smoke: player grounded (eye 17.9/ground 16.2), 8 hitscans 104->52m, 3 kills, exit 0. Deferred: drivable vehicle/heli on terrain (physics::vehicle::set_ground_plane is flat-y only — engine gap shared w/ racer); multi-objective flow, networked MP, ragdolls, tracers.
 - AI navigation 9b14f4b (engine/ai): NavGrid (uniform u8 occupancy, host-filled, no physics/render dep) + NavQuery deterministic A* (octile heuristic, indexed binary min-heap w/ decrease-key, tie-break on cell index, generation-stamped O(1) scratch reset) + greedy string-pull LOS-skip smoothing + per-agent repath throttle + deterministic separation from position snapshots. Parallel-safe via 64-slot per-worker NavQuery pool (16-core machine -> slots 1..16, no collision). Opt-in via AiContext::nav_grid (null = unchanged steer-v1). 7 new [ai][nav] tests. Next: polygon navmesh + true funnel, dynamic obstacle carving, jump/drop links.
 
-## Engine gaps surfaced by demos (track for a physics wave)
-- physics::vehicle::set_ground_plane takes one flat world-Y, not a heightfield — cars/heli can't drive on terrain (df_demo + racer_demo both flag this). Need per-wheel terrain height probe / heightfield suspension raycast.
+## Wave 6 (in flight)
+- Editor no-code gameplay authoring (editor/web/scene/PlayRuntime) — Health/Weapon/Faction/Hitbox/AI components in the inspector + SceneFile serialization + ColliderShape::Plane + authored-into-Play. [IN FLIGHT]
+- Vehicle-on-terrain physics + governor #58 (engine/physics). [LANDED 452bb3a — set_ground_heightfield per-wheel borrowed-callback sampler + governor/steering-authority; 343-line test; physics 89 x3, goldens 4/4, RELEASE green. #58 vehicle/governor portion CLOSED. Wiring into demos/editor is a Wave-7 follow-up.]
+- Render perf kernelization, bench-gated (engine/render) — raster fragment + BVH8 traverse, goldens bit-identical. [IN FLIGHT]
+
+## Engine gaps surfaced by demos (track)
 - Box-box / capsule / GJK speculative-contact coverage (anti-tunneling only covers sphere/box/capsule-vs-plane so far; needs GJK-distance).
+- Vehicle-on-terrain physics API now EXISTS (452bb3a) but is NOT yet wired into df_demo/racer_demo/editor — Wave 7 wires set_ground_heightfield + VehicleDesc governor fields at the call sites.
 
 ## Wave 5+ (planned)
 First demo GAME (indoor BSP shooter: combat + lights + hybrid shadows + AI + a level) under games/ — orchestrator wires it (root CMake + host). Then NFS racer demo, Delta Force terrain demo. Plus: wire PsyGraph tick + AI + combat into the editor play runtime; deferred render fidelity (soft penumbra, terrain-march shadows); anti-tunneling #63; editor graph-panel for PsyGraph.
