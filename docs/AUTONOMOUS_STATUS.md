@@ -52,6 +52,11 @@ First playable FPS demo (games/shooter_demo): BSP room + hybrid shadows + combat
 ## Release gate hardened
 The release gate now ALSO runs the RELEASE psynder_unit suite to 0-failed (not just build_release.sh which only links the arcade). As of 76fd68c it is green.
 
+## Wave 7 (in flight)
+- PsyGraph editor graph-panel (web/editor/scene/script/PlayRuntime) — web node-graph authoring -> bytecode -> run in Play. [IN FLIGHT — lane aa7f2fa825e92069f]
+- AOI per-peer netcode + handshake/lobby + jitter buffer (engine/net). [LANDED f63d848 — AOI-gated per-peer snapshots (interest sphere + byte budget + priority + leave-AOI despawn, reconstructed-world history fix), SYN/FIN Lobby slot table, server InputJitterBuffer; new tagged handshake/ack wire; debug 910 x3, RELEASE unit 0-failed (911), goldens 4/4. Next: dedicated server + matchmaking + AEAD/anti-cheat.]
+- Vehicle-on-terrain demo wiring — df_demo drivable terrain jeep + racer governor (games/df_demo + games/racer_demo). [IN FLIGHT — lane a150fac81648c61ac]
+
 ## IMPORTANT — release-suite gap + uncommitted WIP found (2026-05-30)
 - RELEASE `psynder_unit` has 1 PRE-EXISTING failure: render_rt_frame_helpers.cpp:262 (TlasBuilds counter), root cause = StateRegistry<T> keyed by `this` in engine/render/rt/Bvh.cpp leaks stale counters on address reuse; order-dependent, release-only, passes in isolation. Does NOT affect the arcade binary. Being fixed by lane a5238ec. GOING FORWARD: the release gate must also run the RELEASE psynder_unit suite, not just build_release.sh (which only builds the arcade).
 - RESOLVED: prior-session editor-authoring WIP that was uncommitted in the MAIN worktree (GameplayComponents.h untracked + dirty editor/scene/player files) was stashed, then the clean committed lane version (3c760d2) superseded it; both WIP stashes were verified-redundant and DROPPED. Tree is clean. No pushed commit was ever contaminated.
