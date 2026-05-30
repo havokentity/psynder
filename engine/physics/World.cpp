@@ -179,15 +179,22 @@ static void run_narrowphase(WorldState& w, f32 dt) {
     w.contact_scratch.reserve(w.pair_scratch.size());
     const f32 margin = detail::kernels::kSpeculativeMargin;
     for (const CandidatePair& p : w.pair_scratch) {
-        Contact c;
-        // Speculative-aware collide: penetrating pairs behave exactly as
-        // before; a fast pair about to cross emits a speculative contact the
-        // solver clamps. Pairs with no closed-form gap (box-box / capsule /
-        // GJK) fall through to the unchanged overlap path inside.
-        if (collide_pair_spec(w.bodies[p.a], w.bodies[p.b], dt, margin, c)) {
-            c.body_a = p.a;
-            c.body_b = p.b;
-            w.contact_scratch.push_back(c);
+        // Speculative-aware collide that may emit a resting MANIFOLD (ADR-016):
+        // a near-parallel capsule (lying on a plane/box, or two stacked
+        // parallel capsules) yields TWO contacts at the ends of the overlap so
+        // it rests flat instead of rocking on a single point. EVERY other pair
+        // (spheres / boxes / GJK / end-on capsules / speculative anti-tunnel)
+        // returns the SAME single contact collide_pair_spec produced, so their
+        // behaviour is byte-for-byte unchanged. The island solver already
+        // consumes many contacts per body pair (a box stack does so), so the
+        // extra point flows through detect_islands / solve untouched.
+        Contact mc[detail::kernels::kMaxManifoldContacts];
+        u32 n = detail::kernels::kernel_collide_pair_manifold(
+            w.bodies[p.a], w.bodies[p.b], dt, margin, mc);
+        for (u32 k = 0; k < n; ++k) {
+            mc[k].body_a = p.a;
+            mc[k].body_b = p.b;
+            w.contact_scratch.push_back(mc[k]);
         }
     }
 }

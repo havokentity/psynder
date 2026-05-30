@@ -17,6 +17,7 @@
 #include "physics/Narrowphase.h"
 #include "physics/Solver.h"
 #include "physics/internal/SolverColoring.h"
+#include "physics/internal/CapsuleManifold.h"
 
 #include <algorithm>
 #include <array>
@@ -128,6 +129,11 @@ inline bool kernel_sphere_capsule(
     return kernel_sphere_sphere(cs, rs, closest, rc, out);
 }
 
+// Single deepest contact between two capsules (closest core segment points,
+// radius-padded). This is the point-like / non-parallel path + the kernel-test
+// reference; two NEAR-PARALLEL capsules get a two-point resting manifold instead
+// (capsule_capsule_manifold in CapsuleManifold.h, dispatched by
+// kernel_collide_pair_manifold; ADR-016).
 inline bool kernel_capsule_capsule(math::Vec3 ca,
                                    math::Quat qa,
                                    f32 ra,
@@ -249,8 +255,10 @@ inline f32 kernel_plane_box(
 
 // Plane vs a capsule (centre `cc`, rotation `qc`, radius `rc`, half-height `hc`).
 // The capsule's deepest point is the segment endpoint with the smaller signed
-// distance, minus the radius. Sub-radius accuracy is enough for the PGS solver
-// (we re-collide every step); a true two-point manifold is a Wave-B refinement.
+// distance, minus the radius. This SINGLE-point kernel is the point-like /
+// non-parallel path and the kernel-test reference; a side-lying capsule gets a
+// two-point resting manifold instead (plane_capsule_manifold in
+// CapsuleManifold.h, dispatched by kernel_collide_pair_manifold; ADR-016).
 inline f32 kernel_plane_capsule(
     math::Vec3 pn, f32 pd, math::Vec3 cc, math::Quat qc, f32 rc, f32 hc, Contact& out) noexcept {
     math::Vec3 e0, e1;
@@ -1069,6 +1077,116 @@ inline bool kernel_collide_pair_spec(
         return true;
     }
     return false;
+}
+
+// ─── Capsule resting MANIFOLD dispatch (ADR-016) ────────────────────────────
+//
+// Multi-contact variant of kernel_collide_pair_spec for the capsule resting
+// cases. Fills up to `kMaxManifoldContacts` Contacts in `out[]` and returns the
+// count. The body/normal/depth conventions are identical to the single-Contact
+// path; the ONLY difference is that a capsule lying near-PARALLEL on a plane /
+// box / another capsule yields TWO contacts (one at each end of the overlapping
+// segment region) instead of one, which gives the PGS solver the second torque-
+// resisting point a flat resting capsule needs (single point => rocking/drift;
+// see CapsuleManifold.h). Every non-parallel / point-like / non-capsule pair
+// returns the SAME single contact kernel_collide_pair_spec produced, so the
+// behaviour of spheres / boxes / GJK pairs and end-on capsule hits is unchanged.
+//
+// Deterministic + alloc-free: the manifold is a fixed-size struct, the result
+// is written into a caller-provided fixed array; no heap in the hot path.
+inline constexpr u32 kMaxManifoldContacts = 2;
+
+inline u32 kernel_collide_pair_manifold(
+    const Body& a, const Body& b, f32 dt, f32 margin, Contact out[kMaxManifoldContacts]) noexcept {
+    // Baseline single contact (also resolves speculative / separated / non-
+    // capsule pairs). If it produced nothing, there is no contact at all.
+    Contact base{};
+    bool hit = kernel_collide_pair_spec(a, b, dt, margin, base);
+    if (!hit)
+        return 0;
+
+    // Manifold polish only applies to a PENETRATING (non-speculative) capsule
+    // resting case. A speculative (not-yet-touching) contact keeps its single
+    // point: there is no overlap region to clip yet, and the speculative clamp
+    // is a single-normal speed limit.
+    const bool a_cap = (a.shape == 1);  // 1 == Capsule
+    const bool b_cap = (b.shape == 1);
+    const bool a_plane = (a.shape == kShapePlane);
+    const bool b_plane = (b.shape == kShapePlane);
+    const bool a_box = (a.shape == 2);  // 2 == Box
+    const bool b_box = (b.shape == 2);
+
+    if (!base.speculative) {
+        CapsuleManifold man;
+        man.count = 0;
+
+        if (a_cap && b_cap) {
+            man = capsule_capsule_manifold(a.position,
+                                           a.rotation,
+                                           a.half_extent.x,
+                                           a.half_extent.y,
+                                           b.position,
+                                           b.rotation,
+                                           b.half_extent.x,
+                                           b.half_extent.y);
+        } else if ((a_plane && b_cap) || (a_cap && b_plane)) {
+            const Body& plane = a_plane ? a : b;
+            const Body& cap = a_plane ? b : a;
+            math::Vec3 pn = plane_normal_world(plane.rotation);
+            f32 pd = plane_offset_world(pn, plane.position);
+            man = plane_capsule_manifold(
+                pn, pd, cap.position, cap.rotation, cap.half_extent.x, cap.half_extent.y);
+            // plane_capsule_manifold emits A(plane)->B(cap) normals. If the world
+            // order is (cap, plane) flip to keep A->B == base's convention.
+            if (a_cap)
+                for (u32 i = 0; i < man.count; ++i)
+                    man.pts[i].normal = math::mul(man.pts[i].normal, -1.0f);
+        } else if ((a_cap && b_box) || (a_box && b_cap)) {
+            const Body& cap = a_cap ? a : b;
+            const Body& box = a_cap ? b : a;
+            // base.normal_world is world-A -> world-B. Express it capsule->box.
+            math::Vec3 n_cap_to_box = a_cap ? base.normal_world
+                                            : math::mul(base.normal_world, -1.0f);
+            ManifoldPoint fb;
+            fb.point = base.point_world;
+            fb.normal = n_cap_to_box;
+            fb.depth = base.depth;
+            CapsuleManifold cm = capsule_box_manifold(cap.position,
+                                                      cap.rotation,
+                                                      cap.half_extent.x,
+                                                      cap.half_extent.y,
+                                                      box.position,
+                                                      box.rotation,
+                                                      box.half_extent,
+                                                      n_cap_to_box,
+                                                      fb);
+            // cm normals are capsule->box. Flip back to world A->B if A is box.
+            man = cm;
+            if (a_box)
+                for (u32 i = 0; i < man.count; ++i)
+                    man.pts[i].normal = math::mul(man.pts[i].normal, -1.0f);
+        }
+
+        if (man.count >= 2) {
+            for (u32 i = 0; i < man.count && i < kMaxManifoldContacts; ++i) {
+                Contact c = base;  // inherit body ids + speculative=false
+                c.point_world = man.pts[i].point;
+                c.normal_world = man.pts[i].normal;
+                c.depth = man.pts[i].depth;
+                c.speculative = false;
+                c.separation = 0.0f;
+                c.normal_impulse_acc = 0.0f;
+                c.friction_impulse_acc1 = 0.0f;
+                c.friction_impulse_acc2 = 0.0f;
+                out[i] = c;
+            }
+            return man.count;
+        }
+    }
+
+    // Single-point fallback: identical to kernel_collide_pair_spec.
+    out[0] = base;
+    return 1;
 }
 
 // ─── Union-find island detection (header-inline) ────────────────────────
