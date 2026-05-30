@@ -275,6 +275,21 @@ void navigate(EcsRegistry& registry, AiContext& ctx, f32 dt) {
         return;  // navigation disabled — straight-line steer in act() (unchanged).
     const NavGrid& grid = *ctx.nav_grid;
 
+    // Size every NavQuery pool slot to this grid UP FRONT, once, whenever the
+    // bound grid's cell count changes (a freshly-bound or resized grid). This
+    // moves the one-time scratch allocation OUT of the hot query: find_path()'s
+    // lazy self-size guard then never fires in steady state, so the FIRST path on
+    // a newly-bound grid performs zero heap growth inside the query. Sizing all
+    // slots (not just the ones a given run touches) keeps it deterministic and
+    // independent of how the job system schedules chunks across workers. reset()
+    // on an already-correctly-sized query is O(1) (it only re-stamps), so a grid
+    // that never changes size pays this cost exactly once.
+    if (ctx.nav_sized_cells != grid.cell_count()) {
+        for (NavQuery& q : ctx.nav_query)
+            q.reset(grid);
+        ctx.nav_sized_cells = grid.cell_count();
+    }
+
     registry.query<reads<SceneNodeComponent, TransformComponent, PerceptionComponent>,
                    writes<AiAgentComponent, NavAgentComponent>>(
         [&](std::span<const SceneNodeComponent> nodes,

@@ -116,6 +116,13 @@ struct AiContext {
     static constexpr u32 kNavQueryPool = 64u;
     NavQuery nav_query[kNavQueryPool];
 
+    // Cell count the nav_query pool was last sized for. navigate() primes every
+    // pool slot to the bound grid up front (reset()) whenever this differs from
+    // the grid's current cell count, so the FIRST A* on a freshly-bound grid
+    // grows no scratch inside the hot query (find_path()'s lazy self-size never
+    // fires in steady state). usize(~0) means "not yet sized for any grid".
+    usize nav_sized_cells = static_cast<usize>(~usize{0});
+
     // Repaths run this tick (telemetry / tests). Multiple workers may bump it
     // from the navigate pass, so it is atomic-relaxed like shots_fired.
     std::atomic<u32> repaths{0u};

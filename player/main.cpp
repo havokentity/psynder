@@ -2382,6 +2382,31 @@ struct PlayerApp {
             return std::nullopt;
         }
 
+        if (component == "TrackComponent") {
+            const auto* track = registry.get<scene::TrackComponent>(entity);
+            if (!track)
+                return std::nullopt;
+            // segment_count is bulk geometry the track tool owns (schema-readonly);
+            // it is reported here so the Inspector can show it but never set.
+            if (field == "segment_count")
+                return std::to_string(track->segment_count);
+            if (field == "target_speed")
+                return f32_text(track->target_speed);
+            if (field == "look_ahead")
+                return f32_text(track->look_ahead);
+            if (field == "steer_gain")
+                return f32_text(track->steer_gain);
+            if (field == "steer_clamp")
+                return f32_text(track->steer_clamp);
+            if (field == "throttle_kp")
+                return f32_text(track->throttle_kp);
+            if (field == "lap_gate_point")
+                return vec3_text(track->lap_gate_point);
+            if (field == "lap_gate_normal")
+                return vec3_text(track->lap_gate_normal);
+            return std::nullopt;
+        }
+
         return std::nullopt;
     }
 
@@ -3183,6 +3208,55 @@ struct PlayerApp {
             return true;
         }
 
+        if (component == "TrackComponent") {
+            const auto* track = registry.get<scene::TrackComponent>(entity);
+            if (!track)
+                return false;
+            scene::TrackComponent updated = *track;
+            f32 f = 0.0f;
+            if (field == "target_speed") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.target_speed = f;  // sanitize clamps below
+            } else if (field == "look_ahead") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.look_ahead = f;
+            } else if (field == "steer_gain") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.steer_gain = f;
+            } else if (field == "steer_clamp") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.steer_clamp = f;
+            } else if (field == "throttle_kp") {
+                if (!parse_f32_value(value, f))
+                    return false;
+                updated.throttle_kp = f;
+            } else if (field == "lap_gate_point") {
+                std::array<f32, 3> v{};
+                if (!parse_f32_array(value, v))
+                    return false;
+                updated.lap_gate_point = math::Vec3{v[0], v[1], v[2]};
+            } else if (field == "lap_gate_normal") {
+                std::array<f32, 3> v{};
+                if (!parse_f32_array(value, v))
+                    return false;
+                updated.lap_gate_normal = math::Vec3{v[0], v[1], v[2]};
+            } else {
+                // segment_count + per-segment geometry are authored by the track
+                // tool (schema-readonly); runtime cursor/lap fields never editable.
+                return false;
+            }
+            // sanitize clamps the gains, renormalises the gate normal, and zeroes
+            // the runtime cursor/lap bookkeeping so a live edit always stays valid.
+            registry.add<scene::TrackComponent>(
+                entity, scene::sanitize_track_component(updated));
+            editor::publish_web_scene_hierarchy(scene);
+            return true;
+        }
+
         return false;
     }
 
@@ -3744,6 +3818,24 @@ struct PlayerApp {
         return true;
     }
 
+    // Tag an entity as carrying an authored race TRACK (a closed Bezier loop +
+    // auto-driver tuning + start/finish gate). A freshly-added track starts with
+    // ZERO segments (the geometry is laid out by the track tool / public API);
+    // the designer then tunes the driver scalars + gate live in the Inspector.
+    // Idempotent: a second add no-ops. Defaults are sanitized so an un-authored
+    // track is always valid.
+    bool add_track_to_entity(Entity entity) {
+        scene::Scene* scene = app ? app->active_scene() : nullptr;
+        if (!scene || !entity.valid() || !scene->registry().alive(entity))
+            return false;
+        auto& reg = scene->registry();
+        if (reg.get<scene::TrackComponent>(entity) != nullptr)
+            return true;
+        reg.add<scene::TrackComponent>(
+            entity, scene::sanitize_track_component(scene::TrackComponent{}));
+        return true;
+    }
+
     // Whether `component` names an optional authoring component that the
     // Inspector is allowed to remove. Structural/foundational components
     // (Transform, SceneNode) and the always-present render data (Renderable,
@@ -3762,7 +3854,8 @@ struct PlayerApp {
                component == "WeaponModeComponent" || component == "AiAgent" ||
                component == "AiAgentComponent" || component == "Perception" ||
                component == "PerceptionComponent" || component == "Patrol" ||
-               component == "PatrolComponent";
+               component == "PatrolComponent" || component == "Track" ||
+               component == "TrackComponent";
     }
 
     // Inverse of the add_*_to_entity family: strip a single optional authoring
@@ -3841,6 +3934,11 @@ struct PlayerApp {
         } else if (component == "Patrol" || component == "PatrolComponent") {
             if (reg.get<scene::PatrolComponent>(entity) != nullptr) {
                 reg.remove<scene::PatrolComponent>(entity);
+                removed = true;
+            }
+        } else if (component == "Track" || component == "TrackComponent") {
+            if (reg.get<scene::TrackComponent>(entity) != nullptr) {
+                reg.remove<scene::TrackComponent>(entity);
                 removed = true;
             }
         }
@@ -5308,6 +5406,10 @@ bool add_active_arcade_patrol_to(Entity entity) {
     return g_active_arcade && g_active_arcade->add_patrol_to_entity(entity);
 }
 
+bool add_active_arcade_track_to(Entity entity) {
+    return g_active_arcade && g_active_arcade->add_track_to_entity(entity);
+}
+
 bool remove_active_arcade_component_from(Entity entity, std::string_view component) {
     return g_active_arcade && g_active_arcade->remove_component_from_entity(entity, component);
 }
@@ -5439,6 +5541,8 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
         add.component == "Perception" || add.component == "PerceptionComponent";
     const bool is_patrol =
         add.component == "Patrol" || add.component == "PatrolComponent";
+    const bool is_track =
+        add.component == "Track" || add.component == "TrackComponent";
     if (is_rigid_body) {
         const bool make_static =
             add.component == "RigidBodyStatic" || add.variant == "static";
@@ -5509,6 +5613,12 @@ void apply_active_arcade_component_add(const editor::ipc::SelectionComponentAdd&
                   : "add Patrol failed (entity not alive / no active scene)";
         if (!ok)
             PSY_LOG_WARN("psynder_arcade: add Patrol failed on {}", add.entity_id);
+    } else if (is_track) {
+        ok = add_active_arcade_track_to(entity);
+        text = ok ? "added Track"
+                  : "add Track failed (entity not alive / no active scene)";
+        if (!ok)
+            PSY_LOG_WARN("psynder_arcade: add Track failed on {}", add.entity_id);
     } else {
         text = "add component not supported: ";
         text += add.component;

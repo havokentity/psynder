@@ -253,6 +253,13 @@ public:
     // are forbidden through a blocked corner (no cutting through wall diagonals).
     bool find_path(const NavGrid& grid, NavCell start, NavCell goal, NavPath& out);
 
+    // Number of cells the scratch is currently sized for (0 until first reset()).
+    // A caller can prime sizing with reset(grid) and assert this == grid cell
+    // count to prove a subsequent find_path() does ZERO heap growth; it is also
+    // the cheap "is this query already sized for `grid`?" test used to skip a
+    // redundant reset. The reserved heap capacity never shrinks across queries.
+    [[nodiscard]] usize scratch_size() const noexcept { return g_score_.size(); }
+
 private:
     static constexpr u32 kNoParent = 0xFFFFFFFFu;
     static constexpr u32 kNotInHeap = 0xFFFFFFFFu;
