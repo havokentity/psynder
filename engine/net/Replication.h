@@ -27,7 +27,9 @@
 
 #pragma once
 
+#include "Aoi.h"  // AoiFilter + PeerId for per-peer interest gating.
 #include "core/Types.h"
+#include "math/Math.h"
 #include "scene/EcsRegistry.h"
 #include "scene/SceneEcs.h"
 
@@ -159,6 +161,13 @@ struct ReplEntityState {
     // Flat backing for every component slot, packed at the set's per-slot
     // offsets. Sized to the set's max entity bytes; never grows per tick.
     std::array<u8, kReplEntityByteCap> bytes{};
+    // World position captured at gather time, used ONLY server-side by the
+    // AOI gate (interest-sphere test + closest-first priority). It is NOT
+    // serialized and the client never reads it - so adding it leaves the wire
+    // format untouched. Defaults to origin when the entity carries no
+    // TransformComponent (such entities are then always-visible to every peer:
+    // their distance is whatever the origin maps to).
+    math::Vec3 world_pos{0.f, 0.f, 0.f};
 };
 
 // A full decoded world snapshot: every replicated entity at one server tick.
@@ -197,6 +206,39 @@ class ReplicationServer {
                              u32 client_key,
                              u32 server_tick,
                              std::vector<u8>& out_bytes) noexcept;
+
+    // --- AOI-gated per-peer serialization (Wave-C) --------------------------
+    // The whole-world serialize_snapshot above ships every entity to every
+    // client - fine for tiny sessions, but it does not scale to a Delta-Force
+    // scale map. This overload gates the snapshot to the entities inside the
+    // peer's interest sphere (`aoi.visible(viewpoint, entity.world_pos)`) and
+    // fits them into a per-snapshot BYTE BUDGET, priority-ordered closest
+    // first (highest interest), dropping the overflow this frame so it arrives
+    // a later frame once nearer entities are stable.
+    //
+    // Entities that LEAVE the peer's interest (out-of-sphere, or budget-dropped
+    // while previously in the baseline) are despawned on that client by riding
+    // the SAME per-client despawn set the explicit mark_despawned() path uses -
+    // so the client tears them down exactly as it would a real removal. An
+    // AOI-despawn that re-enters interest is simply re-spawned by the next
+    // snapshot that fits it (it reappears as a fresh full entity record).
+    //
+    // Deterministic: the priority sort is by squared distance to the peer
+    // centre, tie-broken by net_id, so there is no RNG / pointer-order
+    // dependence. Alloc-free per tick: a pooled per-peer scratch list holds the
+    // visible candidates; it only grows once to the world size.
+    //
+    // `byte_budget` is the cap on TOTAL snapshot bytes (header + entity records
+    // + despawn records). 0 means "no cap" (every visible entity). When the
+    // budget cannot even hold the header it is bumped to the header size so a
+    // valid (entity-less) snapshot is always produced.
+    usize serialize_snapshot_aoi(scene::EcsRegistry& registry,
+                                 u32 client_key,
+                                 u32 server_tick,
+                                 const AoiFilter& aoi,
+                                 PeerId viewpoint,
+                                 u32 byte_budget,
+                                 std::vector<u8>& out_bytes) noexcept;
 
     // Mark a net_id as despawned: the entity has been removed from the
     // authoritative world. The despawn is broadcast to every client until each
@@ -243,9 +285,36 @@ class ReplicationServer {
         // snapshot (latest-wins) until acked, then pruned. Pooled vector; only
         // grows on first use up to kMaxPendingDespawns.
         std::vector<PendingDespawn> pending_despawns;
+        // AOI: the net_ids currently inside this peer's interest that we have
+        // SENT (entity record emitted, or carried-forward in the baseline). On
+        // the next AOI tick we diff the new visible set against this to find the
+        // ids that LEFT interest and queue them as per-peer despawns. Sorted
+        // ascending so the diff is a deterministic linear merge. Pooled; only
+        // grows to the peer's view size.
+        std::vector<u32> in_view;
     };
 
     ClientState& client_(u32 client_key) noexcept;
+
+    // Shared gather + seq-assignment + history-record used by both the
+    // whole-world and the AOI serializers. Fills staging_ (sorted by net_id,
+    // each row's world_pos captured), assigns the next seq, copies it into the
+    // client's history ring, and returns the assigned seq. Leaves out_bytes
+    // and the delta-encode to the caller.
+    u32 gather_and_record_(scene::EcsRegistry& registry, u32 client_key, u32 server_tick) noexcept;
+
+    // Emit the snapshot body (header + delta-encoded entity records for the
+    // net_ids in `emit_ids`, in that order, against the client's baseline +
+    // the pending despawn set) into out_bytes. `emit_ids` must be a subset of
+    // staging_ net_ids; entities are looked up in staging_ by net_id. Returns
+    // bytes written. Shared by both serializers.
+    usize encode_body_(ClientState& cs, u32 seq, u32 server_tick,
+                       const std::vector<u32>& emit_ids,
+                       std::vector<u8>& out_bytes) noexcept;
+
+    // Queue a despawn for ONE client only (the AOI-leave path), mirroring the
+    // dedup + baseline-scrub that mark_despawned() applies across every client.
+    void queue_despawn_for_client_(ClientState& cs, u32 net_id) noexcept;
 
     const ReplicatedComponentSet& set_;
     u32 next_seq_ = 1;  // 0 reserved => "no baseline".
@@ -254,6 +323,25 @@ class ReplicationServer {
     // the parallel query.
     ReplWorldSnapshot staging_;
     std::mutex gather_mu_;
+    // Pooled per-peer AOI scratch (single-threaded use after the gather, so it
+    // is shared across peers within one serialize call). `cand_` holds the
+    // visible candidates with their priority key; `emit_` the final ordered
+    // net_id list that fits the budget. Both only grow to the world size once.
+    struct AoiCandidate {
+        u32 net_id = 0;
+        f32 dist_sq = 0.f;     // squared distance to the peer centre (priority).
+        u32 record_bytes = 0;  // delta-encoded size of this entity's record.
+    };
+    std::vector<AoiCandidate> cand_;
+    std::vector<u32> emit_;
+    // Pooled sorted "visible this frame" net_id scratch for the AOI despawn
+    // diff. Swapped into the per-client in_view set each AOI tick (so the two
+    // buffers ping-pong without per-tick heap alloc).
+    std::vector<u32> aoi_visible_scratch_;
+    // Pooled scratch for building the per-client history snapshot (the world
+    // the client reconstructs from the datagram). Reused every encode; only
+    // grows once to the world size.
+    ReplWorldSnapshot record_scratch_;
 };
 
 // --- Client ----------------------------------------------------------------

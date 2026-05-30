@@ -61,6 +61,12 @@ class AoiFilter {
     bool has_peer(PeerId p) const noexcept { return peers_.count(p.raw) != 0; }
     usize peer_count() const noexcept { return peers_.size(); }
 
+    // Peer interest-sphere centre. Returns the origin for an unregistered
+    // peer. The replication AOI gate uses this to compute closest-first
+    // priority (squared distance from the centre) when fitting the per-snapshot
+    // byte budget.
+    math::Vec3 peer_centre(PeerId p) const noexcept;
+
     // ── Per-channel priorities (Wave-B) ─────────────────────────────────
     //
     // Set the priority for `channel`. Higher prio == bigger share of the

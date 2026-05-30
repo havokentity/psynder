@@ -31,6 +31,13 @@ bool AoiFilter::visible(PeerId p, math::Vec3 pos) const noexcept {
     return d2 <= s.radius_sq;
 }
 
+math::Vec3 AoiFilter::peer_centre(PeerId p) const noexcept {
+    auto it = peers_.find(p.raw);
+    if (it == peers_.end())
+        return math::Vec3{0.f, 0.f, 0.f};
+    return it->second.centre;
+}
+
 void AoiFilter::set_channel_priority(u8 channel, u8 prio) noexcept {
     if (channel >= kAoiPriorityChannels)
         return;

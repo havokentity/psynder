@@ -63,49 +63,48 @@ ReplicationServer::ClientState& ReplicationServer::client_(u32 client_key) noexc
     return clients_[client_key];
 }
 
+void ReplicationServer::queue_despawn_for_client_(ClientState& cs, u32 net_id) noexcept {
+    if (net_id == 0)
+        return;
+    // Dedup: don't double-queue the same net_id for one client.
+    for (const PendingDespawn& pd : cs.pending_despawns) {
+        if (pd.net_id == net_id)
+            return;
+    }
+    if (cs.pending_despawns.size() >= kMaxPendingDespawns) {
+        // Pool cap reached: drop the oldest. Worst case the client carries the
+        // stale entity until the next despawn frees a slot; correctness is
+        // preserved because the entity simply stops updating.
+        cs.pending_despawns.erase(cs.pending_despawns.begin());
+    }
+    cs.pending_despawns.push_back(PendingDespawn{net_id, 0u});
+    // A despawned entity must also drop out of the baseline so the delta diff
+    // never tries to carry it forward as "unchanged".
+    if (cs.has_baseline) {
+        auto& ents = cs.baseline.entities;
+        for (usize i = 0; i < ents.size(); ++i) {
+            if (ents[i].net_id == net_id) {
+                ents.erase(ents.begin() + static_cast<isize>(i));
+                break;
+            }
+        }
+    }
+}
+
 void ReplicationServer::mark_despawned(u32 net_id) noexcept {
     if (net_id == 0)
         return;
     // Queue the despawn for every known client. A client that connects later
     // never knew the entity, so it does not need the despawn - this only
     // touches clients with live state.
-    for (auto& [key, cs] : clients_) {
-        // Dedup: don't double-queue the same net_id for one client.
-        bool present = false;
-        for (const PendingDespawn& pd : cs.pending_despawns) {
-            if (pd.net_id == net_id) {
-                present = true;
-                break;
-            }
-        }
-        if (present)
-            continue;
-        if (cs.pending_despawns.size() >= kMaxPendingDespawns) {
-            // Pool cap reached: drop the oldest. Worst case the client carries
-            // the stale entity until the next despawn frees a slot; correctness
-            // is preserved because the entity simply stops updating.
-            cs.pending_despawns.erase(cs.pending_despawns.begin());
-        }
-        cs.pending_despawns.push_back(PendingDespawn{net_id, 0u});
-        // A despawned entity must also drop out of the baseline so the delta
-        // diff never tries to carry it forward as "unchanged".
-        if (cs.has_baseline) {
-            auto& ents = cs.baseline.entities;
-            for (usize i = 0; i < ents.size(); ++i) {
-                if (ents[i].net_id == net_id) {
-                    ents.erase(ents.begin() + static_cast<isize>(i));
-                    break;
-                }
-            }
-        }
-    }
+    for (auto& [key, cs] : clients_)
+        queue_despawn_for_client_(cs, net_id);
 }
 
-usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
-                                            u32 client_key,
-                                            u32 server_tick,
-                                            std::vector<u8>& out_bytes) noexcept {
-    // --- 1. Gather (DOTS query, parallel per-chunk, mutex'd accumulation) ---
+u32 ReplicationServer::gather_and_record_(scene::EcsRegistry& registry,
+                                          u32 client_key,
+                                          u32 server_tick) noexcept {
+    // --- Gather (DOTS query, parallel per-chunk, mutex'd accumulation) ------
     // We read NetIdComponent (identity) + each replicated component column.
     // The query fires once per chunk across worker threads, so the shared
     // staging vector is appended under gather_mu_. Per-chunk work is pure
@@ -122,10 +121,12 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
     // pair: NetIdComponent supplies network identity, SceneNodeComponent
     // supplies the row's Entity handle (the only column-resident way to recover
     // it). For each replicated component we read its bytes through the desc's
-    // type-erased raw_get trampoline. The query fires once per chunk across
+    // type-erased raw_get trampoline. We also capture the row's world position
+    // (TransformComponent translation) for the AOI gate; it is server-only
+    // scratch and never serialized. The query fires once per chunk across
     // worker threads; the shared `staging_.entities` append is serialized under
-    // gather_mu_. Per-row work is memcpy into a stack-local record, so the
-    // lock is held only for the push_back.
+    // gather_mu_. Per-row work is memcpy into a stack-local record, so the lock
+    // is held only for the push_back.
     registry.query<scene::reads<NetIdComponent, scene::SceneNodeComponent>, scene::writes<>>(
         [&](std::span<const NetIdComponent> ids,
             std::span<const scene::SceneNodeComponent> nodes) {
@@ -146,6 +147,8 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
                     mask |= (1u << c);
                 }
                 st.present_mask = mask;
+                if (const auto* tc = registry.get<scene::TransformComponent>(e))
+                    st.world_pos = tc->local.translation;
                 std::lock_guard<std::mutex> lk(gather_mu_);
                 staging_.entities.push_back(st);
             }
@@ -157,15 +160,23 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
                   return a.net_id < b.net_id;
               });
 
-    // --- 2. Assign a seq + record the snapshot for ack-promotion ------------
+    // Assign a seq. History is recorded later (in encode_body_) once we know
+    // exactly which entities this client receives - the recorded snapshot must
+    // mirror the client's reconstructed world (baseline + emitted - despawns),
+    // NOT the full gather, or an AOI-gated client would delta against entities
+    // it never received.
     const u32 seq = next_seq_++;
     staging_.seq = seq;
-    ClientState& cs = client_(client_key);
-    const usize slot = seq % kHistory;
-    cs.history[slot] = staging_;  // copy into the history ring.
-    cs.history_valid[slot] = true;
+    (void)client_(client_key);  // ensure the ClientState exists.
+    return seq;
+}
 
-    // --- 3. Delta-encode vs the client's acked baseline ---------------------
+usize ReplicationServer::encode_body_(ClientState& cs,
+                                      u32 seq,
+                                      u32 server_tick,
+                                      const std::vector<u32>& emit_ids,
+                                      std::vector<u8>& out_bytes) noexcept {
+    const u32 ncomp = set_.count();
     const bool full = !cs.has_baseline;
     const u32 baseline_seq = full ? 0u : cs.baseline.seq;
 
@@ -179,7 +190,7 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
 
     const u32 max_record = u32(kReplEntityPrefixBytes) + set_.max_entity_bytes();
     const usize need = kReplHeaderBytes +
-                       staging_.entities.size() * usize(max_record) +
+                       emit_ids.size() * usize(max_record) +
                        cs.pending_despawns.size() * kReplDespawnRecordBytes;
     if (out_bytes.size() < need)
         out_bytes.resize(need);
@@ -195,7 +206,11 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
     usize off = kReplHeaderBytes;
     u32 emitted = 0;
 
-    for (const ReplEntityState& st : staging_.entities) {
+    for (u32 net_id : emit_ids) {
+        const ReplEntityState* stp = staging_.find(net_id);
+        if (!stp)
+            continue;  // defensive: id no longer in staging.
+        const ReplEntityState& st = *stp;
         const ReplEntityState* base = full ? nullptr : cs.baseline.find(st.net_id);
         // Determine which components changed vs the baseline.
         u32 send_mask = 0;
@@ -229,9 +244,9 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
     }
     write_u32_le(count_field, emitted);
 
-    // --- 4. Append the despawn set ------------------------------------------
-    // Every pending despawn rides this snapshot (latest-wins) until the client
-    // acks it. The client destroys the mapped entity + drops the net_id.
+    // Append the despawn set. Every pending despawn rides this snapshot
+    // (latest-wins) until the client acks it. The client destroys the mapped
+    // entity + drops the net_id.
     u32 despawned = 0;
     for (const PendingDespawn& pd : cs.pending_despawns) {
         write_u32_le(out_bytes.data() + off, pd.net_id);
@@ -239,7 +254,204 @@ usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
         ++despawned;
     }
     write_u32_le(despawn_count_field, despawned);
+
+    // --- Record the per-client history snapshot ----------------------------
+    // The recorded snapshot MUST equal the world the client reconstructs from
+    // this datagram, so a later ack promotes a baseline the client actually
+    // holds. That reconstructed world is: the client's prior baseline, carried
+    // forward, MINUS every despawned net_id, with each emitted entity overlaid
+    // to its full current state. (For a full snapshot the baseline is empty, so
+    // it reduces to "the emitted entities" = the whole gathered set.)
+    ReplWorldSnapshot& rec = record_scratch_;
+    rec.clear();
+    rec.tick = server_tick;
+    rec.seq = seq;
+    if (cs.has_baseline)
+        rec.entities = cs.baseline.entities;  // carry forward what the client had.
+    // Drop despawned ids from the carried-forward set.
+    for (const PendingDespawn& pd : cs.pending_despawns) {
+        for (usize i = 0; i < rec.entities.size(); ++i) {
+            if (rec.entities[i].net_id == pd.net_id) {
+                rec.entities.erase(rec.entities.begin() + static_cast<isize>(i));
+                break;
+            }
+        }
+    }
+    // Overlay every emitted entity's FULL current state (the client ends up
+    // holding the full state after decoding the delta onto its base).
+    for (u32 net_id : emit_ids) {
+        const ReplEntityState* stp = staging_.find(net_id);
+        if (!stp)
+            continue;
+        // Only entities that actually produced a record (passed the delta /
+        // full emit rules above) belong in the client's world. Re-derive that
+        // by checking against the same skip rule: an unchanged delta entity was
+        // NOT emitted but IS still carried forward from the baseline (already
+        // present in rec from the carry-forward copy), so overlaying its full
+        // state here is harmless and keeps rec consistent.
+        bool found = false;
+        for (ReplEntityState& e : rec.entities) {
+            if (e.net_id == net_id) {
+                e = *stp;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            rec.entities.push_back(*stp);
+    }
+    std::sort(rec.entities.begin(), rec.entities.end(),
+              [](const ReplEntityState& a, const ReplEntityState& b) {
+                  return a.net_id < b.net_id;
+              });
+    const usize hslot = seq % kHistory;
+    cs.history[hslot] = rec;  // copy into the client's history ring.
+    cs.history_valid[hslot] = true;
     return off;
+}
+
+usize ReplicationServer::serialize_snapshot(scene::EcsRegistry& registry,
+                                            u32 client_key,
+                                            u32 server_tick,
+                                            std::vector<u8>& out_bytes) noexcept {
+    const u32 seq = gather_and_record_(registry, client_key, server_tick);
+    ClientState& cs = client_(client_key);
+    // Whole-world: emit every gathered net_id, in the staging (net_id-sorted)
+    // order so the byte layout matches the legacy path exactly.
+    emit_.clear();
+    emit_.reserve(staging_.entities.size());
+    for (const ReplEntityState& st : staging_.entities)
+        emit_.push_back(st.net_id);
+    return encode_body_(cs, seq, server_tick, emit_, out_bytes);
+}
+
+namespace {
+
+// Estimate the delta-encoded record size (prefix + changed-component bytes) of
+// `st` against `base`, used by the AOI budget fit. We over-estimate by ignoring
+// the "skip if all-unchanged" rule (a changed-nothing delta record costs 0 on
+// the wire but we count it as the prefix here): the budget is a soft cap and
+// over-estimating only makes it more conservative, never unsafe.
+u32 aoi_record_bytes(const ReplicatedComponentSet& set,
+                     const ReplEntityState& st,
+                     const ReplEntityState* base) noexcept {
+    const u32 ncomp = set.count();
+    u32 bytes = u32(kReplEntityPrefixBytes);
+    for (u32 c = 0; c < ncomp; ++c) {
+        if ((st.present_mask & (1u << c)) == 0)
+            continue;
+        const ReplicatedComponentDesc& d = set.desc(c);
+        if (base && (base->present_mask & (1u << c)) &&
+            std::memcmp(st.bytes.data() + d.flat_offset,
+                        base->bytes.data() + d.flat_offset, d.byte_size) == 0) {
+            continue;  // unchanged vs baseline: not on the wire.
+        }
+        bytes += d.byte_size;
+    }
+    return bytes;
+}
+
+}  // namespace
+
+usize ReplicationServer::serialize_snapshot_aoi(scene::EcsRegistry& registry,
+                                                u32 client_key,
+                                                u32 server_tick,
+                                                const AoiFilter& aoi,
+                                                PeerId viewpoint,
+                                                u32 byte_budget,
+                                                std::vector<u8>& out_bytes) noexcept {
+    const u32 seq = gather_and_record_(registry, client_key, server_tick);
+    ClientState& cs = client_(client_key);
+    const bool full = !cs.has_baseline;
+
+    // --- 1. Visibility pass: collect the entities inside the peer's interest
+    //        sphere, with a closest-first priority key + delta-encoded size. ---
+    cand_.clear();
+    cand_.reserve(staging_.entities.size());
+    const math::Vec3 centre = aoi.peer_centre(viewpoint);
+    for (const ReplEntityState& st : staging_.entities) {
+        if (!aoi.visible(viewpoint, st.world_pos))
+            continue;
+        const f32 dx = st.world_pos.x - centre.x;
+        const f32 dy = st.world_pos.y - centre.y;
+        const f32 dz = st.world_pos.z - centre.z;
+        const ReplEntityState* base = full ? nullptr : cs.baseline.find(st.net_id);
+        AoiCandidate cd{};
+        cd.net_id = st.net_id;
+        cd.dist_sq = dx * dx + dy * dy + dz * dz;
+        cd.record_bytes = aoi_record_bytes(set_, st, base);
+        cand_.push_back(cd);
+    }
+    // Deterministic priority: closest first, ties broken by net_id. No RNG, no
+    // pointer-order dependence.
+    std::sort(cand_.begin(), cand_.end(), [](const AoiCandidate& a, const AoiCandidate& b) {
+        if (a.dist_sq != b.dist_sq)
+            return a.dist_sq < b.dist_sq;
+        return a.net_id < b.net_id;
+    });
+
+    // --- 2. Budget fit: take the priority prefix that fits. A budget of 0
+    //        means "no cap". The despawn records that ride this snapshot also
+    //        consume budget, so reserve their bytes up front. The header always
+    //        fits (budget is floored to it). ---
+    const usize despawn_bytes = cs.pending_despawns.size() * kReplDespawnRecordBytes;
+    usize budget = byte_budget;
+    if (byte_budget != 0 && budget < kReplHeaderBytes)
+        budget = kReplHeaderBytes;  // always produce a valid (empty) snapshot.
+    usize used = kReplHeaderBytes + despawn_bytes;
+
+    emit_.clear();
+    emit_.reserve(cand_.size());
+    for (const AoiCandidate& cd : cand_) {
+        if (byte_budget != 0 && used + cd.record_bytes > budget) {
+            // Over budget this frame. A carried-forward entity (already in the
+            // baseline) simply stays; a not-yet-sent one arrives a later frame
+            // once nearer entities settle. Either way it stays in interest so
+            // it is NOT despawned below.
+            continue;
+        }
+        emit_.push_back(cd.net_id);
+        used += cd.record_bytes;
+    }
+
+    // --- 3. Per-peer AOI despawns: any net_id that WAS in this peer's interest
+    //        last frame but is no longer visible must be torn down on the
+    //        client. We reuse the same pending-despawn set + baseline scrub the
+    //        explicit mark_despawned() path uses, so the client tears it down
+    //        identically. (`cs.in_view` is kept sorted; the new visible set is
+    //        the sorted `cand_` net_ids.) ---
+    // Build the new sorted visible set into emit_-adjacent scratch reusing
+    // cand_'s ordering is by distance, so collect+sort net_ids separately.
+    // We walk cand_ to gather visible ids, sort them, then diff vs cs.in_view.
+    std::vector<u32>& visible_now = aoi_visible_scratch_;
+    visible_now.clear();
+    visible_now.reserve(cand_.size());
+    for (const AoiCandidate& cd : cand_)
+        visible_now.push_back(cd.net_id);
+    std::sort(visible_now.begin(), visible_now.end());
+
+    // Linear merge diff: ids in cs.in_view (sorted) absent from visible_now ->
+    // they left interest -> queue a per-peer despawn.
+    {
+        usize i = 0, j = 0;
+        const std::vector<u32>& prev = cs.in_view;
+        while (i < prev.size()) {
+            const u32 id = prev[i];
+            while (j < visible_now.size() && visible_now[j] < id)
+                ++j;
+            const bool still_visible = (j < visible_now.size() && visible_now[j] == id);
+            if (!still_visible)
+                queue_despawn_for_client_(cs, id);
+            ++i;
+        }
+    }
+
+    const usize n = encode_body_(cs, seq, server_tick, emit_, out_bytes);
+
+    // The peer's interest set for the NEXT diff is everything in the sphere
+    // this frame (budget-dropped entities included: they remain in interest).
+    cs.in_view.swap(visible_now);
+    return n;
 }
 
 void ReplicationServer::ack_from_client(u32 client_key, u32 acked_seq) noexcept {
