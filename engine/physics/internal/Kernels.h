@@ -16,10 +16,12 @@
 #include "physics/Broadphase.h"
 #include "physics/Narrowphase.h"
 #include "physics/Solver.h"
+#include "physics/internal/SolverColoring.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <span>
 #include <vector>
@@ -1180,148 +1182,328 @@ inline void basis_for_normal(math::Vec3 n, math::Vec3& t1, math::Vec3& t2) noexc
     t2 = math::cross(n, t1);
 }
 
+// ContactConstraint, ColorBatchDispatch, solver_serial_dispatch and
+// ColoredIslandScratch are defined in SolverColoring.h (included above) so the
+// public Solver.h surface can expose the pooled-scratch type without pulling in
+// the whole Kernels.h narrowphase.
+
+// ── Per-contact primitive operations (shared by serial + parallel walks) ──
+//
+// These four functions are the whole solver, factored out so the serial colour
+// walk and the parallel (parallel_for per colour) walk call EXACTLY the same
+// arithmetic in the same order per contact. The only difference between the two
+// walks is WHO iterates the per-colour contact list — a serial for-loop or a
+// race-free parallel_for over the colour's disjoint-body batch. Because a
+// colour's contacts touch pairwise-disjoint DYNAMIC bodies, the body-velocity
+// (and body-position) read-modify-write below never races within a colour, so
+// the two walks produce bit-identical results.
+//
+// CRITICAL race detail (why disjoint DYNAMIC bodies is the whole story): a
+// STATIC body (inv_mass == 0) is shared by MANY contacts of the SAME colour
+// (e.g. every box on one floor). The impulse it would receive is identically
+// zero (`mul(P, 0)` linear, `inv_local == {0,0,0}` angular), but blindly
+// assigning the unchanged value back is still a concurrent WRITE to one
+// location from several workers — a data race under the C++ memory model (ASan
+// would NOT catch this; TSan would). So every write-back below is GUARDED by
+// `inv_mass > 0`: static bodies are never written at all. This makes the
+// parallel batch race-free by construction (dynamic writes disjoint; static
+// writes absent) and is bit-identical to writing the unchanged value.
+PSY_FORCEINLINE bool body_is_dynamic(const Body& b) noexcept { return b.inv_mass > 0.0f; }
+
+// Precompute (read-only on bodies): geometry, effective masses, bias/restitution.
+PSY_FORCEINLINE void solver_prepare_contact(Contact& c,
+                                            ContactConstraint& cc,
+                                            std::span<Body> bodies,
+                                            const SolverParams& params,
+                                            f32 dt) noexcept {
+    Body& A = bodies[c.body_a];
+    Body& B = bodies[c.body_b];
+    cc.ra = math::sub(c.point_world, A.position);
+    cc.rb = math::sub(c.point_world, B.position);
+    basis_for_normal(c.normal_world, cc.t1, cc.t2);
+
+    auto eff_mass = [&](math::Vec3 dir) -> f32 {
+        math::Vec3 ra_x = math::cross(cc.ra, dir);
+        math::Vec3 rb_x = math::cross(cc.rb, dir);
+        f32 ang = math::dot(dir, math::cross(apply_inv_inertia(A, ra_x), cc.ra)) +
+                  math::dot(dir, math::cross(apply_inv_inertia(B, rb_x), cc.rb));
+        f32 lin = A.inv_mass + B.inv_mass;
+        f32 k = lin + ang;
+        return (k > 1e-12f) ? 1.0f / k : 0.0f;
+    };
+    cc.eff_n = eff_mass(c.normal_world);
+    cc.eff_t1 = eff_mass(cc.t1);
+    cc.eff_t2 = eff_mass(cc.t2);
+
+    math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
+    math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
+    f32 rel_n = math::dot(math::sub(vb, va), c.normal_world);
+
+    if (c.speculative) {
+        // Speculative contact (bodies not yet touching). The constraint is a
+        // one-sided SPEED LIMIT: the closing velocity may not exceed
+        // separation/dt, so the bodies cannot cross the gap this step. We
+        // encode that as a NEGATIVE target normal velocity (bias) and the
+        // shared velocity-iteration clamp (new_jn = max(0, acc + jn)) does the
+        // rest: when the pair closes slower than allowed the impulse clamps to
+        // zero (no spurious push), when it closes too fast the impulse brings
+        // it exactly to the limit. No restitution, no friction (not in contact
+        // yet), and the position-correction loop skips it (depth == 0). This is
+        // the only thing that resolves a fast thin-body pair a frame early — no
+        // fake thickness, no CCD.
+        cc.e = 0.0f;
+        cc.mu = 0.0f;
+        cc.bias = -c.separation / dt;
+    } else {
+        f32 e = std::max(A.restitution, B.restitution);
+        cc.e = (rel_n < -params.restitution_threshold) ? -e * rel_n : 0.0f;
+
+        cc.mu = std::sqrt(std::max(0.0f, A.friction) * std::max(0.0f, B.friction));
+
+        f32 pen = std::max(0.0f, c.depth - params.slop);
+        cc.bias = (params.baumgarte / dt) * pen;
+    }
+}
+
+// Warm-start: apply the accumulated impulse from the previous step. WRITES
+// body velocities, so it runs in the colour walk (disjoint bodies per colour).
+PSY_FORCEINLINE void solver_warmstart_contact(const Contact& c,
+                                              const ContactConstraint& cc,
+                                              std::span<Body> bodies) noexcept {
+    Body& A = bodies[c.body_a];
+    Body& B = bodies[c.body_b];
+    math::Vec3 P = math::add(math::mul(c.normal_world, c.normal_impulse_acc),
+                             math::add(math::mul(cc.t1, c.friction_impulse_acc1),
+                                       math::mul(cc.t2, c.friction_impulse_acc2)));
+    // Guard static bodies: see the race note above. Writes only ever hit
+    // dynamic bodies, which are disjoint within a colour -> no race.
+    if (body_is_dynamic(A)) {
+        A.linear_velocity = math::sub(A.linear_velocity, math::mul(P, A.inv_mass));
+        A.angular_velocity =
+            math::sub(A.angular_velocity, apply_inv_inertia(A, math::cross(cc.ra, P)));
+    }
+    if (body_is_dynamic(B)) {
+        B.linear_velocity = math::add(B.linear_velocity, math::mul(P, B.inv_mass));
+        B.angular_velocity =
+            math::add(B.angular_velocity, apply_inv_inertia(B, math::cross(cc.rb, P)));
+    }
+}
+
+// One velocity iteration for one contact. WRITES body velocities.
+PSY_FORCEINLINE void solver_solve_velocity_contact(Contact& c,
+                                                   const ContactConstraint& cc,
+                                                   std::span<Body> bodies) noexcept {
+    Body& A = bodies[c.body_a];
+    Body& B = bodies[c.body_b];
+
+    auto rel_vel = [&](math::Vec3 dir) -> f32 {
+        math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
+        math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
+        return math::dot(math::sub(vb, va), dir);
+    };
+
+    f32 vn = rel_vel(c.normal_world);
+    f32 jn = (cc.e + cc.bias - vn) * cc.eff_n;
+    f32 new_jn = std::max(0.0f, c.normal_impulse_acc + jn);
+    jn = new_jn - c.normal_impulse_acc;
+    c.normal_impulse_acc = new_jn;
+
+    f32 vt1 = rel_vel(cc.t1);
+    f32 vt2 = rel_vel(cc.t2);
+    f32 jt1 = -vt1 * cc.eff_t1;
+    f32 jt2 = -vt2 * cc.eff_t2;
+    f32 jt1_new = c.friction_impulse_acc1 + jt1;
+    f32 jt2_new = c.friction_impulse_acc2 + jt2;
+    f32 limit = cc.mu * c.normal_impulse_acc;
+    f32 mag = std::sqrt(jt1_new * jt1_new + jt2_new * jt2_new);
+    if (mag > limit && mag > 1e-12f) {
+        f32 s = limit / mag;
+        jt1_new *= s;
+        jt2_new *= s;
+    }
+    jt1 = jt1_new - c.friction_impulse_acc1;
+    jt2 = jt2_new - c.friction_impulse_acc2;
+    c.friction_impulse_acc1 = jt1_new;
+    c.friction_impulse_acc2 = jt2_new;
+
+    math::Vec3 P = math::add(math::add(math::mul(c.normal_world, jn), math::mul(cc.t1, jt1)),
+                             math::mul(cc.t2, jt2));
+    // Guard static bodies (race note above): only dynamic bodies are written.
+    if (body_is_dynamic(A)) {
+        A.linear_velocity = math::sub(A.linear_velocity, math::mul(P, A.inv_mass));
+        A.angular_velocity =
+            math::sub(A.angular_velocity, apply_inv_inertia(A, math::cross(cc.ra, P)));
+    }
+    if (body_is_dynamic(B)) {
+        B.linear_velocity = math::add(B.linear_velocity, math::mul(P, B.inv_mass));
+        B.angular_velocity =
+            math::add(B.angular_velocity, apply_inv_inertia(B, math::cross(cc.rb, P)));
+    }
+}
+
+// One split-impulse position-correction iteration for one contact. WRITES body
+// positions.
+PSY_FORCEINLINE void solver_solve_position_contact(const Contact& c,
+                                                   const ContactConstraint& cc,
+                                                   std::span<Body> bodies,
+                                                   const SolverParams& params) noexcept {
+    f32 pen = c.depth - params.slop;
+    if (pen <= 0.0f)
+        return;
+    Body& A = bodies[c.body_a];
+    Body& B = bodies[c.body_b];
+    f32 corr = params.baumgarte * pen * cc.eff_n;
+    math::Vec3 P = math::mul(c.normal_world, corr);
+    // Guard static bodies (race note above): only dynamic bodies move.
+    if (body_is_dynamic(A))
+        A.position = math::sub(A.position, math::mul(P, A.inv_mass));
+    if (body_is_dynamic(B))
+        B.position = math::add(B.position, math::mul(P, B.inv_mass));
+}
+
+// ── Core colored projected-Gauss-Seidel solve ────────────────────────────
+//
+// Drives the four primitives above over a deterministic graph colouring
+// (SolverColoring.h). Colours are processed SEQUENTIALLY (Gauss-Seidel across
+// colours); a colour's contacts are dispatched via `batch` (serial or
+// parallel_for). `cache` / `coloring` / `usage` are caller scratch (zero
+// per-frame heap on the pooled production path).
+inline void solver_solve_island_core(std::span<Contact> contacts,
+                                      std::span<const u32> body_indices,
+                                      std::span<Body> bodies,
+                                      const SolverParams& params,
+                                      f32 dt,
+                                      std::vector<ContactConstraint>& cache,
+                                      ColoringScratch& coloring,
+                                      BodyColorUsage& usage,
+                                      const ColorBatchDispatch& batch) {
+    const usize n = contacts.size();
+    if (n == 0)
+        return;
+    if (cache.size() < n)
+        cache.resize(n);
+    // Usage bitset sized to the island's body COUNT (dense local remap), so
+    // total scratch over all islands is O(total bodies), not O(islands x bodies).
+    usage.ensure(body_indices.size());
+
+    bool saturated = false;
+    u32 num_colors =
+        kernel_color_island(contacts, bodies, body_indices, usage, coloring, saturated);
+
+    // Saturated colouring (a body with >= kMaxSolverColors live contacts) means
+    // a colour batch may contain a body conflict -> NOT race-free. Force the
+    // serial dispatcher; correctness is preserved (serial never parallelises a
+    // colour). This is astronomically rare in practice. We bind a local
+    // dispatcher so the choice is a single lvalue used by reference below.
+    ColorBatchDispatch serial_disp = solver_serial_dispatch;
+    const ColorBatchDispatch& disp = saturated ? serial_disp : batch;
+
+    const u32* order = coloring.order.data();
+    const u32* offs = coloring.color_offsets.data();
+
+    // Precompute is read-only on bodies, so it could parallelise over ALL
+    // contacts at once. We run it per colour through the same dispatcher so the
+    // serial and parallel paths share one control-flow (and the precompute of a
+    // colour completes before that colour's warm-start writes — fine, distinct
+    // phases). Bit-identical either way (no body writes here).
+    for (u32 col = 0; col < num_colors; ++col) {
+        const usize lo = offs[col];
+        const usize hi = offs[col + 1];
+        disp(hi - lo, [&](usize a, usize b) {
+            for (usize k = a; k < b; ++k) {
+                usize ci = order[lo + k];
+                solver_prepare_contact(contacts[ci], cache[ci], bodies, params, dt);
+            }
+        });
+    }
+
+    // Warm-start (writes velocities) — per colour, race-free within a colour.
+    for (u32 col = 0; col < num_colors; ++col) {
+        const usize lo = offs[col];
+        const usize hi = offs[col + 1];
+        disp(hi - lo, [&](usize a, usize b) {
+            for (usize k = a; k < b; ++k) {
+                usize ci = order[lo + k];
+                solver_warmstart_contact(contacts[ci], cache[ci], bodies);
+            }
+        });
+    }
+
+    // Velocity iterations. Each iteration walks all colours in order (Gauss-
+    // Seidel across colours), parallel within a colour.
+    for (u32 it = 0; it < params.velocity_iterations; ++it) {
+        for (u32 col = 0; col < num_colors; ++col) {
+            const usize lo = offs[col];
+            const usize hi = offs[col + 1];
+            disp(hi - lo, [&](usize a, usize b) {
+                for (usize k = a; k < b; ++k) {
+                    usize ci = order[lo + k];
+                    solver_solve_velocity_contact(contacts[ci], cache[ci], bodies);
+                }
+            });
+        }
+    }
+
+    // Position iterations (split impulse) — writes positions, same colour walk.
+    for (u32 it = 0; it < params.position_iterations; ++it) {
+        for (u32 col = 0; col < num_colors; ++col) {
+            const usize lo = offs[col];
+            const usize hi = offs[col + 1];
+            disp(hi - lo, [&](usize a, usize b) {
+                for (usize k = a; k < b; ++k) {
+                    usize ci = order[lo + k];
+                    solver_solve_position_contact(contacts[ci], cache[ci], bodies, params);
+                }
+            });
+        }
+    }
+}
+
+// Test-facing / small-island serial entry. Self-contained: it owns local
+// scratch (allocations are fine here — tests don't gate on heap, and the
+// production hot path goes through kernel_solve_island_colored with pooled
+// scratch). Iterates contacts in deterministic COLOURED order, which is why
+// its exact bit values differ from the pre-ADR-013 plain-index PGS — by design
+// (DESIGN.md §16 ADR-013). Still fully deterministic run-to-run.
 inline void kernel_solve_island(const Island& island,
                                 std::span<Contact> contacts,
                                 std::span<const u32> body_indices,
                                 std::span<Body> bodies,
                                 const SolverParams& params,
                                 f32 dt) noexcept {
-    (void)body_indices;
     (void)island;
+    if (contacts.empty())
+        return;
+    // Thread-local scratch so the test simulator's per-step calls don't
+    // re-allocate every tick and so concurrent test TUs never share state.
+    thread_local std::vector<ContactConstraint> cache;
+    thread_local ColoringScratch coloring;
+    thread_local BodyColorUsage usage;
+    solver_solve_island_core(contacts, body_indices, bodies, params, dt, cache, coloring, usage,
+                             solver_serial_dispatch);
+}
 
-    struct CC {
-        math::Vec3 ra, rb;
-        math::Vec3 t1, t2;
-        f32 eff_n = 0.0f, eff_t1 = 0.0f, eff_t2 = 0.0f;
-        f32 bias = 0.0f, e = 0.0f, mu = 0.0f;
-    };
-    std::vector<CC> caches(contacts.size());
-
-    for (usize i = 0; i < contacts.size(); ++i) {
-        Contact& c = contacts[i];
-        CC& cc = caches[i];
-        Body& A = bodies[c.body_a];
-        Body& B = bodies[c.body_b];
-        cc.ra = math::sub(c.point_world, A.position);
-        cc.rb = math::sub(c.point_world, B.position);
-        basis_for_normal(c.normal_world, cc.t1, cc.t2);
-
-        auto eff_mass = [&](math::Vec3 dir) -> f32 {
-            math::Vec3 ra_x = math::cross(cc.ra, dir);
-            math::Vec3 rb_x = math::cross(cc.rb, dir);
-            f32 ang = math::dot(dir, math::cross(apply_inv_inertia(A, ra_x), cc.ra)) +
-                      math::dot(dir, math::cross(apply_inv_inertia(B, rb_x), cc.rb));
-            f32 lin = A.inv_mass + B.inv_mass;
-            f32 k = lin + ang;
-            return (k > 1e-12f) ? 1.0f / k : 0.0f;
-        };
-        cc.eff_n = eff_mass(c.normal_world);
-        cc.eff_t1 = eff_mass(cc.t1);
-        cc.eff_t2 = eff_mass(cc.t2);
-
-        math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
-        math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
-        f32 rel_n = math::dot(math::sub(vb, va), c.normal_world);
-
-        if (c.speculative) {
-            // Speculative contact (bodies not yet touching). The constraint is
-            // a one-sided SPEED LIMIT: the closing velocity may not exceed
-            // separation/dt, so the bodies cannot cross the gap this step. We
-            // encode that as a NEGATIVE target normal velocity (bias) and the
-            // shared velocity-iteration clamp (new_jn = max(0, acc + jn)) does
-            // the rest: when the pair closes slower than allowed the impulse
-            // clamps to zero (no spurious push), when it closes too fast the
-            // impulse brings it exactly to the limit. No restitution, no
-            // friction (not in contact yet), and the position-correction loop
-            // skips it (depth == 0). This is the only thing that resolves a
-            // fast thin-body pair a frame early — no fake thickness, no CCD.
-            cc.e = 0.0f;
-            cc.mu = 0.0f;
-            cc.bias = -c.separation / dt;
-        } else {
-            f32 e = std::max(A.restitution, B.restitution);
-            cc.e = (rel_n < -params.restitution_threshold) ? -e * rel_n : 0.0f;
-
-            cc.mu = std::sqrt(std::max(0.0f, A.friction) * std::max(0.0f, B.friction));
-
-            f32 pen = std::max(0.0f, c.depth - params.slop);
-            cc.bias = (params.baumgarte / dt) * pen;
-        }
-
-        math::Vec3 P = math::add(math::mul(c.normal_world, c.normal_impulse_acc),
-                                 math::add(math::mul(cc.t1, c.friction_impulse_acc1),
-                                           math::mul(cc.t2, c.friction_impulse_acc2)));
-        A.linear_velocity = math::sub(A.linear_velocity, math::mul(P, A.inv_mass));
-        B.linear_velocity = math::add(B.linear_velocity, math::mul(P, B.inv_mass));
-        A.angular_velocity =
-            math::sub(A.angular_velocity, apply_inv_inertia(A, math::cross(cc.ra, P)));
-        B.angular_velocity =
-            math::add(B.angular_velocity, apply_inv_inertia(B, math::cross(cc.rb, P)));
-    }
-
-    for (u32 it = 0; it < params.velocity_iterations; ++it) {
-        for (usize i = 0; i < contacts.size(); ++i) {
-            Contact& c = contacts[i];
-            CC& cc = caches[i];
-            Body& A = bodies[c.body_a];
-            Body& B = bodies[c.body_b];
-
-            auto rel_vel = [&](math::Vec3 dir) -> f32 {
-                math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
-                math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
-                return math::dot(math::sub(vb, va), dir);
-            };
-
-            f32 vn = rel_vel(c.normal_world);
-            f32 jn = (cc.e + cc.bias - vn) * cc.eff_n;
-            f32 new_jn = std::max(0.0f, c.normal_impulse_acc + jn);
-            jn = new_jn - c.normal_impulse_acc;
-            c.normal_impulse_acc = new_jn;
-
-            f32 vt1 = rel_vel(cc.t1);
-            f32 vt2 = rel_vel(cc.t2);
-            f32 jt1 = -vt1 * cc.eff_t1;
-            f32 jt2 = -vt2 * cc.eff_t2;
-            f32 jt1_new = c.friction_impulse_acc1 + jt1;
-            f32 jt2_new = c.friction_impulse_acc2 + jt2;
-            f32 limit = cc.mu * c.normal_impulse_acc;
-            f32 mag = std::sqrt(jt1_new * jt1_new + jt2_new * jt2_new);
-            if (mag > limit && mag > 1e-12f) {
-                f32 s = limit / mag;
-                jt1_new *= s;
-                jt2_new *= s;
-            }
-            jt1 = jt1_new - c.friction_impulse_acc1;
-            jt2 = jt2_new - c.friction_impulse_acc2;
-            c.friction_impulse_acc1 = jt1_new;
-            c.friction_impulse_acc2 = jt2_new;
-
-            math::Vec3 P = math::add(math::add(math::mul(c.normal_world, jn), math::mul(cc.t1, jt1)),
-                                     math::mul(cc.t2, jt2));
-            A.linear_velocity = math::sub(A.linear_velocity, math::mul(P, A.inv_mass));
-            B.linear_velocity = math::add(B.linear_velocity, math::mul(P, B.inv_mass));
-            A.angular_velocity =
-                math::sub(A.angular_velocity, apply_inv_inertia(A, math::cross(cc.ra, P)));
-            B.angular_velocity =
-                math::add(B.angular_velocity, apply_inv_inertia(B, math::cross(cc.rb, P)));
-        }
-    }
-
-    for (u32 it = 0; it < params.position_iterations; ++it) {
-        for (usize i = 0; i < contacts.size(); ++i) {
-            Contact& c = contacts[i];
-            CC& cc = caches[i];
-            Body& A = bodies[c.body_a];
-            Body& B = bodies[c.body_b];
-            f32 pen = c.depth - params.slop;
-            if (pen <= 0.0f)
-                continue;
-            f32 corr = params.baumgarte * pen * cc.eff_n;
-            math::Vec3 P = math::mul(c.normal_world, corr);
-            A.position = math::sub(A.position, math::mul(P, A.inv_mass));
-            B.position = math::add(B.position, math::mul(P, B.inv_mass));
-        }
-    }
+// Production colored-parallel entry. `batch` is the per-colour dispatcher: for
+// a large island World.cpp binds it to the job system's parallel_for so a
+// colour's disjoint-body contacts run across cores; for a small island it binds
+// the serial dispatcher (parallel overhead not worth it below
+// kColoredParallelThreshold). EITHER dispatcher yields bit-identical output
+// (disjoint bodies => order-free), so the serial fallback and the multicore run
+// agree to the last bit — the bench's serial-vs-parallel comparison rests on
+// exactly that. `scratch` is caller-pooled; nothing here allocates once warmed.
+inline void kernel_solve_island_colored(const Island& island,
+                                        std::span<Contact> contacts,
+                                        std::span<const u32> body_indices,
+                                        std::span<Body> bodies,
+                                        const SolverParams& params,
+                                        f32 dt,
+                                        ColoredIslandScratch& scratch,
+                                        const ColorBatchDispatch& batch) {
+    (void)island;
+    if (contacts.empty())
+        return;
+    solver_solve_island_core(contacts, body_indices, bodies, params, dt, scratch.cache,
+                             scratch.coloring, scratch.usage, batch);
 }
 
 // ─── Single-axis SAP pass (header-inline, used by tests directly) ───────

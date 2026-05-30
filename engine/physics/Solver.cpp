@@ -26,4 +26,16 @@ void solve_island(const Island& island,
     kernels::kernel_solve_island(island, contacts, body_indices, bodies, params, dt);
 }
 
+void solve_island_colored(const Island& island,
+                          std::span<Contact> contacts,
+                          std::span<const u32> body_indices,
+                          std::span<Body> bodies,
+                          const SolverParams& params,
+                          f32 dt,
+                          ColoredIslandScratch& scratch,
+                          const ColorBatchDispatch& batch) {
+    kernels::kernel_solve_island_colored(island, contacts, body_indices, bodies, params, dt,
+                                         scratch, batch);
+}
+
 }  // namespace psynder::physics::detail

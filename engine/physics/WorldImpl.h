@@ -56,9 +56,16 @@ struct WorldState {
         usize bodies_count;
         const SolverParams* params;
         f32 dt;
+        // ADR-013 colored solve: each concurrently-solved island owns one
+        // pooled scratch (graph colouring buckets + constraint cache) so the
+        // hot path heap-allocates nothing per frame. Indexed by island.
+        kernels::ColoredIslandScratch* solver_scratch;
     };
     std::vector<IslandJobCtx> island_ctx_scratch;
     std::vector<jobs::JobHandle> island_handle_scratch;
+    // One colored-solve scratch per island, pooled across frames (grown, never
+    // shrunk). island_ctx_scratch[i].solver_scratch points into this.
+    std::vector<kernels::ColoredIslandScratch> island_solver_scratch;
 
     SolverParams solver{};
 

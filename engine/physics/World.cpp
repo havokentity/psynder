@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <vector>
 
 namespace psynder::physics {
@@ -194,25 +195,65 @@ static void run_narrowphase(WorldState& w, f32 dt) {
 static void run_island_solve(WorldState& w, f32 dt) {
     detect_islands(w.contact_scratch, {w.bodies.data(), w.bodies.size()}, w.island_body_indices, w.islands);
 
-    // Each island is independent — dispatch one job per island. Lane 04's
-    // Phase-0 stub runs jobs synchronously, but the data layout is correct
-    // for the real Chase-Lev pool: contacts and body-index slices are
-    // contiguous and disjoint per island. IslandJobCtx is a WorldState member
-    // type so its scratch vector can be reused across steps (Fix 2).
+    // Each island is independent — dispatch one job per island (island-level
+    // parallelism). WITHIN a large island we additionally run the ADR-013
+    // graph-colored solve so a colour's disjoint-body contacts spread across
+    // cores via parallel_for (intra-island parallelism). Contacts and
+    // body-index slices are contiguous and disjoint per island. IslandJobCtx is
+    // a WorldState member type so its scratch vectors reuse across steps.
     using IslandJobCtx = WorldState::IslandJobCtx;
 
     static auto solve_one = [](void* user) noexcept {
         auto* ctx = static_cast<IslandJobCtx*>(user);
-        solve_island(*ctx->island,
-                     {ctx->contacts_base + ctx->island->first_contact, ctx->island->contact_count},
-                     {ctx->body_index_base + ctx->island->first_body, ctx->island->body_count},
-                     {ctx->bodies_base, ctx->bodies_count},
-                     *ctx->params,
-                     ctx->dt);
+        const u32 contact_count = ctx->island->contact_count;
+
+        // Per-colour batch dispatcher. Above the threshold we route a colour's
+        // disjoint-body contacts through the job system's parallel_for; below it
+        // we run serial. EITHER way the result is bit-identical (a colour's
+        // bodies are disjoint, so the partition cannot change the arithmetic),
+        // so determinism holds whether or not the pool is running and regardless
+        // of core count.
+        //
+        // The per-contact solve is LIGHT (tens of ns), so a parallel_for
+        // fork/join (~3-4us measured) only pays off when a colour is large.
+        // Two guards keep us on the right side of break-even: (1) the whole
+        // island must clear kColoredParallelThreshold, and (2) inside the
+        // dispatcher a colour smaller than kColoredColorMinParallel runs inline
+        // (no task submit), so the many tiny box-box colours never fork. Grain
+        // is large (kColoredParallelGrain) because chunk-submission cost — not
+        // load imbalance — is the bottleneck at this work density (empirically
+        // ~512 is the sweet spot; bigger underutilises, smaller over-submits).
+        kernels::ColorBatchDispatch dispatch;
+        if (contact_count >= kernels::kColoredParallelThreshold) {
+            dispatch = [](usize count, const std::function<void(usize, usize)>& fn) {
+                if (count < kernels::kColoredColorMinParallel) {
+                    fn(0, count);  // tiny colour: inline, skip the fork/join
+                    return;
+                }
+                // parallel_for falls back to a synchronous body() call when the
+                // pool is stopped or the range is one chunk.
+                jobs::JobSystem::Get().parallel_for(0, count, kernels::kColoredParallelGrain, fn);
+            };
+        } else {
+            dispatch = kernels::solver_serial_dispatch;
+        }
+
+        solve_island_colored(
+            *ctx->island,
+            {ctx->contacts_base + ctx->island->first_contact, ctx->island->contact_count},
+            {ctx->body_index_base + ctx->island->first_body, ctx->island->body_count},
+            {ctx->bodies_base, ctx->bodies_count},
+            *ctx->params,
+            ctx->dt,
+            *ctx->solver_scratch,
+            dispatch);
     };
 
     // Reuse the per-step scratch: clear (retain capacity) instead of freeing
-    // and re-allocating every 120 Hz sub-tick.
+    // and re-allocating every 120 Hz sub-tick. One colored-solve scratch per
+    // island, pooled across frames.
+    if (w.island_solver_scratch.size() < w.islands.size())
+        w.island_solver_scratch.resize(w.islands.size());
     w.island_ctx_scratch.clear();
     w.island_ctx_scratch.reserve(w.islands.size());
     for (usize i = 0; i < w.islands.size(); ++i) {
@@ -224,6 +265,7 @@ static void run_island_solve(WorldState& w, f32 dt) {
             w.bodies.size(),
             &w.solver,
             dt,
+            &w.island_solver_scratch[i],
         });
     }
 
