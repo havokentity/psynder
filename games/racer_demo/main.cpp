@@ -58,15 +58,18 @@
 // is the lane's terrain-following showcase. Track elevation (a sculpted/banked
 // road fed through set_ground_heightfield) is deferred along with the polish below.
 //
-// VEHICLE GOVERNOR + STEERING AUTHORITY (#58, now wired): build_vehicle sets
+// VEHICLE GOVERNOR + STEERING AUTHORITY (#58, wired): build_vehicle sets
 // VehicleDesc.max_speed (a sane cruise cap) plus steer_full_speed / steer_taper_
 // speed / steer_min_authority, so a held throttle settles AT the cap instead of
 // running away and the front wheels keep enough authority to pull the U-turns.
-// The auto-driver targets kAutoTargetSpeed just UNDER the cap; the smoke run logs
-// a governed-cruise PASS/FAIL (peak speed <= cap, with real track progress). This
-// replaces the earlier "PUBLIC-API GAP" note: the engine-side governing /
-// steering-authority fix the racer agent flagged has since landed on VehicleDesc,
-// and this demo now opts into it. INTERACTIVE WASD play is unchanged.
+// CLOSED-LOOP CORNERING: the auto-driver chases a look-ahead point on the spline,
+// so the smoke car actually corners and LAPS the oval (steering against the
+// chassis heading). This was previously blocked by an engine Pacejka lateral-
+// force SIGN bug — any steer fed a positive-feedback side-slide that spun the
+// chassis, so the smoke had to drive a straight line — now fixed in the physics
+// (the lateral tire force is restoring). The smoke logs one auto-drive PASS/FAIL:
+// peak speed <= cap (governed), real distance covered (progressed), and a Z span
+// proving it drove through a U-turn (cornered). INTERACTIVE WASD play unchanged.
 //
 // DEFERRED POLISH: AI racers, tyre smoke / skid marks, sculpted/banked TRACK
 // ELEVATION (set_ground_heightfield once the track carries relief), multiple
@@ -480,35 +483,17 @@ struct Driver {
     f32 look_ahead_m = 12.0f;                 // aim distance: smooth but responsive
     f32 steer_gain = 0.7f;                    // gentle proportional steer: no spin
     f32 steer_clamp = 0.22f;                  // hard cap on commanded front angle (rad)
-    f32 throttle_kp = 0.15f;  // gentle throttle: no wheel-spin burst to overshoot
+    f32 throttle_kp = 0.5f;  // firm enough to hold near the target; the engine
+                             // speed-governor (not the driver) enforces the hard
+                             // cap, so this can push without runaway.
 };
 
-// Governed STRAIGHT cruise: hold steer at 0 and run the throttle PI toward the
-// target speed so the car accelerates onto the start straight and the
-// VehicleDesc governor pins it AT the cap. This is the provably-stable drive
-// mode (steering is gated on the engine tire-sign fix; see the call site +
-// DEFERRED note). Pure read of the current speed; writes the three controls.
-void straight_cruise(const Driver& driver,
-                     f32 car_speed,
-                     f32& steer_out,
-                     f32& throttle_out,
-                     f32& brake_out) noexcept {
-    steer_out = 0.0f;
-    const f32 speed_err = driver.target_speed_mps - car_speed;
-    if (speed_err >= 0.0f) {
-        throttle_out = std::min(1.0f, driver.throttle_kp * speed_err);
-        brake_out = 0.0f;
-    } else {
-        throttle_out = 0.0f;
-        brake_out = std::min(1.0f, -driver.throttle_kp * speed_err);
-    }
-}
-
 // Compute steer / throttle / brake to chase a look-ahead point at the target
-// speed. Pure read of the track + current car state; writes nothing. Retained
-// for interactive idle-attract + as the ready closed-loop controller for once
-// the engine tire lateral-force sign is corrected (see the smoke call site).
-[[maybe_unused]] void auto_drive(const std::vector<world::outdoor::SplineRoadSegment>& segs,
+// speed. Pure read of the track + current car state; writes the three controls.
+// Drives both the headless smoke and the idle-attract loop. Stable now that the
+// engine's Pacejka lateral tire force is restoring (the sign fix that unblocked
+// cornering — before it, any steer ran away into a spin).
+void auto_drive(const std::vector<world::outdoor::SplineRoadSegment>& segs,
                 const Driver& driver,
                 math::Vec3 car_pos,
                 math::Vec3 chassis_fwd,
@@ -901,6 +886,12 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
     f32 smoke_peak_speed = 0.0f;
     f32 smoke_distance = 0.0f;
     math::Vec3 smoke_prev_pos = game.car_pos;
+    // Track the Z extent the car visits. The oval's two straights sit at
+    // z = -sz and z = +sz (the curve half-depth in build_oval_track); a car that
+    // drives through a U-turn visits both, so a large Z span proves the steering
+    // controller cornered rather than running straight down the start straight.
+    f32 smoke_z_min = game.car_pos.z;
+    f32 smoke_z_max = game.car_pos.z;
 
     while (!window->should_close()) {
         window->poll_events();
@@ -953,22 +944,26 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
             // their stable regime.
             f32 throttle = man_throttle, brake = man_brake, steer = man_steer;
             if (!manual) {
-                // Non-manual (headless smoke + idle attract): a GOVERNED STRAIGHT
-                // cruise down the start straight. The throttle PI eases the car up
-                // to the auto-driver's target and the VehicleDesc governor holds it
-                // AT the cap -- the demo's value here is the speed governor + the
-                // alloc-free fixed-step composition, exercised on the stable
-                // longitudinal axis. Closed-loop CORNERING (the auto_drive steering
-                // controller, kept below for interactive use + the engine fix) is
-                // gated on an engine tire-model fix: the Wave-B Pacejka lateral
-                // force is applied along +tire_right (same sense as the lateral
-                // slip) instead of opposing it, so ANY steer feeds a positive-
-                // feedback side-slide that runs away regardless of throttle/brake
-                // (reproduces in samples/04_nfs_track too -- a pre-existing engine
-                // issue, not this demo). Until that sign is corrected the smoke
-                // drives the provably-stable straight line; steer stays 0 so the
-                // governed-cruise assertion is meaningful. See DEFERRED note.
-                straight_cruise(game.driver, game.car_speed, steer, throttle, brake);
+                // Non-manual (headless smoke + idle attract): CLOSED-LOOP
+                // auto-drive that chases a look-ahead point on the spline, so the
+                // car actually corners and laps instead of cruising in a straight
+                // line. Steering is computed against the chassis HEADING (the body
+                // orientation's local +X forward, projected to the ground plane),
+                // not the noisy velocity vector. This was previously gated on the
+                // Pacejka lateral-force SIGN bug -- any steer fed a positive-
+                // feedback side-slide that spun the chassis -- so the smoke drove
+                // a provably-stable straight line. With that fixed in the engine
+                // (lateral force is restoring), the cornering controller is stable
+                // and the smoke drives the full loop.
+                math::Vec3 heading = math::quat_rotate(game.world.get_rotation(game.chassis),
+                                                       v3(1.0f, 0.0f, 0.0f));
+                heading.y = 0.0f;
+                if (math::dot(heading, heading) < 1e-6f)
+                    heading = game.car_fwd;  // degenerate pose: fall back to velocity dir
+                else
+                    heading = math::normalize(heading);
+                auto_drive(game.track, game.driver, game.car_pos, heading, game.car_speed,
+                           steer, throttle, brake);
             }
             physics::vehicle::set_throttle(game.vehicle, throttle, game.world);
             physics::vehicle::set_brake(game.vehicle, brake, game.world);
@@ -1018,6 +1013,8 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
             smoke_distance += math::length(v3(dp.x, 0.0f, dp.z));
             smoke_prev_pos = game.car_pos;
             smoke_peak_speed = std::max(smoke_peak_speed, game.car_speed);
+            smoke_z_min = std::min(smoke_z_min, game.car_pos.z);
+            smoke_z_max = std::max(smoke_z_max, game.car_pos.z);
             if ((frame % 30u) == 0u) {
                 PSY_LOG_INFO("racer_demo: frame {} car_pos=({:.2f},{:.2f},{:.2f}) speed={:.2f} "
                              "thr={:.2f} brk={:.2f} str={:.2f} lap={}",
@@ -1033,27 +1030,38 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
 
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {
-            // Governed-cruise assertion. With the governor + steering authority on
-            // the VehicleDesc, the auto-driver must hold the cruise UNDER the cap
-            // (peak speed <= the cap, with a small numerical margin) and the car
-            // must have PROGRESSED a meaningful distance (it laps / covers track
-            // rather than stalling). A runaway car would blow past the cap; a
-            // stalled one would log ~0 distance. We emit one greppable PASS/FAIL.
-            constexpr f32 kCapMargin = 1.5f;     // m/s tolerance over the hard cap
-            constexpr f32 kMinProgress = 50.0f;  // metres of track the car must cover
+            // Auto-drive assertion. The closed-loop driver must (1) hold the
+            // cruise UNDER the cap (peak speed <= cap + a small margin: a runaway
+            // car blows past it), (2) PROGRESS a meaningful distance rather than
+            // stalling, and (3) actually CORNER -- drive through a U-turn so it
+            // visits both straights of the oval. Cornering is the real proof the
+            // steering controller (and the restored lateral tire force) works; a
+            // car that could only go straight stays pinned to the start straight.
+            // A short smoke can end before reaching the first curve, so cornering
+            // is only required once the run is long enough to have reached it.
+            constexpr f32 kCapMargin = 1.5f;       // m/s tolerance over the hard cap
+            constexpr f32 kMinProgress = 50.0f;    // metres of track the car must cover
+            constexpr f32 kMinCornerSpan = 30.0f;  // Z extent that proves a U-turn
+            constexpr u32 kCornerFrames = 1300u;   // frames needed to reach a curve
+            const f32 smoke_z_span = smoke_z_max - smoke_z_min;
             const bool governed = smoke_peak_speed <= kCarMaxSpeed + kCapMargin;
             const bool progressed = smoke_distance >= kMinProgress;
-            PSY_LOG_INFO("racer_demo: governed-cruise peak_speed={:.2f} m/s (cap {:.1f}) "
-                         "distance={:.1f}m laps={} {} {}",
+            const bool cornered = smoke_z_span >= kMinCornerSpan;
+            const bool corner_required = smoke_frames >= kCornerFrames;
+            const bool ok = governed && progressed && (!corner_required || cornered);
+            PSY_LOG_INFO("racer_demo: auto-drive peak_speed={:.2f} m/s (cap {:.1f}) "
+                         "distance={:.1f}m z_span={:.1f}m laps={} {} {} {}",
                          static_cast<double>(smoke_peak_speed),
                          static_cast<double>(kCarMaxSpeed), static_cast<double>(smoke_distance),
-                         game.lap.lap_count, governed ? "UNDER-CAP" : "OVER-CAP",
-                         progressed ? "PROGRESSED" : "STALLED");
-            if (governed && progressed)
-                PSY_LOG_INFO("racer_demo: governed-cruise PASS");
+                         static_cast<double>(smoke_z_span), game.lap.lap_count,
+                         governed ? "UNDER-CAP" : "OVER-CAP",
+                         progressed ? "PROGRESSED" : "STALLED",
+                         cornered ? "CORNERED" : "STRAIGHT");
+            if (ok)
+                PSY_LOG_INFO("racer_demo: auto-drive PASS");
             else
-                PSY_LOG_ERROR("racer_demo: governed-cruise FAIL (governed={} progressed={})",
-                              governed, progressed);
+                PSY_LOG_ERROR("racer_demo: auto-drive FAIL (governed={} progressed={} cornered={})",
+                              governed, progressed, cornered);
             PSY_LOG_INFO("racer_demo: smoke target reached ({}); exiting", smoke_frames);
             break;
         }

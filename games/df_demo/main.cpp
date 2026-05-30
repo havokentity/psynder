@@ -1081,13 +1081,6 @@ int run_demo(const app::AppArgs& args, app::WindowApp& app_host) {
                 jeep_clear_min = std::min(jeep_clear_min, clear);
                 jeep_clear_max = std::max(jeep_clear_max, clear);
             }
-            if ((frame % 20u) == 0u) {
-                const math::Vec3 lv = game.world.get_position(game.jeep_chassis);
-                PSY_LOG_INFO("DBG jeep frame={} pos=({:.2f},{:.2f},{:.2f}) fwd=({:.2f},{:.2f})",
-                             frame, static_cast<double>(lv.x), static_cast<double>(lv.y),
-                             static_cast<double>(lv.z), static_cast<double>(game.jeep_fwd.x),
-                             static_cast<double>(game.jeep_fwd.z));
-            }
         }
 
         // 4-6. Combat tick, ordered begin -> fire -> flush so the damage that AI
