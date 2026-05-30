@@ -5,3 +5,4 @@
 # PSYNDER_BUILD_SAMPLES) so the games never force-build everywhere.
 add_subdirectory(shooter_demo)
 add_subdirectory(racer_demo)
+add_subdirectory(df_demo)
