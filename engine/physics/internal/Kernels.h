@@ -566,6 +566,288 @@ inline bool kernel_gjk_epa(const GjkSupport& a, const GjkSupport& b, Contact& ou
     return epa_penetration(a, b, simplex, out);
 }
 
+// ─── GJK distance (separated convex pair, closest-point-to-origin) ──────
+//
+// Companion to the GJK-intersection + EPA-penetration path above. Where that
+// path answers "do these convex shapes overlap, and how deep?", this answers
+// the SEPARATED case: "what is the minimum distance between them, along which
+// separating normal, and where are the witness points?". That gap + normal is
+// exactly what the speculative (anti-tunnelling) contact path needs so a fast
+// box cannot tunnel through another box in one sub-tick.
+//
+// Method: Gilbert-Johnson-Keerthi (GJK) distance, using the closest-point-to-
+// origin-on-simplex sub-algorithm (Gilbert, Johnson & Keerthi, "A Fast
+// Procedure for Computing the Distance Between Complex Objects in Three-
+// Dimensional Space", IEEE J. Robotics & Automation, 1988; Ericson, "Real-Time
+// Collision Detection", 2005, §9.5). We march a simplex of the Minkowski
+// difference A (-) B toward the origin; the minimum distance is the length of
+// the closest point to the origin, and that point's barycentric weights over
+// the simplex recover the world-space witness points on each body.
+//
+// Reuses the existing GjkSupport / kernel_support / mink_support / MinkowskiPt
+// (no duplicate support functions), so the boolean/EPA path and this distance
+// path see byte-identical supports for the same shape pair.
+//
+// Determinism / hot-path contract:
+//   * Fixed-size simplex (max 4 MinkowskiPt), NO heap / std::vector / RNG /
+//     clock. Bounded iteration (kMaxIter) with a relative-progress termination,
+//     so it always returns.
+//   * -fno-fast-math friendly: no reassociation reliance; explicit epsilons; no
+//     NaN-propagation shortcuts.
+//
+// Touching / penetrating case: GJK distance is only meaningful while the shapes
+// are strictly separated. If the marched simplex reaches/encloses the origin
+// (touching or overlapping), `separated == false` is returned and the caller
+// must fall back to the overlap (EPA) path — the speculative path only consumes
+// the separated result.
+struct GjkDistanceResult {
+    bool separated = false;       // false => touching/penetrating => overlap path
+    f32 distance = 0.0f;          // minimum distance between the two shapes (>= 0)
+    math::Vec3 normal{0, 1, 0};   // unit separating normal, points A -> B
+    math::Vec3 point_a{0, 0, 0};  // witness point on A's surface
+    math::Vec3 point_b{0, 0, 0};  // witness point on B's surface
+};
+
+namespace gjk_dist_detail {
+
+// Closest point on segment [a,b] to the origin. Barycentric weights (la,lb)
+// sum to 1 over the surviving vertices. Ericson §5.1.2 specialised to P=origin.
+inline math::Vec3 closest_origin_seg(math::Vec3 a, math::Vec3 b, f32& la, f32& lb) noexcept {
+    math::Vec3 ab = math::sub(b, a);
+    f32 denom = math::dot(ab, ab);
+    if (denom <= 1e-20f) {
+        la = 1.0f;
+        lb = 0.0f;
+        return a;
+    }
+    f32 t = -math::dot(a, ab) / denom;  // project origin onto the line
+    if (t <= 0.0f) {
+        la = 1.0f;
+        lb = 0.0f;
+        return a;
+    }
+    if (t >= 1.0f) {
+        la = 0.0f;
+        lb = 1.0f;
+        return b;
+    }
+    la = 1.0f - t;
+    lb = t;
+    return math::add(a, math::mul(ab, t));
+}
+
+// Closest point on triangle [a,b,c] to the origin (Ericson §5.1.5, P=origin),
+// returning barycentric weights (la,lb,lc) of the supporting feature.
+inline math::Vec3 closest_origin_tri(
+    math::Vec3 a, math::Vec3 b, math::Vec3 c, f32& la, f32& lb, f32& lc) noexcept {
+    math::Vec3 ab = math::sub(b, a);
+    math::Vec3 ac = math::sub(c, a);
+    math::Vec3 ap = math::mul(a, -1.0f);  // origin - a
+    f32 d1 = math::dot(ab, ap);
+    f32 d2 = math::dot(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f) {
+        la = 1.0f; lb = 0.0f; lc = 0.0f;
+        return a;
+    }
+    math::Vec3 bp = math::mul(b, -1.0f);
+    f32 d3 = math::dot(ab, bp);
+    f32 d4 = math::dot(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3) {
+        la = 0.0f; lb = 1.0f; lc = 0.0f;
+        return b;
+    }
+    f32 vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        f32 v = d1 / (d1 - d3);
+        la = 1.0f - v; lb = v; lc = 0.0f;
+        return math::add(a, math::mul(ab, v));
+    }
+    math::Vec3 cp = math::mul(c, -1.0f);
+    f32 d5 = math::dot(ab, cp);
+    f32 d6 = math::dot(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6) {
+        la = 0.0f; lb = 0.0f; lc = 1.0f;
+        return c;
+    }
+    f32 vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        f32 w = d2 / (d2 - d6);
+        la = 1.0f - w; lb = 0.0f; lc = w;
+        return math::add(a, math::mul(ac, w));
+    }
+    f32 va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+        f32 w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        la = 0.0f; lb = 1.0f - w; lc = w;
+        return math::add(b, math::mul(math::sub(c, b), w));
+    }
+    f32 denom = 1.0f / (va + vb + vc);
+    f32 v = vb * denom;
+    f32 w = vc * denom;
+    la = 1.0f - v - w; lb = v; lc = w;
+    return math::add(a, math::add(math::mul(ab, v), math::mul(ac, w)));
+}
+
+}  // namespace gjk_dist_detail
+
+inline GjkDistanceResult gjk_distance(const GjkSupport& a, const GjkSupport& b) noexcept {
+    GjkDistanceResult res{};
+
+    std::array<MinkowskiPt, 4> simplex{};
+    u32 n = 0;
+    // Barycentric weights of `closest` over the surviving simplex vertices.
+    std::array<f32, 4> bary{1.0f, 0.0f, 0.0f, 0.0f};
+
+    // Initial search direction: from B toward A (any non-degenerate dir works).
+    math::Vec3 dir = math::sub(a.position, b.position);
+    if (length_sq(dir) < 1e-20f)
+        dir = {1, 0, 0};
+
+    MinkowskiPt v0 = mink_support(a, b, dir);
+    simplex[0] = v0;
+    n = 1;
+    math::Vec3 closest = v0.p;  // closest point on the simplex to the origin
+
+    constexpr u32 kMaxIter = 32;
+    constexpr f32 kEps = 1e-10f;
+
+    for (u32 iter = 0; iter < kMaxIter; ++iter) {
+        f32 closest_d2 = length_sq(closest);
+        if (closest_d2 <= kEps) {
+            // Simplex reached the origin => shapes touch/overlap.
+            res.separated = false;
+            return res;
+        }
+        // Search toward the origin from the current closest feature.
+        math::Vec3 search = math::mul(closest, -1.0f);
+        MinkowskiPt nv = mink_support(a, b, search);
+
+        // Convergence (standard GJK distance termination, Ericson §9.5.1): the
+        // new support extends the simplex toward the origin by
+        //   progress = dot(nv.p - closest, search).
+        // When that is non-positive (the support cannot get closer to the origin
+        // than the current feature already is) the minimum distance is found.
+        // The relative epsilon keeps the test stable + -fno-fast-math friendly.
+        f32 progress = math::dot(math::sub(nv.p, closest), search);
+        if (progress <= 1e-10f * (closest_d2 + 1.0f))
+            break;
+
+        // Guard against re-adding a duplicate vertex (numerical stall).
+        bool dup = false;
+        for (u32 i = 0; i < n; ++i) {
+            math::Vec3 e = math::sub(nv.p, simplex[i].p);
+            if (length_sq(e) < 1e-14f) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup)
+            break;
+
+        simplex[n++] = nv;
+
+        // Solve closest-point-to-origin on the (now larger) simplex and reduce
+        // it to the supporting feature (drop zero-weight vertices).
+        if (n == 2) {
+            f32 la, lb;
+            closest = gjk_dist_detail::closest_origin_seg(simplex[0].p, simplex[1].p, la, lb);
+            if (lb == 0.0f) {
+                n = 1;
+                bary = {1.0f, 0, 0, 0};
+            } else if (la == 0.0f) {
+                simplex[0] = simplex[1];
+                n = 1;
+                bary = {1.0f, 0, 0, 0};
+            } else {
+                bary = {la, lb, 0, 0};
+            }
+        } else if (n == 3) {
+            f32 la, lb, lc;
+            closest = gjk_dist_detail::closest_origin_tri(
+                simplex[0].p, simplex[1].p, simplex[2].p, la, lb, lc);
+            std::array<MinkowskiPt, 3> keep{};
+            std::array<f32, 3> kw{};
+            u32 m = 0;
+            if (la > 0.0f) { keep[m] = simplex[0]; kw[m] = la; ++m; }
+            if (lb > 0.0f) { keep[m] = simplex[1]; kw[m] = lb; ++m; }
+            if (lc > 0.0f) { keep[m] = simplex[2]; kw[m] = lc; ++m; }
+            for (u32 i = 0; i < m; ++i) {
+                simplex[i] = keep[i];
+                bary[i] = kw[i];
+            }
+            n = m;
+        } else {  // n == 4: closest point over a tetra = min over its 4 faces.
+            f32 best_d2 = std::numeric_limits<f32>::infinity();
+            math::Vec3 best_pt = closest;
+            std::array<MinkowskiPt, 3> best_keep{};
+            std::array<f32, 3> best_w{};
+            u32 best_m = 0;
+            const u32 faces[4][3] = {{0, 1, 2}, {0, 1, 3}, {0, 2, 3}, {1, 2, 3}};
+            for (auto& f : faces) {
+                f32 la, lb, lc;
+                math::Vec3 p = gjk_dist_detail::closest_origin_tri(
+                    simplex[f[0]].p, simplex[f[1]].p, simplex[f[2]].p, la, lb, lc);
+                f32 d2 = length_sq(p);
+                if (d2 < best_d2) {
+                    best_d2 = d2;
+                    best_pt = p;
+                    u32 m = 0;
+                    if (la > 0.0f) { best_keep[m] = simplex[f[0]]; best_w[m] = la; ++m; }
+                    if (lb > 0.0f) { best_keep[m] = simplex[f[1]]; best_w[m] = lb; ++m; }
+                    if (lc > 0.0f) { best_keep[m] = simplex[f[2]]; best_w[m] = lc; ++m; }
+                    best_m = m;
+                }
+            }
+            closest = best_pt;
+            for (u32 i = 0; i < best_m; ++i) {
+                simplex[i] = best_keep[i];
+                bary[i] = best_w[i];
+            }
+            n = best_m;
+            if (best_d2 <= kEps) {
+                res.separated = false;
+                return res;
+            }
+        }
+    }
+
+    // Recover witness points from the surviving simplex's barycentric weights.
+    math::Vec3 pa{0, 0, 0};
+    math::Vec3 pb{0, 0, 0};
+    f32 wsum = 0.0f;
+    for (u32 i = 0; i < n; ++i)
+        wsum += bary[i];
+    if (wsum <= kEps) {
+        // Degenerate weights — fall back to the single nearest vertex.
+        bary = {1.0f, 0, 0, 0};
+        wsum = 1.0f;
+        if (n == 0)
+            n = 1;
+    }
+    f32 inv = 1.0f / wsum;
+    for (u32 i = 0; i < n; ++i) {
+        f32 wi = bary[i] * inv;
+        pa = math::add(pa, math::mul(simplex[i].sa, wi));
+        pb = math::add(pb, math::mul(simplex[i].sb, wi));
+    }
+
+    // The separating direction is pa(on A) -> pb(on B); same A->B convention as
+    // kernel_collide_pair / kernel_pair_separation.
+    math::Vec3 delta = math::sub(pb, pa);
+    f32 dist2 = length_sq(delta);
+    if (dist2 <= kEps) {
+        res.separated = false;  // effectively touching
+        return res;
+    }
+    f32 dist = std::sqrt(dist2);
+    res.separated = true;
+    res.distance = dist;
+    res.normal = math::mul(delta, 1.0f / dist);  // A -> B
+    res.point_a = pa;
+    res.point_b = pb;
+    return res;
+}
+
 // ─── Pair-shape dispatcher (header-inline so tests get the full path) ───
 
 // Plane-vs-shape signed-distance dispatch. Fills `out` (normal/point/depth)
@@ -677,12 +959,22 @@ inline bool kernel_collide_pair(const Body& a, const Body& b, Contact& out) noex
     return kernel_gjk_epa(sa, sb, out);
 }
 
-// Closed-form separation distance for the shape pairs that admit one cheaply
-// (Plane-vs-shape and sphere-vs-sphere). Fills `out` (A->B normal + a contact
-// point on the gap) and returns the gap along that normal: > 0 apart,
-// <= 0 penetrating. Returns +inf when the pair has no closed-form distance
-// here (box-box / capsule / GJK), signalling "no speculative path — use the
-// overlap-only kernel". This is the separation the speculative contact rides.
+// Separation distance for the shape pairs that admit one. Fills `out` (A->B
+// normal + a contact point on the gap) and returns the gap along that normal:
+// > 0 apart. Three tiers, in priority order:
+//   1. Plane-vs-shape and sphere-vs-sphere: exact closed-form gap (cheap).
+//   2. Any other convex pair (box-box, capsule-box, sphere-capsule, ...): the
+//      GJK distance sub-algorithm (gjk_distance) gives the real minimum gap +
+//      separating normal + a witness contact point. This closes the box-box /
+//      capsule-box speculative anti-tunnelling gap that previously returned
+//      +inf and let a fast box tunnel.
+//   3. Returns +inf only when the convex pair is TOUCHING / PENETRATING (GJK
+//      reports `separated == false`), signalling "no speculative path — use the
+//      overlap-only kernel". Routing penetrating pairs back to the overlap path
+//      keeps every existing resting contact byte-for-byte identical: a resting
+//      box stack penetrates (or is exactly touching) so it never takes the new
+//      separated branch, and a SEPARATED pair carried only positive `separation`
+//      (depth == 0) which is a no-op clamp unless the pair is actually closing.
 inline f32 kernel_pair_separation(const Body& a, const Body& b, Contact& out) noexcept {
     if (a.shape == kShapePlane || b.shape == kShapePlane)
         return kernel_plane_pair_sep(a, b, out);
@@ -700,7 +992,34 @@ inline f32 kernel_pair_separation(const Body& a, const Body& b, Contact& out) no
         return sep;
     }
 
-    return std::numeric_limits<f32>::infinity();
+    // General convex pair: GJK distance for the SEPARATED case (box-box,
+    // capsule-box, etc.). Touching/penetrating -> +inf so the caller takes the
+    // unchanged overlap (EPA / AABB-AABB) path; resting stacks are untouched.
+    GjkSupport sa{a.position, a.rotation, a.shape, a.half_extent};
+    GjkSupport sb{b.position, b.rotation, b.shape, b.half_extent};
+    GjkDistanceResult gd = gjk_distance(sa, sb);
+    // Near-contact band: a SMALL gap is handed to the proven overlap (EPA) path
+    // instead of the GJK speculative path. The GJK witness-point normal
+    // DEGENERATES for nearly-parallel faces -- two large flat boxes meeting
+    // face-to-face have an under-determined closest feature, so the recovered
+    // normal jitters off the true face normal. Feeding that to the speculative
+    // one-sided speed-limit lets a SETTLING box creep through its support. EPA's
+    // face-contact normal is stable there, so resting/landing pairs use it (as
+    // they did before this lane). The band exceeds the per-tick approach of a
+    // normal-speed landing so EPA reliably catches the contact within a tick;
+    // genuinely TUNNELLING pairs are caught far earlier -- at gaps ~ closing*dt,
+    // which dwarf the band -- where the GJK normal is well-conditioned. This
+    // keeps the anti-tunnelling win without the face-face normal hazard.
+    constexpr f32 kGjkContactBand = 0.1f;  // 10 cm
+    if (!gd.separated || gd.distance < kGjkContactBand)
+        return std::numeric_limits<f32>::infinity();  // overlap path
+
+    out.normal_world = gd.normal;  // A -> B
+    // Contact point on the gap: midpoint of the two witness points, matching
+    // the EPA overlap path's "between the surfaces" convention.
+    out.point_world = math::mul(math::add(gd.point_a, gd.point_b), 0.5f);
+    out.depth = -gd.distance;  // negative depth == separation (gap)
+    return gd.distance;
 }
 
 // Speculative-aware collide. Used by the world step's narrowphase. Behaviour:
@@ -713,9 +1032,12 @@ inline f32 kernel_pair_separation(const Body& a, const Body& b, Contact& out) no
 //      separation = gap). The solver clamps the approach so the bodies cannot
 //      cross the gap this step — no fake thickness, no position bias.
 //   3. Otherwise -> false (no contact), matching the old behaviour.
-// For pairs with no closed-form distance (box-box / capsule / GJK) this falls
-// straight through to kernel_collide_pair: their overlap-only behaviour, and
-// therefore every existing test + sample, is byte-for-byte unchanged.
+// Separated convex pairs (box-box / capsule-box / ...) now get their gap from
+// the GJK distance sub-algorithm (kernel_pair_separation), so a fast closing
+// box gets a speculative contact a tick early instead of tunnelling. A TOUCHING
+// or PENETRATING convex pair still falls straight through to kernel_collide_pair
+// (kernel_pair_separation returns +inf for it), so resting stacks and every
+// existing overlap test/sample are byte-for-byte unchanged.
 inline bool kernel_collide_pair_spec(
     const Body& a, const Body& b, f32 dt, f32 margin, Contact& out) noexcept {
     f32 sep = kernel_pair_separation(a, b, out);
