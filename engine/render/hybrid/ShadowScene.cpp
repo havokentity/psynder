@@ -167,7 +167,12 @@ ShadowSceneStats build_shadow_scene(
     std::lock_guard<std::mutex> guard(shadow_cache_mutex());
     ShadowCache& cache = shadow_cache();
 
-    // Gather the RT-visible renderables (world transforms already resolved).
+    // Gather the RT shadow CASTERS (world transforms already resolved). This
+    // honors the CastsRtShadow material flag, NOT RtVisible: a surface that is
+    // raytraced-visible but flagged non-casting (glass, foliage cards) must not
+    // occlude, and a cast-only proxy (invisible shadow geometry) must. Spec:
+    // HYBRID_MATERIAL_SHADOWS_STATUS.md — "RT shadow packets must respect
+    // material shadow policy."
     ::psynder::render::SceneRenderQueues queues;
     ::psynder::render::build_scene_render_queues(scene, queues);
 
@@ -176,11 +181,11 @@ ShadowSceneStats build_shadow_scene(
 
     cache.instances.clear();
     cache.referenced_slots.clear();
-    cache.instances.reserve(queues.rt_visible.size());
+    cache.instances.reserve(queues.rt_shadow_casters.size());
 
     u32 blas_built = 0;
 
-    for (const u32 item_index : queues.rt_visible) {
+    for (const u32 item_index : queues.rt_shadow_casters) {
         const ::psynder::scene::SceneRenderItem& item = queues.item(item_index);
         if (item.geometry != ::psynder::scene::GeometryKind::Mesh)
             continue;  // analytic geometry not traced here (matches the RT path)
