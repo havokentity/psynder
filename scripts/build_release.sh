@@ -12,6 +12,8 @@ TARGET=${PSYNDER_TARGET:-psynder_arcade}
 cd "$ROOT_DIR"
 
 if [[ "${PSYNDER_SKIP_WEB:-0}" != "1" ]]; then
+    echo "[build-release] installing web editor deps from lockfile (npm ci)"
+    npm --prefix engine/editor/web ci
     echo "[build-release] rebuilding web editor bundle"
     npm --prefix engine/editor/web run build
 else

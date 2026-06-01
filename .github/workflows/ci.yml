@@ -68,6 +68,31 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
 
+      # clang-tidy gate — enforces the .clang-tidy WarningsAsErrors set
+      # (including the DOTS perf checks: performance-unnecessary-value-param,
+      # performance-move-const-arg, performance-noexcept-move-constructor, …)
+      # on the C++ sources THIS PR touches. Reuses the just-configured build
+      # tree for compile_commands.json. Scoped strictly to changed files via
+      # the PR base SHA so pre-existing debt is grandfathered and the gate can
+      # never go red on legacy code; a full-tree sweep is deferred until the
+      # backlog is cleared. linux-release only (one canonical compile DB).
+      - name: clang-tidy (changed files, PR only)
+        if: matrix.preset == 'linux-release' && github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y clang-tidy-17
+          sudo ln -sf "$(which clang-tidy-17)" /usr/local/bin/clang-tidy
+          base="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags --depth=100 origin "$base" || true
+          files="$(git diff --name-only --diff-filter=ACM "$base" HEAD \
+                    | grep -E '^(engine|tools|samples)/.*\.cpp$' \
+                    | grep -v '/third_party/' || true)"
+          if [ -z "$files" ]; then
+            echo "No changed C++ sources to lint."; exit 0
+          fi
+          echo "Linting changed sources:"; echo "$files"
+          echo "$files" | xargs clang-tidy -p "build/${{ matrix.preset }}"
+
       # The sample + golden tests open a real window. GitHub's Linux runners
       # are headless (no X11/Wayland display), so they need a virtual X server
       # — xvfb-run gives one and the engine's X11 fallback path renders into
@@ -83,6 +108,24 @@ jobs:
       - name: Test (Mac / Windows)
         if: runner.os != 'Linux'
         run: ctest --preset ${{ matrix.preset }}
+
+      # Benchmark regression gate (DESIGN.md: fail PRs on >2% regressions).
+      # CTest only smoke-runs the bench; this runs the FULL roll-up and, when a
+      # committed baseline exists, fails the build if any metric regresses past
+      # the 2% budget (the runner returns success — "not gating" — on a missing
+      # or empty baseline, so the step is dormant-safe until one is committed).
+      #
+      # IMPORTANT: a baseline must be captured ON THIS RUNNER and committed to
+      # tests/bench/baseline-linux-release.json — hosted-runner perf is noisy,
+      # so a baseline measured on another machine WILL false-positive. Until
+      # that is decided, the full bench still runs here as a crash/smoke gate.
+      - name: Benchmark regression gate
+        if: matrix.preset == 'linux-release'
+        run: |
+          build/${{ matrix.preset }}/bin/psynder_bench \
+            --json-out=bench-${{ matrix.preset }}.json \
+            --baseline=tests/bench/baseline-${{ matrix.preset }}.json \
+            --regression-pct=2
 
       # Collect the shippable binaries (samples + lm_* tools) so every push
       # to main / every PR has downloadable artifacts for ~14 days. Release
@@ -124,4 +167,7 @@ jobs:
             -not -path '*/third_party/*' \
             -print0 | xargs -0 clang-format --dry-run --Werror
 
-      # clang-tidy gating is opt-in until the codebase is large enough to be worth it
+      # clang-tidy now GATES in the build job (linux-release): it runs on the
+      # files each PR changes, enforcing the .clang-tidy WarningsAsErrors set on
+      # new code. A full-tree sweep stays deferred until the legacy backlog is
+      # cleared — flip it on here once the tree is clean against the check set.

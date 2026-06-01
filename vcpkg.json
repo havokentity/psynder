@@ -3,6 +3,7 @@
   "version-string": "0.1.0",
   "description": "Pure-CPU game engine with software rasterizer and software raytracer",
   "license": "MIT",
+  "builtin-baseline": "f9ffbaa46ad8e284b2b74919f7e0ba259564d424",
   "dependencies": [
     "fmt",
     "zstd",

@@ -63,6 +63,16 @@ ComponentId component_id() {
     struct Name
 
 // ─── EcsRegistry ───────────────────────────────────────────────────────────────
+//
+// SINGLE-WORLD BY DESIGN. Despite the instance-style surface, every operation
+// routes to one process-global `detail::EcsRegistryImpl` (see EcsRegistry.cpp).
+// Constructing multiple `EcsRegistry`/`Scene` objects does NOT give you isolated
+// worlds — they all alias the same archetype/chunk storage. This matches actual
+// usage: editor-preview and play modes share one world, rollback/prediction is
+// done at the component/event layer, and unit tests reset global state between
+// cases via `EcsRegistryImpl::Get().shutdown()`. If true multi-world isolation
+// is ever needed (concurrent preview+play, netcode rollback worlds), this façade
+// must grow an owned `EcsRegistryImpl*` passed at construction — today it cannot.
 class EcsRegistry {
    public:
     static EcsRegistry& Get();

@@ -9,7 +9,7 @@ There is **zero GPU code** in the engine runtime. The platform layer hands us a 
 - **Language:** C++23
 - **Targets:** Windows (x86-64), Linux (x86-64), macOS (Apple Silicon arm64)
 - **License:** MIT
-- **Status:** **v1.0.0** — DESIGN.md M0–M8 all covered. All 7 sample binaries smoke-pass on Mac. 632 Catch2 unit tests + golden + bench gates green. [Quick start](docs/01-getting-started.md). See [CHANGELOG](CHANGELOG.md) for the per-wave story.
+- **Status:** **v0.1.0 — pre-release, autonomous build in progress.** DESIGN.md M0–M8 covered; the engine is actively extended wave-by-wave. All 7 sample binaries smoke-pass on Mac; the full Catch2 + golden + bench suite is green (1000+ cases, goldens bit-identical). The live ledger [`docs/AUTONOMOUS_STATUS.md`](docs/AUTONOMOUS_STATUS.md) is the authoritative source for the current wave and exact test counts. [Quick start](docs/01-getting-started.md). See [CHANGELOG](CHANGELOG.md) for the per-wave story.
 
 ## Design pillars
 

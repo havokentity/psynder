@@ -39,8 +39,8 @@ if(PSYNDER_VENDOR_RMLUI)
         message(STATUS "[deps] FreeType: fetching via FetchContent")
         FetchContent_Declare(freetype
             GIT_REPOSITORY https://github.com/freetype/freetype.git
-            GIT_TAG        VER-2-13-3
-            GIT_SHALLOW    TRUE
+            GIT_TAG        42608f77f20749dd6ddc9e0536788eaad70ea4b5  # tag VER-2-13-3 (immutable SHA pin)
+            GIT_SHALLOW    FALSE
         )
         set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
         set(FT_DISABLE_BZIP2    ON CACHE BOOL "" FORCE)
@@ -54,8 +54,8 @@ if(PSYNDER_VENDOR_RMLUI)
     message(STATUS "[deps] RmlUi: fetching via FetchContent")
     FetchContent_Declare(rmlui
         GIT_REPOSITORY https://github.com/mikke89/RmlUi.git
-        GIT_TAG        6.2
-        GIT_SHALLOW    TRUE
+        GIT_TAG        2230d1a6e8e0848ed87a5761e2a5160b2a175ba4  # tag 6.2 (immutable SHA pin)
+        GIT_SHALLOW    FALSE
     )
     set(BUILD_SHARED_LIBS_SAVED ${BUILD_SHARED_LIBS})
     set(BUILD_SHARED_LIBS         OFF CACHE BOOL "" FORCE)
