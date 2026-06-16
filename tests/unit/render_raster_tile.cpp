@@ -38,7 +38,7 @@ struct Image {
 };
 
 void render_triangle(Image& img, u32 tile_size) {
-    console::Console::Get().RegisterCVar("r_tile_size", "64", "", 0);
+    console::Console::Get().RegisterCVar("r_tile_size", "64", "", console::CVarFlags::None);
     console::Console::Get().SetCVarOverride("r_tile_size", std::to_string(tile_size));
 
     auto mesh = test_mesh::colored_triangle();
@@ -124,7 +124,7 @@ TEST_CASE("tile size is invariant: 32 / 64 / 128 produce identical output",
 
 TEST_CASE("rasterizer supports multiplicative decal draws for projected shadows",
           "[raster][shadow]") {
-    console::Console::Get().RegisterCVar("r_tile_size", "64", "", 0);
+    console::Console::Get().RegisterCVar("r_tile_size", "64", "", console::CVarFlags::None);
     console::Console::Get().SetCVarOverride("r_tile_size", "64");
 
     Image base(128, 128);

@@ -41,4 +41,8 @@ bool collide_pair(const Body& a, const Body& b, Contact& out) noexcept {
     return kernels::kernel_collide_pair(a, b, out);
 }
 
+bool collide_pair_spec(const Body& a, const Body& b, f32 dt, f32 margin, Contact& out) noexcept {
+    return kernels::kernel_collide_pair_spec(a, b, dt, margin, out);
+}
+
 }  // namespace psynder::physics::detail

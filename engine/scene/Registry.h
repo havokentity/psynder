@@ -3,7 +3,7 @@
 // type registered via PSYNDER_COMPONENT(...). Lane 06 internal.
 //
 // Concurrency: registration happens at static init (single-threaded by
-// definition) and once again from World::add when a new type appears at
+// definition) and once again from EcsRegistry::add when a new type appears at
 // runtime. Lookups are read-only after registration. A single mutex
 // protects insertion.
 
@@ -15,8 +15,8 @@
 #include <vector>
 
 namespace psynder::scene {
-// `ComponentId` is also defined in the public `World.h`. We mirror the
-// typedef here to break the include cycle (`World.h` → `World_Internal.h`
+// `ComponentId` is also defined in the public `EcsRegistry.h`. We mirror the
+// typedef here to break the include cycle (`EcsRegistry.h` → `EcsRegistry_Internal.h`
 // → `Registry.h`). The C++ rules permit identical typedef redeclarations.
 using ComponentId = u32;
 }  // namespace psynder::scene

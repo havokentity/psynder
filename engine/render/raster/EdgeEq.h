@@ -25,6 +25,12 @@ struct ScreenVertex {
     f32 g_over_w;
     f32 b_over_w;
     f32 a_over_w;
+    f32 wx_over_w;
+    f32 wy_over_w;
+    f32 wz_over_w;
+    f32 nx_over_w;
+    f32 ny_over_w;
+    f32 nz_over_w;
 };
 
 // Per-triangle setup data. Computed once per triangle in the binner; the
@@ -81,5 +87,28 @@ bool setup_triangle(const math::Vec4& cp0,
                     u32 viewport_h,
                     TriSetup& out,
                     u8 cull_mode = 0) noexcept;  // 0 Back, 1 Front, 2 None
+
+// Extended setup used by Raster.cpp once it has transformed vertex world
+// attributes. Kept separate so older low-level tests can continue calling the
+// compact setup_triangle() wrapper above.
+bool setup_triangle_lit(const math::Vec4& cp0,
+                        const math::Vec4& cp1,
+                        const math::Vec4& cp2,
+                        math::Vec3 world0,
+                        math::Vec3 world1,
+                        math::Vec3 world2,
+                        math::Vec3 normal0,
+                        math::Vec3 normal1,
+                        math::Vec3 normal2,
+                        math::Vec2 uv0,
+                        math::Vec2 uv1,
+                        math::Vec2 uv2,
+                        u32 col0,
+                        u32 col1,
+                        u32 col2,
+                        u32 viewport_w,
+                        u32 viewport_h,
+                        TriSetup& out,
+                        u8 cull_mode = 0) noexcept;  // 0 Back, 1 Front, 2 None
 
 }  // namespace psynder::render::raster

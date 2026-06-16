@@ -38,6 +38,10 @@ struct TlasState {
     std::vector<Bvh8Node> wide_nodes;
     f32 as_built_cost = 0.0f;
     f32 refit_cost = 0.0f;
+    u64 telemetry_total_ns = 0;
+    u64 telemetry_build_count = 0;
+    u64 telemetry_refit_count = 0;
+    u64 telemetry_transform_update_count = 0;
 };
 
 // Defined in Bvh.cpp. Looks up (or lazily creates) state keyed by `this`.
@@ -45,6 +49,12 @@ Bvh8State& state_of(Bvh8& b) noexcept;
 const Bvh8State& state_of(const Bvh8& b) noexcept;
 TlasState& state_of(Tlas& t) noexcept;
 const TlasState& state_of(const Tlas& t) noexcept;
+
+// Defined in Bvh.cpp. Drops the address-keyed state slot for an object so a
+// later object reusing the same address does not inherit stale state.
+// Called from Bvh8/Tlas ctor (clear stale) and dtor (release).
+void erase_state(const Bvh8& b) noexcept;
+void erase_state(const Tlas& t) noexcept;
 
 // Heuristic: refit_cost > 1.3× as_built_cost → kick async rebuild (§9.4).
 bool bvh_should_async_rebuild(const Bvh8State& s) noexcept;

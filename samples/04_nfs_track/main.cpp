@@ -43,7 +43,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/raster/Raster.h"
 #include "ui/rml/DataBind.h"
 #include "ui/rml/Rml.h"
@@ -591,25 +591,13 @@ inline math::Mat4 yaw_from_forward(math::Vec3 fwd) noexcept {
 
 }  // namespace
 
-platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 04 (NFS track lap)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = 640;
-    desc.render_height = 360;
-    desc.scale_mode = platform::ScaleMode::Integer;
-    return desc;
-}
-
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
-    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     // ─── Track build ────────────────────────────────────────────────────
     const auto track_segs = build_oval_track();
@@ -863,8 +851,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         view.target = fb;
         view.view = math::look_at_rh(eye, tgt, v3(0.0f, 1.0f, 0.0f));
         view.projection = math::perspective_rh(60.0f * math::kDegToRad,
-                                               static_cast<f32>(desc.render_width) /
-                                                   static_cast<f32>(desc.render_height),
+                                               static_cast<f32>(fb.width) / static_cast<f32>(fb.height),
                                                0.2f,
                                                400.0f);
         view.tile_w = 64;
@@ -947,13 +934,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             psynder::ui::rml::render(fb);
         }
 
-        // Engine overlay suite: `~` drop-down console + F1 debug HUD + F2
-        // Play/Edit badge. The car is PID auto-driven, so no movement gate.
-        if (auto* in = platform::input()) {
-            editor::frame_overlays(*in, fb);
-        }
-
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         // In smoke mode, log the chassis position each frame so CI (and the
         // suspension fix verification) can confirm the car rests on the track
@@ -989,18 +971,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
 struct NfsTrackSample {
     static constexpr std::string_view log_name() noexcept { return "sample_04"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 04"; }
-
-    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
-        return make_window_desc(args);
-    }
-
-    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
-        return {.depth_buffer = true};
-    }
+    static constexpr const char* display_name = "Psynder sample 04 (NFS track lap)";
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 

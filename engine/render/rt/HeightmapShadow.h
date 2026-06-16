@@ -34,6 +34,12 @@ struct Heightmap {
     f32 cell_size = 1.0f;
     f32 y_min = 0.0f;  // global min Y (for slab clip)
     f32 y_max = 0.0f;  // global max Y (for slab clip)
+
+    // True when this describes a marchable field. Mirrors the guard inside
+    // trace_heightmap_shadow so callers can cheaply gate the terrain path.
+    [[nodiscard]] PSY_FORCEINLINE bool valid() const noexcept {
+        return y_data != nullptr && width >= 2 && height >= 2 && cell_size > 0.0f;
+    }
 };
 
 // Raymarch the heightmap along `ray` and return true if the ray is

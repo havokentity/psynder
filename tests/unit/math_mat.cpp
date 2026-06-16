@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <array>
 #include <cmath>
 
 using namespace psynder;
@@ -112,6 +113,39 @@ TEST_CASE("Mat4 transform preserves homogeneous vectors", "[math][mat4]") {
     REQUIRE(approx_eq(d.x, 1.0f));
     REQUIRE(approx_eq(d.y, 0.0f));
     REQUIRE(approx_eq(d.z, 0.0f));
+}
+
+TEST_CASE("Mat4 affine SIMD multiply matches scalar multiply", "[math][mat4][simd]") {
+    const Mat4 parent = sample_affine_mat4();
+    const Mat4 local = mul(translate({-4.0f, 3.5f, 2.0f}),
+                           mul(rotate_quat(quat_normalize(
+                                   quat_from_axis_angle({-0.2f, 0.4f, 0.9f}, 0.7f))),
+                               scale({0.5f, 2.0f, 1.25f})));
+
+    REQUIRE(mat4_approx_eq(mul_affine(parent, local), mul(parent, local), 1e-5f));
+}
+
+TEST_CASE("Mat4 affine batch multiply matches scalar multiply", "[math][mat4][batch][simd]") {
+    std::array<Mat4, 5> parents{};
+    std::array<Mat4, 5> locals{};
+    std::array<Mat4, 5> output{};
+
+    for (usize i = 0; i < parents.size(); ++i) {
+        const f32 f = static_cast<f32>(i) + 1.0f;
+        parents[i] = mul(translate({f, -0.5f * f, 0.25f * f}),
+                         mul(rotate_quat(quat_normalize(
+                                 quat_from_axis_angle({0.2f * f, 0.3f, 0.7f}, 0.2f * f))),
+                             scale({1.0f + 0.1f * f, 0.7f + 0.05f * f, 1.3f})));
+        locals[i] = mul(translate({-0.25f * f, 0.75f, 2.0f - f}),
+                        mul(rotate_quat(quat_normalize(
+                                quat_from_axis_angle({0.6f, -0.1f * f, 0.2f}, 0.3f * f))),
+                            scale({0.8f, 1.2f + 0.05f * f, 0.9f})));
+    }
+
+    mul_affine_batch(parents.data(), locals.data(), output.data(), output.size());
+
+    for (usize i = 0; i < output.size(); ++i)
+        REQUIRE(mat4_approx_eq(output[i], mul(parents[i], locals[i]), 1e-5f));
 }
 
 TEST_CASE("Mat3 identity is identity", "[math][mat3]") {

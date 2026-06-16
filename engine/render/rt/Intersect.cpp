@@ -47,9 +47,16 @@ namespace psynder::render::rt::detail {
 
 namespace {
 
-// Möller–Trumbore single-ray vs triangle. Writes hit_t / normal on success.
+// Möller–Trumbore single-ray vs triangle, t-ONLY variant. Returns true and
+// writes hit_t on a valid hit but does NOT compute the surface normal. The
+// closest-hit traversal calls this per candidate and then computes the normal
+// EXACTLY ONCE for the winning triangle (see compute_triangle_normal), instead
+// of normalize()-ing every candidate normal only to overwrite it on the next
+// closer hit. The arithmetic that decides the hit (det/u/v/t) is byte-for-byte
+// identical to ray_triangle_mt; only the wasted intermediate normalize is
+// elided, so the final Hit is bit-identical.
 PSY_FORCEINLINE
-bool ray_triangle_mt(const Ray& r, const Triangle& tri, f32& hit_t, math::Vec3& hit_n) noexcept {
+bool ray_triangle_mt_t(const Ray& r, const Triangle& tri, f32& hit_t) noexcept {
     const math::Vec3 e1 = math::sub(tri.v1, tri.v0);
     const math::Vec3 e2 = math::sub(tri.v2, tri.v0);
     const math::Vec3 pv = math::cross(r.direction, e2);
@@ -74,7 +81,25 @@ bool ray_triangle_mt(const Ray& r, const Triangle& tri, f32& hit_t, math::Vec3& 
         return false;
 
     hit_t = t;
-    hit_n = math::normalize(math::cross(e1, e2));
+    return true;
+}
+
+// The geometric normal used by ray_triangle_mt — factored out so the t-only
+// traversal can compute it once for the winning primitive. Bit-identical to the
+// normalize(cross(e1, e2)) inlined in ray_triangle_mt below.
+PSY_FORCEINLINE
+math::Vec3 compute_triangle_normal(const Triangle& tri) noexcept {
+    const math::Vec3 e1 = math::sub(tri.v1, tri.v0);
+    const math::Vec3 e2 = math::sub(tri.v2, tri.v0);
+    return math::normalize(math::cross(e1, e2));
+}
+
+// Möller–Trumbore single-ray vs triangle. Writes hit_t / normal on success.
+PSY_FORCEINLINE
+bool ray_triangle_mt(const Ray& r, const Triangle& tri, f32& hit_t, math::Vec3& hit_n) noexcept {
+    if (!ray_triangle_mt_t(r, tri, hit_t))
+        return false;
+    hit_n = compute_triangle_normal(tri);
     return true;
 }
 
@@ -330,13 +355,11 @@ LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
                     if (pid >= s.triangles.size())
                         continue;
                     f32 hit_t;
-                    math::Vec3 hit_n;
-                    if (ray_triangle_mt(ray, s.triangles[pid], hit_t, hit_n)) {
+                    if (ray_triangle_mt_t(ray, s.triangles[pid], hit_t)) {
                         if (hit_t < ray.t_max) {
                             ray.t_max = hit_t;
                             out.hit = true;
                             out.t = hit_t;
-                            out.normal = hit_n;
                             out.primitive = pid;
                         }
                     }
@@ -354,6 +377,11 @@ LocalHit traverse_scalar(const Bvh8State& s, const Ray& ray_in) noexcept {
             }
         }
     }
+
+    // Compute the surface normal ONCE for the winning primitive (instead of per
+    // candidate hit inside the loop). Bit-identical to ray_triangle_mt's normal.
+    if (out.hit)
+        out.normal = compute_triangle_normal(s.triangles[out.primitive]);
 
     return out;
 }

@@ -6,7 +6,59 @@
 
 #include <cmath>
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
+
 namespace psynder::math {
+namespace {
+
+PSY_FORCEINLINE void mul_affine_column(const Mat4& a,
+                                       const f32* b_col,
+                                       f32* out_col,
+                                       bool translation) noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const float32x4_t c0 = vld1q_f32(a.m + 0);
+    const float32x4_t c1 = vld1q_f32(a.m + 4);
+    const float32x4_t c2 = vld1q_f32(a.m + 8);
+    const float32x4_t c3 = vld1q_f32(a.m + 12);
+    float32x4_t r = vmulq_n_f32(c0, b_col[0]);
+    r = vfmaq_n_f32(r, c1, b_col[1]);
+    r = vfmaq_n_f32(r, c2, b_col[2]);
+    if (translation)
+        r = vaddq_f32(r, c3);
+    vst1q_f32(out_col, r);
+#elif defined(__x86_64__) || defined(_M_X64)
+    const __m128 c0 = _mm_loadu_ps(a.m + 0);
+    const __m128 c1 = _mm_loadu_ps(a.m + 4);
+    const __m128 c2 = _mm_loadu_ps(a.m + 8);
+    const __m128 c3 = _mm_loadu_ps(a.m + 12);
+    __m128 r = _mm_mul_ps(c0, _mm_set1_ps(b_col[0]));
+#if defined(__FMA__)
+    r = _mm_fmadd_ps(c1, _mm_set1_ps(b_col[1]), r);
+    r = _mm_fmadd_ps(c2, _mm_set1_ps(b_col[2]), r);
+#else
+    r = _mm_add_ps(r, _mm_mul_ps(c1, _mm_set1_ps(b_col[1])));
+    r = _mm_add_ps(r, _mm_mul_ps(c2, _mm_set1_ps(b_col[2])));
+#endif
+    if (translation)
+        r = _mm_add_ps(r, c3);
+    _mm_storeu_ps(out_col, r);
+#else
+    out_col[0] = a.m[0] * b_col[0] + a.m[4] * b_col[1] + a.m[8] * b_col[2] +
+                 (translation ? a.m[12] : 0.0f);
+    out_col[1] = a.m[1] * b_col[0] + a.m[5] * b_col[1] + a.m[9] * b_col[2] +
+                 (translation ? a.m[13] : 0.0f);
+    out_col[2] = a.m[2] * b_col[0] + a.m[6] * b_col[1] + a.m[10] * b_col[2] +
+                 (translation ? a.m[14] : 0.0f);
+    out_col[3] = translation ? 1.0f : 0.0f;
+#endif
+}
+
+}  // namespace
 
 Mat4 identity4() {
     return {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}};
@@ -80,24 +132,56 @@ Mat4 rotate_quat(Quat q) {
 
 Mat4 mul(const Mat4& a, const Mat4& b) {
     Mat4 r{};
+
+    const f32 a00 = a.m[0], a01 = a.m[4], a02 = a.m[8], a03 = a.m[12];
+    const f32 a10 = a.m[1], a11 = a.m[5], a12 = a.m[9], a13 = a.m[13];
+    const f32 a20 = a.m[2], a21 = a.m[6], a22 = a.m[10], a23 = a.m[14];
+    const f32 a30 = a.m[3], a31 = a.m[7], a32 = a.m[11], a33 = a.m[15];
+
     for (int c = 0; c < 4; ++c) {
-        for (int rrow = 0; rrow < 4; ++rrow) {
-            f32 s = 0;
-            for (int k = 0; k < 4; ++k) {
-                s += a.m[k * 4 + rrow] * b.m[c * 4 + k];
-            }
-            r.m[c * 4 + rrow] = s;
-        }
+        const f32 b0 = b.m[c * 4 + 0];
+        const f32 b1 = b.m[c * 4 + 1];
+        const f32 b2 = b.m[c * 4 + 2];
+        const f32 b3 = b.m[c * 4 + 3];
+
+        r.m[c * 4 + 0] = a00 * b0 + a01 * b1 + a02 * b2 + a03 * b3;
+        r.m[c * 4 + 1] = a10 * b0 + a11 * b1 + a12 * b2 + a13 * b3;
+        r.m[c * 4 + 2] = a20 * b0 + a21 * b1 + a22 * b2 + a23 * b3;
+        r.m[c * 4 + 3] = a30 * b0 + a31 * b1 + a32 * b2 + a33 * b3;
     }
     return r;
 }
 
+Mat4 mul_affine(const Mat4& a, const Mat4& b) noexcept {
+    Mat4 r{};
+    mul_affine_column(a, b.m + 0, r.m + 0, false);
+    mul_affine_column(a, b.m + 4, r.m + 4, false);
+    mul_affine_column(a, b.m + 8, r.m + 8, false);
+    mul_affine_column(a, b.m + 12, r.m + 12, true);
+    r.m[3] = 0.0f;
+    r.m[7] = 0.0f;
+    r.m[11] = 0.0f;
+    r.m[15] = 1.0f;
+    return r;
+}
+
+void mul_affine_batch(const Mat4* parents, const Mat4* locals, Mat4* out, usize count) noexcept {
+    if (!parents || !locals || !out)
+        return;
+    for (usize i = 0; i < count; ++i)
+        out[i] = mul_affine(parents[i], locals[i]);
+}
+
 Vec4 mul(const Mat4& m, Vec4 v) {
+    const f32 x = v.x;
+    const f32 y = v.y;
+    const f32 z = v.z;
+    const f32 w = v.w;
     return {
-        m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z + m.m[12] * v.w,
-        m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z + m.m[13] * v.w,
-        m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z + m.m[14] * v.w,
-        m.m[3] * v.x + m.m[7] * v.y + m.m[11] * v.z + m.m[15] * v.w,
+        m.m[0] * x + m.m[4] * y + m.m[8] * z + m.m[12] * w,
+        m.m[1] * x + m.m[5] * y + m.m[9] * z + m.m[13] * w,
+        m.m[2] * x + m.m[6] * y + m.m[10] * z + m.m[14] * w,
+        m.m[3] * x + m.m[7] * y + m.m[11] * z + m.m[15] * w,
     };
 }
 

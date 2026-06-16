@@ -70,6 +70,7 @@ class Window {
         (void)width;
         (void)height;
     }
+    virtual void raise_and_focus() {}
 };
 
 Window* create_window(const WindowDesc& desc);
@@ -84,6 +85,9 @@ void request_fullscreen(bool on);
 void toggle_fullscreen();
 bool is_fullscreen();
 void request_window_size(u32 width, u32 height);
+void request_window_focus();
+u32 active_window_width();
+u32 active_window_height();
 
 // When true, the platform suppresses its default Escape-closes-the-window
 // behaviour because something is capturing text (the software console is
@@ -102,6 +106,8 @@ enum class KeyCode : u16 {
     Tab,
     Backspace,
     Delete,  // forward delete (Del / fn+Delete) — removes the char AT the caret
+    Home,
+    End,
     Left,
     Right,
     Up,
@@ -151,6 +157,8 @@ enum class KeyCode : u16 {
     RightCtrl,
     LeftAlt,
     RightAlt,
+    LeftSuper,
+    RightSuper,
     Count,
 };
 
@@ -160,6 +168,8 @@ struct MouseState {
     f32 wheel = 0;
     bool left = false, right = false, middle = false;
 };
+
+MouseState mouse_to_framebuffer_space(const MouseState& mouse, u32 fb_w, u32 fb_h);
 
 class Input {
    public:
@@ -183,6 +193,13 @@ class Input {
 
 Input* input();
 
+// ─── Clipboard ─────────────────────────────────────────────────────────────
+// Plain text clipboard helpers for in-engine text widgets. Backends use the OS
+// clipboard when available; headless/unsupported builds fall back to a process
+// local buffer so unit tests can still exercise copy/paste behavior.
+std::string clipboard_text();
+void set_clipboard_text(std::string_view text);
+
 // ─── Timing ──────────────────────────────────────────────────────────────
 struct Clock {
     static u64 ticks_now();
@@ -195,5 +212,6 @@ std::string executable_path();
 std::string user_config_dir();
 std::string current_working_directory();
 bool file_exists(std::string_view path);
+bool open_external_url(std::string_view url);
 
 }  // namespace psynder::platform

@@ -20,6 +20,9 @@
 #include "Bvh_impl.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -36,6 +39,12 @@ using detail::kSahBuckets;
 using detail::kTraversalCost;
 
 namespace {
+
+u64 telemetry_now_ns() noexcept {
+    using Clock = std::chrono::steady_clock;
+    return static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
+}
 
 // Compute primitive AABB + centroid for the source triangles.
 struct PrimRef {
@@ -296,13 +305,22 @@ struct ChildEntry {
     bool is_leaf;
 };
 
-void gather_children(const std::vector<BinaryNode>& bin,
-                     u32 bin_id,
-                     u32 depth,
-                     std::vector<ChildEntry>& out) {
+struct ChildList {
+    std::array<ChildEntry, 8> items{};
+    u32 count = 0;
+
+    bool push(ChildEntry entry) noexcept {
+        if (count >= static_cast<u32>(items.size()))
+            return false;
+        items[count++] = entry;
+        return true;
+    }
+};
+
+void gather_children(const std::vector<BinaryNode>& bin, u32 bin_id, u32 depth, ChildList& out) {
     const BinaryNode& n = bin[bin_id];
-    if (n.is_leaf() || depth == 0) {
-        out.push_back({bin_id, n.is_leaf()});
+    if (n.is_leaf() || depth == 0 || out.count >= static_cast<u32>(out.items.size())) {
+        out.push({bin_id, n.is_leaf()});
         return;
     }
     gather_children(bin, n.left, depth - 1, out);
@@ -343,22 +361,19 @@ u32 build_wide(const std::vector<BinaryNode>& bin, u32 bin_id, std::vector<Bvh8N
         return wide_id;
     }
 
-    std::vector<ChildEntry> kids;
-    kids.reserve(8);
+    ChildList kids;
     gather_children(bin, bin_id, 3, kids);
-    if (kids.size() > 8)
-        kids.resize(8);
 
     u8 mask = 0;
-    for (u32 i = 0; i < static_cast<u32>(kids.size()); ++i) {
-        const BinaryNode& cn = bin[kids[i].bin_id];
+    for (u32 i = 0; i < kids.count; ++i) {
+        const BinaryNode& cn = bin[kids.items[i].bin_id];
         w.min_x[i] = cn.bounds.min.x;
         w.min_y[i] = cn.bounds.min.y;
         w.min_z[i] = cn.bounds.min.z;
         w.max_x[i] = cn.bounds.max.x;
         w.max_y[i] = cn.bounds.max.y;
         w.max_z[i] = cn.bounds.max.z;
-        if (kids[i].is_leaf) {
+        if (kids.items[i].is_leaf) {
             w.child_index[i] = cn.first_prim;
             w.child_count[i] = cn.prim_count;
             w.child_kind[i] = 1;
@@ -373,13 +388,13 @@ u32 build_wide(const std::vector<BinaryNode>& bin, u32 bin_id, std::vector<Bvh8N
     // Recurse on inner children. We must build *first*, then patch indices,
     // because vector reallocation during recursion would invalidate refs.
     u32 child_wide_ids[8] = {0};
-    for (u32 i = 0; i < static_cast<u32>(kids.size()); ++i) {
-        if (!kids[i].is_leaf) {
-            child_wide_ids[i] = build_wide(bin, kids[i].bin_id, wide_nodes);
+    for (u32 i = 0; i < kids.count; ++i) {
+        if (!kids.items[i].is_leaf) {
+            child_wide_ids[i] = build_wide(bin, kids.items[i].bin_id, wide_nodes);
         }
     }
-    for (u32 i = 0; i < static_cast<u32>(kids.size()); ++i) {
-        if (!kids[i].is_leaf) {
+    for (u32 i = 0; i < kids.count; ++i) {
+        if (!kids.items[i].is_leaf) {
             wide_nodes[wide_id].child_index[i] = child_wide_ids[i];
         }
     }
@@ -441,6 +456,7 @@ void rebuild_wide_from_binary(const std::vector<BinaryNode>& bin, std::vector<Bv
     wide_nodes.clear();
     if (bin.empty())
         return;
+    wide_nodes.reserve(bin.size());
     build_wide(bin, 0, wide_nodes);
 }
 
@@ -463,8 +479,23 @@ namespace detail {
 // covers create/erase; the state structs themselves are not synchronized
 // (callers must serialize build/refit against intersect, which DESIGN.md
 // §9.4 already requires — refit runs in its own job).
+//
+// Because the key is `this`, an entry MUST be torn down when the owning
+// object is destroyed: otherwise a later object allocated at the SAME
+// address inherits the dead object's stale state (telemetry counters,
+// cached trees). The owning public types (Bvh8/Tlas) declare an explicit
+// out-of-line ctor/dtor below: the ctor erases any stale same-address entry
+// so a reused address always starts fresh, and the dtor erases the entry so
+// the slot is released. `erase` bumps a global generation so the per-thread
+// `find` caches (which hold raw `T*`) cannot hand back a freed pointer when
+// an address is reused.
 
 namespace {
+
+// Bumped on every registry erase. The per-thread find caches store the
+// generation they were filled at and discard themselves if it moved, so a
+// reused `this` address can never resolve to a freed state pointer.
+std::atomic<u64> g_registry_generation{0};
 
 template <typename T>
 struct StateRegistry {
@@ -476,11 +507,15 @@ struct StateRegistry {
     std::unordered_map<const void*, T*> map;
     std::mutex mu;
 
-    ~StateRegistry() {
-        for (auto& kv : map)
-            delete kv.second;
-        map.clear();
-    }
+    // No destructor: the two registries are intentionally leaked at process
+    // exit (see bvh_registry()/tlas_registry() below). Owning Bvh8/Tlas
+    // objects can outlive any registry static and call erase() during their
+    // own destruction at __cxa_atexit time; if the registry (and its mutex)
+    // had already been torn down, that erase would lock a destroyed mutex and
+    // libc++ would throw std::system_error from a noexcept dtor -> terminate
+    // (SIGABRT) -- the static-destruction-order fiasco. Never destroying the
+    // registry makes a late erase always safe. The single map is reclaimed by
+    // the OS at exit, so the leak is bounded and harmless.
 
     T& get_or_create(const void* key) {
         std::lock_guard<std::mutex> lk(mu);
@@ -492,16 +527,38 @@ struct StateRegistry {
         return *s;
     }
 
+    // Drop the entry for `key` (called from the owning object's ctor/dtor).
+    // Bumps the global generation so stale per-thread find caches self-evict.
+    void erase(const void* key) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = map.find(key);
+        if (it == map.end())
+            return;
+        delete it->second;
+        map.erase(it);
+        g_registry_generation.fetch_add(1u, std::memory_order_release);
+    }
+
     T* find(const void* key) const {
         // Hot intersect paths repeatedly ask for the same few TLAS/BLAS
         // states from each worker. Keep a tiny per-thread direct cache so
         // parallel traversal does not serialize on this mutex after the
-        // first lookup on a thread.
+        // first lookup on a thread. The cache is discarded whenever a global
+        // erase has happened since it was filled, so a recycled address can
+        // never resolve to a freed state pointer.
         static thread_local CacheEntry cache[4];
         static thread_local u32 next_slot = 0;
-        for (const CacheEntry& e : cache) {
-            if (e.key == key)
-                return e.value;
+        static thread_local u64 cache_generation = 0;
+        const u64 generation = g_registry_generation.load(std::memory_order_acquire);
+        if (cache_generation != generation) {
+            for (CacheEntry& e : cache)
+                e = CacheEntry{};
+            cache_generation = generation;
+        } else {
+            for (const CacheEntry& e : cache) {
+                if (e.key == key)
+                    return e.value;
+            }
         }
 
         auto& self = const_cast<StateRegistry<T>&>(*this);
@@ -516,13 +573,18 @@ struct StateRegistry {
     }
 };
 
+// Leak-on-exit singletons: the registries are heap-allocated and never
+// freed, so a Bvh8/Tlas destroyed during process teardown (after these
+// function-local statics would otherwise have run their destructors) can
+// still erase its slot without touching a torn-down mutex. The only static
+// here is a raw pointer (trivially destructible -> no atexit hook).
 StateRegistry<Bvh8State>& bvh_registry() {
-    static StateRegistry<Bvh8State> r;
-    return r;
+    static StateRegistry<Bvh8State>* const r = new StateRegistry<Bvh8State>();
+    return *r;
 }
 StateRegistry<TlasState>& tlas_registry() {
-    static StateRegistry<TlasState> r;
-    return r;
+    static StateRegistry<TlasState>* const r = new StateRegistry<TlasState>();
+    return *r;
 }
 
 }  // anonymous namespace
@@ -546,6 +608,16 @@ const TlasState& state_of(const Tlas& t) noexcept {
     if (s)
         return *s;
     return tlas_registry().get_or_create(&t);
+}
+
+// Drop the registry slot keyed by an object's address. Called from the
+// owning type's ctor (clear a stale same-address entry -> fresh start) and
+// dtor (release the slot). Idempotent: erasing an absent key is a no-op.
+void erase_state(const Bvh8& b) noexcept {
+    bvh_registry().erase(&b);
+}
+void erase_state(const Tlas& t) noexcept {
+    tlas_registry().erase(&t);
 }
 
 // ─── Affine helpers (translation + rotation + non-uniform scale) ────────
@@ -617,6 +689,17 @@ math::Mat4 affine_inverse(const math::Mat4& m) noexcept {
 
 }  // namespace detail
 
+// Address-keyed lifetime hooks. The ctor erases any state slot left behind
+// by a prior object that lived at this same address (the registry never
+// hands a recycled address stale state); the next state_of() then lazily
+// creates a fresh, zeroed entry. The dtor releases this object's slot.
+Bvh8::Bvh8() noexcept {
+    detail::erase_state(*this);
+}
+Bvh8::~Bvh8() {
+    detail::erase_state(*this);
+}
+
 void Bvh8::build(const Triangle* tris, u32 count) {
     auto& s = detail::state_of(*this);
     s.triangles.assign(tris, tris + count);
@@ -687,7 +770,30 @@ bool Bvh8::occluded(const Ray& ray) const {
 // TLAS — top-level over BLAS instances
 // ───────────────────────────────────────────────────────────────────────
 
+// See Bvh8 ctor/dtor: clear any stale same-address slot on construct, release
+// this object's slot on destruct. This is what keeps the telemetry counters
+// (build/refit/transform-update) of a brand-new Tlas at zero even when the
+// allocator reuses a freed address.
+Tlas::Tlas() noexcept {
+    detail::erase_state(*this);
+}
+Tlas::~Tlas() {
+    detail::erase_state(*this);
+}
+
+void Tlas::reserve(u32 count) {
+    auto& s = detail::state_of(*this);
+    s.instances.reserve(count);
+    s.blas_states.reserve(count);
+    s.world_bounds.reserve(count);
+    s.inv_transform.reserve(count);
+    s.prim_indices.reserve(count);
+    s.binary_nodes.reserve(static_cast<size_t>(count) * 2u);
+    s.wide_nodes.reserve(static_cast<size_t>(count) * 2u);
+}
+
 void Tlas::build(const InstanceDesc* instances, u32 count) {
+    const u64 telemetry_start = telemetry_now_ns();
     auto& s = detail::state_of(*this);
     s.instances.assign(instances, instances + count);
     s.blas_states.resize(count);
@@ -699,6 +805,8 @@ void Tlas::build(const InstanceDesc* instances, u32 count) {
     if (count == 0) {
         s.as_built_cost = 0.0f;
         s.refit_cost = 0.0f;
+        s.telemetry_total_ns += telemetry_now_ns() - telemetry_start;
+        ++s.telemetry_build_count;
         return;
     }
 
@@ -734,9 +842,28 @@ void Tlas::build(const InstanceDesc* instances, u32 count) {
     rebuild_wide_from_binary(s.binary_nodes, s.wide_nodes);
     s.as_built_cost = tree_sah_cost(s.binary_nodes);
     s.refit_cost = s.as_built_cost;
+    s.telemetry_total_ns += telemetry_now_ns() - telemetry_start;
+    ++s.telemetry_build_count;
+}
+
+bool Tlas::update_instance_transform(u32 instance, const math::Mat4& transform) {
+    const u64 telemetry_start = telemetry_now_ns();
+    auto& s = detail::state_of(*this);
+    if (instance >= s.instances.size())
+        return false;
+    s.instances[instance].transform = transform;
+    s.telemetry_total_ns += telemetry_now_ns() - telemetry_start;
+    ++s.telemetry_transform_update_count;
+    return true;
+}
+
+u32 Tlas::instance_count() const noexcept {
+    const auto& s = detail::state_of(*this);
+    return static_cast<u32>(s.instances.size());
 }
 
 void Tlas::refit() {
+    const u64 telemetry_start = telemetry_now_ns();
     auto& s = detail::state_of(*this);
     const u32 count = static_cast<u32>(s.instances.size());
     if (count == 0 || s.binary_nodes.empty())
@@ -781,6 +908,8 @@ void Tlas::refit() {
     refit_node(refit_node, 0);
     rebuild_wide_from_binary(s.binary_nodes, s.wide_nodes);
     s.refit_cost = tree_sah_cost(s.binary_nodes);
+    s.telemetry_total_ns += telemetry_now_ns() - telemetry_start;
+    ++s.telemetry_refit_count;
 }
 
 Hit Tlas::intersect(const Ray& ray) const {

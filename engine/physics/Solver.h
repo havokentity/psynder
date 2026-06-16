@@ -3,21 +3,30 @@
 // (DESIGN.md §10.1). One solver job per island; islands are independent so
 // the job graph parallelism is embarrassing.
 //
-// Sequential-impulse / projected Gauss-Seidel is Erin Catto's GDC 2006 / 2014
-// recipe. Per contact each iteration we:
+// Projected Gauss-Seidel (Erin Catto's GDC 2006 / 2014 recipe). Per contact
+// each velocity iteration we:
 //   1. Compute relative velocity along normal, project a non-negative impulse
 //      that brings the constraint to zero, accumulate into the warm-start
 //      cache, apply the delta to body velocities.
 //   2. Same for two friction directions, clipped to the cone bound by the
 //      accumulated normal impulse * coefficient.
 // 8 velocity iterations + 3 position-correction (split-impulse) iterations.
+//
+// As of ADR-013 (DESIGN.md §16) the per-island solve is GRAPH-COLORED so it can
+// run a colour's disjoint-body contacts in parallel while staying Gauss-Seidel
+// across colours. `solve_island` is the serial colored walk (tests + small
+// islands); `solve_island_colored` takes a per-colour dispatcher (the job
+// system's parallel_for for large islands) and is bit-identical to the serial
+// walk by construction (disjoint bodies => order-free). See SolverColoring.h.
 
 #pragma once
 
 #include "core/Types.h"
 #include "Body.h"
 #include "Narrowphase.h"
+#include "internal/SolverColoring.h"
 
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -58,5 +67,29 @@ void solve_island(const Island& island,
                   std::span<Body> bodies,
                   const SolverParams& params,
                   f32 dt) noexcept;
+
+// Per-colour batch dispatcher type (defined in SolverColoring.h): the colored
+// solver hands it a contact count + a body functor and it invokes the functor
+// over sub-ranges of [0,count). World.cpp binds it to the job system's
+// parallel_for for large islands, or the serial dispatcher for small ones.
+using kernels::ColorBatchDispatch;
+// Pooled per-island scratch for the colored solve (zero per-frame heap).
+using kernels::ColoredIslandScratch;
+
+// ADR-013 colored projected-Gauss-Seidel solve for one island. Builds a
+// deterministic graph colouring (two constraints differ in colour iff they
+// share a dynamic body), then solves colour-by-colour (sequential, Gauss-Seidel
+// across colours) dispatching each colour's disjoint-body batch through
+// `batch`. Bit-identical whether `batch` is serial or parallel_for-backed, and
+// deterministic run-to-run. `scratch` is caller-pooled. See SolverColoring.h
+// and DESIGN.md §16 ADR-013.
+void solve_island_colored(const Island& island,
+                          std::span<Contact> contacts,
+                          std::span<const u32> body_indices,
+                          std::span<Body> bodies,
+                          const SolverParams& params,
+                          f32 dt,
+                          ColoredIslandScratch& scratch,
+                          const ColorBatchDispatch& batch);
 
 }  // namespace psynder::physics::detail

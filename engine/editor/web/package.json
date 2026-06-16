@@ -5,8 +5,11 @@
   "description": "Psynder editor panels — React + TypeScript, Chrome app windows. Lane 20.",
   "type": "module",
   "scripts": {
+    "gen:ipc": "python3 ../ipc/idl/psyidl.py --input ../ipc/protocol.psy --ts-out src/ipc/protocol.gen.ts",
+    "pretypecheck": "npm run gen:ipc",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
+    "prebuild": "npm run gen:ipc",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },

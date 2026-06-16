@@ -42,12 +42,21 @@ struct BspPortalSet {
     std::vector<math::Vec3> vertices;
 };
 
-// 4-plane frustum used for portal clipping. Normals point inward; a point p
-// is inside the frustum iff dot(p, plane.normal) >= plane.d for all planes.
+// Max planes a clipped portal frustum can hold: the carried-over incoming
+// planes plus one inward side plane per portal edge. `clip_to_portal`
+// (PortalClip.cpp) accumulates up to this many, so the arrays below MUST be
+// sized to it — they used to be [6] while the clip cap was 16, which let the
+// clip loop write past the end (stack-buffer-overflow caught by ASan/UBSan).
+inline constexpr u32 kMaxFrustumPlanes = 16;
+
+// Convex frustum used for portal clipping. Normals point inward; a point p is
+// inside iff dot(p, normals[i]) >= d[i] for all `plane_count` planes. Seeded
+// with the camera frustum (≤6 planes); portal clipping adds side planes up to
+// kMaxFrustumPlanes.
 struct PortalFrustum {
-    math::Vec3 normals[6];
-    f32 d[6];
-    u32 plane_count;  // 4 (side planes) or 6 (incl. near/far)
+    math::Vec3 normals[kMaxFrustumPlanes];
+    f32 d[kMaxFrustumPlanes];
+    u32 plane_count;
 };
 
 // Walk leaves visible from `eye` via portal clipping. Each emit() invocation

@@ -13,5 +13,7 @@
 add_library(psynder_samples_common INTERFACE)
 target_include_directories(psynder_samples_common INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_compile_definitions(psynder_samples_common INTERFACE
+    PSYNDER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(psynder_samples_common INTERFACE
-    psynder_core psynder_math psynder_platform)
+    psynder_core psynder_math psynder_asset psynder_platform)

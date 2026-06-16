@@ -10,6 +10,7 @@
 #include "render/rt/Bvh.h"
 #include "scene/SceneGraph.h"
 
+#include <array>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -143,12 +144,65 @@ struct FrameRenderInput {
     FrameMaterialTable materials{};
 };
 
+enum class FrameTelemetryStage : u8 {
+    SceneInputPrep,
+    TlasRefitUpdate,
+    PrimaryTrace,
+    ReflectionBounces,
+    AmbientOcclusion,
+    DenoiseAo,
+    DirectLightingShadowPackets,
+    CompositeUpsample,
+    WorkerTileScheduling,
+    Count
+};
+
+enum class FrameTelemetryCounter : u8 {
+    OutputPixels,
+    TracePixels,
+    Tiles,
+    TileSize,
+    TileBatch,
+    TilePasses,
+    TileWorkItems,
+    WorkerJobs,
+    TlasInstances,
+    TlasNodes,
+    TlasBuilds,
+    TlasRefits,
+    TlasTransformUpdates,
+    AnalyticSpheres,
+    Lights,
+    PrimaryRays,
+    HitPixels,
+    ReflectionRays,
+    AoRays,
+    AoShadowPackets,
+    DirectShadowRays,
+    DirectShadowPackets,
+    Count
+};
+
+inline constexpr usize kFrameTelemetryStageCount = static_cast<usize>(FrameTelemetryStage::Count);
+inline constexpr usize kFrameTelemetryCounterCount = static_cast<usize>(FrameTelemetryCounter::Count);
+
+struct FrameRenderTelemetry {
+    std::array<u64, kFrameTelemetryStageCount> stage_ns{};
+    std::array<u64, kFrameTelemetryCounterCount> counters{};
+
+    void reset() noexcept {
+        stage_ns.fill(0u);
+        counters.fill(0u);
+    }
+};
+
 struct FrameRenderStats {
     u32 tile_count = 0;
     u32 scheduled_jobs = 0;
     usize hit_pixels = 0;
     f32 ao_min = 1.0f;
     f32 ao_avg = 1.0f;
+    FrameRenderTelemetry telemetry{};
 };
 
 struct FrameRendererConsoleOverrides {
@@ -198,6 +252,10 @@ class FrameRenderer {
     std::vector<f32> hit_normals_;
     std::vector<scene::AnalyticSphereInstance> analytic_spheres_;
     std::vector<u8> rt_shadow_instance_mask_;
+    u64 observed_tlas_telemetry_ns_ = 0;
+    u64 observed_tlas_builds_ = 0;
+    u64 observed_tlas_refits_ = 0;
+    u64 observed_tlas_transform_updates_ = 0;
 };
 
 }  // namespace psynder::render::rt

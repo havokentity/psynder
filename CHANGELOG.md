@@ -612,7 +612,7 @@ lane 04's hetero job-pool work changing scheduling order.
   Default forwards to `Vm::Get().execute_repl`. Lane 19 editor-ipc
   installs its own evaluator without rebuilding script.
 - **Lua spawn binding** — `world:spawn(archetype_name, kv_table)`
-  allocates a real `scene::World::Get().create()` entity, records
+  allocates a real `scene::EcsRegistry::Get().create()` entity, records
   the per-component bag, returns the integer `Entity::raw` handle.
 - PSYNDER_COMPONENT auto-bind deferred to Wave C per the agent's call.
 
@@ -1005,7 +1005,7 @@ shipped.
 
 ### Cross-lane API additions (additive, public headers stable)
 
-- `engine/scene/World.h` added `query<reads<>, writes<>>()`,
+- `engine/scene/EcsRegistry.h` added `query<reads<>, writes<>>()`,
   `set_structural_deferred()`, `apply_structural_changes()` —
   additive only.
 - `cmake/Goldens.cmake` adapter from dmonte's `pt_add_golden_cell`.

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "core/Types.h"
+#include "render/Texture.h"
 
 #include <algorithm>
 #include <span>
@@ -52,31 +53,64 @@ struct MaterialCpuEffectDesc {
     f32 rate = 1.0f;
 };
 
-enum MaterialFlags : u32 {
-    Material_RasterVisible = 1u << 0,
-    Material_RtVisible = 1u << 1,
-    Material_CastsRtShadow = 1u << 2,
-    Material_ReceivesRtShadow = 1u << 3,
-    Material_CastsRasterShadow = 1u << 4,
-    Material_ReceivesRasterShadow = 1u << 5,
-    Material_Editable = 1u << 6,
-    Material_BakeVisible = 1u << 7,
-    Material_CastsBakedShadow = 1u << 8,
-    Material_ReceivesBakedShadow = 1u << 9,
-    Material_EmissiveBakes = 1u << 10,
-
-    Material_DefaultFlags = Material_RasterVisible | Material_RtVisible | Material_CastsRtShadow |
-                            Material_ReceivesRtShadow | Material_CastsRasterShadow |
-                            Material_ReceivesRasterShadow | Material_Editable,
+enum class MaterialFlags : u32 {
+    None = 0,
+    RasterVisible = 1u << 0,
+    RtVisible = 1u << 1,
+    CastsRtShadow = 1u << 2,
+    ReceivesRtShadow = 1u << 3,
+    CastsRasterShadow = 1u << 4,
+    ReceivesRasterShadow = 1u << 5,
+    Editable = 1u << 6,
+    BakeVisible = 1u << 7,
+    CastsBakedShadow = 1u << 8,
+    ReceivesBakedShadow = 1u << 9,
+    EmissiveBakes = 1u << 10,
 };
 
-inline constexpr u32 Material_BakedLightingMask = Material_BakeVisible | Material_CastsBakedShadow |
-                                                  Material_ReceivesBakedShadow |
-                                                  Material_EmissiveBakes;
+[[nodiscard]] constexpr u32 material_flags_bits(MaterialFlags flags) noexcept {
+    return static_cast<u32>(flags);
+}
+
+[[nodiscard]] constexpr MaterialFlags operator|(MaterialFlags a, MaterialFlags b) noexcept {
+    return static_cast<MaterialFlags>(material_flags_bits(a) | material_flags_bits(b));
+}
+
+[[nodiscard]] constexpr u32 operator&(MaterialFlags a, MaterialFlags b) noexcept {
+    return material_flags_bits(a) & material_flags_bits(b);
+}
+
+constexpr MaterialFlags& operator|=(MaterialFlags& a, MaterialFlags b) noexcept {
+    a = a | b;
+    return a;
+}
+
+inline constexpr MaterialFlags Material_RasterVisible = MaterialFlags::RasterVisible;
+inline constexpr MaterialFlags Material_RtVisible = MaterialFlags::RtVisible;
+inline constexpr MaterialFlags Material_CastsRtShadow = MaterialFlags::CastsRtShadow;
+inline constexpr MaterialFlags Material_ReceivesRtShadow = MaterialFlags::ReceivesRtShadow;
+inline constexpr MaterialFlags Material_CastsRasterShadow = MaterialFlags::CastsRasterShadow;
+inline constexpr MaterialFlags Material_ReceivesRasterShadow = MaterialFlags::ReceivesRasterShadow;
+inline constexpr MaterialFlags Material_Editable = MaterialFlags::Editable;
+inline constexpr MaterialFlags Material_BakeVisible = MaterialFlags::BakeVisible;
+inline constexpr MaterialFlags Material_CastsBakedShadow = MaterialFlags::CastsBakedShadow;
+inline constexpr MaterialFlags Material_ReceivesBakedShadow = MaterialFlags::ReceivesBakedShadow;
+inline constexpr MaterialFlags Material_EmissiveBakes = MaterialFlags::EmissiveBakes;
+
+inline constexpr MaterialFlags Material_DefaultFlags =
+    MaterialFlags::RasterVisible | MaterialFlags::RtVisible | MaterialFlags::CastsRtShadow |
+    MaterialFlags::ReceivesRtShadow | MaterialFlags::CastsRasterShadow |
+    MaterialFlags::ReceivesRasterShadow | MaterialFlags::Editable;
+
+inline constexpr MaterialFlags Material_BakedLightingMask =
+    MaterialFlags::BakeVisible | MaterialFlags::CastsBakedShadow |
+    MaterialFlags::ReceivesBakedShadow | MaterialFlags::EmissiveBakes;
 
 struct MaterialDesc {
     u32 albedo_rgba8 = 0xFFFFFFFFu;
     u32 base_color_texture = 0u;
+    TextureView base_color{};
+    const TextureAsset* base_color_asset = nullptr;
     f32 alpha_cutoff = 0.5f;
     f32 reflectivity = 0.0f;
     f32 roughness = 1.0f;
@@ -88,12 +122,14 @@ struct MaterialDesc {
     MaterialShadowAlphaMode shadow_alpha = MaterialShadowAlphaMode::Opaque;
     f32 shadow_opacity = 0.5f;
     f32 shadow_softness = 0.5f;
-    u32 flags = Material_DefaultFlags;
+    MaterialFlags flags = Material_DefaultFlags;
 };
 
 struct MaterialView {
     std::span<const u32> albedo_rgba8;
     std::span<const u32> base_color_texture;
+    std::span<const TextureView> base_color;
+    std::span<const TextureAsset* const> base_color_asset;
     std::span<const f32> alpha_cutoff;
     std::span<const f32> reflectivity;
     std::span<const f32> roughness;
@@ -109,7 +145,7 @@ struct MaterialView {
     std::span<const MaterialShadowAlphaMode> shadow_alpha;
     std::span<const f32> shadow_opacity;
     std::span<const f32> shadow_softness;
-    std::span<const u32> flags;
+    std::span<const MaterialFlags> flags;
 };
 
 class MaterialLibrary {
@@ -119,6 +155,8 @@ class MaterialLibrary {
         alive_.reserve(count);
         albedo_rgba8_.reserve(count);
         base_color_texture_.reserve(count);
+        base_color_.reserve(count);
+        base_color_asset_.reserve(count);
         alpha_cutoff_.reserve(count);
         reflectivity_.reserve(count);
         roughness_.reserve(count);
@@ -143,6 +181,8 @@ class MaterialLibrary {
         free_.clear();
         albedo_rgba8_.clear();
         base_color_texture_.clear();
+        base_color_.clear();
+        base_color_asset_.clear();
         alpha_cutoff_.clear();
         reflectivity_.clear();
         roughness_.clear();
@@ -172,6 +212,8 @@ class MaterialLibrary {
             alive_.push_back(0u);
             albedo_rgba8_.push_back(0u);
             base_color_texture_.push_back(0u);
+            base_color_.push_back({});
+            base_color_asset_.push_back(nullptr);
             alpha_cutoff_.push_back(0.0f);
             reflectivity_.push_back(0.0f);
             roughness_.push_back(0.0f);
@@ -187,7 +229,7 @@ class MaterialLibrary {
             shadow_alpha_.push_back(MaterialShadowAlphaMode::Opaque);
             shadow_opacity_.push_back(0.5f);
             shadow_softness_.push_back(0.5f);
-            flags_.push_back(0u);
+            flags_.push_back(MaterialFlags::None);
         }
 
         alive_[index] = 1u;
@@ -229,6 +271,8 @@ class MaterialLibrary {
         MaterialDesc out{};
         out.albedo_rgba8 = albedo_rgba8_[i];
         out.base_color_texture = base_color_texture_[i];
+        out.base_color = base_color_[i];
+        out.base_color_asset = base_color_asset_[i];
         out.alpha_cutoff = alpha_cutoff_[i];
         out.reflectivity = reflectivity_[i];
         out.roughness = roughness_[i];
@@ -251,6 +295,8 @@ class MaterialLibrary {
     [[nodiscard]] MaterialView view() const noexcept {
         return {albedo_rgba8_,
                 base_color_texture_,
+                base_color_,
+                base_color_asset_,
                 alpha_cutoff_,
                 reflectivity_,
                 roughness_,
@@ -297,6 +343,8 @@ class MaterialLibrary {
     void write_slot(u32 index, const MaterialDesc& desc) noexcept {
         albedo_rgba8_[index] = desc.albedo_rgba8;
         base_color_texture_[index] = desc.base_color_texture;
+        base_color_[index] = desc.base_color;
+        base_color_asset_[index] = desc.base_color_asset;
         alpha_cutoff_[index] = std::clamp(desc.alpha_cutoff, 0.0f, 1.0f);
         reflectivity_[index] = std::clamp(desc.reflectivity, 0.0f, 1.0f);
         roughness_[index] = std::clamp(desc.roughness, 0.0f, 1.0f);
@@ -320,6 +368,8 @@ class MaterialLibrary {
     std::vector<u32> free_;
     std::vector<u32> albedo_rgba8_;
     std::vector<u32> base_color_texture_;
+    std::vector<TextureView> base_color_;
+    std::vector<const TextureAsset*> base_color_asset_;
     std::vector<f32> alpha_cutoff_;
     std::vector<f32> reflectivity_;
     std::vector<f32> roughness_;
@@ -335,11 +385,11 @@ class MaterialLibrary {
     std::vector<MaterialShadowAlphaMode> shadow_alpha_;
     std::vector<f32> shadow_opacity_;
     std::vector<f32> shadow_softness_;
-    std::vector<u32> flags_;
+    std::vector<MaterialFlags> flags_;
 };
 
 PSY_FORCEINLINE bool material_flag_enabled(const MaterialDesc& material, MaterialFlags flag) noexcept {
-    return (material.flags & static_cast<u32>(flag)) != 0u;
+    return (material.flags & flag) != 0u;
 }
 
 }  // namespace psynder::render

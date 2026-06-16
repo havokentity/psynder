@@ -1,0 +1,1283 @@
+// SPDX-License-Identifier: MIT
+// Psynder scene cooker: hand-authored .psyscene.json -> cooked SoA .psyscene.
+
+#include "SceneCook.h"
+
+#include "BehaviorProgram.h"
+
+#include "core/Types.h"
+#include "math/Math.h"
+#include "scene/SceneFile.h"
+
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <span>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+using namespace psynder;
+
+namespace {
+
+using tools::BehaviorProgram;
+using tools::BehaviorScalarExpr;
+using tools::BehaviorScalarSource;
+using tools::BehaviorSpinOp;
+using tools::BehaviorTranslateOp;
+
+struct JsonMember;
+
+struct Json {
+    enum class Kind : u8 {
+        Null,
+        Bool,
+        Number,
+        String,
+        Array,
+        Object,
+    };
+
+    Kind kind = Kind::Null;
+    bool boolean = false;
+    f64 number = 0.0;
+    std::string text;
+    std::vector<Json> array;
+    std::vector<JsonMember> object;
+
+    Json();
+    Json(const Json&);
+    Json(Json&&) noexcept;
+    Json& operator=(const Json&);
+    Json& operator=(Json&&) noexcept;
+    ~Json();
+
+    [[nodiscard]] const Json* field(std::string_view key) const noexcept;
+};
+
+struct JsonMember {
+    std::string key;
+    Json value;
+};
+
+Json::Json() = default;
+Json::Json(const Json&) = default;
+Json::Json(Json&&) noexcept = default;
+Json& Json::operator=(const Json&) = default;
+Json& Json::operator=(Json&&) noexcept = default;
+Json::~Json() = default;
+
+const Json* Json::field(std::string_view key) const noexcept {
+    if (kind != Kind::Object)
+        return nullptr;
+    for (const JsonMember& member : object) {
+        if (member.key == key)
+            return &member.value;
+    }
+    return nullptr;
+}
+
+class JsonParser {
+   public:
+    explicit JsonParser(std::string_view input) : input_(input) {}
+
+    bool parse(Json& out) {
+        skip_ws();
+        if (!parse_value(out))
+            return false;
+        skip_ws();
+        if (pos_ != input_.size())
+            return fail("trailing input");
+        return true;
+    }
+
+    [[nodiscard]] const std::string& error() const noexcept { return error_; }
+
+   private:
+    std::string_view input_;
+    usize pos_ = 0u;
+    std::string error_;
+
+    [[nodiscard]] char peek() const noexcept { return pos_ < input_.size() ? input_[pos_] : '\0'; }
+
+    void skip_ws() noexcept {
+        while (pos_ < input_.size() && std::isspace(static_cast<unsigned char>(input_[pos_])) != 0) {
+            ++pos_;
+        }
+    }
+
+    bool consume(char c) noexcept {
+        if (peek() != c)
+            return false;
+        ++pos_;
+        return true;
+    }
+
+    bool fail(std::string_view message) {
+        if (error_.empty()) {
+            error_ = "scene_cook json: ";
+            error_ += message;
+            error_ += " at byte ";
+            error_ += std::to_string(pos_);
+        }
+        return false;
+    }
+
+    bool literal(std::string_view s) noexcept {
+        if (input_.substr(pos_, s.size()) != s)
+            return false;
+        pos_ += s.size();
+        return true;
+    }
+
+    bool parse_value(Json& out) {
+        skip_ws();
+        const char c = peek();
+        if (c == '"') {
+            out.kind = Json::Kind::String;
+            return parse_string(out.text);
+        }
+        if (c == '{')
+            return parse_object(out);
+        if (c == '[')
+            return parse_array(out);
+        if (c == '-' || (c >= '0' && c <= '9'))
+            return parse_number(out);
+        if (literal("true")) {
+            out.kind = Json::Kind::Bool;
+            out.boolean = true;
+            return true;
+        }
+        if (literal("false")) {
+            out.kind = Json::Kind::Bool;
+            out.boolean = false;
+            return true;
+        }
+        if (literal("null")) {
+            out.kind = Json::Kind::Null;
+            return true;
+        }
+        return fail("expected value");
+    }
+
+    bool parse_string(std::string& out) {
+        if (!consume('"'))
+            return fail("expected string");
+        out.clear();
+        while (pos_ < input_.size()) {
+            const char c = input_[pos_++];
+            if (c == '"')
+                return true;
+            if (c != '\\') {
+                out.push_back(c);
+                continue;
+            }
+            if (pos_ >= input_.size())
+                return fail("unterminated string escape");
+            const char esc = input_[pos_++];
+            switch (esc) {
+                case '"':
+                case '\\':
+                case '/':
+                    out.push_back(esc);
+                    break;
+                case 'b':
+                    out.push_back('\b');
+                    break;
+                case 'f':
+                    out.push_back('\f');
+                    break;
+                case 'n':
+                    out.push_back('\n');
+                    break;
+                case 'r':
+                    out.push_back('\r');
+                    break;
+                case 't':
+                    out.push_back('\t');
+                    break;
+                case 'u':
+                    if (pos_ + 4u > input_.size())
+                        return fail("short unicode escape");
+                    pos_ += 4u;
+                    out.push_back('?');
+                    break;
+                default:
+                    return fail("bad string escape");
+            }
+        }
+        return fail("unterminated string");
+    }
+
+    bool parse_number(Json& out) {
+        const usize start = pos_;
+        if (peek() == '-')
+            ++pos_;
+        if (peek() == '0') {
+            ++pos_;
+        } else if (peek() >= '1' && peek() <= '9') {
+            while (peek() >= '0' && peek() <= '9')
+                ++pos_;
+        } else {
+            return fail("bad number");
+        }
+        if (peek() == '.') {
+            ++pos_;
+            if (!(peek() >= '0' && peek() <= '9'))
+                return fail("bad number fraction");
+            while (peek() >= '0' && peek() <= '9')
+                ++pos_;
+        }
+        if (peek() == 'e' || peek() == 'E') {
+            ++pos_;
+            if (peek() == '+' || peek() == '-')
+                ++pos_;
+            if (!(peek() >= '0' && peek() <= '9'))
+                return fail("bad number exponent");
+            while (peek() >= '0' && peek() <= '9')
+                ++pos_;
+        }
+        const std::string tmp{input_.substr(start, pos_ - start)};
+        char* end = nullptr;
+        const f64 value = std::strtod(tmp.c_str(), &end);
+        if (end == tmp.c_str())
+            return fail("bad number");
+        out.kind = Json::Kind::Number;
+        out.number = value;
+        return true;
+    }
+
+    bool parse_array(Json& out) {
+        if (!consume('['))
+            return fail("expected array");
+        out.kind = Json::Kind::Array;
+        out.array.clear();
+        skip_ws();
+        if (consume(']'))
+            return true;
+        while (true) {
+            Json item;
+            if (!parse_value(item))
+                return false;
+            out.array.push_back(std::move(item));
+            skip_ws();
+            if (consume(']'))
+                return true;
+            if (!consume(','))
+                return fail("expected ',' or ']'");
+        }
+    }
+
+    bool parse_object(Json& out) {
+        if (!consume('{'))
+            return fail("expected object");
+        out.kind = Json::Kind::Object;
+        out.object.clear();
+        skip_ws();
+        if (consume('}'))
+            return true;
+        while (true) {
+            std::string key;
+            skip_ws();
+            if (!parse_string(key))
+                return false;
+            skip_ws();
+            if (!consume(':'))
+                return fail("expected ':'");
+            Json value;
+            if (!parse_value(value))
+                return false;
+            out.object.push_back(JsonMember{std::move(key), std::move(value)});
+            skip_ws();
+            if (consume('}'))
+                return true;
+            if (!consume(','))
+                return fail("expected ',' or '}'");
+        }
+    }
+};
+
+struct CookScene {
+    scene::SceneFileEnvironment environment{};
+    std::vector<math::Vec3> translations;
+    std::vector<math::Quat> rotations;
+    std::vector<math::Vec3> scales;
+    std::vector<scene::SceneFileCamera> cameras;
+    std::vector<scene::SceneFileMeshInstance> mesh_instances;
+    std::vector<scene::SceneFileMaterial> materials;
+    std::vector<scene::SceneFileBehaviorSpinOp> behavior_spin_ops;
+    std::vector<scene::SceneFileBehaviorTranslateOp> behavior_translate_ops;
+    std::vector<char> strings{'\0'};
+    std::unordered_map<std::string, u32> string_offsets;
+};
+
+[[nodiscard]] bool read_text_file(const std::filesystem::path& path, std::string& out);
+
+[[nodiscard]] bool is_number(const Json* v) noexcept {
+    return v && v->kind == Json::Kind::Number;
+}
+
+[[nodiscard]] bool is_array(const Json* v) noexcept {
+    return v && v->kind == Json::Kind::Array;
+}
+
+[[nodiscard]] bool read_bool(const Json* v, bool fallback) noexcept {
+    return v && v->kind == Json::Kind::Bool ? v->boolean : fallback;
+}
+
+[[nodiscard]] f32 read_f32(const Json* v, f32 fallback) noexcept {
+    if (!is_number(v))
+        return fallback;
+    return static_cast<f32>(v->number);
+}
+
+[[nodiscard]] bool read_vec3(const Json* v, math::Vec3& out) noexcept {
+    if (!is_array(v) || v->array.size() != 3u)
+        return false;
+    if (!is_number(&v->array[0]) || !is_number(&v->array[1]) || !is_number(&v->array[2]))
+        return false;
+    out.x = static_cast<f32>(v->array[0].number);
+    out.y = static_cast<f32>(v->array[1].number);
+    out.z = static_cast<f32>(v->array[2].number);
+    return true;
+}
+
+[[nodiscard]] u8 hex_nibble(char c, bool& ok) noexcept {
+    if (c >= '0' && c <= '9')
+        return static_cast<u8>(c - '0');
+    if (c >= 'a' && c <= 'f')
+        return static_cast<u8>(10 + c - 'a');
+    if (c >= 'A' && c <= 'F')
+        return static_cast<u8>(10 + c - 'A');
+    ok = false;
+    return 0u;
+}
+
+[[nodiscard]] u8 hex_byte(std::string_view s, bool& ok) noexcept {
+    return static_cast<u8>((hex_nibble(s[0], ok) << 4u) | hex_nibble(s[1], ok));
+}
+
+[[nodiscard]] u32 read_color_rgba8(const Json* v, u32 fallback) noexcept {
+    if (!v || v->kind != Json::Kind::String)
+        return fallback;
+    std::string_view s{v->text};
+    if (s.size() != 7u || s[0] != '#')
+        return fallback;
+    bool ok = true;
+    const u8 r = hex_byte(s.substr(1, 2), ok);
+    const u8 g = hex_byte(s.substr(3, 2), ok);
+    const u8 b = hex_byte(s.substr(5, 2), ok);
+    if (!ok)
+        return fallback;
+    return static_cast<u32>(r) | (static_cast<u32>(g) << 8u) | (static_cast<u32>(b) << 16u) |
+           (0xFFu << 24u);
+}
+
+[[nodiscard]] scene::ObjectMobility read_mobility(const Json* v) noexcept {
+    if (!v || v->kind != Json::Kind::String)
+        return scene::ObjectMobility::Dynamic;
+    if (v->text == "static")
+        return scene::ObjectMobility::Static;
+    return scene::ObjectMobility::Dynamic;
+}
+
+[[nodiscard]] u32 add_string(CookScene& scene, std::string_view value) {
+    const std::string key{value};
+    if (const auto it = scene.string_offsets.find(key); it != scene.string_offsets.end())
+        return it->second;
+    const u32 offset = static_cast<u32>(scene.strings.size());
+    scene.strings.insert(scene.strings.end(), key.begin(), key.end());
+    scene.strings.push_back('\0');
+    scene.string_offsets.emplace(key, offset);
+    return offset;
+}
+
+[[nodiscard]] render::MaterialFlags material_flag_from_name(std::string_view name) noexcept {
+    if (name == "rasterVisible")
+        return render::MaterialFlags::RasterVisible;
+    if (name == "rtVisible")
+        return render::MaterialFlags::RtVisible;
+    if (name == "castsRtShadow")
+        return render::MaterialFlags::CastsRtShadow;
+    if (name == "receivesRtShadow")
+        return render::MaterialFlags::ReceivesRtShadow;
+    if (name == "castsRasterShadow")
+        return render::MaterialFlags::CastsRasterShadow;
+    if (name == "receivesRasterShadow")
+        return render::MaterialFlags::ReceivesRasterShadow;
+    if (name == "editable")
+        return render::MaterialFlags::Editable;
+    if (name == "bakeVisible")
+        return render::MaterialFlags::BakeVisible;
+    if (name == "castsBakedShadow")
+        return render::MaterialFlags::CastsBakedShadow;
+    if (name == "receivesBakedShadow")
+        return render::MaterialFlags::ReceivesBakedShadow;
+    if (name == "emissiveBakes")
+        return render::MaterialFlags::EmissiveBakes;
+    return render::MaterialFlags::None;
+}
+
+[[nodiscard]] render::MaterialFlags read_material_flags(const Json* v,
+                                                        render::MaterialFlags fallback) noexcept {
+    if (!v)
+        return fallback;
+    if (v->kind == Json::Kind::Number)
+        return static_cast<render::MaterialFlags>(static_cast<u32>(v->number));
+    if (v->kind == Json::Kind::String)
+        return material_flag_from_name(v->text);
+    if (!is_array(v))
+        return fallback;
+    render::MaterialFlags out = render::MaterialFlags::None;
+    for (const Json& entry : v->array) {
+        if (entry.kind == Json::Kind::String)
+            out |= material_flag_from_name(entry.text);
+    }
+    return out;
+}
+
+[[nodiscard]] u32 add_transform(CookScene& scene, const Json& object) {
+    math::Vec3 translation{0.0f, 0.0f, 0.0f};
+    math::Vec3 scale{1.0f, 1.0f, 1.0f};
+    math::Quat rotation{0.0f, 0.0f, 0.0f, 1.0f};
+
+    if (const Json* transform = object.field("transform")) {
+        (void)read_vec3(transform->field("translation"), translation);
+        (void)read_vec3(transform->field("position"), translation);
+        (void)read_vec3(transform->field("scale"), scale);
+    }
+    (void)read_vec3(object.field("translation"), translation);
+    (void)read_vec3(object.field("position"), translation);
+    (void)read_vec3(object.field("scale"), scale);
+
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    f32 degrees = 0.0f;
+    if (const Json* transform = object.field("transform")) {
+        (void)read_vec3(transform->field("rotationAxis"), axis);
+        degrees = read_f32(transform->field("rotationDegrees"), degrees);
+    }
+    (void)read_vec3(object.field("rotationAxis"), axis);
+    degrees = read_f32(object.field("rotationDegrees"), degrees);
+    if (degrees != 0.0f)
+        rotation = math::quat_from_axis_angle(axis, degrees * math::kDegToRad);
+
+    const u32 index = static_cast<u32>(scene.translations.size());
+    scene.translations.push_back(translation);
+    scene.rotations.push_back(rotation);
+    scene.scales.push_back(scale);
+    return index;
+}
+
+[[nodiscard]] std::string_view trim_view(std::string_view s) noexcept {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())) != 0)
+        s.remove_prefix(1u);
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())) != 0)
+        s.remove_suffix(1u);
+    return s;
+}
+
+[[nodiscard]] bool parse_f32_token(std::string_view s, f32& out) noexcept {
+    s = trim_view(s);
+    if (s.empty())
+        return false;
+    const std::string tmp{s};
+    char* end = nullptr;
+    const f32 value = std::strtof(tmp.c_str(), &end);
+    if (end == tmp.c_str())
+        return false;
+    out = value;
+    return true;
+}
+
+[[nodiscard]] bool parse_vec3_literal(std::string_view s, math::Vec3& out) noexcept {
+    const usize open = s.find('[');
+    const usize close = s.find(']', open == std::string_view::npos ? 0u : open + 1u);
+    if (open == std::string_view::npos || close == std::string_view::npos || close <= open)
+        return false;
+    const std::string_view body = s.substr(open + 1u, close - open - 1u);
+    const usize comma0 = body.find(',');
+    const usize comma1 = body.find(',', comma0 == std::string_view::npos ? 0u : comma0 + 1u);
+    if (comma0 == std::string_view::npos || comma1 == std::string_view::npos)
+        return false;
+    return parse_f32_token(body.substr(0u, comma0), out.x) &&
+           parse_f32_token(body.substr(comma0 + 1u, comma1 - comma0 - 1u), out.y) &&
+           parse_f32_token(body.substr(comma1 + 1u), out.z);
+}
+
+[[nodiscard]] bool parse_pair_call(std::string_view source, std::string_view call, f32& a, f32& b) noexcept {
+    const usize marker = source.find(call);
+    if (marker == std::string_view::npos)
+        return false;
+    const usize open = source.find('(', marker + call.size());
+    const usize close = source.find(')', open == std::string_view::npos ? 0u : open + 1u);
+    if (open == std::string_view::npos || close == std::string_view::npos || close <= open)
+        return false;
+    const std::string_view body = source.substr(open + 1u, close - open - 1u);
+    const usize comma = body.find(',');
+    if (comma == std::string_view::npos)
+        return false;
+    return parse_f32_token(body.substr(0u, comma), a) && parse_f32_token(body.substr(comma + 1u), b);
+}
+
+[[nodiscard]] bool parse_assignment_number(std::string_view source,
+                                           std::string_view name,
+                                           f32& out) noexcept {
+    const usize marker = source.find(name);
+    if (marker == std::string_view::npos)
+        return false;
+    const usize equals = source.find('=', marker + name.size());
+    if (equals == std::string_view::npos)
+        return false;
+    return parse_f32_token(source.substr(equals + 1u), out);
+}
+
+[[nodiscard]] std::string read_identifier_after(std::string_view source, std::string_view marker) {
+    const usize start = source.find(marker);
+    if (start == std::string_view::npos)
+        return {};
+    std::string_view tail = source.substr(start + marker.size());
+    tail = trim_view(tail);
+    usize end = 0u;
+    while (end < tail.size()) {
+        const char c = tail[end];
+        if (!(std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'))
+            break;
+        ++end;
+    }
+    return std::string{tail.substr(0u, end)};
+}
+
+[[nodiscard]] std::string read_quoted_after(std::string_view source, std::string_view marker) {
+    const usize start = source.find(marker);
+    if (start == std::string_view::npos)
+        return {};
+    const usize open = source.find('"', start + marker.size());
+    const usize close = source.find('"', open == std::string_view::npos ? 0u : open + 1u);
+    if (open == std::string_view::npos || close == std::string_view::npos || close <= open)
+        return {};
+    return std::string{source.substr(open + 1u, close - open - 1u)};
+}
+
+[[nodiscard]] std::string_view behavior_op_slice(std::string_view source,
+                                                 std::string_view marker) noexcept {
+    const usize start = source.find(marker);
+    if (start == std::string_view::npos)
+        return {};
+    const usize next = source.find("transform.", start + marker.size());
+    if (next == std::string_view::npos)
+        return source.substr(start);
+    return source.substr(start, next - start);
+}
+
+[[nodiscard]] BehaviorScalarExpr read_behavior_scalar(const Json* v,
+                                                      BehaviorScalarExpr fallback = {}) noexcept {
+    if (!v)
+        return fallback;
+    if (v->kind == Json::Kind::Number)
+        return BehaviorScalarExpr::constant(static_cast<f32>(v->number));
+    if (v->kind != Json::Kind::Object)
+        return fallback;
+    const Json* type = v->field("type");
+    if (type && type->kind == Json::Kind::String && type->text == "linearIndex") {
+        return BehaviorScalarExpr::linear_index(read_f32(v->field("base"), fallback.base),
+                                                read_f32(v->field("step"), fallback.step));
+    }
+    return BehaviorScalarExpr::constant(read_f32(v->field("value"), fallback.base));
+}
+
+[[nodiscard]] bool add_spin_op(BehaviorProgram& program,
+                               std::string_view name,
+                               std::string_view target_group,
+                               const math::Vec3& axis,
+                               BehaviorScalarExpr speed,
+                               BehaviorScalarExpr phase,
+                               bool active,
+                               std::string& error) {
+    if (target_group.empty()) {
+        error = "spin behavior requires a non-empty target group";
+        return false;
+    }
+
+    BehaviorSpinOp spin{};
+    spin.name.assign(name.data(), name.size());
+    spin.target_group.assign(target_group.data(), target_group.size());
+    spin.axis = axis;
+    spin.speed = speed;
+    spin.phase = phase;
+    spin.active = active;
+    program.spin_ops.push_back(std::move(spin));
+    return true;
+}
+
+[[nodiscard]] bool add_translate_op(BehaviorProgram& program,
+                                    std::string_view name,
+                                    std::string_view target_group,
+                                    const math::Vec3& axis,
+                                    BehaviorScalarExpr amount,
+                                    bool active,
+                                    std::string& error) {
+    if (target_group.empty()) {
+        error = "translate behavior requires a non-empty target group";
+        return false;
+    }
+
+    BehaviorTranslateOp translate{};
+    translate.name.assign(name.data(), name.size());
+    translate.target_group.assign(target_group.data(), target_group.size());
+    translate.axis = axis;
+    translate.amount = amount;
+    translate.active = active;
+    program.translate_ops.push_back(std::move(translate));
+    return true;
+}
+
+[[nodiscard]] bool parse_legacy_spin_behavior(const Json& behavior,
+                                              BehaviorProgram& program,
+                                              std::string& error) {
+    const Json* target_group = behavior.field("targetGroup");
+    if (!target_group || target_group->kind != Json::Kind::String || target_group->text.empty()) {
+        error = "spin behavior requires a non-empty targetGroup string";
+        return false;
+    }
+
+    std::string_view name_text;
+    if (const Json* name = behavior.field("name"); name && name->kind == Json::Kind::String)
+        name_text = name->text;
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    (void)read_vec3(behavior.field("axis"), axis);
+    return add_spin_op(program,
+                       name_text,
+                       target_group->text,
+                       axis,
+                       read_behavior_scalar(behavior.field("speed")),
+                       read_behavior_scalar(behavior.field("phase")),
+                       read_bool(behavior.field("active"), true),
+                       error);
+}
+
+[[nodiscard]] bool parse_legacy_translate_behavior(const Json& behavior,
+                                                   BehaviorProgram& program,
+                                                   std::string& error) {
+    const Json* target_group = behavior.field("targetGroup");
+    if (!target_group || target_group->kind != Json::Kind::String || target_group->text.empty()) {
+        error = "translate behavior requires a non-empty targetGroup string";
+        return false;
+    }
+
+    std::string_view name_text;
+    if (const Json* name = behavior.field("name"); name && name->kind == Json::Kind::String)
+        name_text = name->text;
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    (void)read_vec3(behavior.field("axis"), axis);
+    return add_translate_op(program,
+                            name_text,
+                            target_group->text,
+                            axis,
+                            read_behavior_scalar(behavior.field("amount")),
+                            read_bool(behavior.field("active"), true),
+                            error);
+}
+
+[[nodiscard]] bool cook_behavior_array(const Json& behaviors,
+                                       BehaviorProgram& program,
+                                       std::string& error) {
+    if (!is_array(&behaviors)) {
+        error = "entity behaviors must be an array";
+        return false;
+    }
+    program.spin_ops.reserve(program.spin_ops.size() + behaviors.array.size());
+    for (const Json& behavior : behaviors.array) {
+        if (behavior.kind != Json::Kind::Object) {
+            error = "entity behavior entry must be an object";
+            return false;
+        }
+        const Json* type = behavior.field("type");
+        if (!type || type->kind != Json::Kind::String || type->text.empty()) {
+            error = "entity behavior requires a non-empty type string";
+            return false;
+        }
+        if (type->text == "spin") {
+            if (!parse_legacy_spin_behavior(behavior, program, error))
+                return false;
+        } else if (type->text == "translate") {
+            if (!parse_legacy_translate_behavior(behavior, program, error))
+                return false;
+        } else {
+            error = "unsupported entity behavior type: " + type->text;
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool cook_psygraph_node(const Json& node,
+                                      std::string_view graph_name,
+                                      std::string_view graph_target_group,
+                                      BehaviorProgram& program,
+                                      std::string& error) {
+    if (node.kind != Json::Kind::Object) {
+        error = "PsyGraph node must be an object";
+        return false;
+    }
+    const Json* op = node.field("op");
+    if (!op)
+        op = node.field("type");
+    if (!op || op->kind != Json::Kind::String)
+        return true;
+
+    std::string_view name = graph_name;
+    if (const Json* node_name = node.field("name");
+        node_name && node_name->kind == Json::Kind::String && !node_name->text.empty()) {
+        name = node_name->text;
+    }
+    std::string_view target_group = graph_target_group;
+    if (const Json* node_target = node.field("targetGroup");
+        node_target && node_target->kind == Json::Kind::String && !node_target->text.empty()) {
+        target_group = node_target->text;
+    }
+    math::Vec3 axis{0.0f, 1.0f, 0.0f};
+    (void)read_vec3(node.field("axis"), axis);
+    if (op->text == "spin" || op->text == "transform.spin") {
+        return add_spin_op(program,
+                           name,
+                           target_group,
+                           axis,
+                           read_behavior_scalar(node.field("speed")),
+                           read_behavior_scalar(node.field("phase")),
+                           read_bool(node.field("active"), true),
+                           error);
+    }
+    if (op->text == "translate" || op->text == "transform.translate") {
+        return add_translate_op(program,
+                                name,
+                                target_group,
+                                axis,
+                                read_behavior_scalar(node.field("amount")),
+                                read_bool(node.field("active"), true),
+                                error);
+    }
+    return true;
+}
+
+[[nodiscard]] bool cook_psygraph_graph(const Json& graph, BehaviorProgram& program, std::string& error) {
+    if (graph.kind != Json::Kind::Object) {
+        error = "PsyGraph graph must be an object";
+        return false;
+    }
+    std::string_view graph_name;
+    if (const Json* name = graph.field("name"); name && name->kind == Json::Kind::String)
+        graph_name = name->text;
+    std::string_view target_group;
+    if (const Json* group = graph.field("targetGroup"); group && group->kind == Json::Kind::String)
+        target_group = group->text;
+    const Json* nodes = graph.field("nodes");
+    if (!nodes || !is_array(nodes)) {
+        error = "PsyGraph graph requires a nodes array";
+        return false;
+    }
+    for (const Json& node : nodes->array) {
+        if (!cook_psygraph_node(node, graph_name, target_group, program, error))
+            return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool cook_psygraph_source(const std::filesystem::path& path,
+                                        BehaviorProgram& program,
+                                        std::string& error) {
+    std::string source;
+    if (!read_text_file(path, source)) {
+        error = "failed to read PsyGraph source " + path.string();
+        return false;
+    }
+    Json root;
+    JsonParser parser{source};
+    if (!parser.parse(root)) {
+        error = parser.error();
+        return false;
+    }
+    if (const Json* graphs = root.field("graphs")) {
+        if (!is_array(graphs)) {
+            error = "PsyGraph graphs must be an array";
+            return false;
+        }
+        for (const Json& graph : graphs->array) {
+            if (!cook_psygraph_graph(graph, program, error))
+                return false;
+        }
+        return true;
+    }
+    return cook_psygraph_graph(root, program, error);
+}
+
+[[nodiscard]] bool cook_psyscript_source(const std::filesystem::path& path,
+                                         BehaviorProgram& program,
+                                         std::string& error) {
+    std::string source;
+    if (!read_text_file(path, source)) {
+        error = "failed to read PsyScript source " + path.string();
+        return false;
+    }
+    const std::string name = read_identifier_after(source, "behavior");
+    const std::string target_group = read_quoted_after(source, "target_group");
+    bool emitted = false;
+    const std::string_view source_view{source};
+    const std::string_view spin_source = behavior_op_slice(source_view, "transform.spin");
+    if (!spin_source.empty()) {
+        math::Vec3 axis{0.0f, 1.0f, 0.0f};
+        const usize axis_marker = spin_source.find("axis");
+        if (axis_marker != std::string_view::npos)
+            (void)parse_vec3_literal(spin_source.substr(axis_marker), axis);
+        f32 speed_base = 0.0f;
+        f32 speed_step = 0.0f;
+        if (!parse_pair_call(spin_source, "linear_index", speed_base, speed_step))
+            (void)parse_pair_call(spin_source, "linearIndex", speed_base, speed_step);
+        f32 phase_value = 0.0f;
+        (void)parse_assignment_number(spin_source, "phase", phase_value);
+        if (!add_spin_op(program,
+                         name,
+                         target_group,
+                         axis,
+                         BehaviorScalarExpr::linear_index(speed_base, speed_step),
+                         BehaviorScalarExpr::constant(phase_value),
+                         true,
+                         error)) {
+            return false;
+        }
+        emitted = true;
+    }
+
+    const std::string_view translate_source = behavior_op_slice(source_view, "transform.translate");
+    if (!translate_source.empty()) {
+        math::Vec3 axis{0.0f, 1.0f, 0.0f};
+        const usize axis_marker = translate_source.find("axis");
+        if (axis_marker != std::string_view::npos)
+            (void)parse_vec3_literal(translate_source.substr(axis_marker), axis);
+        f32 amount_base = 0.0f;
+        f32 amount_step = 0.0f;
+        if (!parse_pair_call(translate_source, "linear_index", amount_base, amount_step))
+            (void)parse_pair_call(translate_source, "linearIndex", amount_base, amount_step);
+        if (!add_translate_op(program,
+                              name,
+                              target_group,
+                              axis,
+                              BehaviorScalarExpr::linear_index(amount_base, amount_step),
+                              true,
+                              error)) {
+            return false;
+        }
+        emitted = true;
+    }
+
+    if (!emitted) {
+        error = "PsyScript behavior requires at least one transform operation";
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool cook_behavior_source(const std::filesystem::path& path,
+                                        BehaviorProgram& program,
+                                        std::string& error) {
+    const std::string filename = path.filename().string();
+    if (filename.ends_with(".psyscript"))
+        return cook_psyscript_source(path, program, error);
+    if (filename.ends_with(".psygraph.json"))
+        return cook_psygraph_source(path, program, error);
+
+    std::string source;
+    if (!read_text_file(path, source)) {
+        error = "failed to read behavior source " + path.string();
+        return false;
+    }
+    Json root;
+    JsonParser parser{source};
+    if (!parser.parse(root)) {
+        error = parser.error();
+        return false;
+    }
+    const Json* behaviors = root.kind == Json::Kind::Object ? root.field("behaviors") : &root;
+    if (!behaviors) {
+        error = "behavior source requires a behaviors array";
+        return false;
+    }
+    return cook_behavior_array(*behaviors, program, error);
+}
+
+[[nodiscard]] bool lower_behavior_program(const BehaviorProgram& program,
+                                          CookScene& out,
+                                          std::string& error) {
+    out.behavior_spin_ops.reserve(out.behavior_spin_ops.size() + program.spin_ops.size());
+    for (const BehaviorSpinOp& op : program.spin_ops) {
+        if (op.target_group.empty()) {
+            error = "behavior program contains a spin op without a target group";
+            return false;
+        }
+
+        scene::SceneFileBehaviorSpinOp spin{};
+        if (!op.name.empty())
+            spin.name_offset = add_string(out, op.name);
+        spin.target_group_name_offset = add_string(out, op.target_group);
+        spin.axis = op.axis;
+        spin.speed_base = op.speed.base;
+        spin.speed_step = op.speed.source == BehaviorScalarSource::LinearIndex ? op.speed.step : 0.0f;
+        spin.phase_base = op.phase.base;
+        spin.phase_step = op.phase.source == BehaviorScalarSource::LinearIndex ? op.phase.step : 0.0f;
+        spin.flags = op.active ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
+                               : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
+        out.behavior_spin_ops.push_back(spin);
+    }
+
+    out.behavior_translate_ops.reserve(out.behavior_translate_ops.size() +
+                                       program.translate_ops.size());
+    for (const BehaviorTranslateOp& op : program.translate_ops) {
+        if (op.target_group.empty()) {
+            error = "behavior program contains a translate op without a target group";
+            return false;
+        }
+
+        scene::SceneFileBehaviorTranslateOp translate{};
+        if (!op.name.empty())
+            translate.name_offset = add_string(out, op.name);
+        translate.target_group_name_offset = add_string(out, op.target_group);
+        translate.axis = op.axis;
+        translate.amount_base = op.amount.base;
+        translate.amount_step =
+            op.amount.source == BehaviorScalarSource::LinearIndex ? op.amount.step : 0.0f;
+        translate.flags = op.active
+                              ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
+                              : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
+        out.behavior_translate_ops.push_back(translate);
+    }
+    return true;
+}
+
+[[nodiscard]] bool cook_json(const Json& root,
+                             const std::filesystem::path& source_dir,
+                             CookScene& out,
+                             std::string& error) {
+    if (root.kind != Json::Kind::Object) {
+        error = "scene root must be an object";
+        return false;
+    }
+    if (const Json* env = root.field("environment")) {
+        out.environment.clear_color_rgba8 =
+            read_color_rgba8(env->field("clearColor"), out.environment.clear_color_rgba8);
+        out.environment.clear_color = read_bool(env->field("clearColorEnabled"), true) ? 1u : 0u;
+        out.environment.clear_depth = read_bool(env->field("clearDepth"), true) ? 1u : 0u;
+    }
+
+    if (const Json* cameras = root.field("cameras")) {
+        if (!is_array(cameras)) {
+            error = "cameras must be an array";
+            return false;
+        }
+        out.cameras.reserve(cameras->array.size());
+        for (const Json& c : cameras->array) {
+            if (c.kind != Json::Kind::Object) {
+                error = "camera entry must be an object";
+                return false;
+            }
+            scene::SceneFileCamera camera{};
+            camera.transform_index = add_transform(out, c);
+            (void)read_vec3(c.field("lookAt"), camera.look_at);
+            (void)read_vec3(c.field("up"), camera.up);
+            camera.fov_y_rad = read_f32(c.field("fovYDegrees"), 60.0f) * math::kDegToRad;
+            camera.near_z = read_f32(c.field("nearZ"), camera.near_z);
+            camera.far_z = read_f32(c.field("farZ"), camera.far_z);
+            camera.tile_w =
+                static_cast<u32>(read_f32(c.field("tileW"), static_cast<f32>(camera.tile_w)));
+            camera.tile_h =
+                static_cast<u32>(read_f32(c.field("tileH"), static_cast<f32>(camera.tile_h)));
+            camera.active = read_bool(c.field("active"), true) ? 1u : 0u;
+            out.cameras.push_back(camera);
+        }
+    }
+
+    if (const Json* materials = root.field("materials")) {
+        if (!is_array(materials)) {
+            error = "materials must be an array";
+            return false;
+        }
+        out.materials.reserve(materials->array.size());
+        for (const Json& m : materials->array) {
+            if (m.kind != Json::Kind::Object) {
+                error = "material entry must be an object";
+                return false;
+            }
+            const Json* name = m.field("name");
+            if (!name || name->kind != Json::Kind::String || name->text.empty()) {
+                error = "material entry requires a non-empty name string";
+                return false;
+            }
+
+            scene::SceneFileMaterial material{};
+            material.name_offset = add_string(out, name->text);
+            if (const Json* base_color_texture = m.field("baseColorTexture");
+                base_color_texture && base_color_texture->kind == Json::Kind::String) {
+                material.base_color_texture_name_offset = add_string(out, base_color_texture->text);
+            }
+            material.albedo_rgba8 = read_color_rgba8(m.field("albedo"), material.albedo_rgba8);
+            material.flags = read_material_flags(m.field("flags"), material.flags);
+            material.alpha_cutoff = read_f32(m.field("alphaCutoff"), material.alpha_cutoff);
+            material.reflectivity = read_f32(m.field("reflectivity"), material.reflectivity);
+            material.roughness = read_f32(m.field("roughness"), material.roughness);
+            material.emissive = read_f32(m.field("emissive"), material.emissive);
+            out.materials.push_back(material);
+        }
+    }
+
+    const Json* meshes = root.field("meshInstances");
+    if (!meshes)
+        meshes = root.field("objects");
+    if (meshes) {
+        if (!is_array(meshes)) {
+            error = "meshInstances must be an array";
+            return false;
+        }
+        out.mesh_instances.reserve(meshes->array.size());
+        for (const Json& m : meshes->array) {
+            if (m.kind != Json::Kind::Object) {
+                error = "mesh instance entry must be an object";
+                return false;
+            }
+            const Json* mesh_name = m.field("mesh");
+            if (!mesh_name || mesh_name->kind != Json::Kind::String || mesh_name->text.empty()) {
+                error = "mesh instance requires a non-empty mesh string";
+                return false;
+            }
+            scene::SceneFileMeshInstance instance{};
+            instance.transform_index = add_transform(out, m);
+            instance.mesh_name_offset = add_string(out, mesh_name->text);
+            if (const Json* material = m.field("material");
+                material && material->kind == Json::Kind::String) {
+                instance.material_name_offset = add_string(out, material->text);
+            }
+            if (const Json* group = m.field("group"); group && group->kind == Json::Kind::String) {
+                instance.group_name_offset = add_string(out, group->text);
+            }
+            instance.mobility = read_mobility(m.field("mobility"));
+            instance.flags = read_bool(m.field("visible"), true) ? scene::RenderableFlags::Visible
+                                                                 : scene::RenderableFlags::None;
+            out.mesh_instances.push_back(instance);
+        }
+    }
+
+    BehaviorProgram behavior_program{};
+    if (const Json* inline_behaviors = root.field("entityBehaviors")) {
+        if (!cook_behavior_array(*inline_behaviors, behavior_program, error))
+            return false;
+    }
+    if (const Json* behavior_sources = root.field("entityBehaviorSources")) {
+        if (!is_array(behavior_sources)) {
+            error = "entityBehaviorSources must be an array";
+            return false;
+        }
+        for (const Json& source : behavior_sources->array) {
+            if (source.kind != Json::Kind::String || source.text.empty()) {
+                error = "entityBehaviorSources entries must be non-empty strings";
+                return false;
+            }
+            if (!cook_behavior_source(source_dir / source.text, behavior_program, error))
+                return false;
+        }
+    }
+    if (!lower_behavior_program(behavior_program, out, error))
+        return false;
+    return true;
+}
+
+void append_bytes(std::vector<u8>& out, const void* data, usize bytes) {
+    const auto* p = static_cast<const u8*>(data);
+    out.insert(out.end(), p, p + bytes);
+}
+
+void pad_to_alignment(std::vector<u8>& out) {
+    const usize aligned = ((out.size() + scene::kPsySceneAlignment - 1u) / scene::kPsySceneAlignment) *
+                          scene::kPsySceneAlignment;
+    out.resize(aligned, 0u);
+}
+
+template <class T>
+void append_chunk(std::vector<u8>& bytes,
+                  std::vector<scene::SceneFileChunk>& chunks,
+                  scene::SceneFileChunkType type,
+                  std::span<const T> data,
+                  u32 stride) {
+    pad_to_alignment(bytes);
+    scene::SceneFileChunk chunk{};
+    chunk.type = type;
+    chunk.offset = static_cast<u32>(bytes.size());
+    chunk.bytes = static_cast<u32>(data.size_bytes());
+    chunk.stride = stride;
+    if (!data.empty())
+        append_bytes(bytes, data.data(), data.size_bytes());
+    chunks.push_back(chunk);
+}
+
+[[nodiscard]] std::vector<u8> write_scene_blob(const CookScene& scene) {
+    std::vector<u8> bytes;
+    std::vector<scene::SceneFileChunk> chunks;
+    bytes.resize(sizeof(scene::SceneFileHeader));
+    bytes.resize(bytes.size() + 10u * sizeof(scene::SceneFileChunk));
+
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::Strings,
+                 std::span<const char>{scene.strings.data(), scene.strings.size()},
+                 1u);
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::Environment,
+                 std::span<const scene::SceneFileEnvironment>{&scene.environment, 1u},
+                 sizeof(scene::SceneFileEnvironment));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::TransformTranslation,
+                 std::span<const math::Vec3>{scene.translations.data(), scene.translations.size()},
+                 sizeof(math::Vec3));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::TransformRotation,
+                 std::span<const math::Quat>{scene.rotations.data(), scene.rotations.size()},
+                 sizeof(math::Quat));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::TransformScale,
+                 std::span<const math::Vec3>{scene.scales.data(), scene.scales.size()},
+                 sizeof(math::Vec3));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::Cameras,
+                 std::span<const scene::SceneFileCamera>{scene.cameras.data(), scene.cameras.size()},
+                 sizeof(scene::SceneFileCamera));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::MeshInstances,
+                 std::span<const scene::SceneFileMeshInstance>{scene.mesh_instances.data(),
+                                                               scene.mesh_instances.size()},
+                 sizeof(scene::SceneFileMeshInstance));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::Materials,
+                 std::span<const scene::SceneFileMaterial>{scene.materials.data(),
+                                                           scene.materials.size()},
+                 sizeof(scene::SceneFileMaterial));
+    append_chunk(bytes,
+                 chunks,
+                 scene::SceneFileChunkType::BehaviorSpinOps,
+                 std::span<const scene::SceneFileBehaviorSpinOp>{scene.behavior_spin_ops.data(),
+                                                                 scene.behavior_spin_ops.size()},
+                 sizeof(scene::SceneFileBehaviorSpinOp));
+    append_chunk(
+        bytes,
+        chunks,
+        scene::SceneFileChunkType::BehaviorTranslateOps,
+        std::span<const scene::SceneFileBehaviorTranslateOp>{scene.behavior_translate_ops.data(),
+                                                             scene.behavior_translate_ops.size()},
+        sizeof(scene::SceneFileBehaviorTranslateOp));
+
+    scene::SceneFileHeader header{};
+    header.file_bytes = static_cast<u32>(bytes.size());
+    header.chunk_count = static_cast<u32>(chunks.size());
+    header.transform_count = static_cast<u32>(scene.translations.size());
+    header.camera_count = static_cast<u32>(scene.cameras.size());
+    header.mesh_instance_count = static_cast<u32>(scene.mesh_instances.size());
+    std::memcpy(bytes.data(), &header, sizeof(header));
+    std::memcpy(bytes.data() + sizeof(header), chunks.data(), chunks.size() * sizeof(chunks[0]));
+    return bytes;
+}
+
+[[nodiscard]] bool read_text_file(const std::filesystem::path& path, std::string& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return false;
+    out.assign(std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{});
+    return true;
+}
+
+[[nodiscard]] bool write_binary_file(const std::filesystem::path& path, std::span<const u8> bytes) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::binary);
+    if (!out)
+        return false;
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return out.good();
+}
+
+}  // namespace
+
+bool psynder::tools::cook_psyscene_json_file(const std::filesystem::path& input,
+                                             const std::filesystem::path& output,
+                                             SceneCookStats* stats,
+                                             std::string* error) {
+    std::string source;
+    if (!read_text_file(input, source)) {
+        if (error)
+            *error = "failed to read " + input.string();
+        return false;
+    }
+
+    Json root;
+    JsonParser parser{source};
+    if (!parser.parse(root)) {
+        if (error)
+            *error = parser.error();
+        return false;
+    }
+
+    CookScene scene;
+    std::string cook_error;
+    if (!cook_json(root, input.parent_path(), scene, cook_error)) {
+        if (error)
+            *error = cook_error;
+        return false;
+    }
+
+    const std::vector<u8> blob = write_scene_blob(scene);
+    if (!write_binary_file(output, std::span<const u8>{blob.data(), blob.size()})) {
+        if (error)
+            *error = "failed to write " + output.string();
+        return false;
+    }
+
+    if (stats) {
+        stats->bytes = blob.size();
+        stats->transforms = scene.translations.size();
+        stats->cameras = scene.cameras.size();
+        stats->mesh_instances = scene.mesh_instances.size();
+        stats->behavior_spin_ops = scene.behavior_spin_ops.size();
+        stats->behavior_translate_ops = scene.behavior_translate_ops.size();
+    }
+    return true;
+}
+
+int psynder::tools::scene_cook_cli_main(int argc, char** argv) {
+    if (argc != 3) {
+        std::fprintf(stderr, "Usage: scene_cook <input.psyscene.json> <output.psyscene>\n");
+        return EXIT_FAILURE;
+    }
+
+    std::string error;
+    SceneCookStats stats{};
+    if (!cook_psyscene_json_file(argv[1], argv[2], &stats, &error)) {
+        std::fprintf(stderr, "scene_cook: %s\n", error.c_str());
+        return EXIT_FAILURE;
+    }
+
+    std::fprintf(stdout,
+                 "scene_cook: %s -> %s (%zu bytes, %zu transforms, %zu cameras, %zu meshes)\n",
+                 argv[1],
+                 argv[2],
+                 stats.bytes,
+                 stats.transforms,
+                 stats.cameras,
+                 stats.mesh_instances);
+    return EXIT_SUCCESS;
+}

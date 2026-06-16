@@ -22,8 +22,8 @@ if(PSYNDER_ENABLE_TRACY)
         set(TRACY_INSTALL       OFF CACHE BOOL "" FORCE)
         FetchContent_Declare(tracy
             GIT_REPOSITORY https://github.com/wolfpld/tracy.git
-            GIT_TAG        v0.11.1
-            GIT_SHALLOW    TRUE
+            GIT_TAG        5d542dc09f3d9378d005092a4ad446bd405f819a  # tag v0.11.1 (immutable SHA pin)
+            GIT_SHALLOW    FALSE
         )
         FetchContent_MakeAvailable(tracy)
     endif()

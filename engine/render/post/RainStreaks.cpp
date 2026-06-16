@@ -25,9 +25,9 @@ namespace psynder::render::post {
 
 namespace {
 
-PSY_CVAR(r_rain_enable, "1", "Rain streaks enable (0/1).", console::CVAR_ARCHIVE);
+PSY_CVAR(r_rain_enable, "1", "Rain streaks enable (0/1).", console::CVarFlags::Archive);
 
-PSY_CVAR(r_rain_intensity, "1.0", "Rain streak HDR intensity multiplier.", console::CVAR_ARCHIVE);
+PSY_CVAR(r_rain_intensity, "1.0", "Rain streak HDR intensity multiplier.", console::CVarFlags::Archive);
 
 bool cvar_enable() noexcept {
     if (const auto* cv = console::Console::Get().FindCVar("r_rain_enable")) {

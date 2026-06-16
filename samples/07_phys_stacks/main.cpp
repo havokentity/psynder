@@ -23,8 +23,8 @@
 // spheres. An orbit camera (mirrors sample 05's `make_orbit_camera`) frames
 // the stack.
 //
-// Because the engine does not expose an explicit sleep flag on the public API
-// (and Wave-A never sets `kFlagSleeping`), "at rest" is derived here from each
+// Because the engine does not expose an explicit sleep flag on the public API,
+// "at rest" is derived here from each
 // body's per-frame world-space displacement: a body whose centre moves less
 // than a small epsilon over a frame is reported as settled. The smoke log
 // prints active/settled counts plus the apex box Y and a tracked sphere Y so
@@ -46,7 +46,7 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/raster/Raster.h"
 
 #include <array>
@@ -259,25 +259,13 @@ struct SphereBody {
 
 }  // namespace
 
-platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 07 (stacks & restitution)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = 640;
-    desc.render_height = 360;
-    desc.scale_mode = platform::ScaleMode::Integer;
-    return desc;
-}
-
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
-    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     // ─── Physics world ──────────────────────────────────────────────────
     auto& world = physics::World::Get();
@@ -487,8 +475,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         view.target = fb;
         view.view = math::look_at_rh(cam.eye, cam.target, v3(0.0f, 1.0f, 0.0f));
         view.projection = math::perspective_rh(55.0f * math::kDegToRad,
-                                               static_cast<f32>(desc.render_width) /
-                                                   static_cast<f32>(desc.render_height),
+                                               static_cast<f32>(fb.width) / static_cast<f32>(fb.height),
                                                0.1f,
                                                200.0f);
         view.tile_w = 64;
@@ -544,11 +531,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // Engine overlay suite: `~` console + F1 debug HUD + F2 badge.
-        if (auto* in = platform::input()) {
-            editor::frame_overlays(*in, fb);
-        }
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (args.smoke_frames > 0) {
             PSY_LOG_INFO(
@@ -582,18 +566,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
 struct PhysStacksSample {
     static constexpr std::string_view log_name() noexcept { return "sample_07"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 07"; }
-
-    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
-        return make_window_desc(args);
-    }
-
-    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
-        return {.depth_buffer = true};
-    }
+    static constexpr const char* display_name = "Psynder sample 07 (stacks & restitution)";
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 

@@ -7,6 +7,7 @@
 #pragma once
 
 #include "core/Types.h"
+#include "editor/ipc/Ipc.h"
 #include "editor/ipc/internal/WsFrame.h"
 
 #include <atomic>
@@ -29,6 +30,8 @@ namespace psynder::editor::ipc::internal {
 // and runs its read/write loop on its own OS thread (one thread per client —
 // editor panels are O(handful) so this is fine).
 struct Connection {
+    ~Connection() noexcept;
+
     int sock = -1;
     std::thread worker;
     std::atomic<bool> authed{false};
@@ -48,12 +51,14 @@ struct Connection {
 class Server {
    public:
     static Server& Get();
+    ~Server();
 
     bool start(const char* bind_host, ::psynder::u16 port, bool require_session_token);
     void stop();
 
     // Push a state delta to all connected, authenticated, subscribed clients.
     void broadcast(std::string_view channel, std::span<const ::psynder::u8> payload);
+    bool has_subscribers(std::string_view channel);
 
     // Wave-B: slice-scoped scene-delta push. Wraps `msgpack_payload` in a
     // SceneDeltaFrame (opcode 20) tagged with `slice_name` and broadcasts to
@@ -86,8 +91,47 @@ class Server {
     // originating client without keeping a dead Connection alive after the
     // socket has closed.
     struct InboundCmd {
+        // Selection-channel operations that mutate the ECS / scene. These are
+        // received on a per-connection socket worker thread but MUST be applied
+        // on the engine main thread (the registry is iterated every frame by
+        // render gather + update_play_runtime; a structural mutation off-thread
+        // is a data race / chunk UAF). They ride the same `inbound_` queue the
+        // console-eval path uses and are dispatched by pump() on the main
+        // thread.
+        enum class SelectionOp : ::psynder::u8 {
+            None = 0,
+            Select,
+            ComponentEdit,
+            ComponentAdd,
+            ComponentRemove,
+        };
+
         std::string channel;
         std::vector<::psynder::u8> payload;
+        std::weak_ptr<Connection> conn;
+        std::string reply_channel;
+        std::string reply_type;
+        std::string reply_command;
+        ::psynder::u32 request_id = 0;
+        bool has_request_id = false;
+        bool quiet = false;
+        bool legacy_console_result = false;
+
+        // Selection op carried for main-thread dispatch. When `selection_op`
+        // is not None, the console fields above are ignored and pump() invokes
+        // the registered selection handler instead. The typed payloads carry
+        // their own `entity_id` so the op targets the entity the client picked
+        // at send time, not the host's live selection.
+        SelectionOp selection_op = SelectionOp::None;
+        ::psynder::u32 selection_entity_id = 0;
+        ::psynder::editor::ipc::SelectionComponentEdit selection_edit;
+        ::psynder::editor::ipc::SelectionComponentAdd selection_add;
+        ::psynder::editor::ipc::SelectionComponentRemove selection_remove;
+    };
+    struct InboundCompletion {
+        ::psynder::u32 id = 0;
+        ::psynder::u32 cursor = 0;
+        std::string input;
         std::weak_ptr<Connection> conn;
     };
 
@@ -125,8 +169,18 @@ class Server {
     std::mutex conns_mu_;
     std::vector<std::shared_ptr<Connection>> conns_;
 
+    // Client workers are detached (a worker can outlive its Connection's slot in
+    // conns_, which is GC'd opportunistically; a joinable std::thread destroyed
+    // by ~Connection would std::terminate). Detaching means stop() cannot join
+    // them, so we count live workers and block stop() until the count hits zero
+    // — otherwise a detached worker keeps touching `this` after ~Server (UAF).
+    std::atomic<int> active_workers_{0};
+    std::mutex workers_mu_;
+    std::condition_variable workers_done_cv_;
+
     std::mutex inbound_mu_;
     std::deque<InboundCmd> inbound_;
+    std::deque<InboundCompletion> inbound_completions_;
 
     // Wave-B: set by `install_repl_backend()`. When false, `pump()` falls
     // back to the legacy Wave-A path (log-only). When true, `pump()` calls

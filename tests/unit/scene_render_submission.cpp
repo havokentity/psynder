@@ -6,6 +6,7 @@
 
 #include "render/Material.h"
 #include "scene/SceneEcs.h"
+#include "scene/EcsRegistry_Internal.h"
 
 #include <vector>
 
@@ -18,6 +19,11 @@ scene::LocalTransform translate(math::Vec3 t) {
     out.translation = t;
     return out;
 }
+
+struct RegistryReset {
+    RegistryReset() { scene::detail::EcsRegistryImpl::Get().shutdown(); }
+    ~RegistryReset() { scene::detail::EcsRegistryImpl::Get().shutdown(); }
+};
 
 }  // namespace
 
@@ -35,9 +41,9 @@ TEST_CASE("render material library stores editable raster and RT state in SoA co
     desc.shadow_alpha = render::MaterialShadowAlphaMode::AlphaTest;
     desc.shadow_opacity = 0.75f;
     desc.shadow_softness = 0.25f;
-    desc.flags = render::Material_RasterVisible | render::Material_RtVisible |
-                 render::Material_CastsRtShadow | render::Material_Editable |
-                 render::Material_BakeVisible | render::Material_CastsBakedShadow;
+    desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::RtVisible |
+                 render::MaterialFlags::CastsRtShadow | render::MaterialFlags::Editable |
+                 render::MaterialFlags::BakeVisible | render::MaterialFlags::CastsBakedShadow;
 
     const render::MaterialId id = library.create(desc);
     REQUIRE(library.valid(id));
@@ -54,16 +60,17 @@ TEST_CASE("render material library stores editable raster and RT state in SoA co
     REQUIRE(view.shadow_alpha[0] == render::MaterialShadowAlphaMode::AlphaTest);
     REQUIRE_THAT(static_cast<double>(view.shadow_opacity[0]), Catch::Matchers::WithinAbs(0.75, 1e-6));
     REQUIRE_THAT(static_cast<double>(view.shadow_softness[0]), Catch::Matchers::WithinAbs(0.25, 1e-6));
-    REQUIRE((view.flags[0] & render::Material_CastsRtShadow) != 0u);
-    REQUIRE((view.flags[0] & render::Material_CastsBakedShadow) != 0u);
+    REQUIRE((view.flags[0] & render::MaterialFlags::CastsRtShadow) != 0u);
+    REQUIRE((view.flags[0] & render::MaterialFlags::CastsBakedShadow) != 0u);
 }
 
-TEST_CASE("runtime scene creates transform-backed renderable entities for shared renderers",
+TEST_CASE("scene creates transform-backed renderable entities for shared renderers",
           "[scene][render_submission]") {
-    auto& world = scene::World::Get();
-    world.set_structural_deferred(false);
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
 
-    scene::RuntimeScene scene{world};
+    scene::Scene scene{registry};
     render::MaterialDesc material_desc{};
     material_desc.albedo_rgba8 = 0xFF2040C0u;
     material_desc.reflectivity = 1.0f;
@@ -78,9 +85,9 @@ TEST_CASE("runtime scene creates transform-backed renderable entities for shared
     renderable.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
 
     const Entity entity = scene.create_renderable(renderable, translate({3.0f, 4.0f, 5.0f}));
-    REQUIRE(world.get<scene::TransformComponent>(entity) != nullptr);
-    REQUIRE(world.get<scene::SceneNodeComponent>(entity) != nullptr);
-    REQUIRE(world.get<scene::RenderableComponent>(entity) != nullptr);
+    REQUIRE(registry.get<scene::TransformComponent>(entity) != nullptr);
+    REQUIRE(registry.get<scene::SceneNodeComponent>(entity) != nullptr);
+    REQUIRE(registry.get<scene::RenderableComponent>(entity) != nullptr);
 
     const scene::SceneGraphUpdateStats stats = scene.update_transforms();
     REQUIRE(stats.transforms_updated >= 1u);
@@ -100,4 +107,153 @@ TEST_CASE("runtime scene creates transform-backed renderable entities for shared
                  Catch::Matchers::WithinAbs(6.0, 1e-5));
 
     REQUIRE(scene.destroy_entity(entity));
+}
+
+TEST_CASE("scene owns environment clear settings", "[scene][render_submission][environment]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    scene::Scene scene{registry};
+    REQUIRE(scene.environment().settings().clear_color);
+    REQUIRE(scene.environment().settings().clear_depth);
+    REQUIRE(scene.environment().clear_enabled());
+    REQUIRE(scene.environment().settings().clear_enabled());
+    REQUIRE(scene.environment().settings().clear_color_rgba8 == 0xFF000000u);
+    REQUIRE(scene.runtime().environment.clear_enabled());
+    REQUIRE(scene.runtime().environment.clear_color_rgba8[0] == 0xFF000000u);
+
+    scene.environment().set_clear_color(0xFF202028u);
+    scene.environment().set_clear_enabled(true, false);
+    REQUIRE(scene.environment().settings().clear_color_rgba8 == 0xFF202028u);
+    REQUIRE_FALSE(scene.environment().settings().clear_depth);
+    REQUIRE(scene.environment().clear_enabled());
+    REQUIRE(scene.runtime().environment.clear_flags[0] == scene::EnvironmentClearFlags::Color);
+    REQUIRE(scene.runtime().environment.clear_color_rgba8[0] == 0xFF202028u);
+
+    scene.environment().disable_clear();
+    REQUIRE_FALSE(scene.environment().clear_enabled());
+    REQUIRE_FALSE(scene.environment().settings().clear_enabled());
+    REQUIRE_FALSE(scene.runtime().environment.clear_enabled());
+
+    REQUIRE_FALSE(scene.environment().clouds().enabled);
+    scene::EnvironmentCloudSettings clouds{};
+    clouds.enabled = true;
+    clouds.coverage = 0.65f;
+    scene.environment().set_clouds(clouds);
+    REQUIRE(scene.environment().settings().clouds.enabled);
+    REQUIRE_THAT(static_cast<double>(scene.environment().settings().clouds.coverage),
+                 Catch::Matchers::WithinAbs(0.65, 1e-5));
+    REQUIRE(scene.runtime().environment.cloud_enabled[0] == 1u);
+    REQUIRE_THAT(static_cast<double>(scene.runtime().environment.cloud_coverage[0]),
+                 Catch::Matchers::WithinAbs(0.65, 1e-5));
+}
+
+TEST_CASE("scene camera is a transform-backed hierarchy entity",
+          "[scene][render_submission][camera]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    scene::Scene scene{registry};
+    const Entity camera_rig = scene.create_entity(translate({0.0f, 2.0f, 0.0f}));
+
+    scene::CameraComponent camera{};
+    camera.aspect = 2.0f;
+    camera.tile_w = 32u;
+    camera.tile_h = 32u;
+    const Entity camera_entity =
+        scene.create_camera(camera, translate({0.0f, 0.0f, 5.0f}), scene.node(camera_rig));
+
+    REQUIRE(registry.get<scene::TransformComponent>(camera_entity) != nullptr);
+    REQUIRE(registry.get<scene::SceneNodeComponent>(camera_entity) != nullptr);
+    REQUIRE(registry.get<scene::CameraComponent>(camera_entity) != nullptr);
+    REQUIRE(scene.graph().parent(scene.node(camera_entity)) == scene.node(camera_rig));
+    REQUIRE(scene.active_camera_entity() == camera_entity);
+
+    scene::SceneCameraView camera_view{};
+    REQUIRE(scene.active_camera_view(1.0f, camera_view));
+    REQUIRE(camera_view.entity == camera_entity);
+    REQUIRE(camera_view.node == scene.node(camera_entity));
+    REQUIRE(camera_view.tile_w == 32u);
+    REQUIRE(camera_view.tile_h == 32u);
+
+    REQUIRE(scene.destroy_entity(camera_entity));
+    REQUIRE(scene.destroy_entity(camera_rig));
+
+    scene::SceneCameraView empty_view{};
+    REQUIRE_FALSE(scene.active_camera_view(1.0f, empty_view));
+}
+
+TEST_CASE("scene prewarm preserves capacity through dynamic renderable updates",
+          "[scene][render_submission][prewarm]") {
+    RegistryReset reset;
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+
+    scene::Scene scene{registry};
+    scene::ScenePrewarmConfig config{};
+    config.scene_entities = 8u;
+    config.renderables = 6u;
+    config.render_items = 6u;
+    scene.prewarm_capacity(config);
+
+    REQUIRE(scene.graph().node_capacity() >= config.scene_entities);
+    REQUIRE(registry.entity_capacity() >= config.scene_entities);
+
+    render::MaterialDesc material_desc{};
+    material_desc.albedo_rgba8 = 0xFF88CC44u;
+    const render::MaterialId material = scene.materials().create(material_desc);
+
+    scene::RenderableComponent static_renderable =
+        scene::make_static_renderable(scene::GeometryKind::AnalyticSphere,
+                                      17u,
+                                      material,
+                                      math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}});
+    scene::RenderableComponent dynamic_renderable =
+        scene::make_dynamic_renderable(scene::GeometryKind::AnalyticSphere,
+                                       23u,
+                                       material,
+                                       math::Aabb{{-0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}});
+
+    const u32 chunks_after_prewarm = registry.chunk_live_count();
+    const u32 graph_capacity = scene.graph().node_capacity();
+    const u32 dirty_capacity = scene.graph().dirty_root_capacity();
+
+    std::vector<Entity> static_entities;
+    static_entities.reserve(5u);
+    for (u32 i = 0; i < 5u; ++i) {
+        static_entities.push_back(
+            scene.create_renderable(static_renderable, translate({static_cast<f32>(i), 0.0f, 0.0f})));
+    }
+    const Entity dynamic_entity =
+        scene.create_renderable(dynamic_renderable, translate({0.0f, 2.0f, 0.0f}));
+
+    scene.update_transforms();
+    REQUIRE(registry.chunk_live_count() == chunks_after_prewarm);
+    REQUIRE(scene.graph().node_capacity() == graph_capacity);
+    REQUIRE(scene.graph().dirty_root_capacity() == dirty_capacity);
+
+    std::vector<scene::SceneRenderItem> items;
+    scene.gather_render_items(items);
+    REQUIRE(items.size() == 6u);
+    const usize item_capacity = items.capacity();
+    REQUIRE(item_capacity >= config.render_items);
+
+    for (u32 frame = 0; frame < 12u; ++frame) {
+        scene.set_transform(dynamic_entity, translate({static_cast<f32>(frame) * 0.25f, 2.0f, 0.0f}));
+        const scene::SceneGraphUpdateStats stats = scene.update_transforms();
+        REQUIRE(stats.nodes_visited == 1u);
+        REQUIRE(stats.transforms_updated == 1u);
+        scene.gather_render_items(items);
+        REQUIRE(items.size() == 6u);
+        REQUIRE(items.capacity() == item_capacity);
+        REQUIRE(registry.chunk_live_count() == chunks_after_prewarm);
+        REQUIRE(scene.graph().node_capacity() == graph_capacity);
+        REQUIRE(scene.graph().dirty_root_capacity() == dirty_capacity);
+    }
+
+    for (Entity entity : static_entities)
+        REQUIRE(scene.destroy_entity(entity));
+    REQUIRE(scene.destroy_entity(dynamic_entity));
 }

@@ -9,6 +9,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace psynder::editor::ipc {
 
@@ -17,6 +18,77 @@ struct ServerDesc {
     u16 port = 7654;
     bool require_session_token = true;
 };
+
+struct StatsSection {
+    std::string_view name;
+    f32 ms = 0.0f;
+};
+
+struct StatsTick {
+    u64 frame_index = 0;
+    f32 cpu_ms = 0.0f;
+    f32 render_ms = 0.0f;
+    u32 draw_calls = 0;
+    u32 entities = 0;
+    std::span<const StatsSection> sections;
+};
+
+using SelectionSelectHandler = void (*)(u32 entity_id);
+
+enum class SelectionComponentEditValueKind : u8 {
+    Null,
+    Bool,
+    I64,
+    U64,
+    F64,
+    String,
+    BoolArray,
+    F64Array,
+    StringArray,
+};
+
+struct SelectionComponentEditValue {
+    SelectionComponentEditValueKind kind = SelectionComponentEditValueKind::Null;
+    bool bool_value = false;
+    i64 i64_value = 0;
+    u64 u64_value = 0;
+    f64 f64_value = 0.0;
+    std::string string_value;
+    std::vector<u8> bool_values;
+    std::vector<f64> f64_values;
+    std::vector<std::string> string_values;
+};
+
+struct SelectionComponentEdit {
+    u32 entity_id = 0;
+    std::string component;
+    std::string field;
+    std::string field_kind;
+    SelectionComponentEditValue value;
+};
+
+using SelectionComponentEditHandler = void (*)(const SelectionComponentEdit& edit);
+
+// Add a component to an entity from the Inspector "Add Component" control.
+// `variant` is an optional sub-kind discriminator (e.g. "static" for a
+// static RigidBody); empty means the component's default flavor.
+struct SelectionComponentAdd {
+    u32 entity_id = 0;
+    std::string component;
+    std::string variant;
+};
+
+using SelectionComponentAddHandler = void (*)(const SelectionComponentAdd& add);
+
+// Remove a component from an entity from the Inspector per-component remove
+// (the inverse of "Add Component"). Only the optional authoring components are
+// removable; the host handler rejects structural/foundational ones.
+struct SelectionComponentRemove {
+    u32 entity_id = 0;
+    std::string component;
+};
+
+using SelectionComponentRemoveHandler = void (*)(const SelectionComponentRemove& remove);
 
 class Server {
    public:
@@ -27,6 +99,13 @@ class Server {
 
     // Push a state delta to all connected panels (one-directional engine→UI).
     void broadcast(std::string_view channel, std::span<const u8> msgpack_payload);
+    void broadcast_stats_tick(const StatsTick& tick);
+    void set_selection_select_handler(SelectionSelectHandler handler);
+    void set_selection_component_edit_handler(SelectionComponentEditHandler handler);
+    void set_selection_component_add_handler(SelectionComponentAddHandler handler);
+    void set_selection_component_remove_handler(SelectionComponentRemoveHandler handler);
+
+    [[nodiscard]] bool has_subscribers(std::string_view channel) const;
 
     // Pump once per frame to dispatch any incoming command RPCs onto the
     // console queue.

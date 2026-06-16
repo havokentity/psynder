@@ -32,8 +32,18 @@
 // │  48   8     vertices (offset, count)                                    │
 // │  56   8     indices  (offset, count)                                    │
 // │  64   8     pvs      (offset, count = pvs_row_bytes * cluster_count)    │
-// │  72   24    reserved                                                    │
+// │  72   8     lightmaps       (offset, count = lit-face directory rows)   │  (W12-2)
+// │  80   8     lightmap_pixels (offset, byte_count = packed RGB16F lumels) │  (W12-2)
+// │  88   8     reserved                                                    │
 // └─────────────────────────────────────────────────────────────────────────┘
+//
+// W12-2 lightmap chunks (ADDITIVE — repurposed the trailing reserved bytes; the
+// header is still exactly 96 bytes and the loader's nodes/leaves/faces/vertices/
+// indices/pvs parsing is byte-for-byte unchanged). When `lightmaps.count == 0`
+// the level is unlit and every face keeps `lightmap == kBspNoLightmap` — nothing
+// regresses. When non-zero, `lightmaps` is a directory of per-lit-face records
+// (see BspFileLightmap) and `lightmap_pixels` holds the packed 16-bit half-float
+// RGB lumels those records index into (DESIGN.md §8.1: RGB16F, per-surface res).
 
 #pragma once
 
@@ -62,7 +72,13 @@ struct BspFileHeader {
     BspFileChunk vertices;
     BspFileChunk indices;
     BspFileChunk pvs;
-    u32 reserved[6];
+    // W12-2 lightmap chunks (ADDITIVE — carved out of the old `reserved[6]`, so
+    // the header is still exactly 96 bytes). `lightmaps` = per-lit-face directory
+    // (BspFileLightmap rows); `lightmap_pixels` = packed RGB16F lumel bytes the
+    // rows index into. Both are 0/0 for an unlit blob (no regression).
+    BspFileChunk lightmaps;
+    BspFileChunk lightmap_pixels;
+    u32 reserved[2];
 };
 static_assert(sizeof(BspFileHeader) == 96, "BspFileHeader must be exactly 96 bytes");
 
@@ -90,9 +106,35 @@ struct BspFileFace {
     u32 first_vertex;
     u32 vertex_count;
     u32 material;
-    u32 lightmap;
+    u32 lightmap;  // index into the lightmap directory, or kBspFaceNoLightmap.
 };
 static_assert(sizeof(BspFileFace) == 16, "BspFileFace layout drift");
+
+// W12-2 per-lit-face lightmap directory record. `lm_qbsp` bakes one of these
+// for every face it shades; `BspFace::lightmap` indexes this directory (NOT a
+// raw page id). `pixel_offset` is a BYTE offset into the `lightmap_pixels`
+// chunk; the lumel block at that offset is `width * height` RGB16F texels
+// (3 * 2 bytes each), row-major, addressed by the face's base UV (0..1). The
+// lumels are 16-bit IEEE-754 half-floats (DESIGN.md §8.1) so the bake can carry
+// HDR irradiance; the runtime decodes them to LDR RGBA8 for the rasterizer's
+// per-draw lightmap chunk (BspDraw.h).
+struct BspFileLightmap {
+    u32 face;          // BspFace index this lumel block belongs to.
+    u32 width;         // lumels across (== face base-U span).
+    u32 height;        // lumels down  (== face base-V span).
+    u32 pixel_offset;  // BYTE offset into the lightmap_pixels chunk.
+};
+static_assert(sizeof(BspFileLightmap) == 16, "BspFileLightmap layout drift");
+
+// Sentinel stored in `BspFileFace::lightmap` when a face carries no baked
+// lightmap (full-bright). Mirrors lm_qbsp's kBspNoLightmap so an unlit blob
+// round-trips a face's flat-shaded state through the loader untouched.
+inline constexpr u32 kBspFaceNoLightmap = 0xFFFFFFFFu;
+
+// RGB16F: 3 half-float channels per lumel = 6 bytes. Matches the LightmapAtlas
+// page texel stride (LightmapAtlas.h) and DESIGN.md §8.1's "16-bit half-float
+// RGB lightmaps".
+inline constexpr u32 kBspLightmapTexelBytes = 6u;
 
 // Vertices in the .psybsp blob are a direct subset of the rasterizer Vertex
 // (position / normal / uv / lightmap_uv / packed RGBA8). We don't re-declare

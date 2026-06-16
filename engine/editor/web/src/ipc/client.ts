@@ -10,13 +10,15 @@
 // re-applied on the new socket without dropping events seen prior to the
 // disconnect.
 
-import { decode, encode } from '@msgpack/msgpack';
+import { decode, decodeMulti, encode } from '@msgpack/msgpack';
 
 import type {
     Channel,
     Envelope,
+    ProfilerFrame,
 } from './protocol';
 import { PROTOCOL_VERSION } from './protocol';
+import { opcodes as OPCODES } from './protocol.gen';
 
 export interface ClientOptions {
     /** Override the engine endpoint; default derives from window.location. */
@@ -36,6 +38,8 @@ export type ConnectionState =
 
 type Listener = (env: Envelope) => void;
 type StateListener = (state: ConnectionState) => void;
+type SceneSlice = Channel | 'perf' | 'scene';
+type PendingConsoleRequest = { id: number; quiet: boolean };
 
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS  = 8000;
@@ -53,6 +57,7 @@ export class IpcClient {
     private destroyed = false;
     private highest_seen_version = PROTOCOL_VERSION;
     private version_warned = false;
+    private pending_console_requests: PendingConsoleRequest[] = [];
 
     constructor(opts: ClientOptions = {}) {
         this.url = opts.url ?? this.default_url();
@@ -105,9 +110,9 @@ export class IpcClient {
     /** Send an envelope. Silently dropped if not connected. */
     send<T>(ch: Channel, type: string, payload: T): void {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        const env: Envelope<T> = { v: PROTOCOL_VERSION, ch, type, payload };
         try {
-            this.ws.send(encode(env));
+            const frame = this.encode_frame(ch, type, payload);
+            if (frame) this.ws.send(frame);
         } catch (err) {
             // Surface as a console message but never throw to the React tree.
             // eslint-disable-next-line no-console
@@ -196,6 +201,14 @@ export class IpcClient {
         // Strings are not part of the protocol; ignore.
         if (!buf) return;
 
+        try {
+            const parts = Array.from(decodeMulti(buf));
+            if (this.handle_opcode_frame(parts)) return;
+        } catch {
+            // Fall through to the legacy envelope decoder below; useful while
+            // browser mocks and generated engine frames coexist.
+        }
+
         let env: Envelope;
         try {
             env = decode(buf) as Envelope;
@@ -222,15 +235,164 @@ export class IpcClient {
             }
         }
 
-        const set = this.channel_listeners.get(env.ch);
-        if (!set) return;
-        for (const fn of set) {
-            try { fn(env); }
-            catch (err) {
-                // eslint-disable-next-line no-console
-                console.error('[psynder ipc] listener threw', err);
+        for (const delivery of fanout_envelopes(env)) {
+            const set = this.channel_listeners.get(delivery.ch);
+            if (!set) continue;
+            for (const fn of set) {
+                try { fn(delivery); }
+                catch (err) {
+                    // eslint-disable-next-line no-console
+                    console.error('[psynder ipc] listener threw', err);
+                }
             }
         }
+    }
+
+    private encode_frame<T>(ch: Channel, type: string, payload: T): Uint8Array | null {
+        if (type === 'subscribe') {
+            return concat_msgpack(OPCODES.SubscribeFrame, [ch]);
+        }
+        if (type === 'unsubscribe') {
+            return concat_msgpack(OPCODES.UnsubscribeFrame, [ch]);
+        }
+        if (ch === 'console' && type === 'eval') {
+            const p = payload as {
+                id?: number;
+                source?: string;
+                text?: string;
+                mode?: string;
+                quiet?: boolean;
+            };
+            const text = p.source ?? p.text ?? '';
+            const mode = p.mode === 'lua' ? 'lua' : 'console';
+            if (typeof p.id === 'number') {
+                this.pending_console_requests.push({
+                    id: p.id,
+                    quiet: p.quiet === true,
+                });
+            }
+            return concat_msgpack(OPCODES.ConsoleFrame, [
+                text,
+                mode,
+                Number(p.id ?? 0),
+                p.quiet === true,
+            ]);
+        }
+        if (ch === 'console' && type === 'complete') {
+            const p = payload as { id?: number; input?: string; cursor?: number };
+            return concat_msgpack(OPCODES.ConsoleCompletionQueryFrame, [
+                Number(p.id ?? 0),
+                p.input ?? '',
+                Number(p.cursor ?? 0),
+            ]);
+        }
+
+        // Future panels can still use the previous envelope shape until their
+        // generated opcode frames land. The current C++ server ignores these.
+        const env: Envelope<T> = { v: PROTOCOL_VERSION, ch, type, payload };
+        return encode(env);
+    }
+
+    private handle_opcode_frame(parts: unknown[]): boolean {
+        if (parts.length < 2 || typeof parts[0] !== 'number') return false;
+        const op = parts[0];
+        const body = parts[1];
+        if (op === OPCODES.WelcomeFrame) {
+            const welcome = Array.isArray(body) ? body : [];
+            const version = Number(welcome[1] ?? PROTOCOL_VERSION);
+            if (version > this.highest_seen_version) {
+                this.highest_seen_version = version;
+            }
+            return true;
+        }
+        if (op === OPCODES.ConsoleReplyFrame) {
+            const reply = Array.isArray(body) ? body : [];
+            const request = this.pending_console_requests.shift();
+            const id = request?.id ?? 0;
+            const ok = Boolean(reply[0]);
+            const text = typeof reply[1] === 'string' ? reply[1] : '';
+            if (request?.quiet && ok) return true;
+            this.handle_envelope({
+                v: PROTOCOL_VERSION,
+                ch: 'console',
+                type: 'result',
+                payload: {
+                    id,
+                    ok,
+                    text,
+                    value_kind: ok ? 'text' : 'error',
+                },
+            });
+            return true;
+        }
+        if (op === OPCODES.ConsoleCompletionReplyFrame) {
+            const reply = Array.isArray(body) ? body : [];
+            const names = Array.isArray(reply[3]) ? reply[3] : [];
+            const kinds = Array.isArray(reply[4]) ? reply[4] : [];
+            const values = Array.isArray(reply[5]) ? reply[5] : [];
+            const descriptions = Array.isArray(reply[6]) ? reply[6] : [];
+            this.handle_envelope({
+                v: PROTOCOL_VERSION,
+                ch: 'console',
+                type: 'completions',
+                payload: {
+                    id: Number(reply[0] ?? 0),
+                    start: Number(reply[1] ?? 0),
+                    end: Number(reply[2] ?? 0),
+                    items: names.map((name, index) => ({
+                        name: String(name ?? ''),
+                        kind: completion_kind(Number(kinds[index] ?? 0)),
+                        value: typeof values[index] === 'string' ? values[index] : '',
+                        description: typeof descriptions[index] === 'string'
+                            ? descriptions[index]
+                            : '',
+                    })),
+                },
+            });
+            return true;
+        }
+        if (op === OPCODES.LogFrame) {
+            const log = Array.isArray(body) ? body : [];
+            this.handle_envelope({
+                v: PROTOCOL_VERSION,
+                ch: 'console',
+                type: 'log',
+                payload: {
+                    level: level_name(Number(log[0] ?? 2)),
+                    ts: Date.now(),
+                    text: typeof log[1] === 'string' ? log[1] : '',
+                },
+            });
+            return true;
+        }
+        if (op === OPCODES.StatsFrame) {
+            const frame = profiler_frame_from_stats(body);
+            this.handle_envelope(profiler_envelope(frame));
+            return true;
+        }
+        if (op === OPCODES.SceneDeltaFrame) {
+            const env = this.decode_scene_delta_slice(body);
+            if (env) this.handle_envelope(env);
+            return true;
+        }
+        return true;
+    }
+
+    private decode_scene_delta_slice(body: unknown): Envelope | null {
+        const slice = scene_slice_name(body);
+        const payload_bytes = scene_slice_payload(body);
+        if (!slice || !payload_bytes) return null;
+
+        let decoded: unknown;
+        try {
+            decoded = decode(payload_bytes);
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(`[psynder ipc] scene slice '${slice}' payload decode failed`, err);
+            return null;
+        }
+
+        return envelope_from_scene_slice(slice, decoded);
     }
 
     private fall_back_or_retry(): void {
@@ -267,6 +429,247 @@ export class IpcClient {
         for (const fn of this.state_listeners) {
             try { fn(s); } catch { /* ignore */ }
         }
+    }
+}
+
+function concat_msgpack(op: number, body: unknown): Uint8Array {
+    const a = encode(op);
+    const b = encode(body);
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
+}
+
+function scene_slice_name(body: unknown): SceneSlice | null {
+    const raw = Array.isArray(body)
+        ? body[0]
+        : as_record(body)?.slice;
+    return is_scene_slice(raw) ? raw : null;
+}
+
+function scene_slice_payload(body: unknown): Uint8Array | null {
+    const raw = Array.isArray(body)
+        ? body[1]
+        : as_record(body)?.payload;
+    return bytes_from_wire(raw);
+}
+
+function envelope_from_scene_slice(slice: SceneSlice, decoded: unknown): Envelope | null {
+    const direct = direct_envelope(decoded);
+    if (direct) return direct;
+
+    const ch = legacy_channel_for_scene_slice(slice);
+    if (!ch) return null;
+
+    const typed = typed_payload(decoded);
+    if (typed) {
+        const payload = ch === 'profiler' && typed.type === 'frame'
+            ? profiler_frame_from_stats(typed.payload)
+            : typed.payload;
+        return { v: PROTOCOL_VERSION, ch, type: typed.type, payload };
+    }
+
+    const inferred_type = infer_scene_delta_type(ch, decoded);
+    if (!inferred_type) return null;
+    const payload = ch === 'profiler' && inferred_type === 'frame'
+        ? profiler_frame_from_stats(decoded)
+        : decoded;
+    return { v: PROTOCOL_VERSION, ch, type: inferred_type, payload };
+}
+
+function fanout_envelopes(env: Envelope): Envelope[] {
+    if (env.ch === 'stats' || env.ch === 'perf') {
+        return [env, profiler_envelope(profiler_frame_from_stats(env.payload))];
+    }
+    return [env];
+}
+
+function direct_envelope(value: unknown): Envelope | null {
+    const rec = as_record(value);
+    if (!rec) return null;
+    if (!is_channel(rec.ch) || typeof rec.type !== 'string') return null;
+    return {
+        v: typeof rec.v === 'number' ? rec.v : PROTOCOL_VERSION,
+        ch: rec.ch,
+        type: rec.type,
+        payload: rec.payload,
+    };
+}
+
+function typed_payload(value: unknown): { type: string; payload: unknown } | null {
+    const rec = as_record(value);
+    if (!rec || typeof rec.type !== 'string') return null;
+    if ('payload' in rec) return { type: rec.type, payload: rec.payload };
+
+    const payload: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(rec)) {
+        if (key !== 'type') payload[key] = item;
+    }
+    return { type: rec.type, payload };
+}
+
+function legacy_channel_for_scene_slice(slice: SceneSlice): Channel | null {
+    if (slice === 'perf') return 'profiler';
+    if (slice === 'scene') return 'scene';
+    if (slice === 'stats') return 'profiler';
+    if (slice === 'schemas'
+        || slice === 'selection'
+        || slice === 'assets'
+        || slice === 'props'
+        || slice === 'psygraph'
+        || slice === 'profiler'
+        || slice === 'console') {
+        return slice;
+    }
+    return null;
+}
+
+function infer_scene_delta_type(ch: Channel, payload: unknown): string | null {
+    if (ch === 'selection' && payload == null) return 'cleared';
+
+    const rec = as_record(payload);
+    if (!rec) return null;
+
+    if (ch === 'schemas') {
+        if (Array.isArray(rec.components)) return 'catalog';
+        if ('added' in rec || 'removed' in rec) return 'delta';
+    }
+    if (ch === 'selection') {
+        if (typeof rec.entity_id === 'number' && is_record(rec.components)) return 'state';
+        if (typeof rec.component === 'string'
+            && typeof rec.field === 'string'
+            && 'value' in rec) return 'patch';
+    }
+    if (ch === 'assets') {
+        if (Array.isArray(rec.entries)) return 'catalog';
+        if ('added' in rec || 'removed' in rec) return 'delta';
+    }
+    if (ch === 'props') {
+        if (Array.isArray(rec.props)) return 'catalog';
+    }
+    if (ch === 'psygraph') {
+        if (Array.isArray(rec.nodes) && Array.isArray(rec.links)) return 'document';
+    }
+    if (ch === 'scene') {
+        if (Array.isArray(rec.nodes) || 'entity_count' in rec) return 'hierarchy';
+    }
+    if (ch === 'profiler') {
+        if (Array.isArray(payload)
+            || 'frame' in rec
+            || 'frame_index' in rec
+            || 'cpu_ms' in rec
+            || 'render_ms' in rec) return 'frame';
+    }
+
+    return null;
+}
+
+function profiler_envelope(frame: ProfilerFrame): Envelope<ProfilerFrame> {
+    return {
+        v: PROTOCOL_VERSION,
+        ch: 'profiler',
+        type: 'frame',
+        payload: frame,
+    };
+}
+
+function profiler_frame_from_stats(value: unknown): ProfilerFrame {
+    if (Array.isArray(value)) {
+        const cpu_ms = number_from_wire(value[1]);
+        return {
+            frame: number_from_wire(value[0]),
+            cpu_ms,
+            render_ms: number_from_wire(value[2]),
+            draw_calls: number_from_wire(value[3]),
+            entities: number_from_wire(value[4]),
+            sections: [{ name: 'frame', ms: cpu_ms }],
+        };
+    }
+
+    const rec = as_record(value);
+    if (rec) {
+        const cpu_ms = number_from_wire(rec.cpu_ms);
+        const raw_sections = Array.isArray(rec.sections) ? rec.sections : [];
+        const sections = raw_sections
+            .map((s) => {
+                const sec = as_record(s);
+                if (!sec || typeof sec.name !== 'string') return null;
+                return { name: sec.name, ms: number_from_wire(sec.ms) };
+            })
+            .filter((s): s is { name: string; ms: number } => s !== null);
+        return {
+            frame: number_from_wire(rec.frame ?? rec.frame_index),
+            cpu_ms,
+            render_ms: number_from_wire(rec.render_ms),
+            draw_calls: number_from_wire(rec.draw_calls),
+            entities: number_from_wire(rec.entities),
+            sections: sections.length > 0 ? sections : [{ name: 'frame', ms: cpu_ms }],
+        };
+    }
+
+    return {
+        frame: 0,
+        cpu_ms: 0,
+        render_ms: 0,
+        draw_calls: 0,
+        entities: 0,
+        sections: [{ name: 'frame', ms: 0 }],
+    };
+}
+
+function bytes_from_wire(value: unknown): Uint8Array | null {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+        return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    return null;
+}
+
+function number_from_wire(value: unknown): number {
+    if (typeof value === 'bigint') return Number(value);
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    return 0;
+}
+
+function is_scene_slice(value: unknown): value is SceneSlice {
+    return value === 'perf' || value === 'scene' || is_channel(value);
+}
+
+function is_channel(value: unknown): value is Channel {
+    return value === 'stats'
+        || value === 'perf'
+        || value === 'schemas'
+        || value === 'selection'
+        || value === 'console'
+        || value === 'profiler'
+        || value === 'assets'
+        || value === 'props'
+        || value === 'psygraph';
+}
+
+function as_record(value: unknown): Record<string, unknown> | null {
+    return is_record(value) ? value : null;
+}
+
+function is_record(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function completion_kind(kind: number): 'cvar' | 'command' | 'value' {
+    if (kind === 1) return 'command';
+    if (kind === 2) return 'value';
+    return 'cvar';
+}
+
+function level_name(level: number): 'trace' | 'debug' | 'info' | 'warn' | 'error' {
+    switch (level) {
+        case 0: return 'trace';
+        case 1: return 'debug';
+        case 3: return 'warn';
+        case 4: return 'error';
+        default: return 'info';
     }
 }
 

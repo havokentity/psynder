@@ -11,7 +11,7 @@
 //   - Favourites: AddFavorite + fN magic dispatch + in-range / out-of-range.
 //   - History: PushHistory dedupe, kMaxHistoryDepth cap.
 //   - Bracket-batch via QueueExecute / Drain.
-//   - SaveArchivedCvars writes only CVAR_ARCHIVE cvars that diverged from
+//   - SaveArchivedCvars writes only archived cvars that diverged from
 //     default; LoadFromFile reads them back.
 //   - requires_predicate warning fires on interactive Execute.
 //
@@ -94,9 +94,9 @@ TEST_CASE("Cvar allowed_values gate rejects unknown values", "[core][console][cv
     REQUIRE(cv->value == "metalfx");
 }
 
-TEST_CASE("Cvar CVAR_READONLY blocks writes", "[core][console][cvar]") {
+TEST_CASE("Cvar read-only flag blocks writes", "[core][console][cvar]") {
     auto& C = cn::Console::Get();
-    C.RegisterCVar("test_engine_version", "0.1.0", "build version", cn::CVAR_READONLY);
+    C.RegisterCVar("test_engine_version", "0.1.0", "build version", cn::CVarFlags::ReadOnly);
     auto bad = C.Execute("test_engine_version 9.9.9");
     REQUIRE_FALSE(bad.ok);
     REQUIRE(bad.error.find("read-only") != std::string::npos);
@@ -234,8 +234,8 @@ TEST_CASE("Bracket-batch collects then commits as one undo step", "[core][consol
 TEST_CASE("SaveArchivedCvars writes only diverged-from-default archive cvars",
           "[core][console][archive]") {
     auto& C = cn::Console::Get();
-    C.RegisterCVar("test_archive_kept", "5", "archived numeric", cn::CVAR_ARCHIVE);
-    C.RegisterCVar("test_archive_default", "5", "archived but at default", cn::CVAR_ARCHIVE);
+    C.RegisterCVar("test_archive_kept", "5", "archived numeric", cn::CVarFlags::Archive);
+    C.RegisterCVar("test_archive_default", "5", "archived but at default", cn::CVarFlags::Archive);
     C.RegisterCVar("test_archive_volatile", "tmp", "not archived");
     C.SetCVarOverride("test_archive_kept", "42");
     C.SetCVarOverride("test_archive_volatile", "modified");

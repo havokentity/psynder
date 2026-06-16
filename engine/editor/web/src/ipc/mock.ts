@@ -11,8 +11,10 @@ import type {
     AssetEntry,
     ComponentSchema,
     ConsoleLog,
+    ConsoleResult,
     Envelope,
     ProfilerFrame,
+    PsyGraphDocument,
     PropCatalog,
     PropEntry,
     SchemaCatalog,
@@ -26,7 +28,7 @@ const DEMO_SCHEMAS: ComponentSchema[] = [
         layout_hash: 'mock-transform-v1',
         fields: [
             { name: 'position', kind: 'vec3', numeric: { step: 0.01, unit: 'm' } },
-            { name: 'rotation', kind: 'quat' },
+            { name: 'rotation', kind: 'vec3', numeric: { step: 0.1, unit: 'deg' } },
             { name: 'scale',    kind: 'vec3', numeric: { step: 0.01, min: 0.001 } },
         ],
     },
@@ -69,7 +71,7 @@ const DEMO_SELECTION: SelectionState = {
     components: {
         Transform: {
             position: [1.5, 0.0, -3.25],
-            rotation: [0, 0, 0, 1],
+            rotation: [0, 0, 0],
             scale: [1, 1, 1],
         },
         Visible: {
@@ -135,11 +137,219 @@ const DEMO_PROPS: PropEntry[] = [
     { id: 'computer',     name: 'Computer',       category: 'furniture', thumbnail_url: tile_thumb('pc', '#9a9a9a'),    tags: ['interior', 'electronics'] },
 ];
 
+const DEMO_PSYGRAPH: PsyGraphDocument = {
+    id: 'crate-spin',
+    name: 'CrateSpin',
+    source_path: 'samples/02_textured_quad/assets/behaviors/crate_spin.psyscript',
+    target_group: 'crates',
+    nodes: [
+        {
+            id: 'on_update',
+            op: 'on_update',
+            title: 'On Update',
+            x: 56,
+            y: 96,
+            inputs: [],
+            outputs: [{ id: 'flow', label: 'flow', kind: 'flow' }],
+            values: {},
+        },
+        {
+            id: 'spin_crates',
+            op: 'spin',
+            title: 'Transform Spin',
+            x: 324,
+            y: 76,
+            inputs: [
+                { id: 'flow', label: 'flow', kind: 'flow' },
+                { id: 'axis', label: 'axis', kind: 'vec3' },
+                { id: 'speed', label: 'speed', kind: 'float' },
+            ],
+            outputs: [{ id: 'flow', label: 'flow', kind: 'flow' }],
+            values: {
+                axis: [0, 1, 0],
+                speed: { type: 'linearIndex', base: 0.35, step: 0.12 },
+                phase: { type: 'constant', value: 0 },
+                targetGroup: 'crates',
+            },
+        },
+        {
+            id: 'compiled_op',
+            op: 'compiled_behavior_op',
+            title: 'Cooked SoA Op',
+            x: 640,
+            y: 104,
+            inputs: [{ id: 'flow', label: 'flow', kind: 'flow' }],
+            outputs: [],
+            values: {
+                chunk: 'BehaviorSpinOps',
+                runtime: 'Scene::SpinBehaviorSoA',
+            },
+        },
+    ],
+    links: [
+        {
+            id: 'update_to_spin',
+            from_node: 'on_update',
+            from_pin: 'flow',
+            to_node: 'spin_crates',
+            to_pin: 'flow',
+        },
+        {
+            id: 'spin_to_compiled',
+            from_node: 'spin_crates',
+            from_pin: 'flow',
+            to_node: 'compiled_op',
+            to_pin: 'flow',
+        },
+    ],
+    diagnostics: [
+        { level: 'info', text: 'PsyGraph mock: compiles to one packed spin op.' },
+    ],
+};
+
 export interface MockDriver {
     stop(): void;
 }
 
 type Deliver = (env: Envelope) => void;
+
+export interface MockConsoleReply {
+    logs: ConsoleLog[];
+    result: ConsoleResult;
+}
+
+function summarize_command(source: string): string {
+    const one_line = source.replace(/\s+/g, ' ').trim();
+    return one_line.length > 80 ? `${one_line.slice(0, 77)}...` : one_line;
+}
+
+/** Deterministic offline reply for console commands sent while IPC is mocked. */
+export function mock_console_eval(id: number, source: string): MockConsoleReply {
+    const now = Date.now();
+    const command = source.trim();
+    const normalized = command.toLowerCase();
+    const logs: ConsoleLog[] = [
+        {
+            level: 'debug',
+            ts: now,
+            tag: 'mock-repl',
+            text: `accepted #${id}: ${summarize_command(command)}`,
+        },
+    ];
+
+    if (normalized === 'help' || normalized === '?') {
+        return {
+            logs,
+            result: {
+                id,
+                ok: true,
+                duration_ms: 1.2,
+                value_kind: 'text',
+                text: [
+                    'mock console commands:',
+                    '  help',
+                    '  getpos',
+                    '  selection',
+                    '  spawn <prop_id>',
+                    '  echo <text>',
+                ].join('\n'),
+            },
+        };
+    }
+
+    if (normalized === 'getpos') {
+        return {
+            logs,
+            result: {
+                id,
+                ok: true,
+                duration_ms: 0.8,
+                value_kind: 'table',
+                text: '{ x = 1.500, y = 0.000, z = -3.250 }',
+            },
+        };
+    }
+
+    if (normalized === 'selection') {
+        return {
+            logs,
+            result: {
+                id,
+                ok: true,
+                duration_ms: 0.9,
+                value_kind: 'table',
+                text: 'entity 0x427: crate_red.01 (Transform, Visible, RigidBody)',
+            },
+        };
+    }
+
+    if (normalized.startsWith('spawn ')) {
+        const prop_id = command.slice(6).trim() || '<missing>';
+        logs.push({
+            level: prop_id === '<missing>' ? 'warn' : 'info',
+            ts: now + 1,
+            tag: 'mock-scene',
+            text: prop_id === '<missing>'
+                ? 'spawn requested without a prop id'
+                : `queued spawn for prop '${prop_id}'`,
+        });
+        return {
+            logs,
+            result: {
+                id,
+                ok: prop_id !== '<missing>',
+                duration_ms: 2.4,
+                value_kind: prop_id === '<missing>' ? 'error' : 'text',
+                text: prop_id === '<missing>'
+                    ? 'usage: spawn <prop_id>'
+                    : `mock entity spawned from '${prop_id}'`,
+            },
+        };
+    }
+
+    if (normalized.startsWith('echo ')) {
+        return {
+            logs,
+            result: {
+                id,
+                ok: true,
+                duration_ms: 0.5,
+                value_kind: 'string',
+                text: command.slice(5),
+            },
+        };
+    }
+
+    if (normalized.includes('error') || normalized.includes('throw')) {
+        logs.push({
+            level: 'error',
+            ts: now + 1,
+            tag: 'mock-lua',
+            text: 'mock evaluator raised a scripted error',
+        });
+        return {
+            logs,
+            result: {
+                id,
+                ok: false,
+                duration_ms: 1.6,
+                value_kind: 'error',
+                text: `mock error while evaluating: ${summarize_command(command)}`,
+            },
+        };
+    }
+
+    return {
+        logs,
+        result: {
+            id,
+            ok: true,
+            duration_ms: 1.0,
+            value_kind: 'text',
+            text: `mock ok: ${summarize_command(command)}`,
+        },
+    };
+}
 
 /** Start emitting demo frames into a listener. Caller owns the lifetime. */
 export function start_mock(deliver: Deliver): MockDriver {
@@ -164,6 +374,7 @@ export function start_mock(deliver: Deliver): MockDriver {
     send({ v: PROTOCOL_VERSION, ch: 'assets', type: 'catalog', payload: asset_catalog });
     const prop_catalog: PropCatalog = { props: DEMO_PROPS };
     send({ v: PROTOCOL_VERSION, ch: 'props', type: 'catalog', payload: prop_catalog });
+    send({ v: PROTOCOL_VERSION, ch: 'psygraph', type: 'document', payload: DEMO_PSYGRAPH });
 
     // ── Profiler — emulate a 60 Hz frame stream ─────────────────────────
     let frame_idx = 0;
@@ -175,7 +386,7 @@ export function start_mock(deliver: Deliver): MockDriver {
         const wiggle = (a: number, b: number) =>
             a + b * Math.sin(t * (1 + a * 0.13));
         const cpu = 5.5 + wiggle(0.3, 1.6);
-        const gpu = 1.1 + wiggle(0.5, 0.4);
+        const render = 1.1 + wiggle(0.5, 0.4);
         const sections = [
             { name: 'scene',    ms: 0.4 + wiggle(0.1, 0.2) },
             { name: 'render',   ms: cpu * 0.55 },
@@ -186,7 +397,7 @@ export function start_mock(deliver: Deliver): MockDriver {
         const frame: ProfilerFrame = {
             frame: frame_idx,
             cpu_ms: cpu,
-            gpu_ms: gpu,
+            render_ms: render,
             sections,
         };
         send({ v: PROTOCOL_VERSION, ch: 'profiler', type: 'frame', payload: frame });
@@ -233,4 +444,9 @@ export function mock_assets(): AssetCatalog {
 /** Synchronously generate the mock prop catalog. */
 export function mock_props(): PropCatalog {
     return { props: DEMO_PROPS };
+}
+
+/** Synchronously generate the mock PsyGraph behavior document. */
+export function mock_psygraph(): PsyGraphDocument {
+    return DEMO_PSYGRAPH;
 }

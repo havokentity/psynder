@@ -330,7 +330,7 @@ def emit_ts(proto: Protocol) -> str:
     P = out.append
     P("// SPDX-License-Identifier: MIT")
     P("// AUTO-GENERATED — do not edit. Source: engine/editor/ipc/protocol.psy")
-    P("// Regenerate via the CMake custom-command in engine/editor/ipc/CMakeLists.txt.")
+    P("// Regenerate via CMake or `npm run gen:ipc` in engine/editor/web.")
     P("")
     P(f"export const kProtocolVersion = {proto.version};")
     P("")
@@ -365,23 +365,20 @@ def emit_ts(proto: Protocol) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="protocol.psy")
-    ap.add_argument("--cpp-out", required=True, help="path to Protocol.gen.h")
-    ap.add_argument("--ts-out", required=True, help="path to protocol.gen.ts")
+    ap.add_argument("--cpp-out", help="path to Protocol.gen.h")
+    ap.add_argument("--ts-out", help="path to protocol.gen.ts")
     args = ap.parse_args()
+    if not args.cpp_out and not args.ts_out:
+        ap.error("at least one of --cpp-out or --ts-out is required")
     try:
         proto = parse(args.input)
     except ParseError as e:
         print(f"psyidl: {e}", file=sys.stderr)
         return 1
 
-    cpp_src = emit_cpp(proto)
-    ts_src = emit_ts(proto)
-
-    os.makedirs(os.path.dirname(os.path.abspath(args.cpp_out)), exist_ok=True)
-    os.makedirs(os.path.dirname(os.path.abspath(args.ts_out)), exist_ok=True)
-
     # Only rewrite on change so CMake's custom-command doesn't churn.
     def write_if_changed(path: str, content: str) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 if fh.read() == content:
@@ -391,8 +388,10 @@ def main() -> int:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(content)
 
-    write_if_changed(args.cpp_out, cpp_src)
-    write_if_changed(args.ts_out, ts_src)
+    if args.cpp_out:
+        write_if_changed(args.cpp_out, emit_cpp(proto))
+    if args.ts_out:
+        write_if_changed(args.ts_out, emit_ts(proto))
     return 0
 
 

@@ -36,12 +36,12 @@ namespace {
 PSY_CVAR(r_motion_blur_strength,
          "1.0",
          "Camera motion-blur shutter scale (0=off, 1=normal). Per-call strength multiplies on top.",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 
 PSY_CVAR(r_motion_blur_max_pixel,
          "32.0",
          "Per-pixel clamp on motion-blur velocity magnitude (pixels).",
-         console::CVAR_ARCHIVE);
+         console::CVarFlags::Archive);
 
 f32 cvar_strength() noexcept {
     if (const auto* cv = console::Console::Get().FindCVar("r_motion_blur_strength")) {

@@ -5,7 +5,7 @@
 // mirror and saturated-diffuse spheres plus a couple of boxes, all built as
 // `render::rt::Bvh8` BLAS instances inside one `render::rt::Tlas`. Two point
 // lights orbit the room. The sample hands its TLAS, materials, reflectivity,
-// camera, and lights to the hybrid scene renderer, which owns the primary
+// camera, and lights to the hybrid rendering system, which owns the primary
 // pass, shadow packets, optional single-bounce reflections, and upsample.
 //
 // Navigation is the shared `psynder::samples::CharacterController`: FreeCam by
@@ -31,11 +31,9 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/console/ConsoleOverlay.h"
-#include "ui/imm/DebugHud.h"
 
 #include <algorithm>
 #include <array>
@@ -225,7 +223,7 @@ platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     return desc;
 }
 
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
     const u32 smoke_frames = args.smoke_frames;
     render::rt::ensure_frame_scheduler_console_registered();
@@ -238,10 +236,13 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     // room shell. Per-instance placement + scale lives on the TLAS
     // InstanceDesc; the material is keyed off the instance index.
     std::vector<render::rt::Triangle> sphere_tris;
+    sphere_tris.reserve(2u * 24u * (14u - 1u));
     emit_unit_sphere(sphere_tris, /*stacks=*/14, /*slices=*/24);
     std::vector<render::rt::Triangle> cube_tris;
+    cube_tris.reserve(12);
     emit_unit_cube(cube_tris);
     std::vector<render::rt::Triangle> room_tris;
+    room_tris.reserve(10);
     emit_room(room_tris, kRoomHalf, kWallHeight);
 
     render::rt::Bvh8 sphere_blas;
@@ -262,6 +263,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     };
 
     std::vector<InstanceInfo> scene;
+    scene.reserve(11);
     // 8 spheres in a loose ring + 1 big mirror in the middle.
     scene.push_back(
         {&sphere_blas, {0.0f, 1.3f, 0.0f}, 1.3f, {0.95f, 0.95f, 0.97f, 0.92f}});  // hero mirror
@@ -299,8 +301,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         material.albedo_rgba8 =
             pack_rgba8(clamp_u8(m.r * 255.0f), clamp_u8(m.g * 255.0f), clamp_u8(m.b * 255.0f));
         material.reflectivity = m.reflectivity;
-        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
-                         render::Material_ReceivesRtShadow;
+        material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::CastsRtShadow |
+                         render::MaterialFlags::ReceivesRtShadow;
         instance_materials[i] = material_library.create(material);
     }
 
@@ -309,9 +311,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     // -- CPU framebuffer + shared RT renderer. -----------------------------
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::Framebuffer& fb = app_host.framebuffer();
-    render::SceneRenderer renderer;
-    ui::imm::DebugHudFrameHistory hud_history{};
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     // -- Shared first-person / free-cam controller (samples/common). ------
     samples::CharacterControllerConfig cc_cfg{};
@@ -331,24 +331,15 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     auto* input = platform::input();
     const u64 t0 = platform::Clock::ticks_now();
     u64 last_ticks = t0;
-    u64 prev_frame_ticks = t0;
     u32 frame = 0;
     const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
-    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
     std::array<Light, kNumLights> lights{};
 
     while (!window->should_close()) {
         window->poll_events();
 
         const u64 now_ticks = platform::Clock::ticks_now();
-        const f32 frame_ms =
-            smoke_frames > 0
-                ? kSmokeFrameMs
-                : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
-        prev_frame_ticks = now_ticks;
-        hud_history.push(frame_ms);
-
-        if (input && input->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+        if (input && input->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             PSY_LOG_INFO("sample_11: escape pressed, exiting");
             break;
         }
@@ -359,7 +350,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now_ticks - last_ticks)));
         last_ticks = now_ticks;
 
-        const editor::Mode edit_mode = input ? editor::sample_step(*input, fb, dt) : editor::Mode::Play;
+        const editor::Mode edit_mode = app_host.engine_frame_update(dt);
 
         f64 t;
         if (edit_mode == editor::Mode::Edit) {
@@ -373,7 +364,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
             controller.set_look(yaw, -0.18f);
         } else {
             t = platform::Clock::seconds(now_ticks - t0);
-            if (input && !ui::console::is_open())
+            if (input && !editor::overlays_capturing())
                 controller.update(*input, dt);
         }
 
@@ -401,9 +392,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(70, 70, 80);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
-        ui::console::draw(fb);
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (smoke_frames > 0) {
             const math::Vec3 eye = controller.eye();
@@ -439,7 +429,7 @@ struct RtSpheresSample {
     }
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 

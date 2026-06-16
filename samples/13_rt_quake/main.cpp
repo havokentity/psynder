@@ -7,7 +7,7 @@
 // triangle list, packed into a `render::rt::Bvh8` BLAS, and referenced once
 // from a `render::rt::Tlas`. Two point lights (one per room) light the
 // interior. The sample hands its TLAS, per-triangle materials, camera, and
-// lights to the hybrid scene renderer, which casts primary rays and 8-wide
+// lights to the hybrid rendering system, which casts primary rays and 8-wide
 // shadow packets through the SAME room BVH, so the dividing wall + doorway
 // cast real shadows between the two rooms.
 //
@@ -33,11 +33,9 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/console/ConsoleOverlay.h"
-#include "ui/imm/DebugHud.h"
 
 #include <algorithm>
 #include <array>
@@ -137,6 +135,11 @@ void push_quad(RoomGeo& g,
 }
 
 void build_room(RoomGeo& g) {
+    constexpr u32 kQuadCount = 18;
+    g.tris.reserve(2u * kQuadCount);
+    g.normals.reserve(2u * kQuadCount);
+    g.colors.reserve(2u * kQuadCount);
+
     constexpr f32 kFloorY = 0.0f;
     constexpr f32 kCeilY = 3.0f;
     constexpr f32 kRoomAZ0 = -8.0f;  // back wall of room A
@@ -353,7 +356,7 @@ platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     return desc;
 }
 
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
     const u32 smoke_frames = args.smoke_frames;
     render::rt::ensure_frame_renderer_console_registered();
@@ -385,9 +388,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     controller.set_look(0.0f, 0.0f);
 
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::Framebuffer& fb = app_host.framebuffer();
-    render::SceneRenderer renderer;
-    ui::imm::DebugHudFrameHistory hud_history{};
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 13 running{}",
                  smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)
@@ -395,11 +396,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
     const u64 t0 = platform::Clock::ticks_now();
     u64 last_ticks = t0;
-    u64 prev_frame_ticks = t0;
     u32 frame = 0;
     const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
     constexpr f32 kFovY = 70.0f * math::kDegToRad;
-    constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
 
     std::array<Light, kNumLights> lights{};
     make_lights(lights);
@@ -408,15 +407,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         window->poll_events();
 
         const u64 now_ticks = platform::Clock::ticks_now();
-        const f32 frame_ms =
-            smoke_frames > 0
-                ? kSmokeFrameMs
-                : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
-        prev_frame_ticks = now_ticks;
-        hud_history.push(frame_ms);
-
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             PSY_LOG_INFO("sample_13: escape pressed, exiting");
             break;
         }
@@ -428,13 +420,13 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now_ticks - last_ticks)));
         last_ticks = now_ticks;
 
-        const editor::Mode edit_mode = input ? editor::sample_step(*input, fb, dt) : editor::Mode::Play;
+        const editor::Mode edit_mode = app_host.engine_frame_update(dt);
         if (smoke_frames > 0) {
             const f32 phase = static_cast<f32>(frame) / 60.0f;
             const f32 t01 = std::clamp(phase, 0.0f, 1.0f);
             controller.set_position({0.0f, room.floor_y + cc_cfg.eye_height, -5.0f + 8.0f * t01});
             controller.set_look(0.0f, 0.0f);
-        } else if (edit_mode != editor::Mode::Edit && input && !ui::console::is_open()) {
+        } else if (edit_mode != editor::Mode::Edit && input && !editor::overlays_capturing()) {
             controller.update(*input, dt);
         }
 
@@ -457,9 +449,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(140, 140, 150);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
-        ui::console::draw(fb);
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {
@@ -480,7 +471,7 @@ struct RtQuakeSample {
     }
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 

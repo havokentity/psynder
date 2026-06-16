@@ -519,7 +519,10 @@ void print_help() {
                  "\n"
                  "Notes:\n"
                  "  - FNV-1a 64-bit hash indexes the file table (case-insensitive paths).\n"
-                 "  - --zstd compresses each entry independently when supported by the build.\n"
+                 "  - --zstd is RESERVED: per-entry zstd is not yet implemented in this\n"
+                 "    tool, so entries are stored raw and the flag is ignored. (The\n"
+                 "    runtime Vfs reader already decompresses zstd paks; only the offline\n"
+                 "    pack/unpack wiring is pending — it needs a tool-side decompressor.)\n"
                  "  - Reads can be performed via lane 05's Vfs::mount_pak once that lands.\n");
 }
 
@@ -538,6 +541,16 @@ int cmd_pack(int argc, char** argv) {
         } else if (a == "--level" && i + 1 < argc) {
             opt.zstd_level = static_cast<u32>(std::atoi(argv[++i]));
         }
+    }
+    // Honesty guard: --zstd is advertised but per-entry compression isn't wired
+    // in this tool yet (maybe_compress is a raw passthrough). Rather than
+    // silently storing raw while claiming success, tell the user and clear the
+    // flag so the on-disk archive is never marked compressed.
+    if (opt.compress) {
+        std::fprintf(stderr,
+                     "lm_pak: warning: --zstd is not yet implemented in this tool; "
+                     "storing entries raw.\n");
+        opt.compress = false;
     }
     auto r = pack_directory(argv[2], argv[3], opt);
     if (!r.ok) {

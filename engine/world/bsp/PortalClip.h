@@ -60,8 +60,7 @@ bool portal_visible_from_eye(const BspPortal& portal, math::Vec3 eye);
 // front of every plane.) Exposed for tests.
 bool point_in_frustum(const PortalFrustum& f, math::Vec3 p);
 
-// Upper bound for plane storage in a clipped frustum. Side planes are added
-// per portal edge; we cap at this many to keep the per-leaf state cheap.
-inline constexpr u32 kMaxFrustumPlanes = 16;
+// kMaxFrustumPlanes (the clip plane cap) now lives in Portal.h next to
+// PortalFrustum so the array size and the cap stay a single source of truth.
 
 }  // namespace psynder::world::bsp

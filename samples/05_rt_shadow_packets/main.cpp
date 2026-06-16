@@ -3,7 +3,7 @@
 //
 // The scene: a dark ground plane and five colored cubes scattered around it,
 // lit by three orbiting point lights (red / green / blue). The sample hands
-// its TLAS, camera, lights, and instance colors to the hybrid scene renderer;
+// its TLAS, camera, lights, and instance colors to the hybrid rendering system;
 // the engine owns primary visibility, 8-wide shadow packets, lighting, and
 // upsample. The skybox is a vertical gradient.
 //
@@ -24,11 +24,9 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/console/ConsoleOverlay.h"
-#include "ui/imm/DebugHud.h"
 
 #include <algorithm>
 #include <array>
@@ -188,7 +186,7 @@ platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     return desc;
 }
 
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
     const u32 smoke_frames = args.smoke_frames;
     render::rt::ensure_frame_renderer_console_registered();
@@ -199,9 +197,11 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     std::array<CubeInstance, kNumCubes> cube_instances = make_cube_instances();
 
     std::vector<render::rt::Triangle> cube_tris;
+    cube_tris.reserve(12);
     emit_unit_cube(cube_tris);
 
     std::vector<render::rt::Triangle> ground_tris;
+    ground_tris.reserve(2);
     emit_ground(ground_tris, /*half=*/8.0f);
 
     render::rt::Bvh8 cube_blas;
@@ -219,24 +219,22 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         render::MaterialDesc material{};
         material.albedo_rgba8 = cube_instances[i].color;
-        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
-                         render::Material_ReceivesRtShadow;
+        material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::CastsRtShadow |
+                         render::MaterialFlags::ReceivesRtShadow;
         instance_materials[i] = materials.create(material);
     }
     insts[kNumCubes].blas = &ground_blas;
     insts[kNumCubes].transform = math::identity4();
     render::MaterialDesc ground_material{};
     ground_material.albedo_rgba8 = pack_rgba8(60, 60, 70);
-    ground_material.flags = render::Material_RtVisible | render::Material_ReceivesRtShadow;
+    ground_material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::ReceivesRtShadow;
     instance_materials[kNumCubes] = materials.create(ground_material);
 
     render::rt::Tlas tlas;
     tlas.build(insts.data(), static_cast<u32>(insts.size()));
 
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::Framebuffer& fb = app_host.framebuffer();
-    render::SceneRenderer renderer;
-    ui::imm::DebugHudFrameHistory hud_history{};
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 05 running{}",
                  smoke_frames > 0 ? fmt::format(" -- smoke mode, {} frames", smoke_frames)
@@ -258,16 +256,14 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 ? kSmokeFrameMs
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
-        hud_history.push(frame_ms);
 
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
         const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb, frame_ms * 0.001f)
-                              : editor::Mode::Play;
+            app_host.engine_frame_update(frame_ms * 0.001f);
         const f64 t = (edit_mode == editor::Mode::Edit) ? 0.0
                       : smoke_frames > 0
                           ? static_cast<f64>(frame) * (1.0 / 60.0)
@@ -290,9 +286,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         rt_input.materials.default_rgba8 = pack_rgba8(60, 60, 70);
         renderer.render_rt(rt_input, rt_config, final_pixels.data());
 
-        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
-        ui::console::draw(fb);
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {
@@ -313,7 +308,7 @@ struct RtShadowPacketsSample {
     }
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 

@@ -34,6 +34,9 @@ struct VehicleWheel {
 };
 
 struct Vehicle {
+    // Full chassis BodyId.raw (index + generation). step_vehicles resolves it
+    // with a gen check each tick so a destroyed/recycled chassis is skipped
+    // rather than driving a different body.
     u32 chassis_body = 0;
     std::vector<VehicleWheel> wheels;
 
@@ -59,10 +62,29 @@ struct Vehicle {
     // ─── Ground contact ───────────────────────────────────────────────
     // Flat ground-plane height (world Y) used by the per-wheel suspension
     // raycast. Default 0. Set via vehicle::set_ground_plane(). The sample-04
-    // oval track is flat; elevated terrain would swap this scalar for a
-    // height-query hook (function pointer + void* user) so the 120 Hz loop
-    // stays free of virtual / std::function dispatch.
+    // oval track is flat.
     f32 ground_y = 0.0f;
+
+    // Elevated/sloped terrain path (set via vehicle::set_ground_heightfield).
+    // ADR: per-wheel terrain height is sampled through a BORROWED host
+    // callback (function pointer + void* user) rather than a per-wheel
+    // World::raycast. Rationale: (1) the demo/editor terrain is a regular grid
+    // heightfield with an O(1) bilinear height(x,z) — no march needed; (2) a
+    // downward World::raycast would self-hit the dynamic chassis/wheel bodies
+    // and only supports ONE `ignore` body, and Heightfield/TriangleMesh shapes
+    // currently raycast against an OBB fallback (not the real surface), so it
+    // could not contact the terrain anyway; (3) function-pointer + void* keeps
+    // the 120 Hz suspension loop free of heap alloc, std::function, and virtual
+    // dispatch, and keeps the probe deterministic. Null fn → flat ground_y.
+    f32 (*terrain_fn)(void*, f32, f32) = nullptr;
+    void* terrain_user = nullptr;
+
+    // ─── Speed governor + steering authority (#58) ─────────────────────
+    // max_speed_mps == 0 disables the governor (legacy unclamped behaviour).
+    f32 max_speed_mps = 0.0f;
+    f32 steer_full_speed = 0.0f;     // m/s: full authority at/below this
+    f32 steer_taper_speed = 0.0f;    // m/s: min authority at/above this
+    f32 steer_min_authority = 1.0f;  // 0..1 authority at high speed
 
     // ─── Persistent drivetrain state ──────────────────────────────────
     f32 engine_rpm = 800.0f;  // idle by default
@@ -71,7 +93,11 @@ struct Vehicle {
     // `engine_max_torque`. Wave B reads from the curve.
     f32 engine_max_torque = 400.0f;
 
+    // `gen` is the slot's current generation (1..255, never 0), preserved
+    // across destroy and bumped on reuse so a stale VehicleId fails the decode
+    // equality check. `alive` marks a live slot vs a hole.
     u32 gen = 1;
+    bool alive = false;
 };
 
 struct VehicleWorld {
@@ -79,6 +105,12 @@ struct VehicleWorld {
     std::vector<u32> free_slots;
 };
 
+// The per-world vehicle sub-state now lives inside WorldImpl (one per World
+// instance) — there is no longer a vehicle_world() file-static singleton.
+// detail::vehicle_world() is the LEGACY default-world accessor: it returns
+// World::Get()'s vehicle sub-world (defined in World.cpp). Re-declared here —
+// in addition to WorldImpl.h — so callers that include only this header keep
+// compiling UNCHANGED.
 VehicleWorld& vehicle_world();
 
 // Per-vehicle solver step (defined in Vehicle.cpp). Runs once per fixed

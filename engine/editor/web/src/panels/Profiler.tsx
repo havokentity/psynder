@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Psynder editor — Profiler panel. Streams per-frame samples from the engine
 // over the `profiler` channel and renders them as:
-//   1. a scrolling cpu/gpu line strip chart (top), and
+//   1. a scrolling cpu/render line strip chart (top), and
 //   2. a per-subsystem stacked-bar strip showing where each frame's CPU
 //      budget went (render/physics/audio/ui/…) — Wave B addition, mirroring
 //      the in-engine immediate-mode allocator heatmap idea from DESIGN.md
@@ -26,8 +26,9 @@ const BAD_MS    = 33.3;   // 30 Hz threshold — bar color flips warning red.
 const STACK_PALETTE = ['#5fb0ff', '#f49a4b', '#6dd49e', '#c98ee0', '#f6c244', '#e16a6a', '#7dc7d8'];
 
 interface Sample {
+    frame: number;
     cpu_ms: number;
-    gpu_ms: number;
+    render_ms: number;
     /** Per-subsystem breakdown for this frame — drives the stacked-bar strip. */
     sections: ProfilerSection[];
 }
@@ -59,16 +60,22 @@ export function Profiler() {
     React.useEffect(() => {
         const unsub = client.subscribe('profiler', (env: Envelope) => {
             if (env.type !== 'frame' || paused) return;
-            const frame = env.payload as ProfilerFrame;
+            const frame = merge_profiler_frame(latest_ref.current, normalize_profiler_frame(env.payload));
             latest_ref.current = frame;
             const ring = ring_ref.current;
-            ring.push({
+            const sample = {
+                frame: frame.frame,
                 cpu_ms: frame.cpu_ms,
-                gpu_ms: frame.gpu_ms,
+                render_ms: frame.render_ms,
                 // Defensive copy — protocol envelopes are nominally immutable
                 // but we don't trust upstream code to keep them that way.
                 sections: frame.sections.map((s) => ({ name: s.name, ms: s.ms })),
-            });
+            };
+            if (ring.length > 0 && ring[ring.length - 1].frame === sample.frame) {
+                ring[ring.length - 1] = sample;
+            } else {
+                ring.push(sample);
+            }
             if (ring.length > HISTORY) ring.splice(0, ring.length - HISTORY);
         });
         return unsub;
@@ -76,7 +83,11 @@ export function Profiler() {
 
     React.useEffect(() => {
         const unsub = client.on_state((s) => {
-            if (s === 'open') client.send('profiler', 'subscribe', {});
+            if (s === 'open') {
+                client.send('profiler', 'subscribe', {});
+                client.send('stats', 'subscribe', {});
+                client.send('perf', 'subscribe', {});
+            }
         });
         return unsub;
     }, [client]);
@@ -136,7 +147,7 @@ export function Profiler() {
                 />
                 <div className="psy-profiler-legend">
                     <span className="psy-legend-swatch is-cpu" /> cpu
-                    <span className="psy-legend-swatch is-gpu" /> gpu
+                    <span className="psy-legend-swatch is-render" /> render
                     <span className="psy-legend-swatch is-target" /> 16.6 ms
                 </div>
             </div>
@@ -161,6 +172,53 @@ export function Profiler() {
     );
 }
 
+function normalize_profiler_frame(payload: unknown): ProfilerFrame {
+    const rec = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+        ? payload as Record<string, unknown>
+        : {};
+    const cpu_ms = number_value(rec.cpu_ms);
+    const raw_sections = Array.isArray(rec.sections) ? rec.sections : [];
+    const sections = raw_sections
+        .map((section) => {
+            if (typeof section !== 'object' || section === null || Array.isArray(section)) {
+                return null;
+            }
+            const s = section as Record<string, unknown>;
+            if (typeof s.name !== 'string') return null;
+            return { name: s.name, ms: number_value(s.ms) };
+        })
+        .filter((s): s is ProfilerSection => s !== null);
+
+    return {
+        frame: number_value(rec.frame ?? rec.frame_index),
+        cpu_ms,
+        render_ms: number_value(rec.render_ms),
+        draw_calls: number_value(rec.draw_calls),
+        entities: number_value(rec.entities),
+        sections: sections.length > 0 ? sections : [{ name: 'frame', ms: cpu_ms }],
+    };
+}
+
+function merge_profiler_frame(previous: ProfilerFrame | null, incoming: ProfilerFrame): ProfilerFrame {
+    if (!previous || previous.frame !== incoming.frame) return incoming;
+    if (has_rich_sections(incoming.sections)) return incoming;
+    if (!has_rich_sections(previous.sections)) return incoming;
+    return {
+        ...incoming,
+        sections: previous.sections.map((s) => ({ name: s.name, ms: s.ms })),
+    };
+}
+
+function has_rich_sections(sections: ProfilerSection[]): boolean {
+    return sections.length > 1 || sections.some((s) => s.name !== 'frame');
+}
+
+function number_value(value: unknown): number {
+    if (typeof value === 'bigint') return Number(value);
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    return 0;
+}
+
 function FrameStats({ frame }: { frame: ProfilerFrame | null }) {
     if (!frame) {
         return <div className="psy-empty">Waiting for first frame…</div>;
@@ -169,8 +227,10 @@ function FrameStats({ frame }: { frame: ProfilerFrame | null }) {
         <ul className="psy-stats-grid">
             <li><span>frame</span><code>{frame.frame}</code></li>
             <li><span>cpu</span><code>{frame.cpu_ms.toFixed(2)} ms</code></li>
-            <li><span>gpu</span><code>{frame.gpu_ms.toFixed(2)} ms</code></li>
+            <li><span>render</span><code>{frame.render_ms.toFixed(2)} ms</code></li>
             <li><span>fps</span><code>{(1000 / Math.max(frame.cpu_ms, 0.0001)).toFixed(1)}</code></li>
+            <li><span>draws</span><code>{frame.draw_calls ?? 0}</code></li>
+            <li><span>entities</span><code>{frame.entities ?? 0}</code></li>
         </ul>
     );
 }
@@ -251,7 +311,7 @@ function draw_strip(canvas: HTMLCanvasElement, ring: Sample[]) {
 
     if (ring.length === 0) return;
 
-    const draw_series = (key: 'cpu_ms' | 'gpu_ms', color: string) => {
+    const draw_series = (key: 'cpu_ms' | 'render_ms', color: string) => {
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -267,7 +327,7 @@ function draw_strip(canvas: HTMLCanvasElement, ring: Sample[]) {
     };
 
     draw_series('cpu_ms', '#5fb0ff');
-    draw_series('gpu_ms', '#f49a4b');
+    draw_series('render_ms', '#f49a4b');
 }
 
 // Per-column stacked-bar of subsystem timings — one column per recent frame.

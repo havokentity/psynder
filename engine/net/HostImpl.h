@@ -16,8 +16,10 @@
 #include "Net.h"  // PeerId, HostDesc, Mode
 #include "Reliability.h"
 #include "Snapshot.h"
+#include "UdpSocket.h"
 #include "core/Types.h"
 
+#include <array>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -67,6 +69,21 @@ class HostImpl {
     // Lane-14 internal API; the public Net.h surface remains frozen.
     void set_window_size(WindowSize sz) noexcept { window_size_ = sz; }
     WindowSize window_size() const noexcept { return window_size_; }
+
+    // Select the REAL localhost-UDP transport for this host. Must be called
+    // before start(); the socket is opened inside start() (bound to
+    // 127.0.0.1:port, non-blocking). When UDP is enabled, send_raw_ writes
+    // datagrams over the socket and poll() drains them; the LoopbackBus is NOT
+    // used. When disabled (default), the host rides the in-process LoopbackBus
+    // exactly as Wave-A did - this keeps the deterministic test path intact.
+    //
+    // If the socket cannot be opened (sockets unavailable in a headless
+    // sandbox), start() leaves UDP off and falls back to LoopbackBus, and
+    // udp_active() reports false so a smoke test can skip cleanly.
+    //
+    // Lane-14 internal API; the public Net.h surface remains frozen.
+    void set_use_udp(bool on) noexcept { want_udp_ = on; }
+    bool udp_active() const noexcept { return udp_.is_open(); }
 
     // Returns the local port we're bound to.
     u16 local_port() const noexcept { return port_; }
@@ -124,6 +141,9 @@ class HostImpl {
     void drain_ooo_(PeerState& ps) noexcept;
     void run_rto_(PeerState& ps) noexcept;
     void flush_acks_(PeerState& ps) noexcept;
+    // Drain every queued datagram off the real UDP socket into on_datagram().
+    // No-op (and no alloc) when UDP is not active. Called from poll().
+    void pump_udp_() noexcept;
 
     bool started_ = false;
     u16 port_ = 0;
@@ -139,6 +159,15 @@ class HostImpl {
     LockstepCoordinator lockstep_{8};  // default 8 for racing
     // Pending acks: peers whose ack we owe on the next tick / flush.
     std::vector<PeerId> pending_ack_peers_;
+
+    // --- Real localhost-UDP transport (Wave B) -----------------------------
+    // `want_udp_` is the caller's request (set before start()); `udp_` is the
+    // live socket (open only if the request succeeded). The recv buffer is a
+    // fixed pooled array so pump_udp_() never heap-allocates per tick. Sized to
+    // one max-MTU datagram (header + the 1500-byte payload cap send_raw_ uses).
+    bool want_udp_ = false;
+    UdpSocket udp_{};
+    std::array<u8, kFrameHeaderBytes + 1500> udp_recv_buf_{};
 };
 
 // Internal API for the test harness: build a fresh HostImpl bound to a

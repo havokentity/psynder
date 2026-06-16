@@ -87,11 +87,9 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/Texture.h"
 #include "render/raster/Raster.h"
-#include "ui/console/ConsoleOverlay.h"
-#include "ui/imm/DebugHud.h"
 #include "world/bsp/Bsp.h"
 #include "world/bsp/BspFormat.h"
 
@@ -770,7 +768,7 @@ void set_quad_uvs_and_albedo(World& w) {
 // ─── Visibility callback ──────────────────────────────────────────────────
 struct DrawCtx {
     const World* world = nullptr;
-    render::SceneRenderer* renderer = nullptr;
+    render::RenderingSystem* renderer = nullptr;
     // Render-vertex buffer (positions/uv/normal/color all constant — colour is
     // always the face albedo; the lightmap modulates it per pixel via the
     // chunk). Submitted as the vertex buffer for every face.
@@ -818,20 +816,8 @@ void emit_leaf_faces(const world::bsp::BspLeaf& leaf, void* user) {
 
 }  // namespace
 
-platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 14 (baked lightmap room)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = 640;
-    desc.render_height = 360;
-    desc.scale_mode = platform::ScaleMode::Integer;
-    return desc;
-}
-
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
-    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
     auto* input = platform::input();
 
@@ -922,7 +908,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     // CPU framebuffer + depth.
     render::Framebuffer& fb = app_host.framebuffer();
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 14 running{} — B toggles baked/unbaked",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -931,22 +917,19 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const u64 t0 = platform::Clock::ticks_now();
     u64 last_ticks = t0;
     u32 frame = 0;
-    f32 frame_ms_ring[60] = {0.0f};
 
     while (!window->should_close()) {
         window->poll_events();
         const u64 now = platform::Clock::ticks_now();
-        const f32 frame_ms = static_cast<f32>(platform::Clock::seconds(now - last_ticks) * 1000.0);
         const f32 dt =
             (args.smoke_frames > 0)
                 ? 1.0f / 60.0f
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now - last_ticks)));
         last_ticks = now;
-        frame_ms_ring[frame % 60u] = frame_ms;
 
-        // Run console capture before gameplay hotkeys so toggle/escape/B frames
+        // Run overlay input before gameplay hotkeys so toggle/escape/B frames
         // never leak into game controls.
-        (void)editor::sample_update(*input, dt);
+        (void)app_host.engine_frame_update(dt);
 
         if (!bake_integrated && bake_state && bake_state->done.load(std::memory_order_acquire)) {
             bake_integrated = true;
@@ -1006,8 +989,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         view.target = fb;
         view.view = controller.view_matrix();
         view.projection = math::perspective_rh(70.0f * math::kDegToRad,
-                                               static_cast<f32>(desc.render_width) /
-                                                   static_cast<f32>(desc.render_height),
+                                               static_cast<f32>(fb.width) / static_cast<f32>(fb.height),
                                                0.05f,
                                                200.0f);
         view.tile_w = 64;
@@ -1024,25 +1006,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // PLAY/EDIT badge.
-        editor::sample_draw(fb);
-
-        // Debug HUD overlay (`r_debug_hud full`).
-        {
-            ui::imm::DebugHudStats stats{};
-            stats.frame_ms = frame_ms;
-            const u32 n = std::min<u32>(frame + 1u, 60u);
-            f32 sum = 0.0f;
-            for (u32 i = 0; i < n; ++i)
-                sum += frame_ms_ring[i];
-            stats.avg_frame_ms = n ? sum / static_cast<f32>(n) : frame_ms;
-            stats.draw_calls = ctx.draw_count;
-            stats.triangles = ctx.tri_count;
-            ui::imm::draw_debug_hud(fb, stats);
-        }
-
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (args.smoke_frames > 0) {
             PSY_LOG_INFO("sample_14: frame {} — eye ({:.2f},{:.2f},{:.2f}) baked={} draws={}",
@@ -1068,18 +1033,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
 struct LightmapQuakeSample {
     static constexpr std::string_view log_name() noexcept { return "sample_14"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 14"; }
-
-    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
-        return make_window_desc(args);
-    }
-
-    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
-        return {.depth_buffer = true};
-    }
+    static constexpr const char* display_name = "Psynder sample 14 (baked lightmap room)";
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 

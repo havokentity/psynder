@@ -3,14 +3,14 @@
 //   1. `set_repl_backend` — installing a custom backend redirects
 //      `dispatch_repl` calls (simulating lane 19's WS console path).
 //   2. `world:spawn` — the new Lua binding allocates a real engine entity
-//      and returns a non-zero integer handle that `scene::World::alive`
+//      and returns a non-zero integer handle that `scene::EcsRegistry::alive`
 //      confirms is live.
 
 #include "script/Script.h"
 #include "script/internal/ReplHook.h"
 
 #include "core/Types.h"
-#include "scene/World.h"
+#include "scene/EcsRegistry.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -99,15 +99,15 @@ TEST_CASE("script: world:spawn returns a valid engine entity handle", "[script][
     REQUIRE_FALSE(out.empty());
 
     // Round-trip through `std::stoul` to recover the Entity::raw value;
-    // confirm `scene::World::alive` agrees.
+    // confirm `scene::EcsRegistry::alive` agrees.
     const unsigned long raw_ul = std::stoul(out);
     psynder::Entity e;
     e.raw = static_cast<psynder::u32>(raw_ul);
     REQUIRE(e.valid());
-    REQUIRE(psynder::scene::World::Get().alive(e));
+    REQUIRE(psynder::scene::EcsRegistry::Get().alive(e));
 
     // Spawning a second entity returns a different raw handle — the shared
-    // `scene::World` must hand out unique ids.
+    // `scene::EcsRegistry` must hand out unique ids.
     REQUIRE(vm.execute_string("spawned2 = world:spawn('Prop', { Position = { x=4, y=5, z=6 } })",
                               "spawn-call-2"));
     REQUIRE(vm.execute_repl("spawned2", out));

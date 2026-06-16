@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Psynder editor IPC — Wave-B coverage for the slice-scoped delta push,
-// schema v2 welcome, and the script-lane REPL hook routing. Lane 19.
+// schema welcome, and console command routing. Lane 19.
 //
 // Each test stands up a live server on an ephemeral port, hand-rolls the
 // HTTP+WS upgrade, then exchanges binary frames over the raw socket. We do
@@ -17,17 +17,18 @@
 //      load-bearing invariant lane 20 React panels rely on: each panel can
 //      open one WebSocket and selectively pick up only its own slice.
 //
-//   2. v2 protocol bump remains decodable by a v1 client. The Welcome frame
-//      is unchanged byte-shape; v1 decoders see `server_ver == 2` and can
+//   2. Protocol bumps remain decodable by older clients. The Welcome frame
+//      is unchanged byte-shape; older decoders see the current server_ver and can
 //      gate features off it. The forward-compat fallback for unknown opcodes
 //      is also asserted (the server's `default:` arm in client_loop must
 //      drop unknown frames silently, not disconnect).
 //
-//   3. REPL hook routes a "1+1" ConsoleCmd through `script::dispatch_repl`
-//      and ships back a ConsoleReplyFrame. We install a stub backend via
-//      `script::set_repl_backend(...)` so the test does not depend on a
-//      live Lua VM; the contract under test is the *routing*, not Lua.
+//   3. ConsoleCmd carries an explicit mode. `console` routes to the engine
+//      command/cvar registry and `lua` routes to `script::dispatch_repl`.
+//      Completion frames route to core/console/Completion, which is the
+//      single source of truth used by both native and web consoles.
 
+#include "core/console/Console.h"
 #include "editor/ipc/Ipc.h"
 #include "editor/ipc/internal/Crypto.h"
 #include "editor/ipc/internal/Msgpack.h"
@@ -38,10 +39,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -332,6 +335,14 @@ struct StubBackendState {
     std::string last_line;
 };
 StubBackendState g_stub{};
+struct ExternalMirrorState {
+    std::atomic<int> calls{0};
+    std::mutex mu;
+    std::string line;
+    std::string output;
+    std::string error;
+};
+ExternalMirrorState g_external_mirror{};
 
 bool stub_repl_backend(std::string_view line, std::string& out) noexcept {
     g_stub.calls.fetch_add(1, std::memory_order_relaxed);
@@ -349,6 +360,15 @@ bool stub_repl_backend(std::string_view line, std::string& out) noexcept {
     out.append(line);
     out += ")";
     return true;
+}
+
+void external_mirror_sink(std::string_view line,
+                          const ::psynder::console::ExecuteResult& result) {
+    g_external_mirror.calls.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(g_external_mirror.mu);
+    g_external_mirror.line.assign(line);
+    g_external_mirror.output = result.output;
+    g_external_mirror.error = result.error;
 }
 
 }  // namespace
@@ -411,7 +431,7 @@ TEST_CASE("ipc: push_scene_delta routes per slice", "[ipc][delta]") {
     sock_close(sB);
 }
 
-TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
+TEST_CASE("ipc: stats frame carries software render sections", "[ipc][stats][server]") {
     ServerGuard guard;
     auto port = pick_port();
     ServerDesc desc;
@@ -422,8 +442,195 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     REQUIRE(srv.start(desc));
     const std::string tok = srv.session_token();
 
-    // The Welcome struct shape is identical between v1 and v2. A v1 panel
-    // decoder sees `server_ver == 2` and can branch on the value — our
+    proto::Welcome welcome;
+    std::vector<::psynder::u8> tail;
+    sock_t s = open_panel(port, tok, welcome, tail);
+    REQUIRE(sock_valid(s));
+
+    client_subscribe(s, "profiler");
+    wait_for_subscriptions();
+
+    const StatsSection sections[] = {
+        {"host/frame", 12.0f},
+        {"render", 2.5f},
+    };
+    srv.broadcast_stats_tick(StatsTick{
+        77u,
+        12.5f,
+        2.5f,
+        9u,
+        3u,
+        std::span<const StatsSection>{sections},
+    });
+
+    auto pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r(pl.data(), pl.size());
+    ::psynder::u16 op = 0;
+    REQUIRE(r.u16_(op));
+    REQUIRE(op == proto::opcodes::kStatsFrame);
+
+    ::psynder::u32 field_count = 0;
+    REQUIRE(r.map_header(field_count));
+    REQUIRE(field_count == 6u);
+
+    ::psynder::u64 frame_index = 0;
+    ::psynder::f32 cpu_ms = 0.0f;
+    ::psynder::f32 render_ms = 0.0f;
+    ::psynder::u32 draw_calls = 0;
+    ::psynder::u32 entities = 0;
+    ::psynder::u32 section_count = 0;
+
+    for (::psynder::u32 i = 0; i < field_count; ++i) {
+        std::string key;
+        REQUIRE(r.str(key));
+        if (key == "frame") {
+            REQUIRE(r.u64_(frame_index));
+        } else if (key == "cpu_ms") {
+            REQUIRE(r.f32_(cpu_ms));
+        } else if (key == "render_ms") {
+            REQUIRE(r.f32_(render_ms));
+        } else if (key == "draw_calls") {
+            REQUIRE(r.u32_(draw_calls));
+        } else if (key == "entities") {
+            REQUIRE(r.u32_(entities));
+        } else if (key == "sections") {
+            REQUIRE(r.array_header(section_count));
+            REQUIRE(section_count == 2u);
+            for (::psynder::u32 j = 0; j < section_count; ++j) {
+                ::psynder::u32 section_fields = 0;
+                REQUIRE(r.map_header(section_fields));
+                REQUIRE(section_fields == 2u);
+                std::string section_name;
+                ::psynder::f32 section_ms = 0.0f;
+                for (::psynder::u32 k = 0; k < section_fields; ++k) {
+                    std::string section_key;
+                    REQUIRE(r.str(section_key));
+                    if (section_key == "name") {
+                        REQUIRE(r.str(section_name));
+                    } else if (section_key == "ms") {
+                        REQUIRE(r.f32_(section_ms));
+                    } else {
+                        REQUIRE(r.skip());
+                    }
+                }
+                if (j == 1u) {
+                    REQUIRE(section_name == "render");
+                    REQUIRE(section_ms == 2.5f);
+                }
+            }
+        } else {
+            REQUIRE(r.skip());
+        }
+    }
+
+    REQUIRE(frame_index == 77u);
+    REQUIRE(cpu_ms == 12.5f);
+    REQUIRE(render_ms == 2.5f);
+    REQUIRE(draw_calls == 9u);
+    REQUIRE(entities == 3u);
+    REQUIRE(r.eof());
+
+    sock_close(s);
+}
+
+TEST_CASE("ipc: profiler stat broadcast tolerates workbench subscriptions", "[ipc][stats][server]") {
+    ServerGuard guard;
+    auto port = pick_port();
+    ServerDesc desc;
+    desc.bind_host = "127.0.0.1";
+    desc.port = port;
+    desc.require_session_token = true;
+    auto& srv = *guard.srv;
+    REQUIRE(srv.start(desc));
+    const std::string tok = srv.session_token();
+
+    proto::Welcome welcome;
+    std::vector<::psynder::u8> tail;
+    sock_t s = open_panel(port, tok, welcome, tail);
+    REQUIRE(sock_valid(s));
+
+    client_subscribe(s, "profiler");
+    client_subscribe(s, "stats");
+    client_subscribe(s, "perf");
+    wait_for_subscriptions();
+
+    const StatsSection sections[] = {
+        {"host/frame", 16.0f},
+        {"render", 3.0f},
+    };
+    for (::psynder::u32 i = 0; i < 300u; ++i) {
+        srv.broadcast_stats_tick(StatsTick{
+            i,
+            16.0f,
+            3.0f,
+            2u,
+            1u,
+            std::span<const StatsSection>{sections},
+        });
+    }
+
+    auto pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r(pl.data(), pl.size());
+    ::psynder::u16 op = 0;
+    REQUIRE(r.u16_(op));
+    REQUIRE(op == proto::opcodes::kStatsFrame);
+
+    sock_close(s);
+}
+
+TEST_CASE("ipc: stats broadcast reaps disconnected subscribers safely", "[ipc][stats][server]") {
+    ServerGuard guard;
+    auto port = pick_port();
+    ServerDesc desc;
+    desc.bind_host = "127.0.0.1";
+    desc.port = port;
+    desc.require_session_token = true;
+    auto& srv = *guard.srv;
+    REQUIRE(srv.start(desc));
+    const std::string tok = srv.session_token();
+
+    proto::Welcome welcome;
+    std::vector<::psynder::u8> tail;
+    sock_t s = open_panel(port, tok, welcome, tail);
+    REQUIRE(sock_valid(s));
+
+    client_subscribe(s, "profiler");
+    wait_for_subscriptions();
+    sock_close(s);
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+
+    const StatsSection sections[] = {
+        {"host/frame", 11.0f},
+        {"render", 1.0f},
+    };
+    for (::psynder::u32 i = 0; i < 8u; ++i) {
+        srv.broadcast_stats_tick(StatsTick{
+            i,
+            11.0f,
+            1.0f,
+            1u,
+            1u,
+            std::span<const StatsSection>{sections},
+        });
+    }
+    SUCCEED("dead profiler subscriber was reaped without terminating");
+}
+
+TEST_CASE("ipc: schema bump stays back-compat", "[ipc][schema]") {
+    ServerGuard guard;
+    auto port = pick_port();
+    ServerDesc desc;
+    desc.bind_host = "127.0.0.1";
+    desc.port = port;
+    desc.require_session_token = true;
+    auto& srv = *guard.srv;
+    REQUIRE(srv.start(desc));
+    const std::string tok = srv.session_token();
+
+    // The Welcome struct shape is stable across protocol bumps. An older panel
+    // decoder sees the newer server_ver and can branch on the value — our
     // assertion here is that the value flows through and is the bumped
     // version, not the old 1.
     proto::Welcome welcome;
@@ -431,13 +638,13 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     sock_t s = open_panel(port, tok, welcome, tail);
     REQUIRE(sock_valid(s));
     REQUIRE(welcome.accepted);
-    REQUIRE(welcome.server_ver == 2u);
-    REQUIRE(proto::kProtocolVersion == 2u);
+    REQUIRE(welcome.server_ver == 4u);
+    REQUIRE(proto::kProtocolVersion == 4u);
 
     // Forward-compat: ship the server a frame with an unknown opcode and
     // verify the connection stays alive (we can still drive normal traffic
     // afterwards). The "any unknown opcode treated as no-op rather than
-    // disconnect" contract is what lets a v1 client speak to a v3 server
+    // disconnect" contract is what lets an older client speak to a v4 server
     // five waves from now without an upgrade flag-day.
     {
         msgpack::Writer w;
@@ -468,15 +675,39 @@ TEST_CASE("ipc: v2 schema bump stays back-compat", "[ipc][schema]") {
     sock_close(s);
 }
 
-TEST_CASE("ipc: REPL hook routes console eval through script lane", "[ipc][repl]") {
-    // Install our stub backend BEFORE starting the server so install_repl
-    // sees it. The previous test's backend (if any) is overwritten —
+TEST_CASE("ipc: console frame separates engine console and lua", "[ipc][repl]") {
+    auto& console = ::psynder::console::Console::Get();
+    console.RegisterCommand("test_ipc_echo",
+                            "unit-test echo command",
+                            [](std::span<const std::string_view> args,
+                               ::psynder::console::Output& out) {
+                                out.Print("engine");
+                                for (std::string_view arg : args) {
+                                    out.Print(" ");
+                                    out.Print(arg);
+                                }
+                            });
+
+    // Install our stub backend BEFORE starting the server so the script
+    // fallback is live. The previous test's backend (if any) is overwritten —
     // set_repl_backend takes the most recent install.
     g_stub.calls.store(0);
     {
         std::lock_guard<std::mutex> lk(g_stub.mu);
         g_stub.last_line.clear();
     }
+    g_external_mirror.calls.store(0);
+    {
+        std::lock_guard<std::mutex> lk(g_external_mirror.mu);
+        g_external_mirror.line.clear();
+        g_external_mirror.output.clear();
+        g_external_mirror.error.clear();
+    }
+    console.ClearExternalExecutionSinks();
+    console.AddExternalExecutionSink(&external_mirror_sink);
+    struct SinkRestore {
+        ~SinkRestore() { ::psynder::console::Console::Get().ClearExternalExecutionSinks(); }
+    } sink_restore;
     ::psynder::script::set_repl_backend(&stub_repl_backend);
     struct BackendRestore {
         ~BackendRestore() { ::psynder::script::set_repl_backend(nullptr); }
@@ -497,12 +728,13 @@ TEST_CASE("ipc: REPL hook routes console eval through script lane", "[ipc][repl]
     sock_t s = open_panel(port, tok, welcome, tail);
     REQUIRE(sock_valid(s));
 
-    // Send a ConsoleCmd("1+1"). The server queues it on the pump path.
+    // Send a real engine-console command. The REPL stub should not run.
     {
         msgpack::Writer w;
         w.u16_(proto::opcodes::kConsoleFrame);
         proto::ConsoleCmd cmd;
-        cmd.text = "1+1";
+        cmd.text = "test_ipc_echo hello web";
+        cmd.mode = "console";
         proto::ConsoleCmd_encode(w, cmd);
         send_ws_client_binary(s, w.data(), w.size());
     }
@@ -520,7 +752,65 @@ TEST_CASE("ipc: REPL hook routes console eval through script lane", "[ipc][repl]
     proto::ConsoleReply rep;
     REQUIRE(proto::ConsoleReply_decode(r, rep));
     REQUIRE(rep.ok);
-    REQUIRE(rep.text == "2");
+    REQUIRE(rep.text == "engine hello web");
+    REQUIRE(g_stub.calls.load() == 0);
+    REQUIRE(g_external_mirror.calls.load() == 1);
+    {
+        std::lock_guard<std::mutex> lk(g_external_mirror.mu);
+        REQUIRE(g_external_mirror.line == "test_ipc_echo hello web");
+        REQUIRE(g_external_mirror.output == "engine hello web");
+        REQUIRE(g_external_mirror.error.empty());
+    }
+
+    // Unknown engine-console input stays a console error and does not fall
+    // through to Lua.
+    {
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleFrame);
+        proto::ConsoleCmd cmd;
+        cmd.text = "1+1";
+        cmd.mode = "console";
+        proto::ConsoleCmd_encode(w, cmd);
+        send_ws_client_binary(s, w.data(), w.size());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    srv.pump();
+
+    pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r2(pl.data(), pl.size());
+    op = 0;
+    REQUIRE(r2.u16_(op));
+    REQUIRE(op == proto::opcodes::kConsoleReplyFrame);
+    proto::ConsoleReply rep2;
+    REQUIRE(proto::ConsoleReply_decode(r2, rep2));
+    REQUIRE_FALSE(rep2.ok);
+    REQUIRE(rep2.text.find("unknown command or cvar") != std::string::npos);
+    REQUIRE(g_stub.calls.load() == 0);
+
+    // Lua mode routes explicitly to the script REPL.
+    {
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleFrame);
+        proto::ConsoleCmd cmd;
+        cmd.text = "1+1";
+        cmd.mode = "lua";
+        proto::ConsoleCmd_encode(w, cmd);
+        send_ws_client_binary(s, w.data(), w.size());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    srv.pump();
+
+    pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r3(pl.data(), pl.size());
+    op = 0;
+    REQUIRE(r3.u16_(op));
+    REQUIRE(op == proto::opcodes::kConsoleReplyFrame);
+    proto::ConsoleReply rep3;
+    REQUIRE(proto::ConsoleReply_decode(r3, rep3));
+    REQUIRE(rep3.ok);
+    REQUIRE(rep3.text == "2");
 
     // Sanity: the stub was actually invoked once with the right line.
     REQUIRE(g_stub.calls.load() == 1);
@@ -528,6 +818,34 @@ TEST_CASE("ipc: REPL hook routes console eval through script lane", "[ipc][repl]
         std::lock_guard<std::mutex> lk(g_stub.mu);
         REQUIRE(g_stub.last_line == "1+1");
     }
+
+    // Completion requests are served by core/console/Completion, not by a
+    // separate web-only table.
+    {
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleCompletionQueryFrame);
+        proto::ConsoleCompletionQuery query;
+        query.id = 77;
+        query.input = "test_ip";
+        query.cursor = static_cast<::psynder::u32>(query.input.size());
+        proto::ConsoleCompletionQuery_encode(w, query);
+        send_ws_client_binary(s, w.data(), w.size());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    srv.pump();
+
+    pl = recv_ws_binary(s, tail, std::chrono::milliseconds(2000));
+    REQUIRE_FALSE(pl.empty());
+    msgpack::Reader r4(pl.data(), pl.size());
+    op = 0;
+    REQUIRE(r4.u16_(op));
+    REQUIRE(op == proto::opcodes::kConsoleCompletionReplyFrame);
+    proto::ConsoleCompletionReply comp;
+    REQUIRE(proto::ConsoleCompletionReply_decode(r4, comp));
+    REQUIRE(comp.id == 77u);
+    REQUIRE(comp.start == 0u);
+    REQUIRE(comp.end == 7u);
+    REQUIRE(std::find(comp.names.begin(), comp.names.end(), "test_ipc_echo") != comp.names.end());
 
     sock_close(s);
 }

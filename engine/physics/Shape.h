@@ -17,8 +17,15 @@ namespace psynder::physics::detail {
 //   Capsule      : x = radius, y = half-height of cylindrical section
 //   Box          : x/y/z = half extents
 //   ConvexHull   : x = bounding radius (verts stored in a side table)
+//   Plane        : (ignored) — an infinite half-space, see Physics.h
 // World-space AABB factors in the conservative bound = bounding-radius
 // expansion for non-axis-aligned shapes.
+
+// Numeric shape code mirroring the public `Shape` enum (Physics.h). The kernels
+// dispatch on the stored u8, so keep this in sync with that enum. Only `Plane`
+// is referenced by name; the others stay as literals to match the existing
+// switch/branch tables byte-for-byte.
+inline constexpr u8 kShapePlane = 7;
 
 PSY_FORCEINLINE math::Vec3 quat_rotate(math::Quat q, math::Vec3 v) noexcept {
     // q * v * q^-1 — standard Rodrigues path. Compiles to ~14 fma on AVX2.
@@ -26,6 +33,47 @@ PSY_FORCEINLINE math::Vec3 quat_rotate(math::Quat q, math::Vec3 v) noexcept {
     f32 s = q.w;
     math::Vec3 t = math::mul(math::cross(u, v), 2.0f);
     return math::add(math::add(v, math::mul(t, s)), math::cross(u, t));
+}
+
+// Conjugate (== inverse for a unit quaternion). Physics-internal so callers
+// qualify `detail::quat_conjugate` and never trip the math/physics ADL
+// ambiguity the qualified quat_rotate path documents above.
+PSY_FORCEINLINE math::Quat quat_conjugate(math::Quat q) noexcept {
+    return {-q.x, -q.y, -q.z, q.w};
+}
+
+// A Plane is the half-space below an infinite surface whose world normal is the
+// body's local +Y rotated into world (`rotation * +Y`) and whose offset is
+// d = dot(normal, position). The signed distance of a world point p to the
+// surface is dot(normal, p) - d; a body penetrates when its support point along
+// -normal dips below the plane (signed distance < 0). These two helpers are the
+// single source of truth for that derivation (narrowphase + AABB share them).
+PSY_FORCEINLINE math::Vec3 plane_normal_world(math::Quat rotation) noexcept {
+    // Qualified to dodge the math/physics quat_rotate ADL ambiguity.
+    return detail::quat_rotate(rotation, math::Vec3{0.0f, 1.0f, 0.0f});
+}
+PSY_FORCEINLINE f32 plane_offset_world(math::Vec3 normal, math::Vec3 position) noexcept {
+    return math::dot(normal, position);
+}
+
+// Apply a body's inverse-inertia tensor to a WORLD-space angular quantity
+// (torque or angular impulse). Body inertia is a diagonal in the body's LOCAL
+// principal frame; the world tensor is R * I_local^-1 * R^T. We never form the
+// 3x3 — instead rotate `v` into local with R^T, scale by the diagonal, rotate
+// the result back to world with R:
+//     out_world = R * ( inv_local (.) ( R^T * v_world ) )
+// Exact for a rotated asymmetric body (produces physical precession), and
+// reduces to the old `inv_local (.) v` when rotation is identity. Alloc-free
+// and -fno-fast-math friendly (no reciprocals beyond the precomputed diagonal).
+PSY_FORCEINLINE math::Vec3 apply_inv_inertia_world(math::Quat rotation,
+                                                   math::Vec3 inv_local,
+                                                   math::Vec3 v_world) noexcept {
+    // Qualified to dodge the math/physics quat_rotate ADL ambiguity (see above).
+    const math::Vec3 v_local = detail::quat_rotate(detail::quat_conjugate(rotation), v_world);
+    const math::Vec3 a_local{v_local.x * inv_local.x,
+                             v_local.y * inv_local.y,
+                             v_local.z * inv_local.z};
+    return detail::quat_rotate(rotation, a_local);
 }
 
 inline math::Aabb aabb_world(u8 shape,
@@ -36,6 +84,15 @@ inline math::Aabb aabb_world(u8 shape,
     // axis-aligned box's identity-rotation case. The broadphase deals in
     // AABBs anyway; an extra-fat AABB just costs a few false-positive
     // narrowphase pairs.
+    if (shape == kShapePlane) {
+        // Infinite half-space: report a very large AABB so the SAP broadphase
+        // pairs every body against the plane (a static plane can never be
+        // tunnelled, so it must always be a candidate). Using a big finite
+        // bound rather than +/-inf keeps the endpoint sort total-order-safe
+        // (NaN/inf comparisons in std::sort are UB) and deterministic.
+        constexpr f32 kBig = 1.0e9f;
+        return {{-kBig, -kBig, -kBig}, {kBig, kBig, kBig}};
+    }
     f32 r;
     switch (shape) {
         case 0:
@@ -46,9 +103,12 @@ inline math::Aabb aabb_world(u8 shape,
             break;  // Capsule
         case 2: {   // Box
             math::Vec3 ex = half_extent;
-            math::Vec3 ax = quat_rotate(rotation, {ex.x, 0, 0});
-            math::Vec3 ay = quat_rotate(rotation, {0, ex.y, 0});
-            math::Vec3 az = quat_rotate(rotation, {0, 0, ex.z});
+            // Qualified to suppress ADL: a TU that also includes
+            // math/MathExt.h would otherwise see math::quat_rotate via
+            // argument-dependent lookup and the call would be ambiguous.
+            math::Vec3 ax = detail::quat_rotate(rotation, {ex.x, 0, 0});
+            math::Vec3 ay = detail::quat_rotate(rotation, {0, ex.y, 0});
+            math::Vec3 az = detail::quat_rotate(rotation, {0, 0, ex.z});
             math::Vec3 e{std::fabs(ax.x) + std::fabs(ay.x) + std::fabs(az.x),
                          std::fabs(ax.y) + std::fabs(ay.y) + std::fabs(az.y),
                          std::fabs(ax.z) + std::fabs(ay.z) + std::fabs(az.z)};

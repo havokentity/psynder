@@ -8,6 +8,7 @@
 //   - Per-tag accounting hooks (budget set, peak watermark).
 
 #include "core/alloc/Allocator.h"
+#include "core/alloc/FrameAllocGuard.h"
 #include "core/Types.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -155,4 +156,84 @@ TEST_CASE("Per-tag budgets and counters round-trip", "[core][alloc][budget]") {
     [[maybe_unused]] usize cur = mem::current_usage(mem::Tag::Render);
     [[maybe_unused]] usize peak = mem::peak_usage(mem::Tag::Render);
     REQUIRE(peak >= cur);
+}
+
+TEST_CASE("Frame allocation guard is inert while disabled", "[core][alloc][frame_guard]") {
+    static constexpr const char* kName = "core.test.frame.disabled";
+    constexpr mem::FrameAllocScopeId kId = mem::frame_alloc_scope_id(kName);
+
+    mem::frame_alloc_guard_reset(kId);
+    mem::frame_alloc_guard_set_enabled(false);
+
+    auto token = mem::begin_frame_alloc_scope(kId, kName);
+    REQUIRE_FALSE(token.active);
+
+    mem::PageBlock pb = mem::page_alloc(1024, /*prefer_hugepage=*/false);
+    REQUIRE(pb.ptr != nullptr);
+    mem::page_free(pb);
+
+    auto totals = mem::frame_alloc_scope_totals(kId);
+    REQUIRE(totals.alloc_count == 0);
+    REQUIRE(totals.free_count == 0);
+    REQUIRE(totals.alloc_bytes == 0);
+    REQUIRE(totals.free_bytes == 0);
+}
+
+TEST_CASE("Frame allocation guard records scoped page allocations", "[core][alloc][frame_guard]") {
+    static constexpr const char* kName = "core.test.frame.heap";
+    constexpr mem::FrameAllocScopeId kId = mem::frame_alloc_scope_id(kName);
+
+    mem::frame_alloc_guard_reset(kId);
+    mem::frame_alloc_guard_set_enabled(true);
+
+    auto token = mem::begin_frame_alloc_scope(kId, kName);
+    REQUIRE(token.active);
+
+    mem::PageBlock pb = mem::page_alloc(1234, /*prefer_hugepage=*/false);
+    REQUIRE(pb.ptr != nullptr);
+    const usize reserved = pb.bytes;
+    mem::page_free(pb);
+
+    const mem::FrameAllocStats scoped = mem::end_frame_alloc_scope(token);
+    mem::frame_alloc_guard_set_enabled(false);
+
+    REQUIRE(scoped.alloc_count == 1);
+    REQUIRE(scoped.free_count == 1);
+    REQUIRE(scoped.alloc_bytes == reserved);
+    REQUIRE(scoped.free_bytes == reserved);
+
+    const mem::FrameAllocScopeInfo info = mem::frame_alloc_scope_info(kId);
+    REQUIRE(info.name == kName);
+    REQUIRE(info.totals.alloc_count == 1);
+    REQUIRE(info.totals.free_count == 1);
+}
+
+TEST_CASE("Frame allocation guard attributes nested scopes", "[core][alloc][frame_guard]") {
+    static constexpr const char* kOuterName = "core.test.frame.outer";
+    static constexpr const char* kInnerName = "core.test.frame.inner";
+    constexpr mem::FrameAllocScopeId kOuterId = mem::frame_alloc_scope_id(kOuterName);
+    constexpr mem::FrameAllocScopeId kInnerId = mem::frame_alloc_scope_id(kInnerName);
+
+    mem::frame_alloc_guard_reset(kOuterId);
+    mem::frame_alloc_guard_reset(kInnerId);
+    mem::frame_alloc_guard_set_enabled(true);
+
+    auto outer = mem::begin_frame_alloc_scope(kOuterId, kOuterName);
+    auto inner = mem::begin_frame_alloc_scope(kInnerId, kInnerName);
+    REQUIRE(outer.active);
+    REQUIRE(inner.active);
+
+    mem::PageBlock pb = mem::page_alloc(4096, /*prefer_hugepage=*/false);
+    REQUIRE(pb.ptr != nullptr);
+    const usize reserved = pb.bytes;
+    mem::page_free(pb);
+
+    const mem::FrameAllocStats inner_stats = mem::end_frame_alloc_scope(inner);
+    const mem::FrameAllocStats outer_stats = mem::end_frame_alloc_scope(outer);
+    mem::frame_alloc_guard_set_enabled(false);
+
+    REQUIRE(inner_stats.alloc_count == 1);
+    REQUIRE(inner_stats.alloc_bytes == reserved);
+    REQUIRE(outer_stats.alloc_count == 1);
+    REQUIRE(outer_stats.alloc_bytes == reserved);
 }

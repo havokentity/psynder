@@ -98,6 +98,75 @@ and before ending a session so crash recovery has a concrete resume point.
   - `ctest --test-dir build/mac-release -R sample_ --output-on-failure` passed:
     12/12 sample smokes
   - `git diff --check` passed
+- Flat-frame wave started from `origin/integration/wave-hybrid-material-shadows`
+  after PR #142/#143 were merged into the integration branch. User is testing
+  the main checkout, so all new work uses separate worktrees.
+- Flat-frame agents dispatched:
+  - `codex/agent-core-frame-alloc-guard`
+    - agent: `019e4fc0-d1f1-72d0-a93d-9a4f87f2af37`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-core-frame-alloc-guard`
+    - owns `engine/core/`
+    - task: frame allocation guard/telemetry foundation
+    - status: complete; commit `7b21321`; additive frame allocation guard
+      telemetry in core allocator with focused core allocation tests
+  - `codex/agent-rt-frame-telemetry`
+    - agent: `019e4fc0-d26c-7062-b37b-c9f01553e328`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-rt-frame-telemetry`
+    - owns `engine/render/rt/`
+    - task: RT frame-stage timing/counters without render-loop allocation
+    - status: complete; commit `062ac21`; fixed-id RT frame-stage
+      telemetry/counters for graphing scene/refit/shadow/bounce/denoise/tile
+      costs without render-loop formatting
+    - integration note: sample/UI labels should be mapped outside the render
+      loop from the fixed telemetry ids
+  - `codex/agent-scene-prewarm-pools`
+    - agent: `019e4fc0-d2a8-7d70-8da2-a4a293fde698`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-scene-prewarm-pools`
+    - owns `engine/scene/`
+    - task: prewarm/fixed-capacity behavior for dynamic scene updates
+    - status: complete; commit `2957fec`; capacity/prewarm APIs for
+      `SceneGraph`, `EcsRegistry`, and `Scene`
+    - integration note: includes focused tests under `tests/`; orchestrator
+      should review/own that cross-lane coverage during merge
+  - `codex/agent-math-hotpath`
+    - agent: `019e4fc0-d2ef-7c11-8c88-20ef0553a663`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-math-hotpath`
+    - owns `engine/math/`
+    - task: math hot-path tightening within lane 02
+    - status: complete; commit `2aa0bbf`; scalar batch transform and Mat4
+      hot paths tightened with hoisted matrix values, restricted locals,
+      4-wide unrolled loops, and math hotpath smoke bench
+    - integration note: touched math remains scalar-backed; a true SIMD batch
+      transform requires a coordinated lane-03 `engine/simd/` follow-up
+  - `codex/agent-samples-perf-graph`
+    - agent: `019e4fc0-d33a-7761-a655-9cd7fa49577f`
+    - `/Volumes/XTRM 5 Media/More MyRepos/Psynder.worktrees/agent-samples-perf-graph`
+    - owns `samples/` and `tests/`
+    - task: sample perf graph/debug HUD allocation hygiene and validation
+    - status: complete; commit `823e58b`; prewarmed sample geometry vectors,
+      stopped per-frame sample 12 CLI cvar reapplication, skipped HUD stats
+      construction when debug HUD is off, added compact-HUD smoke coverage
+    - integration note: lane 25 needs a core/UI allocation counter hook to
+      prove hard zero-allocation HUD draws
+- Math/SIMD finding for this wave: `engine/simd` has real SIMD support and
+  runtime dispatch, but `engine/math` Mat4/quaternion/batch helpers are still
+  largely scalar; batch transform helpers are the first lane-02 target.
+- Flat-frame local integration complete in orchestrator worktree:
+  - merged core alloc guard, RT telemetry, scene prewarm, math hotpath, and
+    samples perf graph branches into `codex/flat-frame-orchestrator`
+  - `git diff --check` passed
+  - `cmake --preset mac-release` passed in the fresh orchestrator worktree
+  - `cmake --build --preset mac-release --target psynder_unit
+    sample_12_rt_showcase psynder_bench_math_hotpath` passed
+  - focused tests passed: `[core][alloc][frame_guard]`, `[render_rt]`,
+    `[scene]`, `[math]`
+  - `build/mac-release/bin/sample_12_rt_showcase --smoke-frames=120
+    --debug-hud=compact` passed
+  - `build/mac-release/bin/psynder_unit` passed: 692 test cases, 248352
+    assertions
+  - `build/mac-release/bin/psynder_bench_math_hotpath --smoke` passed
+  - `ctest --test-dir build/mac-release -R sample_ --output-on-failure`
+    passed after building the sample targets: 13/13
 
 ## Next Multi-Agent Step
 
@@ -112,7 +181,7 @@ and before ending a session so crash recovery has a concrete resume point.
 
 ## Decisions Captured
 
-- `SceneRenderer` / `HybridRenderer` is the common renderer path.
+- `RenderingSystem` / `HybridRenderer` is the common renderer path.
 - Scene submission stays ECS/DOTS-oriented: renderables are ECS components,
   material identity is a handle, and queues hold compact item indices.
 - Material policy is surface-level data. Object mobility is per renderable.
@@ -148,7 +217,7 @@ and before ending a session so crash recovery has a concrete resume point.
   - Hardened scene render gathering against parallel ECS query callbacks using
     thread-local chunk scratch plus a short append lock.
 
-- `engine/render/SceneRenderer.h`
+- `engine/render/RenderingSystem.h`
   - Added queues for:
     - `raster_shadow_casters`
     - `raster_shadow_receivers`
@@ -206,7 +275,7 @@ and before ending a session so crash recovery has a concrete resume point.
 
 - Promote sample-local PPM/texture loading into engine asset/texture code.
 - Make asset loaders async by design, and keep samples on async loading paths.
-- Continue migrating samples to `SceneRenderer` / `HybridRenderer`.
+- Continue migrating samples to `RenderingSystem` / `HybridRenderer`.
 - Split base texture policy from baked lightmap payload policy.
 - Make the lightmap baker consume shared scene/material policy instead of
   sample-local bake structures.
@@ -217,7 +286,7 @@ and before ending a session so crash recovery has a concrete resume point.
 ## Current Modified Files
 
 - `engine/render/Material.h`
-- `engine/render/SceneRenderer.h`
+- `engine/render/RenderingSystem.h`
 - `engine/render/raster/Raster.cpp`
 - `engine/render/raster/Raster.h`
 - `engine/render/raster/TileBin.h`
@@ -231,6 +300,6 @@ and before ending a session so crash recovery has a concrete resume point.
 - `tests/CMakeLists.txt`
 - `tests/unit/render_raster_tile.cpp`
 - `tests/unit/render_rt_frame_helpers.cpp`
-- `tests/unit/render_scene_renderer.cpp`
+- `tests/unit/render_rendering_system.cpp`
 - `tests/unit/scene_render_submission.cpp`
 - `docs/HYBRID_MATERIAL_SHADOWS_STATUS.md`

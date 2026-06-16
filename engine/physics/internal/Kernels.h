@@ -16,10 +16,14 @@
 #include "physics/Broadphase.h"
 #include "physics/Narrowphase.h"
 #include "physics/Solver.h"
+#include "physics/internal/SolverColoring.h"
+#include "physics/internal/CapsuleManifold.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -95,7 +99,7 @@ inline void closest_pts_segments(
 
 inline void capsule_endpoints(
     math::Vec3 center, math::Quat q, f32 half_h, math::Vec3& a, math::Vec3& b) noexcept {
-    math::Vec3 axis = quat_rotate(q, {0, half_h, 0});
+    math::Vec3 axis = detail::quat_rotate(q, {0, half_h, 0});
     a = math::sub(center, axis);
     b = math::add(center, axis);
 }
@@ -125,6 +129,11 @@ inline bool kernel_sphere_capsule(
     return kernel_sphere_sphere(cs, rs, closest, rc, out);
 }
 
+// Single deepest contact between two capsules (closest core segment points,
+// radius-padded). This is the point-like / non-parallel path + the kernel-test
+// reference; two NEAR-PARALLEL capsules get a two-point resting manifold instead
+// (capsule_capsule_manifold in CapsuleManifold.h, dispatched by
+// kernel_collide_pair_manifold; ADR-016).
 inline bool kernel_capsule_capsule(math::Vec3 ca,
                                    math::Quat qa,
                                    f32 ra,
@@ -172,11 +181,105 @@ inline bool kernel_aabb_aabb(math::Aabb a, math::Aabb b, Contact& out) noexcept 
     return true;
 }
 
+// Speculative-contact reach. A separated pair is promoted to a speculative
+// contact only when the gap is within this fixed margin OR the pair would
+// close the gap this tick (relative normal approach * dt >= gap). The margin
+// keeps a tiny standing band of speculative contacts around resting bodies
+// from doing anything (they carry positive separation, so the solver clamp is
+// a no-op there) while still catching a fast body a frame early. Small + fixed
+// = cheap + deterministic.
+inline constexpr f32 kSpeculativeMargin = 0.02f;  // 2 cm
+
+// ─── Plane half-space kernels (exact signed-distance, cheap) ────────────
+//
+// A Plane is an INFINITE half-space whose surface normal is `pn` (the body's
+// local +Y rotated to world) and whose offset is `pd = dot(pn, plane_pos)`.
+// The signed distance of a world point p to the surface is dot(pn, p) - pd;
+// the solid side is below (signed distance < 0). For each shape we find its
+// support point in the -pn direction (the part nearest / furthest into the
+// solid side), measure that support's signed distance `sep`, and:
+//   sep < 0  -> penetrating; depth = -sep, a real contact.
+//   sep >= 0 -> separated; the caller decides whether to emit a SPECULATIVE
+//               contact (negative depth = `sep`) when the shapes approach.
+// Output convention matches kernel_collide_pair: `normal_world` points from
+// A (the plane) toward B (the shape) == +pn, so the solver pushes the shape
+// out along the plane normal. The contact point sits on the surface beneath
+// the support point. A static plane is never tunnelled: a body that leaps to
+// the solid side in one tick has sep < 0 and is resolved this step.
+//
+// `out.depth` may be returned NEGATIVE here (separation). kernel_collide_pair
+// only forwards a negative-depth contact when the pair is closing; resting /
+// receding separated pairs are dropped (return false) so behaviour for the
+// existing shapes is unchanged.
+
+PSY_FORCEINLINE f32 plane_signed_dist(math::Vec3 pn, f32 pd, math::Vec3 p) noexcept {
+    return math::dot(pn, p) - pd;
+}
+
+// Plane (normal pn, offset pd) vs a sphere centred at `cs` with radius `rs`.
+// `sep` (output) is the gap between the sphere surface and the plane (>0 apart,
+// <0 penetrating). Returns the separation; the contact point/normal are filled
+// regardless so the caller can promote a near-miss to a speculative contact.
+inline f32 kernel_plane_sphere(
+    math::Vec3 pn, f32 pd, math::Vec3 cs, f32 rs, Contact& out) noexcept {
+    f32 center_sd = plane_signed_dist(pn, pd, cs);
+    f32 sep = center_sd - rs;  // gap from sphere surface to plane
+    out.normal_world = pn;     // A(plane) -> B(sphere)
+    // Contact point: the sphere's lowest point projected onto the surface.
+    math::Vec3 support = math::sub(cs, math::mul(pn, rs));
+    out.point_world = math::sub(support, math::mul(pn, center_sd - rs));
+    out.depth = -sep;  // >0 when penetrating
+    return sep;
+}
+
+// Plane vs an oriented box (centre `cc`, rotation `qc`, half extents `he`).
+// The box's deepest point into the solid side is found by summing the three
+// half-axis projections with the sign that drives each toward -pn.
+inline f32 kernel_plane_box(
+    math::Vec3 pn, f32 pd, math::Vec3 cc, math::Quat qc, math::Vec3 he, Contact& out) noexcept {
+    math::Vec3 ax = detail::quat_rotate(qc, math::Vec3{he.x, 0, 0});
+    math::Vec3 ay = detail::quat_rotate(qc, math::Vec3{0, he.y, 0});
+    math::Vec3 az = detail::quat_rotate(qc, math::Vec3{0, 0, he.z});
+    // Lowest corner along the plane normal: step each half-axis toward -pn.
+    math::Vec3 lowest = cc;
+    lowest = math::add(lowest, math::mul(ax, (math::dot(ax, pn) > 0.0f) ? -1.0f : 1.0f));
+    lowest = math::add(lowest, math::mul(ay, (math::dot(ay, pn) > 0.0f) ? -1.0f : 1.0f));
+    lowest = math::add(lowest, math::mul(az, (math::dot(az, pn) > 0.0f) ? -1.0f : 1.0f));
+    f32 sep = plane_signed_dist(pn, pd, lowest);
+    out.normal_world = pn;
+    // Contact point: the lowest corner projected onto the surface.
+    out.point_world = math::sub(lowest, math::mul(pn, sep));
+    out.depth = -sep;
+    return sep;
+}
+
+// Plane vs a capsule (centre `cc`, rotation `qc`, radius `rc`, half-height `hc`).
+// The capsule's deepest point is the segment endpoint with the smaller signed
+// distance, minus the radius. This SINGLE-point kernel is the point-like /
+// non-parallel path and the kernel-test reference; a side-lying capsule gets a
+// two-point resting manifold instead (plane_capsule_manifold in
+// CapsuleManifold.h, dispatched by kernel_collide_pair_manifold; ADR-016).
+inline f32 kernel_plane_capsule(
+    math::Vec3 pn, f32 pd, math::Vec3 cc, math::Quat qc, f32 rc, f32 hc, Contact& out) noexcept {
+    math::Vec3 e0, e1;
+    capsule_endpoints(cc, qc, hc, e0, e1);
+    f32 d0 = plane_signed_dist(pn, pd, e0);
+    f32 d1 = plane_signed_dist(pn, pd, e1);
+    math::Vec3 lower = (d0 <= d1) ? e0 : e1;
+    f32 lower_sd = (d0 <= d1) ? d0 : d1;
+    f32 sep = lower_sd - rc;  // gap from capsule surface to plane
+    out.normal_world = pn;
+    math::Vec3 support = math::sub(lower, math::mul(pn, rc));
+    out.point_world = math::sub(support, math::mul(pn, lower_sd - rc));
+    out.depth = -sep;
+    return sep;
+}
+
 // ─── GJK + EPA (support-mapping convex pair) ────────────────────────────
 
 inline math::Vec3 kernel_support(const GjkSupport& s, math::Vec3 d) noexcept {
     math::Quat qinv{-s.rotation.x, -s.rotation.y, -s.rotation.z, s.rotation.w};
-    math::Vec3 dl = quat_rotate(qinv, d);
+    math::Vec3 dl = detail::quat_rotate(qinv, d);
     math::Vec3 local;
     switch (s.shape) {
         case 0: {
@@ -210,7 +313,7 @@ inline math::Vec3 kernel_support(const GjkSupport& s, math::Vec3 d) noexcept {
             break;
         }
     }
-    return math::add(s.position, quat_rotate(s.rotation, local));
+    return math::add(s.position, detail::quat_rotate(s.rotation, local));
 }
 
 struct MinkowskiPt {
@@ -473,9 +576,349 @@ inline bool kernel_gjk_epa(const GjkSupport& a, const GjkSupport& b, Contact& ou
     return epa_penetration(a, b, simplex, out);
 }
 
+// ─── GJK distance (separated convex pair, closest-point-to-origin) ──────
+//
+// Companion to the GJK-intersection + EPA-penetration path above. Where that
+// path answers "do these convex shapes overlap, and how deep?", this answers
+// the SEPARATED case: "what is the minimum distance between them, along which
+// separating normal, and where are the witness points?". That gap + normal is
+// exactly what the speculative (anti-tunnelling) contact path needs so a fast
+// box cannot tunnel through another box in one sub-tick.
+//
+// Method: Gilbert-Johnson-Keerthi (GJK) distance, using the closest-point-to-
+// origin-on-simplex sub-algorithm (Gilbert, Johnson & Keerthi, "A Fast
+// Procedure for Computing the Distance Between Complex Objects in Three-
+// Dimensional Space", IEEE J. Robotics & Automation, 1988; Ericson, "Real-Time
+// Collision Detection", 2005, §9.5). We march a simplex of the Minkowski
+// difference A (-) B toward the origin; the minimum distance is the length of
+// the closest point to the origin, and that point's barycentric weights over
+// the simplex recover the world-space witness points on each body.
+//
+// Reuses the existing GjkSupport / kernel_support / mink_support / MinkowskiPt
+// (no duplicate support functions), so the boolean/EPA path and this distance
+// path see byte-identical supports for the same shape pair.
+//
+// Determinism / hot-path contract:
+//   * Fixed-size simplex (max 4 MinkowskiPt), NO heap / std::vector / RNG /
+//     clock. Bounded iteration (kMaxIter) with a relative-progress termination,
+//     so it always returns.
+//   * -fno-fast-math friendly: no reassociation reliance; explicit epsilons; no
+//     NaN-propagation shortcuts.
+//
+// Touching / penetrating case: GJK distance is only meaningful while the shapes
+// are strictly separated. If the marched simplex reaches/encloses the origin
+// (touching or overlapping), `separated == false` is returned and the caller
+// must fall back to the overlap (EPA) path — the speculative path only consumes
+// the separated result.
+struct GjkDistanceResult {
+    bool separated = false;       // false => touching/penetrating => overlap path
+    f32 distance = 0.0f;          // minimum distance between the two shapes (>= 0)
+    math::Vec3 normal{0, 1, 0};   // unit separating normal, points A -> B
+    math::Vec3 point_a{0, 0, 0};  // witness point on A's surface
+    math::Vec3 point_b{0, 0, 0};  // witness point on B's surface
+};
+
+namespace gjk_dist_detail {
+
+// Closest point on segment [a,b] to the origin. Barycentric weights (la,lb)
+// sum to 1 over the surviving vertices. Ericson §5.1.2 specialised to P=origin.
+inline math::Vec3 closest_origin_seg(math::Vec3 a, math::Vec3 b, f32& la, f32& lb) noexcept {
+    math::Vec3 ab = math::sub(b, a);
+    f32 denom = math::dot(ab, ab);
+    if (denom <= 1e-20f) {
+        la = 1.0f;
+        lb = 0.0f;
+        return a;
+    }
+    f32 t = -math::dot(a, ab) / denom;  // project origin onto the line
+    if (t <= 0.0f) {
+        la = 1.0f;
+        lb = 0.0f;
+        return a;
+    }
+    if (t >= 1.0f) {
+        la = 0.0f;
+        lb = 1.0f;
+        return b;
+    }
+    la = 1.0f - t;
+    lb = t;
+    return math::add(a, math::mul(ab, t));
+}
+
+// Closest point on triangle [a,b,c] to the origin (Ericson §5.1.5, P=origin),
+// returning barycentric weights (la,lb,lc) of the supporting feature.
+inline math::Vec3 closest_origin_tri(
+    math::Vec3 a, math::Vec3 b, math::Vec3 c, f32& la, f32& lb, f32& lc) noexcept {
+    math::Vec3 ab = math::sub(b, a);
+    math::Vec3 ac = math::sub(c, a);
+    math::Vec3 ap = math::mul(a, -1.0f);  // origin - a
+    f32 d1 = math::dot(ab, ap);
+    f32 d2 = math::dot(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f) {
+        la = 1.0f; lb = 0.0f; lc = 0.0f;
+        return a;
+    }
+    math::Vec3 bp = math::mul(b, -1.0f);
+    f32 d3 = math::dot(ab, bp);
+    f32 d4 = math::dot(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3) {
+        la = 0.0f; lb = 1.0f; lc = 0.0f;
+        return b;
+    }
+    f32 vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        f32 v = d1 / (d1 - d3);
+        la = 1.0f - v; lb = v; lc = 0.0f;
+        return math::add(a, math::mul(ab, v));
+    }
+    math::Vec3 cp = math::mul(c, -1.0f);
+    f32 d5 = math::dot(ab, cp);
+    f32 d6 = math::dot(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6) {
+        la = 0.0f; lb = 0.0f; lc = 1.0f;
+        return c;
+    }
+    f32 vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        f32 w = d2 / (d2 - d6);
+        la = 1.0f - w; lb = 0.0f; lc = w;
+        return math::add(a, math::mul(ac, w));
+    }
+    f32 va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+        f32 w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        la = 0.0f; lb = 1.0f - w; lc = w;
+        return math::add(b, math::mul(math::sub(c, b), w));
+    }
+    f32 denom = 1.0f / (va + vb + vc);
+    f32 v = vb * denom;
+    f32 w = vc * denom;
+    la = 1.0f - v - w; lb = v; lc = w;
+    return math::add(a, math::add(math::mul(ab, v), math::mul(ac, w)));
+}
+
+}  // namespace gjk_dist_detail
+
+inline GjkDistanceResult gjk_distance(const GjkSupport& a, const GjkSupport& b) noexcept {
+    GjkDistanceResult res{};
+
+    std::array<MinkowskiPt, 4> simplex{};
+    u32 n = 0;
+    // Barycentric weights of `closest` over the surviving simplex vertices.
+    std::array<f32, 4> bary{1.0f, 0.0f, 0.0f, 0.0f};
+
+    // Initial search direction: from B toward A (any non-degenerate dir works).
+    math::Vec3 dir = math::sub(a.position, b.position);
+    if (length_sq(dir) < 1e-20f)
+        dir = {1, 0, 0};
+
+    MinkowskiPt v0 = mink_support(a, b, dir);
+    simplex[0] = v0;
+    n = 1;
+    math::Vec3 closest = v0.p;  // closest point on the simplex to the origin
+
+    constexpr u32 kMaxIter = 32;
+    constexpr f32 kEps = 1e-10f;
+
+    for (u32 iter = 0; iter < kMaxIter; ++iter) {
+        f32 closest_d2 = length_sq(closest);
+        if (closest_d2 <= kEps) {
+            // Simplex reached the origin => shapes touch/overlap.
+            res.separated = false;
+            return res;
+        }
+        // Search toward the origin from the current closest feature.
+        math::Vec3 search = math::mul(closest, -1.0f);
+        MinkowskiPt nv = mink_support(a, b, search);
+
+        // Convergence (standard GJK distance termination, Ericson §9.5.1): the
+        // new support extends the simplex toward the origin by
+        //   progress = dot(nv.p - closest, search).
+        // When that is non-positive (the support cannot get closer to the origin
+        // than the current feature already is) the minimum distance is found.
+        // The relative epsilon keeps the test stable + -fno-fast-math friendly.
+        f32 progress = math::dot(math::sub(nv.p, closest), search);
+        if (progress <= 1e-10f * (closest_d2 + 1.0f))
+            break;
+
+        // Guard against re-adding a duplicate vertex (numerical stall).
+        bool dup = false;
+        for (u32 i = 0; i < n; ++i) {
+            math::Vec3 e = math::sub(nv.p, simplex[i].p);
+            if (length_sq(e) < 1e-14f) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup)
+            break;
+
+        simplex[n++] = nv;
+
+        // Solve closest-point-to-origin on the (now larger) simplex and reduce
+        // it to the supporting feature (drop zero-weight vertices).
+        if (n == 2) {
+            f32 la, lb;
+            closest = gjk_dist_detail::closest_origin_seg(simplex[0].p, simplex[1].p, la, lb);
+            if (lb == 0.0f) {
+                n = 1;
+                bary = {1.0f, 0, 0, 0};
+            } else if (la == 0.0f) {
+                simplex[0] = simplex[1];
+                n = 1;
+                bary = {1.0f, 0, 0, 0};
+            } else {
+                bary = {la, lb, 0, 0};
+            }
+        } else if (n == 3) {
+            f32 la, lb, lc;
+            closest = gjk_dist_detail::closest_origin_tri(
+                simplex[0].p, simplex[1].p, simplex[2].p, la, lb, lc);
+            std::array<MinkowskiPt, 3> keep{};
+            std::array<f32, 3> kw{};
+            u32 m = 0;
+            if (la > 0.0f) { keep[m] = simplex[0]; kw[m] = la; ++m; }
+            if (lb > 0.0f) { keep[m] = simplex[1]; kw[m] = lb; ++m; }
+            if (lc > 0.0f) { keep[m] = simplex[2]; kw[m] = lc; ++m; }
+            for (u32 i = 0; i < m; ++i) {
+                simplex[i] = keep[i];
+                bary[i] = kw[i];
+            }
+            n = m;
+        } else {  // n == 4: closest point over a tetra = min over its 4 faces.
+            f32 best_d2 = std::numeric_limits<f32>::infinity();
+            math::Vec3 best_pt = closest;
+            std::array<MinkowskiPt, 3> best_keep{};
+            std::array<f32, 3> best_w{};
+            u32 best_m = 0;
+            const u32 faces[4][3] = {{0, 1, 2}, {0, 1, 3}, {0, 2, 3}, {1, 2, 3}};
+            for (auto& f : faces) {
+                f32 la, lb, lc;
+                math::Vec3 p = gjk_dist_detail::closest_origin_tri(
+                    simplex[f[0]].p, simplex[f[1]].p, simplex[f[2]].p, la, lb, lc);
+                f32 d2 = length_sq(p);
+                if (d2 < best_d2) {
+                    best_d2 = d2;
+                    best_pt = p;
+                    u32 m = 0;
+                    if (la > 0.0f) { best_keep[m] = simplex[f[0]]; best_w[m] = la; ++m; }
+                    if (lb > 0.0f) { best_keep[m] = simplex[f[1]]; best_w[m] = lb; ++m; }
+                    if (lc > 0.0f) { best_keep[m] = simplex[f[2]]; best_w[m] = lc; ++m; }
+                    best_m = m;
+                }
+            }
+            closest = best_pt;
+            for (u32 i = 0; i < best_m; ++i) {
+                simplex[i] = best_keep[i];
+                bary[i] = best_w[i];
+            }
+            n = best_m;
+            if (best_d2 <= kEps) {
+                res.separated = false;
+                return res;
+            }
+        }
+    }
+
+    // Recover witness points from the surviving simplex's barycentric weights.
+    math::Vec3 pa{0, 0, 0};
+    math::Vec3 pb{0, 0, 0};
+    f32 wsum = 0.0f;
+    for (u32 i = 0; i < n; ++i)
+        wsum += bary[i];
+    if (wsum <= kEps) {
+        // Degenerate weights — fall back to the single nearest vertex.
+        bary = {1.0f, 0, 0, 0};
+        wsum = 1.0f;
+        if (n == 0)
+            n = 1;
+    }
+    f32 inv = 1.0f / wsum;
+    for (u32 i = 0; i < n; ++i) {
+        f32 wi = bary[i] * inv;
+        pa = math::add(pa, math::mul(simplex[i].sa, wi));
+        pb = math::add(pb, math::mul(simplex[i].sb, wi));
+    }
+
+    // The separating direction is pa(on A) -> pb(on B); same A->B convention as
+    // kernel_collide_pair / kernel_pair_separation.
+    math::Vec3 delta = math::sub(pb, pa);
+    f32 dist2 = length_sq(delta);
+    if (dist2 <= kEps) {
+        res.separated = false;  // effectively touching
+        return res;
+    }
+    f32 dist = std::sqrt(dist2);
+    res.separated = true;
+    res.distance = dist;
+    res.normal = math::mul(delta, 1.0f / dist);  // A -> B
+    res.point_a = pa;
+    res.point_b = pb;
+    return res;
+}
+
 // ─── Pair-shape dispatcher (header-inline so tests get the full path) ───
 
+// Plane-vs-shape signed-distance dispatch. Fills `out` (normal/point/depth)
+// and returns the separation: > 0 apart, <= 0 penetrating. `out.normal_world`
+// always points A -> B (plane -> shape). Both swap orders are handled so the
+// caller can pass the bodies in either order. Returns +inf when neither body
+// is a plane OR both are planes (two infinite half-spaces have no meaningful
+// finite separation — skipped). The separation lets kernel_collide_pair emit a
+// penetration contact and kernel_collide_pair_spec additionally emit a
+// speculative contact.
+inline f32 kernel_plane_pair_sep(const Body& a, const Body& b, Contact& out) noexcept {
+    const bool a_plane = (a.shape == kShapePlane);
+    const bool b_plane = (b.shape == kShapePlane);
+    if (a_plane == b_plane)
+        return std::numeric_limits<f32>::infinity();  // neither, or both
+
+    // Orient so the PLANE is A in the kernel's A->B normal convention; if the
+    // physical body order is (shape, plane) we flip the resulting normal so the
+    // returned contact still points from the world's A to its B.
+    const Body& plane = a_plane ? a : b;
+    const Body& shape = a_plane ? b : a;
+    math::Vec3 pn = plane_normal_world(plane.rotation);
+    f32 pd = plane_offset_world(pn, plane.position);
+
+    f32 sep;
+    switch (shape.shape) {
+        case 0:  // Sphere
+            sep = kernel_plane_sphere(pn, pd, shape.position, shape.half_extent.x, out);
+            break;
+        case 1:  // Capsule
+            sep = kernel_plane_capsule(
+                pn, pd, shape.position, shape.rotation, shape.half_extent.x, shape.half_extent.y, out);
+            break;
+        case 2:  // Box
+            sep = kernel_plane_box(pn, pd, shape.position, shape.rotation, shape.half_extent, out);
+            break;
+        default:  // hull/compound/heightfield/trimesh -> bounding sphere fallback
+            sep = kernel_plane_sphere(pn, pd, shape.position, shape.half_extent.x, out);
+            break;
+    }
+    // `out` was filled with the plane->shape normal. If the world order is
+    // (shape, plane) i.e. A is the shape, flip to A->B (shape->plane).
+    if (!a_plane)
+        out.normal_world = math::mul(out.normal_world, -1.0f);
+    return sep;
+}
+
 inline bool kernel_collide_pair(const Body& a, const Body& b, Contact& out) noexcept {
+    // Plane half-space first: a static plane can never be tunnelled, and the
+    // signed-distance test is exact + cheap. Emit a (touching) contact only
+    // when actually penetrating so resting/separated behaviour for every other
+    // pair stays exactly as before.
+    if (a.shape == kShapePlane || b.shape == kShapePlane) {
+        f32 sep = kernel_plane_pair_sep(a, b, out);
+        if (sep < 0.0f) {
+            out.depth = -sep;
+            out.speculative = false;
+            return true;
+        }
+        return false;
+    }
     if (a.shape == 0 && b.shape == 0) {
         return kernel_sphere_sphere(a.position, a.half_extent.x, b.position, b.half_extent.x, out);
     }
@@ -524,6 +967,226 @@ inline bool kernel_collide_pair(const Body& a, const Body& b, Contact& out) noex
     GjkSupport sa{a.position, a.rotation, a.shape, a.half_extent};
     GjkSupport sb{b.position, b.rotation, b.shape, b.half_extent};
     return kernel_gjk_epa(sa, sb, out);
+}
+
+// Separation distance for the shape pairs that admit one. Fills `out` (A->B
+// normal + a contact point on the gap) and returns the gap along that normal:
+// > 0 apart. Three tiers, in priority order:
+//   1. Plane-vs-shape and sphere-vs-sphere: exact closed-form gap (cheap).
+//   2. Any other convex pair (box-box, capsule-box, sphere-capsule, ...): the
+//      GJK distance sub-algorithm (gjk_distance) gives the real minimum gap +
+//      separating normal + a witness contact point. This closes the box-box /
+//      capsule-box speculative anti-tunnelling gap that previously returned
+//      +inf and let a fast box tunnel.
+//   3. Returns +inf only when the convex pair is TOUCHING / PENETRATING (GJK
+//      reports `separated == false`), signalling "no speculative path — use the
+//      overlap-only kernel". Routing penetrating pairs back to the overlap path
+//      keeps every existing resting contact byte-for-byte identical: a resting
+//      box stack penetrates (or is exactly touching) so it never takes the new
+//      separated branch, and a SEPARATED pair carried only positive `separation`
+//      (depth == 0) which is a no-op clamp unless the pair is actually closing.
+inline f32 kernel_pair_separation(const Body& a, const Body& b, Contact& out) noexcept {
+    if (a.shape == kShapePlane || b.shape == kShapePlane)
+        return kernel_plane_pair_sep(a, b, out);
+
+    if (a.shape == 0 && b.shape == 0) {
+        // Sphere-sphere: exact gap = |centres| - (ra + rb).
+        math::Vec3 d = math::sub(b.position, a.position);
+        f32 dist = std::sqrt(math::dot(d, d));
+        f32 r = a.half_extent.x + b.half_extent.x;
+        math::Vec3 n = (dist > 1e-9f) ? math::mul(d, 1.0f / dist) : math::Vec3{0, 1, 0};
+        out.normal_world = n;  // A -> B
+        out.point_world = math::add(a.position, math::mul(n, a.half_extent.x));
+        f32 sep = dist - r;
+        out.depth = -sep;
+        return sep;
+    }
+
+    // General convex pair: GJK distance for the SEPARATED case (box-box,
+    // capsule-box, etc.). Touching/penetrating -> +inf so the caller takes the
+    // unchanged overlap (EPA / AABB-AABB) path; resting stacks are untouched.
+    GjkSupport sa{a.position, a.rotation, a.shape, a.half_extent};
+    GjkSupport sb{b.position, b.rotation, b.shape, b.half_extent};
+    GjkDistanceResult gd = gjk_distance(sa, sb);
+    // Near-contact band: a SMALL gap is handed to the proven overlap (EPA) path
+    // instead of the GJK speculative path. The GJK witness-point normal
+    // DEGENERATES for nearly-parallel faces -- two large flat boxes meeting
+    // face-to-face have an under-determined closest feature, so the recovered
+    // normal jitters off the true face normal. Feeding that to the speculative
+    // one-sided speed-limit lets a SETTLING box creep through its support. EPA's
+    // face-contact normal is stable there, so resting/landing pairs use it (as
+    // they did before this lane). The band exceeds the per-tick approach of a
+    // normal-speed landing so EPA reliably catches the contact within a tick;
+    // genuinely TUNNELLING pairs are caught far earlier -- at gaps ~ closing*dt,
+    // which dwarf the band -- where the GJK normal is well-conditioned. This
+    // keeps the anti-tunnelling win without the face-face normal hazard.
+    constexpr f32 kGjkContactBand = 0.1f;  // 10 cm
+    if (!gd.separated || gd.distance < kGjkContactBand)
+        return std::numeric_limits<f32>::infinity();  // overlap path
+
+    out.normal_world = gd.normal;  // A -> B
+    // Contact point on the gap: midpoint of the two witness points, matching
+    // the EPA overlap path's "between the surfaces" convention.
+    out.point_world = math::mul(math::add(gd.point_a, gd.point_b), 0.5f);
+    out.depth = -gd.distance;  // negative depth == separation (gap)
+    return gd.distance;
+}
+
+// Speculative-aware collide. Used by the world step's narrowphase. Behaviour:
+//   1. Penetrating pair -> identical touching contact as kernel_collide_pair
+//      (speculative == false), so existing resting contacts are UNCHANGED.
+//   2. Separated pair, closed-form distance available, and the bodies are
+//      CLOSING along the contact normal fast enough that the gap could close
+//      within `dt` (rel approach * dt >= gap) OR the gap is already within
+//      `margin` -> emit a SPECULATIVE contact (speculative == true,
+//      separation = gap). The solver clamps the approach so the bodies cannot
+//      cross the gap this step — no fake thickness, no position bias.
+//   3. Otherwise -> false (no contact), matching the old behaviour.
+// Separated convex pairs (box-box / capsule-box / ...) now get their gap from
+// the GJK distance sub-algorithm (kernel_pair_separation), so a fast closing
+// box gets a speculative contact a tick early instead of tunnelling. A TOUCHING
+// or PENETRATING convex pair still falls straight through to kernel_collide_pair
+// (kernel_pair_separation returns +inf for it), so resting stacks and every
+// existing overlap test/sample are byte-for-byte unchanged.
+inline bool kernel_collide_pair_spec(
+    const Body& a, const Body& b, f32 dt, f32 margin, Contact& out) noexcept {
+    f32 sep = kernel_pair_separation(a, b, out);
+    if (sep == std::numeric_limits<f32>::infinity())
+        return kernel_collide_pair(a, b, out);  // no closed-form gap — overlap only
+
+    if (sep < 0.0f) {
+        // Penetrating: ordinary touching contact (depth already set by the
+        // separation kernel). Bit-identical to the kernel_collide_pair path.
+        out.depth = -sep;
+        out.speculative = false;
+        return true;
+    }
+
+    // Separated. Relative velocity of B w.r.t. A along the contact normal;
+    // negative == closing (B moving toward A along -normal). Only a closing
+    // pair can tunnel, so a receding/static separated pair never spawns a
+    // speculative contact (no spurious impulses on resting stacks).
+    const math::Vec3 n = out.normal_world;
+    const f32 vn = math::dot(math::sub(b.linear_velocity, a.linear_velocity), n);
+    const f32 closing = -vn;  // > 0 when approaching
+    const bool within_reach = (sep <= margin) || (closing * dt >= sep);
+    if (closing > 0.0f && within_reach) {
+        out.speculative = true;
+        out.separation = sep;
+        out.depth = 0.0f;  // not penetrating; the clamp uses `separation`
+        return true;
+    }
+    return false;
+}
+
+// ─── Capsule resting MANIFOLD dispatch (ADR-016) ────────────────────────────
+//
+// Multi-contact variant of kernel_collide_pair_spec for the capsule resting
+// cases. Fills up to `kMaxManifoldContacts` Contacts in `out[]` and returns the
+// count. The body/normal/depth conventions are identical to the single-Contact
+// path; the ONLY difference is that a capsule lying near-PARALLEL on a plane /
+// box / another capsule yields TWO contacts (one at each end of the overlapping
+// segment region) instead of one, which gives the PGS solver the second torque-
+// resisting point a flat resting capsule needs (single point => rocking/drift;
+// see CapsuleManifold.h). Every non-parallel / point-like / non-capsule pair
+// returns the SAME single contact kernel_collide_pair_spec produced, so the
+// behaviour of spheres / boxes / GJK pairs and end-on capsule hits is unchanged.
+//
+// Deterministic + alloc-free: the manifold is a fixed-size struct, the result
+// is written into a caller-provided fixed array; no heap in the hot path.
+inline constexpr u32 kMaxManifoldContacts = 2;
+
+inline u32 kernel_collide_pair_manifold(
+    const Body& a, const Body& b, f32 dt, f32 margin, Contact out[kMaxManifoldContacts]) noexcept {
+    // Baseline single contact (also resolves speculative / separated / non-
+    // capsule pairs). If it produced nothing, there is no contact at all.
+    Contact base{};
+    bool hit = kernel_collide_pair_spec(a, b, dt, margin, base);
+    if (!hit)
+        return 0;
+
+    // Manifold polish only applies to a PENETRATING (non-speculative) capsule
+    // resting case. A speculative (not-yet-touching) contact keeps its single
+    // point: there is no overlap region to clip yet, and the speculative clamp
+    // is a single-normal speed limit.
+    const bool a_cap = (a.shape == 1);  // 1 == Capsule
+    const bool b_cap = (b.shape == 1);
+    const bool a_plane = (a.shape == kShapePlane);
+    const bool b_plane = (b.shape == kShapePlane);
+    const bool a_box = (a.shape == 2);  // 2 == Box
+    const bool b_box = (b.shape == 2);
+
+    if (!base.speculative) {
+        CapsuleManifold man;
+        man.count = 0;
+
+        if (a_cap && b_cap) {
+            man = capsule_capsule_manifold(a.position,
+                                           a.rotation,
+                                           a.half_extent.x,
+                                           a.half_extent.y,
+                                           b.position,
+                                           b.rotation,
+                                           b.half_extent.x,
+                                           b.half_extent.y);
+        } else if ((a_plane && b_cap) || (a_cap && b_plane)) {
+            const Body& plane = a_plane ? a : b;
+            const Body& cap = a_plane ? b : a;
+            math::Vec3 pn = plane_normal_world(plane.rotation);
+            f32 pd = plane_offset_world(pn, plane.position);
+            man = plane_capsule_manifold(
+                pn, pd, cap.position, cap.rotation, cap.half_extent.x, cap.half_extent.y);
+            // plane_capsule_manifold emits A(plane)->B(cap) normals. If the world
+            // order is (cap, plane) flip to keep A->B == base's convention.
+            if (a_cap)
+                for (u32 i = 0; i < man.count; ++i)
+                    man.pts[i].normal = math::mul(man.pts[i].normal, -1.0f);
+        } else if ((a_cap && b_box) || (a_box && b_cap)) {
+            const Body& cap = a_cap ? a : b;
+            const Body& box = a_cap ? b : a;
+            // base.normal_world is world-A -> world-B. Express it capsule->box.
+            math::Vec3 n_cap_to_box = a_cap ? base.normal_world
+                                            : math::mul(base.normal_world, -1.0f);
+            ManifoldPoint fb;
+            fb.point = base.point_world;
+            fb.normal = n_cap_to_box;
+            fb.depth = base.depth;
+            CapsuleManifold cm = capsule_box_manifold(cap.position,
+                                                      cap.rotation,
+                                                      cap.half_extent.x,
+                                                      cap.half_extent.y,
+                                                      box.position,
+                                                      box.rotation,
+                                                      box.half_extent,
+                                                      n_cap_to_box,
+                                                      fb);
+            // cm normals are capsule->box. Flip back to world A->B if A is box.
+            man = cm;
+            if (a_box)
+                for (u32 i = 0; i < man.count; ++i)
+                    man.pts[i].normal = math::mul(man.pts[i].normal, -1.0f);
+        }
+
+        if (man.count >= 2) {
+            for (u32 i = 0; i < man.count && i < kMaxManifoldContacts; ++i) {
+                Contact c = base;  // inherit body ids + speculative=false
+                c.point_world = man.pts[i].point;
+                c.normal_world = man.pts[i].normal;
+                c.depth = man.pts[i].depth;
+                c.speculative = false;
+                c.separation = 0.0f;
+                c.normal_impulse_acc = 0.0f;
+                c.friction_impulse_acc1 = 0.0f;
+                c.friction_impulse_acc2 = 0.0f;
+                out[i] = c;
+            }
+            return man.count;
+        }
+    }
+
+    // Single-point fallback: identical to kernel_collide_pair_spec.
+    out[0] = base;
+    return 1;
 }
 
 // ─── Union-find island detection (header-inline) ────────────────────────
@@ -637,48 +1300,79 @@ inline void basis_for_normal(math::Vec3 n, math::Vec3& t1, math::Vec3& t2) noexc
     t2 = math::cross(n, t1);
 }
 
-inline void kernel_solve_island(const Island& island,
-                                std::span<Contact> contacts,
-                                std::span<const u32> body_indices,
-                                std::span<Body> bodies,
-                                const SolverParams& params,
-                                f32 dt) noexcept {
-    (void)body_indices;
-    (void)island;
+// ContactConstraint, ColorBatchDispatch, solver_serial_dispatch and
+// ColoredIslandScratch are defined in SolverColoring.h (included above) so the
+// public Solver.h surface can expose the pooled-scratch type without pulling in
+// the whole Kernels.h narrowphase.
 
-    struct CC {
-        math::Vec3 ra, rb;
-        math::Vec3 t1, t2;
-        f32 eff_n = 0.0f, eff_t1 = 0.0f, eff_t2 = 0.0f;
-        f32 bias = 0.0f, e = 0.0f, mu = 0.0f;
+// ── Per-contact primitive operations (shared by serial + parallel walks) ──
+//
+// These four functions are the whole solver, factored out so the serial colour
+// walk and the parallel (parallel_for per colour) walk call EXACTLY the same
+// arithmetic in the same order per contact. The only difference between the two
+// walks is WHO iterates the per-colour contact list — a serial for-loop or a
+// race-free parallel_for over the colour's disjoint-body batch. Because a
+// colour's contacts touch pairwise-disjoint DYNAMIC bodies, the body-velocity
+// (and body-position) read-modify-write below never races within a colour, so
+// the two walks produce bit-identical results.
+//
+// CRITICAL race detail (why disjoint DYNAMIC bodies is the whole story): a
+// STATIC body (inv_mass == 0) is shared by MANY contacts of the SAME colour
+// (e.g. every box on one floor). The impulse it would receive is identically
+// zero (`mul(P, 0)` linear, `inv_local == {0,0,0}` angular), but blindly
+// assigning the unchanged value back is still a concurrent WRITE to one
+// location from several workers — a data race under the C++ memory model (ASan
+// would NOT catch this; TSan would). So every write-back below is GUARDED by
+// `inv_mass > 0`: static bodies are never written at all. This makes the
+// parallel batch race-free by construction (dynamic writes disjoint; static
+// writes absent) and is bit-identical to writing the unchanged value.
+PSY_FORCEINLINE bool body_is_dynamic(const Body& b) noexcept { return b.inv_mass > 0.0f; }
+
+// Precompute (read-only on bodies): geometry, effective masses, bias/restitution.
+PSY_FORCEINLINE void solver_prepare_contact(Contact& c,
+                                            ContactConstraint& cc,
+                                            std::span<Body> bodies,
+                                            const SolverParams& params,
+                                            f32 dt) noexcept {
+    Body& A = bodies[c.body_a];
+    Body& B = bodies[c.body_b];
+    cc.ra = math::sub(c.point_world, A.position);
+    cc.rb = math::sub(c.point_world, B.position);
+    basis_for_normal(c.normal_world, cc.t1, cc.t2);
+
+    auto eff_mass = [&](math::Vec3 dir) -> f32 {
+        math::Vec3 ra_x = math::cross(cc.ra, dir);
+        math::Vec3 rb_x = math::cross(cc.rb, dir);
+        f32 ang = math::dot(dir, math::cross(apply_inv_inertia(A, ra_x), cc.ra)) +
+                  math::dot(dir, math::cross(apply_inv_inertia(B, rb_x), cc.rb));
+        f32 lin = A.inv_mass + B.inv_mass;
+        f32 k = lin + ang;
+        return (k > 1e-12f) ? 1.0f / k : 0.0f;
     };
-    std::vector<CC> caches(contacts.size());
+    cc.eff_n = eff_mass(c.normal_world);
+    cc.eff_t1 = eff_mass(cc.t1);
+    cc.eff_t2 = eff_mass(cc.t2);
 
-    for (usize i = 0; i < contacts.size(); ++i) {
-        Contact& c = contacts[i];
-        CC& cc = caches[i];
-        Body& A = bodies[c.body_a];
-        Body& B = bodies[c.body_b];
-        cc.ra = math::sub(c.point_world, A.position);
-        cc.rb = math::sub(c.point_world, B.position);
-        basis_for_normal(c.normal_world, cc.t1, cc.t2);
+    math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
+    math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
+    f32 rel_n = math::dot(math::sub(vb, va), c.normal_world);
 
-        auto eff_mass = [&](math::Vec3 dir) -> f32 {
-            math::Vec3 ra_x = math::cross(cc.ra, dir);
-            math::Vec3 rb_x = math::cross(cc.rb, dir);
-            f32 ang = math::dot(dir, math::cross(apply_inv_inertia(A, ra_x), cc.ra)) +
-                      math::dot(dir, math::cross(apply_inv_inertia(B, rb_x), cc.rb));
-            f32 lin = A.inv_mass + B.inv_mass;
-            f32 k = lin + ang;
-            return (k > 1e-12f) ? 1.0f / k : 0.0f;
-        };
-        cc.eff_n = eff_mass(c.normal_world);
-        cc.eff_t1 = eff_mass(cc.t1);
-        cc.eff_t2 = eff_mass(cc.t2);
-
-        math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
-        math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
-        f32 rel_n = math::dot(math::sub(vb, va), c.normal_world);
+    if (c.speculative) {
+        // Speculative contact (bodies not yet touching). The constraint is a
+        // one-sided SPEED LIMIT: the closing velocity may not exceed
+        // separation/dt, so the bodies cannot cross the gap this step. We
+        // encode that as a NEGATIVE target normal velocity (bias) and the
+        // shared velocity-iteration clamp (new_jn = max(0, acc + jn)) does the
+        // rest: when the pair closes slower than allowed the impulse clamps to
+        // zero (no spurious push), when it closes too fast the impulse brings
+        // it exactly to the limit. No restitution, no friction (not in contact
+        // yet), and the position-correction loop skips it (depth == 0). This is
+        // the only thing that resolves a fast thin-body pair a frame early — no
+        // fake thickness, no CCD.
+        cc.e = 0.0f;
+        cc.mu = 0.0f;
+        cc.bias = -c.separation / dt;
+    } else {
         f32 e = std::max(A.restitution, B.restitution);
         cc.e = (rel_n < -params.restitution_threshold) ? -e * rel_n : 0.0f;
 
@@ -686,81 +1380,248 @@ inline void kernel_solve_island(const Island& island,
 
         f32 pen = std::max(0.0f, c.depth - params.slop);
         cc.bias = (params.baumgarte / dt) * pen;
+    }
+}
 
-        math::Vec3 P = math::add(math::mul(c.normal_world, c.normal_impulse_acc),
-                                 math::add(math::mul(cc.t1, c.friction_impulse_acc1),
-                                           math::mul(cc.t2, c.friction_impulse_acc2)));
+// Warm-start: apply the accumulated impulse from the previous step. WRITES
+// body velocities, so it runs in the colour walk (disjoint bodies per colour).
+PSY_FORCEINLINE void solver_warmstart_contact(const Contact& c,
+                                              const ContactConstraint& cc,
+                                              std::span<Body> bodies) noexcept {
+    Body& A = bodies[c.body_a];
+    Body& B = bodies[c.body_b];
+    math::Vec3 P = math::add(math::mul(c.normal_world, c.normal_impulse_acc),
+                             math::add(math::mul(cc.t1, c.friction_impulse_acc1),
+                                       math::mul(cc.t2, c.friction_impulse_acc2)));
+    // Guard static bodies: see the race note above. Writes only ever hit
+    // dynamic bodies, which are disjoint within a colour -> no race.
+    if (body_is_dynamic(A)) {
         A.linear_velocity = math::sub(A.linear_velocity, math::mul(P, A.inv_mass));
-        B.linear_velocity = math::add(B.linear_velocity, math::mul(P, B.inv_mass));
         A.angular_velocity =
             math::sub(A.angular_velocity, apply_inv_inertia(A, math::cross(cc.ra, P)));
+    }
+    if (body_is_dynamic(B)) {
+        B.linear_velocity = math::add(B.linear_velocity, math::mul(P, B.inv_mass));
         B.angular_velocity =
             math::add(B.angular_velocity, apply_inv_inertia(B, math::cross(cc.rb, P)));
     }
+}
 
-    for (u32 it = 0; it < params.velocity_iterations; ++it) {
-        for (usize i = 0; i < contacts.size(); ++i) {
-            Contact& c = contacts[i];
-            CC& cc = caches[i];
-            Body& A = bodies[c.body_a];
-            Body& B = bodies[c.body_b];
+// One velocity iteration for one contact. WRITES body velocities.
+PSY_FORCEINLINE void solver_solve_velocity_contact(Contact& c,
+                                                   const ContactConstraint& cc,
+                                                   std::span<Body> bodies) noexcept {
+    Body& A = bodies[c.body_a];
+    Body& B = bodies[c.body_b];
 
-            auto rel_vel = [&](math::Vec3 dir) -> f32 {
-                math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
-                math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
-                return math::dot(math::sub(vb, va), dir);
-            };
+    auto rel_vel = [&](math::Vec3 dir) -> f32 {
+        math::Vec3 va = math::add(A.linear_velocity, math::cross(A.angular_velocity, cc.ra));
+        math::Vec3 vb = math::add(B.linear_velocity, math::cross(B.angular_velocity, cc.rb));
+        return math::dot(math::sub(vb, va), dir);
+    };
 
-            f32 vn = rel_vel(c.normal_world);
-            f32 jn = (cc.e + cc.bias - vn) * cc.eff_n;
-            f32 new_jn = std::max(0.0f, c.normal_impulse_acc + jn);
-            jn = new_jn - c.normal_impulse_acc;
-            c.normal_impulse_acc = new_jn;
+    f32 vn = rel_vel(c.normal_world);
+    f32 jn = (cc.e + cc.bias - vn) * cc.eff_n;
+    f32 new_jn = std::max(0.0f, c.normal_impulse_acc + jn);
+    jn = new_jn - c.normal_impulse_acc;
+    c.normal_impulse_acc = new_jn;
 
-            f32 vt1 = rel_vel(cc.t1);
-            f32 vt2 = rel_vel(cc.t2);
-            f32 jt1 = -vt1 * cc.eff_t1;
-            f32 jt2 = -vt2 * cc.eff_t2;
-            f32 jt1_new = c.friction_impulse_acc1 + jt1;
-            f32 jt2_new = c.friction_impulse_acc2 + jt2;
-            f32 limit = cc.mu * c.normal_impulse_acc;
-            f32 mag = std::sqrt(jt1_new * jt1_new + jt2_new * jt2_new);
-            if (mag > limit && mag > 1e-12f) {
-                f32 s = limit / mag;
-                jt1_new *= s;
-                jt2_new *= s;
+    f32 vt1 = rel_vel(cc.t1);
+    f32 vt2 = rel_vel(cc.t2);
+    f32 jt1 = -vt1 * cc.eff_t1;
+    f32 jt2 = -vt2 * cc.eff_t2;
+    f32 jt1_new = c.friction_impulse_acc1 + jt1;
+    f32 jt2_new = c.friction_impulse_acc2 + jt2;
+    f32 limit = cc.mu * c.normal_impulse_acc;
+    f32 mag = std::sqrt(jt1_new * jt1_new + jt2_new * jt2_new);
+    if (mag > limit && mag > 1e-12f) {
+        f32 s = limit / mag;
+        jt1_new *= s;
+        jt2_new *= s;
+    }
+    jt1 = jt1_new - c.friction_impulse_acc1;
+    jt2 = jt2_new - c.friction_impulse_acc2;
+    c.friction_impulse_acc1 = jt1_new;
+    c.friction_impulse_acc2 = jt2_new;
+
+    math::Vec3 P = math::add(math::add(math::mul(c.normal_world, jn), math::mul(cc.t1, jt1)),
+                             math::mul(cc.t2, jt2));
+    // Guard static bodies (race note above): only dynamic bodies are written.
+    if (body_is_dynamic(A)) {
+        A.linear_velocity = math::sub(A.linear_velocity, math::mul(P, A.inv_mass));
+        A.angular_velocity =
+            math::sub(A.angular_velocity, apply_inv_inertia(A, math::cross(cc.ra, P)));
+    }
+    if (body_is_dynamic(B)) {
+        B.linear_velocity = math::add(B.linear_velocity, math::mul(P, B.inv_mass));
+        B.angular_velocity =
+            math::add(B.angular_velocity, apply_inv_inertia(B, math::cross(cc.rb, P)));
+    }
+}
+
+// One split-impulse position-correction iteration for one contact. WRITES body
+// positions.
+PSY_FORCEINLINE void solver_solve_position_contact(const Contact& c,
+                                                   const ContactConstraint& cc,
+                                                   std::span<Body> bodies,
+                                                   const SolverParams& params) noexcept {
+    f32 pen = c.depth - params.slop;
+    if (pen <= 0.0f)
+        return;
+    Body& A = bodies[c.body_a];
+    Body& B = bodies[c.body_b];
+    f32 corr = params.baumgarte * pen * cc.eff_n;
+    math::Vec3 P = math::mul(c.normal_world, corr);
+    // Guard static bodies (race note above): only dynamic bodies move.
+    if (body_is_dynamic(A))
+        A.position = math::sub(A.position, math::mul(P, A.inv_mass));
+    if (body_is_dynamic(B))
+        B.position = math::add(B.position, math::mul(P, B.inv_mass));
+}
+
+// ── Core colored projected-Gauss-Seidel solve ────────────────────────────
+//
+// Drives the four primitives above over a deterministic graph colouring
+// (SolverColoring.h). Colours are processed SEQUENTIALLY (Gauss-Seidel across
+// colours); a colour's contacts are dispatched via `batch` (serial or
+// parallel_for). `cache` / `coloring` / `usage` are caller scratch (zero
+// per-frame heap on the pooled production path).
+inline void solver_solve_island_core(std::span<Contact> contacts,
+                                      std::span<const u32> body_indices,
+                                      std::span<Body> bodies,
+                                      const SolverParams& params,
+                                      f32 dt,
+                                      std::vector<ContactConstraint>& cache,
+                                      ColoringScratch& coloring,
+                                      BodyColorUsage& usage,
+                                      const ColorBatchDispatch& batch) {
+    const usize n = contacts.size();
+    if (n == 0)
+        return;
+    if (cache.size() < n)
+        cache.resize(n);
+    // Usage bitset sized to the island's body COUNT (dense local remap), so
+    // total scratch over all islands is O(total bodies), not O(islands x bodies).
+    usage.ensure(body_indices.size());
+
+    bool saturated = false;
+    u32 num_colors =
+        kernel_color_island(contacts, bodies, body_indices, usage, coloring, saturated);
+
+    // Saturated colouring (a body with >= kMaxSolverColors live contacts) means
+    // a colour batch may contain a body conflict -> NOT race-free. Force the
+    // serial dispatcher; correctness is preserved (serial never parallelises a
+    // colour). This is astronomically rare in practice. We bind a local
+    // dispatcher so the choice is a single lvalue used by reference below.
+    ColorBatchDispatch serial_disp = solver_serial_dispatch;
+    const ColorBatchDispatch& disp = saturated ? serial_disp : batch;
+
+    const u32* order = coloring.order.data();
+    const u32* offs = coloring.color_offsets.data();
+
+    // Precompute is read-only on bodies, so it could parallelise over ALL
+    // contacts at once. We run it per colour through the same dispatcher so the
+    // serial and parallel paths share one control-flow (and the precompute of a
+    // colour completes before that colour's warm-start writes — fine, distinct
+    // phases). Bit-identical either way (no body writes here).
+    for (u32 col = 0; col < num_colors; ++col) {
+        const usize lo = offs[col];
+        const usize hi = offs[col + 1];
+        disp(hi - lo, [&](usize a, usize b) {
+            for (usize k = a; k < b; ++k) {
+                usize ci = order[lo + k];
+                solver_prepare_contact(contacts[ci], cache[ci], bodies, params, dt);
             }
-            jt1 = jt1_new - c.friction_impulse_acc1;
-            jt2 = jt2_new - c.friction_impulse_acc2;
-            c.friction_impulse_acc1 = jt1_new;
-            c.friction_impulse_acc2 = jt2_new;
+        });
+    }
 
-            math::Vec3 P = math::add(math::add(math::mul(c.normal_world, jn), math::mul(cc.t1, jt1)),
-                                     math::mul(cc.t2, jt2));
-            A.linear_velocity = math::sub(A.linear_velocity, math::mul(P, A.inv_mass));
-            B.linear_velocity = math::add(B.linear_velocity, math::mul(P, B.inv_mass));
-            A.angular_velocity =
-                math::sub(A.angular_velocity, apply_inv_inertia(A, math::cross(cc.ra, P)));
-            B.angular_velocity =
-                math::add(B.angular_velocity, apply_inv_inertia(B, math::cross(cc.rb, P)));
+    // Warm-start (writes velocities) — per colour, race-free within a colour.
+    for (u32 col = 0; col < num_colors; ++col) {
+        const usize lo = offs[col];
+        const usize hi = offs[col + 1];
+        disp(hi - lo, [&](usize a, usize b) {
+            for (usize k = a; k < b; ++k) {
+                usize ci = order[lo + k];
+                solver_warmstart_contact(contacts[ci], cache[ci], bodies);
+            }
+        });
+    }
+
+    // Velocity iterations. Each iteration walks all colours in order (Gauss-
+    // Seidel across colours), parallel within a colour.
+    for (u32 it = 0; it < params.velocity_iterations; ++it) {
+        for (u32 col = 0; col < num_colors; ++col) {
+            const usize lo = offs[col];
+            const usize hi = offs[col + 1];
+            disp(hi - lo, [&](usize a, usize b) {
+                for (usize k = a; k < b; ++k) {
+                    usize ci = order[lo + k];
+                    solver_solve_velocity_contact(contacts[ci], cache[ci], bodies);
+                }
+            });
         }
     }
 
+    // Position iterations (split impulse) — writes positions, same colour walk.
     for (u32 it = 0; it < params.position_iterations; ++it) {
-        for (usize i = 0; i < contacts.size(); ++i) {
-            Contact& c = contacts[i];
-            CC& cc = caches[i];
-            Body& A = bodies[c.body_a];
-            Body& B = bodies[c.body_b];
-            f32 pen = c.depth - params.slop;
-            if (pen <= 0.0f)
-                continue;
-            f32 corr = params.baumgarte * pen * cc.eff_n;
-            math::Vec3 P = math::mul(c.normal_world, corr);
-            A.position = math::sub(A.position, math::mul(P, A.inv_mass));
-            B.position = math::add(B.position, math::mul(P, B.inv_mass));
+        for (u32 col = 0; col < num_colors; ++col) {
+            const usize lo = offs[col];
+            const usize hi = offs[col + 1];
+            disp(hi - lo, [&](usize a, usize b) {
+                for (usize k = a; k < b; ++k) {
+                    usize ci = order[lo + k];
+                    solver_solve_position_contact(contacts[ci], cache[ci], bodies, params);
+                }
+            });
         }
     }
+}
+
+// Test-facing / small-island serial entry. Self-contained: it owns local
+// scratch (allocations are fine here — tests don't gate on heap, and the
+// production hot path goes through kernel_solve_island_colored with pooled
+// scratch). Iterates contacts in deterministic COLOURED order, which is why
+// its exact bit values differ from the pre-ADR-013 plain-index PGS — by design
+// (DESIGN.md §16 ADR-013). Still fully deterministic run-to-run.
+inline void kernel_solve_island(const Island& island,
+                                std::span<Contact> contacts,
+                                std::span<const u32> body_indices,
+                                std::span<Body> bodies,
+                                const SolverParams& params,
+                                f32 dt) noexcept {
+    (void)island;
+    if (contacts.empty())
+        return;
+    // Thread-local scratch so the test simulator's per-step calls don't
+    // re-allocate every tick and so concurrent test TUs never share state.
+    thread_local std::vector<ContactConstraint> cache;
+    thread_local ColoringScratch coloring;
+    thread_local BodyColorUsage usage;
+    solver_solve_island_core(contacts, body_indices, bodies, params, dt, cache, coloring, usage,
+                             solver_serial_dispatch);
+}
+
+// Production colored-parallel entry. `batch` is the per-colour dispatcher: for
+// a large island World.cpp binds it to the job system's parallel_for so a
+// colour's disjoint-body contacts run across cores; for a small island it binds
+// the serial dispatcher (parallel overhead not worth it below
+// kColoredParallelThreshold). EITHER dispatcher yields bit-identical output
+// (disjoint bodies => order-free), so the serial fallback and the multicore run
+// agree to the last bit — the bench's serial-vs-parallel comparison rests on
+// exactly that. `scratch` is caller-pooled; nothing here allocates once warmed.
+inline void kernel_solve_island_colored(const Island& island,
+                                        std::span<Contact> contacts,
+                                        std::span<const u32> body_indices,
+                                        std::span<Body> bodies,
+                                        const SolverParams& params,
+                                        f32 dt,
+                                        ColoredIslandScratch& scratch,
+                                        const ColorBatchDispatch& batch) {
+    (void)island;
+    if (contacts.empty())
+        return;
+    solver_solve_island_core(contacts, body_indices, bodies, params, dt, scratch.cache,
+                             scratch.coloring, scratch.usage, batch);
 }
 
 // ─── Single-axis SAP pass (header-inline, used by tests directly) ───────
@@ -1022,6 +1883,104 @@ inline DrivetrainOutput kernel_drivetrain_step(const DrivetrainParams& p,
     out.wheel_torque_l = 0.5f * wheel_t + brake_l;
     out.wheel_torque_r = 0.5f * wheel_t + brake_r;
     return out;
+}
+
+// ─── Speed governor + steering authority (#58) ────────────────────────────
+//
+// The racer auto-drive flagged two weaknesses: (a) at full throttle the car
+// runs away past any intended cruising speed (no governor), and (b) steering
+// is too weak to hold a line at low speed yet twitchy at high speed (flat
+// authority). Both are corrected by two pure, deterministic scalar kernels the
+// vehicle solver applies BEFORE the tire/drive forces — no RNG, no time, no
+// allocation, -fno-fast-math friendly.
+
+// Drive-torque governor multiplier in [0, 1]. As the chassis forward speed
+// `fwd_speed` (m/s, signed; only the forward/positive half is governed)
+// approaches `max_speed`, the returned scale tapers smoothly to 0 so engine
+// drive torque is cut at the cap. The taper begins at `taper_frac` of the cap
+// (default 0.85) and is a smooth Hermite (smoothstep) so there is no torque
+// discontinuity that would chatter the integrator. `max_speed <= 0` disables
+// the governor (returns 1 — exact legacy behaviour). Above the cap the scale
+// is exactly 0 (drive cut entirely; drag + rolling resistance bleed the
+// overspeed back down), which clamps runaway without ever reversing thrust.
+PSY_FORCEINLINE f32 kernel_speed_governor(f32 fwd_speed,
+                                          f32 max_speed,
+                                          f32 taper_frac = 0.85f) noexcept {
+    if (!(max_speed > 0.0f))
+        return 1.0f;  // governor disabled
+    // Only govern forward motion; reversing/standing is never throttled here.
+    if (fwd_speed <= 0.0f)
+        return 1.0f;
+    const f32 taper_start = max_speed * taper_frac;
+    if (fwd_speed <= taper_start)
+        return 1.0f;
+    if (fwd_speed >= max_speed)
+        return 0.0f;
+    // Smoothstep from 1 at taper_start down to 0 at max_speed.
+    const f32 denom = std::max(1e-3f, max_speed - taper_start);
+    const f32 t = (fwd_speed - taper_start) / denom;  // 0..1 across the band
+    const f32 s = t * t * (3.0f - 2.0f * t);          // smoothstep
+    return 1.0f - s;
+}
+
+// Steering-authority multiplier in [min_authority, 1]. The commanded
+// front-wheel angle is scaled by the returned factor so the effective steer
+// is full (×1) at/below `full_speed` and tapers (smoothstep) to
+// `min_authority` at/above `taper_speed`. This keeps enough angle to actually
+// turn the chassis at parking speed while damping the high-speed twitch that
+// made the auto-drive over-correct. A degenerate config (taper_speed <=
+// full_speed) or min_authority >= 1 returns 1 (identity — legacy behaviour).
+PSY_FORCEINLINE f32 kernel_steer_authority(f32 abs_speed,
+                                           f32 full_speed,
+                                           f32 taper_speed,
+                                           f32 min_authority) noexcept {
+    if (!(min_authority < 1.0f) || !(taper_speed > full_speed))
+        return 1.0f;  // identity
+    if (abs_speed <= full_speed)
+        return 1.0f;
+    if (abs_speed >= taper_speed)
+        return min_authority;
+    const f32 denom = std::max(1e-3f, taper_speed - full_speed);
+    const f32 t = (abs_speed - full_speed) / denom;  // 0..1
+    const f32 s = t * t * (3.0f - 2.0f * t);         // smoothstep
+    return 1.0f - s * (1.0f - min_authority);        // 1 → min_authority
+}
+
+// Bilinear sample of a regular grid heightfield (origin at cell (0,0), row-
+// major `iz*width + ix`, `spacing` metres per cell). Returns the interpolated
+// surface height at world (x, z). The (x, z) is clamped to the grid extent so
+// a wheel that overhangs the edge contacts the boundary cell rather than
+// reading out of bounds. Pure / branch-light / alloc-free — suitable as the
+// body of a host HeightSampler callback over an editor sculpt grid or a demo
+// heightmap. `heights` must hold `width*height` samples.
+PSY_FORCEINLINE f32 kernel_heightfield_bilinear(const f32* heights,
+                                                u32 width,
+                                                u32 height,
+                                                f32 spacing,
+                                                math::Vec3 origin,
+                                                f32 x,
+                                                f32 z) noexcept {
+    if (heights == nullptr || width == 0 || height == 0 || !(spacing > 0.0f))
+        return origin.y;
+    f32 fx = (x - origin.x) / spacing;
+    f32 fz = (z - origin.z) / spacing;
+    const f32 max_x = static_cast<f32>(width - 1);
+    const f32 max_z = static_cast<f32>(height - 1);
+    fx = std::clamp(fx, 0.0f, max_x);
+    fz = std::clamp(fz, 0.0f, max_z);
+    const u32 ix0 = static_cast<u32>(fx);
+    const u32 iz0 = static_cast<u32>(fz);
+    const u32 ix1 = (ix0 + 1 < width) ? ix0 + 1 : ix0;
+    const u32 iz1 = (iz0 + 1 < height) ? iz0 + 1 : iz0;
+    const f32 tx = fx - static_cast<f32>(ix0);
+    const f32 tz = fz - static_cast<f32>(iz0);
+    const f32 h00 = heights[static_cast<usize>(iz0) * width + ix0];
+    const f32 h10 = heights[static_cast<usize>(iz0) * width + ix1];
+    const f32 h01 = heights[static_cast<usize>(iz1) * width + ix0];
+    const f32 h11 = heights[static_cast<usize>(iz1) * width + ix1];
+    const f32 a = h00 + (h10 - h00) * tx;
+    const f32 b = h01 + (h11 - h01) * tx;
+    return a + (b - a) * tz + origin.y;
 }
 
 // ─── Aero (Wave B) ───────────────────────────────────────────────────────

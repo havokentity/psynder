@@ -456,9 +456,47 @@ void rasterize_tile(const Framebuffer& fb,
         i64 e2_row = eval_edge2(t, px, py);
 
         const bool has_tex = (tex != nullptr);
-        const bool alpha_test = (d.flags & draw_flags::kAlphaTest) != 0;
-        const bool affine = affine_mode || (d.flags & draw_flags::kAffine) != 0;
+        const bool alpha_test = (d.flags & DrawFlags::AlphaTest) != 0u;
+        const bool affine = affine_mode || (d.flags & DrawFlags::Affine) != 0u;
         const bool multiply_blend = d.blend_mode == 1u;
+        // M-HYB: pick the lighting evaluator ONCE per draw on a const bool — the
+        // per-pixel loop never re-checks the runtime occluder beyond this. When
+        // no occluder is bound (Raster mode / no shadows) we use the plain
+        // evaluator, so the hot path is unchanged and goldens are byte-identical.
+        const bool hybrid_shadows = d.light_packet.shadow.active();
+
+        // Perf hoist (byte-identical): both lighting evaluators take an early
+        // return to a per-draw CONSTANT {base,base,base} (base = diffuse +
+        // emissive) whenever there are no per-pixel dynamic lights — i.e. the
+        // material does not receive dynamic lights, or the packet carries no
+        // lights. In that case the lit colour does NOT depend on the pixel's
+        // world position or normal, so we (a) evaluate the lighting ONCE here
+        // and (b) skip the six per-pixel perspective-correct world_pos/normal
+        // interpolations entirely. This is exactly the Raster-default / golden
+        // path the existing goldens and the unlit bench exercise. The result is
+        // identical to calling evaluate_raster_lighting per pixel because that
+        // call is a pure function returning the same constant for every pixel.
+        const bool light_is_per_pixel = d.material_lighting.receives_dynamic_lights &&
+                                        d.light_packet.lights != nullptr &&
+                                        d.light_packet.light_count != 0u;
+        math::Vec3 const_light_rgb{0.0f, 0.0f, 0.0f};
+        if (!light_is_per_pixel) {
+            // Mirror the evaluators' early-return: base = diffuse + emissive,
+            // broadcast to all channels. (The hybrid evaluator delegates to the
+            // plain one when shadows are inactive, and its own early return is
+            // the same expression, so this covers every constant case.)
+            const f32 base = d.material_lighting.diffuse + d.material_lighting.emissive;
+            const_light_rgb = {base, base, base};
+        }
+
+        // Material albedo tint, unpacked once per draw (0xAABBGGRR -> R low).
+        // Modulates the shaded base colour: final = vertexColor*texture*albedo*
+        // light. Default 0xFFFFFFFF -> (1,1,1,1) identity, so vertex-colour /
+        // texture-only meshes are unchanged.
+        const f32 albedo_r = static_cast<f32>(d.albedo_rgba8 & 0xFFu) * (1.0f / 255.0f);
+        const f32 albedo_g = static_cast<f32>((d.albedo_rgba8 >> 8) & 0xFFu) * (1.0f / 255.0f);
+        const f32 albedo_b = static_cast<f32>((d.albedo_rgba8 >> 16) & 0xFFu) * (1.0f / 255.0f);
+        const f32 albedo_a = static_cast<f32>((d.albedo_rgba8 >> 24) & 0xFFu) * (1.0f / 255.0f);
 
         // Dispatch tag — DESIGN.md §7.6. Picked once per draw; the inner
         // pixel loop branches on a const bool, never on a per-pixel
@@ -557,7 +595,16 @@ void rasterize_tile(const Framebuffer& fb,
                     if (depth_ok) {
                         // Attributes: linear-in-1/w then divide at the quad
                         // for perspective-correct, or skip divide for affine.
+                        // world_pos / normal_world are interpolated ONLY when
+                        // the lighting term actually depends on them (per-pixel
+                        // dynamic lights). For the constant-light path (no
+                        // dynamic lights) those six interpolations are dead, so
+                        // we skip them and use the per-draw const_light_rgb —
+                        // byte-identical output, six fewer perspective interps
+                        // per covered pixel.
                         f32 r, g, b, a, u, v;
+                        math::Vec3 world_pos{0.0f, 0.0f, 0.0f};
+                        math::Vec3 normal_world{0.0f, 0.0f, 0.0f};
                         if (affine) {
                             // Affine — interpolate the un-/w-divided values
                             // directly. Looks like PS1: textures swim with
@@ -574,6 +621,30 @@ void rasterize_tile(const Framebuffer& fb,
                                 w1 * (t.v1.u_over_w / t.v1.inv_w) + w2 * (t.v2.u_over_w / t.v2.inv_w);
                             v = w0 * (t.v0.v_over_w / t.v0.inv_w) +
                                 w1 * (t.v1.v_over_w / t.v1.inv_w) + w2 * (t.v2.v_over_w / t.v2.inv_w);
+                            if (light_is_per_pixel) {
+                                world_pos = {
+                                    w0 * (t.v0.wx_over_w / t.v0.inv_w) +
+                                        w1 * (t.v1.wx_over_w / t.v1.inv_w) +
+                                        w2 * (t.v2.wx_over_w / t.v2.inv_w),
+                                    w0 * (t.v0.wy_over_w / t.v0.inv_w) +
+                                        w1 * (t.v1.wy_over_w / t.v1.inv_w) +
+                                        w2 * (t.v2.wy_over_w / t.v2.inv_w),
+                                    w0 * (t.v0.wz_over_w / t.v0.inv_w) +
+                                        w1 * (t.v1.wz_over_w / t.v1.inv_w) +
+                                        w2 * (t.v2.wz_over_w / t.v2.inv_w),
+                                };
+                                normal_world = {
+                                    w0 * (t.v0.nx_over_w / t.v0.inv_w) +
+                                        w1 * (t.v1.nx_over_w / t.v1.inv_w) +
+                                        w2 * (t.v2.nx_over_w / t.v2.inv_w),
+                                    w0 * (t.v0.ny_over_w / t.v0.inv_w) +
+                                        w1 * (t.v1.ny_over_w / t.v1.inv_w) +
+                                        w2 * (t.v2.ny_over_w / t.v2.inv_w),
+                                    w0 * (t.v0.nz_over_w / t.v0.inv_w) +
+                                        w1 * (t.v1.nz_over_w / t.v1.inv_w) +
+                                        w2 * (t.v2.nz_over_w / t.v2.inv_w),
+                                };
+                            }
                         } else {
                             const f32 w_recip = inv_w != 0.0f ? 1.0f / inv_w : 0.0f;
                             r = (w0 * t.v0.r_over_w + w1 * t.v1.r_over_w + w2 * t.v2.r_over_w) * w_recip;
@@ -582,7 +653,37 @@ void rasterize_tile(const Framebuffer& fb,
                             a = (w0 * t.v0.a_over_w + w1 * t.v1.a_over_w + w2 * t.v2.a_over_w) * w_recip;
                             u = (w0 * t.v0.u_over_w + w1 * t.v1.u_over_w + w2 * t.v2.u_over_w) * w_recip;
                             v = (w0 * t.v0.v_over_w + w1 * t.v1.v_over_w + w2 * t.v2.v_over_w) * w_recip;
+                            if (light_is_per_pixel) {
+                                world_pos = {
+                                    (w0 * t.v0.wx_over_w + w1 * t.v1.wx_over_w + w2 * t.v2.wx_over_w) *
+                                        w_recip,
+                                    (w0 * t.v0.wy_over_w + w1 * t.v1.wy_over_w + w2 * t.v2.wy_over_w) *
+                                        w_recip,
+                                    (w0 * t.v0.wz_over_w + w1 * t.v1.wz_over_w + w2 * t.v2.wz_over_w) *
+                                        w_recip,
+                                };
+                                normal_world = {
+                                    (w0 * t.v0.nx_over_w + w1 * t.v1.nx_over_w + w2 * t.v2.nx_over_w) *
+                                        w_recip,
+                                    (w0 * t.v0.ny_over_w + w1 * t.v1.ny_over_w + w2 * t.v2.ny_over_w) *
+                                        w_recip,
+                                    (w0 * t.v0.nz_over_w + w1 * t.v1.nz_over_w + w2 * t.v2.nz_over_w) *
+                                        w_recip,
+                                };
+                            }
                         }
+                        const math::Vec3 light_rgb =
+                            !light_is_per_pixel
+                                ? const_light_rgb
+                                : (hybrid_shadows
+                                       ? evaluate_raster_lighting_hybrid(d.light_packet,
+                                                                         d.material_lighting,
+                                                                         world_pos,
+                                                                         normal_world)
+                                       : evaluate_raster_lighting(d.light_packet,
+                                                                  d.material_lighting,
+                                                                  world_pos,
+                                                                  normal_world));
 
                         u32 out_rgba;
                         if (surface_cached) {
@@ -600,7 +701,10 @@ void rasterize_tile(const Framebuffer& fb,
                             const f32 tg = static_cast<f32>((t_rgba >> 8) & 0xFFu) * (1.0f / 255.0f);
                             const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f / 255.0f);
                             const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f / 255.0f);
-                            out_rgba = pack_rgba(r * tr, g * tg, b * tb, a * ta);
+                            out_rgba = pack_rgba(r * tr * albedo_r * light_rgb.x,
+                                                 g * tg * albedo_g * light_rgb.y,
+                                                 b * tb * albedo_b * light_rgb.z,
+                                                 a * ta * albedo_a);
                         } else if (has_tex) {
                             // OnTheFly: sample base texture. Three paths,
                             // picked by per-draw const bools above:
@@ -626,9 +730,15 @@ void rasterize_tile(const Framebuffer& fb,
                             const f32 tg = static_cast<f32>((t_rgba >> 8) & 0xFFu) * (1.0f / 255.0f);
                             const f32 tb = static_cast<f32>((t_rgba >> 16) & 0xFFu) * (1.0f / 255.0f);
                             const f32 ta = static_cast<f32>((t_rgba >> 24) & 0xFFu) * (1.0f / 255.0f);
-                            out_rgba = pack_rgba(r * tr, g * tg, b * tb, a * ta);
+                            out_rgba = pack_rgba(r * tr * albedo_r * light_rgb.x,
+                                                 g * tg * albedo_g * light_rgb.y,
+                                                 b * tb * albedo_b * light_rgb.z,
+                                                 a * ta * albedo_a);
                         } else {
-                            out_rgba = pack_rgba(r, g, b, a);
+                            out_rgba = pack_rgba(r * albedo_r * light_rgb.x,
+                                                 g * albedo_g * light_rgb.y,
+                                                 b * albedo_b * light_rgb.z,
+                                                 a * albedo_a);
                         }
                         row_pix[x] =
                             multiply_blend

@@ -54,7 +54,7 @@ TEST_CASE(
     "trilinear path: colored-triangle render still produces "
     "front-face coverage",
     "[raster][trilinear]") {
-    console::Console::Get().RegisterCVar("r_tile_size", "64", "", 0);
+    console::Console::Get().RegisterCVar("r_tile_size", "64", "", console::CVarFlags::None);
     console::Console::Get().SetCVarOverride("r_tile_size", "64");
 
     auto mesh = test_mesh::colored_triangle();

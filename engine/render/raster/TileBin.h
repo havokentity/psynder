@@ -7,8 +7,10 @@
 #pragma once
 
 #include "EdgeEq.h"
+#include "RasterLighting.h"
 #include "core/Types.h"
 #include "render/Framebuffer.h"
+#include "render/raster/Raster.h"
 
 #include <cstddef>
 
@@ -26,8 +28,11 @@ struct PSY_CACHELINE_ALIGN DrawCmd {
     const TriSetup* tris = nullptr;
     u32 tri_count = 0;
     u32 material_id = 0;
-    u32 flags = 0;  // bit 0: alpha test, bit 1: affine,
-                    // bits 2-7: surface-cache eligibility
+    // Material albedo tint (0xAABBGGRR). Copied from DrawItem; the fragment loop
+    // modulates base colour by this so authored material colours show in raster
+    // (was previously never read). 0xFFFFFFFF = identity (white).
+    u32 albedo_rgba8 = 0xFFFFFFFFu;
+    DrawFlags flags = DrawFlags::None;
     // Surface-cache dispatch (DESIGN.md §7.6).
     u8 shading_path = 0;  // ShadingPath enum
     // Per-draw EWA anisotropy cap (1/2/4/8/16). 1 ⇒ no anisotropy; the
@@ -38,6 +43,8 @@ struct PSY_CACHELINE_ALIGN DrawCmd {
     u8 blend_mode = 0;  // DrawBlendMode
     u8 blend_opacity = 255;
     u8 _spad[1] = {};
+    RasterMaterialInputs material_lighting{};
+    RasterLightPacket light_packet{};
     const u32* surface_cache_payload = nullptr;  // pre-multiplied chunk
     u32 surface_cache_width = 0;
     u32 surface_cache_height = 0;

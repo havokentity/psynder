@@ -3,15 +3,32 @@
 
 #pragma once
 
+#include "asset/Vault.h"
 #include "core/AppArgs.h"
 #include "core/Log.h"
 #include "core/Types.h"
+#include "editor/core/SampleHook.h"
+#include "math/Math.h"
 #include "platform/Platform.h"
+#include "render/FrameStats.h"
 #include "render/Framebuffer.h"
+#include "render/Image.h"
 #include "render/PngWriter.h"
+#include "render/RenderingSystem.h"
+#include "render/TextureGenerators.h"
+#include "scene/SceneEcs.h"
+#include "scene/SceneFile.h"
+#include "ui/imm/Imm.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <concepts>
 #include <cstdlib>
+#include <filesystem>
+#include <optional>
+#include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -20,8 +37,55 @@
 namespace psynder::app {
 
 struct WindowAppOptions {
-    bool depth_buffer = false;
+    bool depth_buffer = true;
+    bool scene_notices = true;
 };
+
+struct FrameClear {
+    bool color = false;
+    bool depth = false;
+    u32 color_rgba8 = 0xFF000000u;
+
+    [[nodiscard]] static constexpr FrameClear none() noexcept { return {}; }
+    [[nodiscard]] static constexpr FrameClear color_only(u32 rgba8) noexcept {
+        return {true, false, rgba8};
+    }
+    [[nodiscard]] static constexpr FrameClear depth_only() noexcept {
+        return {false, true, 0xFF000000u};
+    }
+    [[nodiscard]] static constexpr FrameClear color_depth(u32 rgba8) noexcept {
+        return {true, true, rgba8};
+    }
+};
+
+struct PSY_CACHELINE_ALIGN WindowFrameCacheReady {
+    scene::Scene* scene_ptr = nullptr;
+    scene::SceneRuntime* runtime_ptr = nullptr;
+    scene::Environment* environment_ptr = nullptr;
+    scene::EnvironmentRuntimeSoA* environment_runtime_ptr = nullptr;
+
+    [[nodiscard]] bool has_scene() const noexcept { return scene_ptr != nullptr; }
+    [[nodiscard]] scene::Scene& scene() const noexcept { return *scene_ptr; }
+    [[nodiscard]] scene::SceneRuntime& runtime() const noexcept { return *runtime_ptr; }
+    [[nodiscard]] scene::Environment& environment() const noexcept { return *environment_ptr; }
+    [[nodiscard]] scene::EnvironmentRuntimeSoA& hot_environment() const noexcept {
+        return *environment_runtime_ptr;
+    }
+};
+
+static_assert(sizeof(WindowFrameCacheReady) == kCacheLine);
+static_assert(alignof(WindowFrameCacheReady) == kCacheLine);
+
+inline platform::WindowDesc default_window_desc(std::string_view title = "Psynder") {
+    platform::WindowDesc desc{};
+    desc.title.assign(title.data(), title.size());
+    desc.window_width = 1280;
+    desc.window_height = 720;
+    desc.render_width = 640;
+    desc.render_height = 360;
+    desc.scale_mode = platform::ScaleMode::Integer;
+    return desc;
+}
 
 // Owns the standard app/sample process boilerplate: common CLI args, one
 // platform window, a CPU RGBA8 framebuffer backing store, optional depth, PNG
@@ -29,7 +93,11 @@ struct WindowAppOptions {
 class WindowApp {
    public:
     WindowApp(const AppArgs& args, const platform::WindowDesc& desc, WindowAppOptions options = {})
-        : args_(args), width_(desc.render_width), height_(desc.render_height) {
+        : args_(args)
+        , width_(desc.render_width)
+        , height_(desc.render_height)
+        , scene_notices_(options.scene_notices) {
+        render::reset_frame_stats();
         window_ = platform::create_window(desc);
         if (!window_)
             return;
@@ -44,6 +112,8 @@ class WindowApp {
         framebuffer_.format = render::PixelFormat::RGBA8;
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
+
+        rendering_system_.prewarm_builtin_meshes();
     }
 
     WindowApp(const WindowApp&) = delete;
@@ -75,6 +145,274 @@ class WindowApp {
     [[nodiscard]] const std::vector<u32>& pixels() const noexcept { return pixels_; }
     [[nodiscard]] std::vector<u32>& depth() noexcept { return depth_; }
     [[nodiscard]] const std::vector<u32>& depth() const noexcept { return depth_; }
+    [[nodiscard]] render::RenderingSystem& rendering_system() noexcept { return rendering_system_; }
+    [[nodiscard]] const render::RenderingSystem& rendering_system() const noexcept {
+        return rendering_system_;
+    }
+    [[nodiscard]] scene::Scene& scene() noexcept { return *active_scene_; }
+    [[nodiscard]] const scene::Scene& scene() const noexcept { return *active_scene_; }
+    [[nodiscard]] scene::Scene* active_scene() noexcept { return active_scene_; }
+    [[nodiscard]] const scene::Scene* active_scene() const noexcept { return active_scene_; }
+    [[nodiscard]] u32 loaded_scene_count() const noexcept { return loaded_scene_count_; }
+    [[nodiscard]] std::span<scene::Scene* const> loaded_scenes() noexcept {
+        return {loaded_scenes_.data(), loaded_scene_count_};
+    }
+    [[nodiscard]] std::span<scene::Scene* const> loaded_scenes() const noexcept {
+        return {loaded_scenes_.data(), loaded_scene_count_};
+    }
+    [[nodiscard]] scene::Scene& loaded_scene(u32 index = 0u) noexcept {
+        return *loaded_scenes_[index];
+    }
+    [[nodiscard]] const scene::Scene& loaded_scene(u32 index = 0u) const noexcept {
+        return *loaded_scenes_[index];
+    }
+
+    [[nodiscard]] scene::Scene& create_scene() noexcept {
+        if (owned_scene_count_ >= kMaxLoadedScenes) {
+            PSY_LOG_ERROR("app: cannot create scene; capacity {} exhausted", kMaxLoadedScenes);
+            return *owned_scenes_[kMaxLoadedScenes - 1u];
+        }
+        owned_scenes_[owned_scene_count_].emplace();
+        scene::Scene& scene = *owned_scenes_[owned_scene_count_++];
+        (void)load_scene(scene);
+        return scene;
+    }
+
+    [[nodiscard]] scene::Scene& create_active_scene() noexcept {
+        scene::Scene& scene = create_scene();
+        set_scene(scene);
+        return scene;
+    }
+
+    [[nodiscard]] WindowFrameCacheReady cache_ready() noexcept {
+        WindowFrameCacheReady cr{};
+        cr.scene_ptr = active_scene_;
+        cr.runtime_ptr = active_runtime_;
+        cr.environment_ptr = active_scene_ ? &active_scene_->environment() : nullptr;
+        cr.environment_runtime_ptr = active_runtime_ ? &active_runtime_->environment : nullptr;
+        return cr;
+    }
+
+    [[nodiscard]] render::raster::ViewState default_raster_view() noexcept {
+        render::raster::ViewState view{};
+        view.target = framebuffer_;
+        view.view = math::identity4();
+        view.projection = math::identity4();
+        view.tile_w = 64;
+        view.tile_h = 64;
+        return view;
+    }
+
+    bool load_scene(scene::Scene& scene) noexcept {
+        for (u32 i = 0; i < loaded_scene_count_; ++i) {
+            if (loaded_scenes_[i] == &scene) {
+                bind_scene_authoring(scene);
+                return true;
+            }
+        }
+        if (loaded_scene_count_ >= kMaxLoadedScenes)
+            return false;
+        loaded_scenes_[loaded_scene_count_++] = &scene;
+        bind_scene_authoring(scene);
+        return true;
+    }
+
+    void set_scene(scene::Scene& scene) noexcept {
+        if (load_scene(scene)) {
+            active_scene_ = &scene;
+            active_runtime_ = &scene.runtime();
+            active_scene_rendered_ = false;
+        }
+    }
+
+    void clear_scene() noexcept {
+        active_scene_ = nullptr;
+        active_runtime_ = nullptr;
+        active_scene_rendered_ = false;
+    }
+
+    // Golden-safe opt-in: when enabled, engine_frame_render() gathers the active
+    // scene's LightComponents (plus the RenderSettings sun/ambient) into a
+    // reused, pre-reserved buffer and feeds them to the raster ViewState. When
+    // disabled (the default) the view carries no lights, so the raster path
+    // keeps its historical default/preview behaviour and samples/goldens stay
+    // byte-identical. The arcade enables this in PlayerApp::started().
+    void set_scene_lighting_enabled(bool enabled) noexcept {
+        scene_lighting_enabled_ = enabled;
+    }
+    [[nodiscard]] bool scene_lighting_enabled() const noexcept {
+        return scene_lighting_enabled_;
+    }
+
+    // M-HYB (DESIGN.md §8): supply a borrowed traced-shadow occluder for the
+    // NEXT engine_frame_render() raster pass (Hybrid mode). The host builds the
+    // scene shadow TLAS (render::hybrid::build_shadow_scene) and hands the
+    // resulting ShadowOccluder here right before rendering; engine_frame_render
+    // attaches it to the raster ViewState (only when scene lighting is enabled,
+    // so the shadow term has lights to attenuate) and then CLEARS it, so it is a
+    // strictly one-frame opt-in. Default (never set / inactive) leaves the view
+    // occluder null, keeping the Raster path byte-identical (goldens unchanged).
+    void set_pending_shadow_occluder(const render::raster::ShadowOccluder& shadow) noexcept {
+        pending_shadow_ = shadow;
+    }
+    void clear_pending_shadow_occluder() noexcept {
+        pending_shadow_ = render::raster::ShadowOccluder{};
+    }
+
+    void reset_scenes() noexcept {
+        clear_scene();
+        for (u32 i = 0; i < owned_scene_count_; ++i)
+            owned_scenes_[i].reset();
+        owned_scene_count_ = 0;
+        loaded_scene_count_ = 0;
+    }
+
+    void reserve_scene_capacity(u32 renderables, u32 meshes = 0) {
+        rendering_system_.reserve_scene_capacity(renderables, meshes);
+    }
+
+    bool update_scene_load(scene::SceneLoadRequest& request, scene::Scene& scene) {
+        return request.update(scene,
+                              scene::SceneLoadRuntimeHooks{
+                                  .user = this,
+                                  .reserve_render_capacity = &WindowApp::reserve_scene_load_capacity,
+                                  .resolve_mesh = &WindowApp::resolve_scene_load_mesh,
+                                  .resolve_material = &WindowApp::resolve_scene_load_material,
+                              });
+    }
+
+    render::SceneRenderStats render_scene(scene::Scene& scene) {
+        return render_scene(scene, default_raster_view());
+    }
+
+    render::SceneRenderStats render_scene(scene::Scene& scene, const render::raster::ViewState& view) {
+        render::SceneRenderStats stats = rendering_system_.render_raster(scene, view);
+        if (&scene == active_scene_)
+            active_scene_rendered_ = true;
+        return stats;
+    }
+
+    render::SceneRenderStats engine_frame_render() {
+        if (active_scene_rendered_)
+            return {};
+        if (active_scene_ == nullptr) {
+            if (scene_notices_)
+                draw_notice("No Scene Loaded");
+            active_scene_rendered_ = true;
+            return {};
+        }
+        scene::SceneCameraView camera{};
+        if (!active_scene_->active_camera_view(render_target_aspect(), camera)) {
+            draw_notice("No Camera Rendering");
+            active_scene_rendered_ = true;
+            return {};
+        }
+        render::raster::ViewState view{};
+        view.target = framebuffer_;
+        view.view = camera.view;
+        view.projection = camera.projection;
+        view.tile_w = camera.tile_w;
+        view.tile_h = camera.tile_h;
+        populate_view_scene_lights(*active_scene_, view);
+        // M-HYB: attach the one-frame traced-shadow occluder (Hybrid mode). Only
+        // meaningful when scene lighting fed lights into the view above; otherwise
+        // the hybrid evaluator early-outs and the occluder is inert. Consume it
+        // here so it never bleeds into a later frame / a different render mode.
+        if (scene_lighting_enabled_ && view.lights != nullptr && pending_shadow_.active())
+            view.shadow = pending_shadow_;
+        clear_pending_shadow_occluder();
+        return render_scene(*active_scene_, view);
+    }
+
+    void engine_frame_begin(FrameClear clear) noexcept {
+        active_scene_rendered_ = false;
+        if (active_runtime_ && active_runtime_->environment.clear_enabled())
+            apply_environment_clear(active_runtime_->environment);
+        if (clear.color)
+            render::clear_framebuffer_color(framebuffer_, clear.color_rgba8);
+        if (clear.depth)
+            render::clear_framebuffer_depth(framebuffer_);
+    }
+
+    editor::Mode engine_frame_update(f32 dt) noexcept {
+        engine_frame_update_ran_ = true;
+        behavior_seconds_ += dt > 0.0f ? dt : (1.0f / 60.0f);
+        if (active_scene_)
+            active_scene_->update_entity_behaviors(behavior_seconds_);
+        engine_frame_ms_ = dt > 0.0f ? dt * 1000.0f : 1000.0f / 60.0f;
+        record_engine_frame_ms(engine_frame_ms_);
+        if (auto* input = platform::input()) {
+            return editor::sample_update(*input, dt);
+        }
+        return editor::current_mode();
+    }
+
+    void engine_frame_post() noexcept {
+        const u64 render_begin = platform::Clock::ticks_now();
+        engine_frame_render();
+        const u64 render_end = platform::Clock::ticks_now();
+        const render::FrameStats render_stats = render::frame_stats_snapshot();
+        editor::FrameOverlayStats reported = make_engine_overlay_stats(render_stats);
+        reported.render_ms = editor::detail::elapsed_ms(render_begin, render_end);
+        if (active_scene_)
+            reported.entities = active_scene_->registry().entity_count();
+        if (auto* input = platform::input()) {
+            if (engine_frame_update_ran_) {
+                editor::draw_frame_overlays(framebuffer_,
+                                            editor::make_debug_hud_stats_with_render(
+                                                engine_frame_ms_,
+                                                average_engine_frame_ms(),
+                                                reported));
+                editor::publish_frame_profile(engine_frame_ms_, reported);
+            } else {
+                editor::frame_overlays(*input, framebuffer_, reported);
+            }
+        }
+        editor::publish_web_scene_hierarchy(active_scene_);
+        render::reset_frame_stats();
+        engine_frame_update_ran_ = false;
+    }
+
+    void engine_frame_post(const editor::FrameOverlayStats& stats) noexcept {
+        const u64 render_begin = platform::Clock::ticks_now();
+        engine_frame_render();
+        const u64 render_end = platform::Clock::ticks_now();
+        editor::FrameOverlayStats reported = stats;
+        reported.render_stats_valid = true;
+        if (reported.render_ms <= 0.0f)
+            reported.render_ms = editor::detail::elapsed_ms(render_begin, render_end);
+        if (active_scene_)
+            reported.entities = active_scene_->registry().entity_count();
+        if (auto* input = platform::input()) {
+            if (engine_frame_update_ran_) {
+                editor::draw_frame_overlays(framebuffer_,
+                                            editor::make_debug_hud_stats_with_render(
+                                                engine_frame_ms_,
+                                                engine_frame_ms_,
+                                                reported));
+                editor::publish_frame_profile(engine_frame_ms_, reported);
+            } else {
+                editor::frame_overlays(*input, framebuffer_, reported);
+            }
+        }
+        editor::publish_web_scene_hierarchy(active_scene_);
+        render::reset_frame_stats();
+        engine_frame_update_ran_ = false;
+    }
+
+    void engine_frame_post(const ui::imm::DebugHudStats& hud) noexcept {
+        engine_frame_render();
+        if (!engine_frame_update_ran_) {
+            if (auto* input = platform::input()) {
+                editor::sample_update(*input, hud.frame_ms > 0.0f ? hud.frame_ms * 0.001f
+                                                                  : 1.0f / 60.0f);
+            }
+        }
+        editor::draw_frame_overlays(framebuffer_, hud);
+        editor::publish_web_scene_hierarchy(active_scene_);
+        render::reset_frame_stats();
+        engine_frame_update_ran_ = false;
+    }
 
     void present() { window().present(framebuffer_); }
 
@@ -95,6 +433,10 @@ class WindowApp {
 
    private:
     void destroy() noexcept {
+        for (u32 i = 0; i < loaded_scene_count_; ++i) {
+            if (loaded_scenes_[i])
+                loaded_scenes_[i]->clear_mesh_spawner(this);
+        }
         if (window_) {
             platform::destroy_window(window_);
             window_ = nullptr;
@@ -106,22 +448,416 @@ class WindowApp {
         window_ = other.window_;
         width_ = other.width_;
         height_ = other.height_;
+        scene_notices_ = other.scene_notices_;
+        engine_frame_update_ran_ = other.engine_frame_update_ran_;
+        behavior_seconds_ = other.behavior_seconds_;
+        engine_frame_ms_ = other.engine_frame_ms_;
+        engine_frame_ms_ring_ = other.engine_frame_ms_ring_;
+        engine_frame_ms_head_ = other.engine_frame_ms_head_;
+        engine_frame_ms_count_ = other.engine_frame_ms_count_;
+        owned_scene_count_ = other.owned_scene_count_;
+        for (u32 i = 0; i < owned_scene_count_; ++i) {
+            if (other.owned_scenes_[i])
+                owned_scenes_[i].emplace(std::move(*other.owned_scenes_[i]));
+        }
+        loaded_scene_count_ = other.loaded_scene_count_;
+        const auto remap_scene = [&](scene::Scene* scene) noexcept -> scene::Scene* {
+            if (!scene)
+                return nullptr;
+            for (u32 i = 0; i < other.owned_scene_count_; ++i) {
+                if (other.owned_scenes_[i] && scene == &*other.owned_scenes_[i])
+                    return owned_scenes_[i] ? &*owned_scenes_[i] : nullptr;
+            }
+            return scene;
+        };
+        for (u32 i = 0; i < loaded_scene_count_; ++i) {
+            loaded_scenes_[i] = remap_scene(other.loaded_scenes_[i]);
+            if (loaded_scenes_[i])
+                bind_scene_authoring(*loaded_scenes_[i]);
+        }
+        active_scene_ = remap_scene(other.active_scene_);
+        active_runtime_ = active_scene_ ? &active_scene_->runtime() : nullptr;
+        active_scene_rendered_ = other.active_scene_rendered_;
+        scene_lighting_enabled_ = other.scene_lighting_enabled_;
+        pending_shadow_ = other.pending_shadow_;
+        scene_light_items_ = std::move(other.scene_light_items_);
+        raster_lights_ = std::move(other.raster_lights_);
         pixels_ = std::move(other.pixels_);
         depth_ = std::move(other.depth_);
+        rendering_system_ = std::move(other.rendering_system_);
+        scene_textures_ = std::move(other.scene_textures_);
         framebuffer_ = other.framebuffer_;
         framebuffer_.pixels = reinterpret_cast<u8*>(pixels_.data());
         framebuffer_.depth = depth_.empty() ? nullptr : depth_.data();
         other.window_ = nullptr;
+        other.engine_frame_update_ran_ = false;
+        other.behavior_seconds_ = 0.0f;
+        other.engine_frame_ms_ = 1000.0f / 60.0f;
+        other.engine_frame_ms_ring_ = {};
+        other.engine_frame_ms_head_ = 0;
+        other.engine_frame_ms_count_ = 0;
+        other.scene_notices_ = true;
+        other.active_scene_ = nullptr;
+        other.active_runtime_ = nullptr;
+        other.active_scene_rendered_ = false;
+        other.scene_lighting_enabled_ = false;
+        other.pending_shadow_ = render::raster::ShadowOccluder{};
+        other.loaded_scenes_ = {};
+        other.loaded_scene_count_ = 0;
+        for (u32 i = 0; i < other.owned_scene_count_; ++i)
+            other.owned_scenes_[i].reset();
+        other.owned_scene_count_ = 0;
         other.framebuffer_ = {};
     }
+
+    static constexpr u32 kMaxLoadedScenes = 8u;
 
     AppArgs args_{};
     platform::Window* window_ = nullptr;
     u32 width_ = 0;
     u32 height_ = 0;
+    bool scene_notices_ = true;
+    bool engine_frame_update_ran_ = false;
+    f32 behavior_seconds_ = 0.0f;
+    f32 engine_frame_ms_ = 1000.0f / 60.0f;
+    std::array<f32, 120> engine_frame_ms_ring_{};
+    u32 engine_frame_ms_head_ = 0;
+    u32 engine_frame_ms_count_ = 0;
+    std::array<std::optional<scene::Scene>, kMaxLoadedScenes> owned_scenes_{};
+    u32 owned_scene_count_ = 0;
+    std::array<scene::Scene*, kMaxLoadedScenes> loaded_scenes_{};
+    u32 loaded_scene_count_ = 0;
+    scene::Scene* active_scene_ = nullptr;
+    scene::SceneRuntime* active_runtime_ = nullptr;
+    bool active_scene_rendered_ = false;
+    bool scene_lighting_enabled_ = false;
+    // M-HYB one-frame traced-shadow occluder (see set_pending_shadow_occluder).
+    // Borrowed: the host's shadow TLAS must outlive the next render. Default
+    // inactive -> no shadow rays -> Raster/golden path byte-identical.
+    render::raster::ShadowOccluder pending_shadow_{};
     std::vector<u32> pixels_;
     std::vector<u32> depth_;
     render::Framebuffer framebuffer_{};
+    render::RenderingSystem rendering_system_{};
+
+    // Pooled per-frame light buffers (cleared + refilled, never reallocated
+    // once warmed). `scene_light_items_` receives the gathered SceneLightItems;
+    // `raster_lights_` holds the converted RasterLights that the ViewState
+    // borrows for the frame. Only touched when scene_lighting_enabled_.
+    std::vector<scene::SceneLightItem> scene_light_items_{};
+    std::vector<render::raster::RasterLight> raster_lights_{};
+
+    struct NamedSceneTexture {
+        std::string name;
+        render::Texture2D texture;
+    };
+    std::vector<NamedSceneTexture> scene_textures_{};
+
+    void record_engine_frame_ms(f32 frame_ms) noexcept {
+        engine_frame_ms_ring_[engine_frame_ms_head_] = frame_ms;
+        engine_frame_ms_head_ =
+            (engine_frame_ms_head_ + 1u) % static_cast<u32>(engine_frame_ms_ring_.size());
+        if (engine_frame_ms_count_ < static_cast<u32>(engine_frame_ms_ring_.size()))
+            ++engine_frame_ms_count_;
+    }
+
+    [[nodiscard]] f32 average_engine_frame_ms() const noexcept {
+        if (engine_frame_ms_count_ == 0u)
+            return engine_frame_ms_;
+        f32 sum = 0.0f;
+        for (u32 i = 0; i < engine_frame_ms_count_; ++i)
+            sum += engine_frame_ms_ring_[i];
+        return sum / static_cast<f32>(engine_frame_ms_count_);
+    }
+
+    void bind_scene_authoring(scene::Scene& scene) noexcept {
+        scene.bind_mesh_spawner(this,
+                                &WindowApp::spawn_mesh_for_scene,
+                                &WindowApp::spawn_mesh_instance_for_scene,
+                                &WindowApp::spawn_mesh_batch_for_scene);
+    }
+
+    static Entity spawn_mesh_for_scene(void* user,
+                                       scene::Scene& scene,
+                                       const render::MeshDesc& mesh_desc,
+                                       const scene::LocalTransform& local,
+                                       scene::SceneNode parent,
+                                       scene::RenderableFlags flags,
+                                       scene::ObjectMobility mobility) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return {};
+        return app->rendering_system_.spawn_mesh(scene, mesh_desc, local, parent, flags, mobility);
+    }
+
+    static Entity spawn_mesh_instance_for_scene(void* user,
+                                                scene::Scene& scene,
+                                                render::MeshId mesh,
+                                                render::MaterialId material,
+                                                const scene::LocalTransform& local,
+                                                scene::SceneNode parent,
+                                                scene::RenderableFlags flags,
+                                                scene::ObjectMobility mobility) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return {};
+        return app->rendering_system_.spawn_mesh_instance(
+            scene, mesh, material, local, parent, flags, mobility);
+    }
+
+    static u32 spawn_mesh_batch_for_scene(void* user,
+                                          scene::Scene& scene,
+                                          render::MeshId mesh,
+                                          render::MaterialId material,
+                                          std::span<const scene::LocalTransform> local,
+                                          std::span<Entity> out_entities,
+                                          scene::SceneNode parent,
+                                          scene::RenderableFlags flags,
+                                          scene::ObjectMobility mobility) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return 0u;
+        return app->rendering_system_.spawn_mesh_batch(
+            scene, mesh, material, local, out_entities, parent, flags, mobility);
+    }
+
+    static void reserve_scene_load_capacity(void* user, u32 renderables, u32 meshes) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (app)
+            app->reserve_scene_capacity(renderables, meshes);
+    }
+
+    static render::MeshId resolve_scene_load_mesh(void* user, std::string_view mesh_name) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return {};
+        if (mesh_name == "builtin.unit_cube" || mesh_name == "builtin.unit_cube.crate")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::UnitCube);
+        if (mesh_name == "builtin.textured_triangle")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::TexturedTriangle);
+        if (mesh_name == "builtin.pyramid")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::Pyramid);
+        if (mesh_name == "builtin.cone")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::Cone);
+        if (mesh_name == "builtin.uv_sphere")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::UvSphere);
+        if (mesh_name == "builtin.geodesic_sphere")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::GeodesicSphere);
+        if (mesh_name == "builtin.sierpinski_tetrahedron") {
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::SierpinskiTetrahedron);
+        }
+        if (mesh_name == "builtin.sierpinski_carpet")
+            return app->rendering_system_.builtin_mesh(render::BuiltInMesh::SierpinskiCarpet);
+        return {};
+    }
+
+    static render::MaterialId resolve_scene_load_material(void* user,
+                                                          scene::Scene& scene,
+                                                          const scene::SceneFileView& scene_file,
+                                                          const scene::SceneFileMaterial& material) {
+        auto* app = static_cast<WindowApp*>(user);
+        if (!app)
+            return {};
+
+        render::MaterialDesc desc{};
+        desc.albedo_rgba8 = material.albedo_rgba8;
+        desc.flags = material.flags;
+        desc.alpha_cutoff = material.alpha_cutoff;
+        desc.reflectivity = material.reflectivity;
+        desc.roughness = material.roughness;
+        desc.emissive = material.emissive;
+        desc.winding = material.winding;
+        desc.blend = material.blend;
+        desc.raster_shadow_mode = material.raster_shadow_mode;
+        desc.shadow_alpha = material.shadow_alpha;
+        desc.shadow_opacity = material.shadow_opacity;
+        desc.shadow_softness = material.shadow_softness;
+
+        const std::string_view texture_name =
+            scene::scene_file_string(scene_file, material.base_color_texture_name_offset);
+        desc.base_color = app->scene_texture_view(texture_name);
+        return scene.materials().create(desc);
+    }
+
+    render::TextureView scene_texture_view(std::string_view texture_name) {
+        if (texture_name.empty())
+            return {};
+        for (const NamedSceneTexture& entry : scene_textures_) {
+            if (entry.name == texture_name)
+                return entry.texture.view();
+        }
+
+        render::Texture2D texture{};
+        if (texture_name == "textures.procedural.wooden_crate") {
+            texture = render::texture_generators::wooden_crate();
+        } else if (texture_name == "textures.procedural.checker") {
+            texture = render::texture_generators::checker();
+        } else if (texture_name == "textures.procedural.grid") {
+            texture = render::texture_generators::grid();
+        } else if (texture_name == "textures.procedural.bricks") {
+            texture = render::texture_generators::bricks();
+        } else if (texture_name == "textures.procedural.wood_planks") {
+            texture = render::texture_generators::wood_planks();
+        } else if (texture_name == "textures.procedural.building_facade") {
+            texture = render::texture_generators::building_facade();
+        } else {
+            render::Rgba8Image image{};
+            const asset::Blob blob = asset::Vault::Get().read(texture_name);
+            if (blob.data && render::image_detail::decode_ppm_rgba8(
+                                 std::span<const u8>{blob.data, blob.bytes}, image)) {
+                texture = render::Texture2D{std::move(image)};
+            } else {
+                texture = render::fallback_checker_texture();
+                PSY_LOG_WARN("scene: unknown texture '{}'; using fallback checker", texture_name);
+            }
+        }
+        scene_textures_.push_back(NamedSceneTexture{std::string{texture_name}, std::move(texture)});
+        return scene_textures_.back().texture.view();
+    }
+
+    [[nodiscard]] f32 render_target_aspect() const noexcept {
+        return height_ == 0u ? 1.0f : static_cast<f32>(width_) / static_cast<f32>(height_);
+    }
+
+    // Gather scene LightComponents + the RenderSettings sun/ambient into the
+    // pooled raster_lights_ buffer and point `view` at it. No-op (leaves the
+    // view's lights null) unless scene_lighting_enabled_ — so the disabled
+    // default path stays byte-identical to pre-change behaviour. Allocation-
+    // free in steady state: both pooled buffers reserve once and are reused.
+    void populate_view_scene_lights(scene::Scene& scene, render::raster::ViewState& view) {
+        if (!scene_lighting_enabled_)
+            return;
+
+        constexpr u32 kMaxLights = render::raster::RasterLightPacket::kMaxLights;
+        raster_lights_.clear();
+        if (raster_lights_.capacity() < kMaxLights)
+            raster_lights_.reserve(kMaxLights);
+
+        // Default ambient term (full white) preserves the no-render-settings
+        // look; overwritten below when the scene carries RenderSettings.
+        view.ambient_linear = math::Vec3{1.0f, 1.0f, 1.0f};
+
+        const auto unpack_rgba8 = [](u32 rgba8) noexcept -> math::Vec3 {
+            // Engine packing is 0xAABBGGRR (R in the low byte), matching the
+            // framebuffer / MaterialDesc / EnvironmentSettings. Linear-ish:
+            // raster shading treats these channels directly (no sRGB decode,
+            // mirroring the existing preview-light colours).
+            const f32 r = static_cast<f32>(rgba8 & 0xFFu) / 255.0f;
+            const f32 g = static_cast<f32>((rgba8 >> 8) & 0xFFu) / 255.0f;
+            const f32 b = static_cast<f32>((rgba8 >> 16) & 0xFFu) / 255.0f;
+            return math::Vec3{r, g, b};
+        };
+
+        const scene::RenderSettings& rs = scene.render_settings();
+        const math::Vec3 ambient = unpack_rgba8(rs.ambient_color_rgba8);
+        view.ambient_linear = math::Vec3{ambient.x * rs.ambient_intensity,
+                                         ambient.y * rs.ambient_intensity,
+                                         ambient.z * rs.ambient_intensity};
+
+        // Per-entity LightComponents (point / spot / directional).
+        scene.gather_lights(scene_light_items_);
+        for (const scene::SceneLightItem& item : scene_light_items_) {
+            if (raster_lights_.size() >= kMaxLights)
+                break;
+            render::raster::RasterLight light{};
+            switch (item.kind) {
+                case scene::LightKind::Directional:
+                    light.kind = render::raster::RasterLightKind::Directional;
+                    break;
+                case scene::LightKind::Spot:
+                    light.kind = render::raster::RasterLightKind::Spot;
+                    break;
+                case scene::LightKind::Point:
+                default:
+                    light.kind = render::raster::RasterLightKind::Point;
+                    break;
+            }
+            light.position_world = item.position;
+            light.direction_world = item.direction;
+            light.color_linear = unpack_rgba8(item.color_rgba8);
+            light.intensity = item.intensity;
+            light.range = item.range;
+            // Cone half-angles are stored in degrees; the shader compares
+            // against cos(half-angle). Inner cone is the brighter/narrower one,
+            // so its cosine is the larger value (matching RasterLight defaults
+            // where spot_inner_cos > spot_outer_cos).
+            light.spot_inner_cos = std::cos(item.inner_cone_deg * math::kDegToRad);
+            light.spot_outer_cos = std::cos(item.outer_cone_deg * math::kDegToRad);
+            raster_lights_.push_back(light);
+        }
+
+        // Global directional sun from RenderSettings (opt-in via sun_enabled).
+        if (rs.sun_enabled != 0u && raster_lights_.size() < kMaxLights) {
+            render::raster::RasterLight sun{};
+            sun.kind = render::raster::RasterLightKind::Directional;
+            sun.direction_world = scene::sanitize_render_sun_direction(rs.sun_direction);
+            sun.color_linear = unpack_rgba8(rs.sun_color_rgba8);
+            sun.intensity = rs.sun_intensity;
+            raster_lights_.push_back(sun);
+        }
+
+        if (!raster_lights_.empty()) {
+            view.lights = raster_lights_.data();
+            view.light_count = static_cast<u32>(raster_lights_.size());
+        }
+    }
+
+    void apply_environment_clear(const scene::EnvironmentRuntimeSoA& environment) noexcept {
+        constexpr u32 kMainEnvironment = 0u;
+        const scene::EnvironmentClearFlags flags = environment.clear_flags[kMainEnvironment];
+        if ((flags & scene::EnvironmentClearFlags::Color) != 0u) {
+            render::clear_framebuffer_color(framebuffer_,
+                                            environment.clear_color_rgba8[kMainEnvironment]);
+        }
+        if ((flags & scene::EnvironmentClearFlags::Depth) != 0u)
+            render::clear_framebuffer_depth(framebuffer_);
+    }
+
+    void draw_notice(std::string_view text) noexcept {
+        if (framebuffer_.width == 0u || framebuffer_.height == 0u || framebuffer_.pixels == nullptr)
+            return;
+
+        constexpr f32 kCellW = 6.0f;
+        constexpr f32 kCellH = 8.0f;
+        const f32 text_w = static_cast<f32>(text.size()) * kCellW;
+        const f32 panel_w = text_w + 16.0f;
+        const f32 panel_h = kCellH + 12.0f;
+        const f32 x = (static_cast<f32>(framebuffer_.width) - panel_w) * 0.5f;
+        const f32 y = (static_cast<f32>(framebuffer_.height) - panel_h) * 0.5f;
+
+        ui::imm::begin_frame(framebuffer_);
+        ui::imm::filled_rect(math::Vec2{x, y},
+                             math::Vec2{panel_w, panel_h},
+                             ui::imm::rgba(0x0B, 0x10, 0x18));
+        ui::imm::rect_outline(math::Vec2{x, y},
+                              math::Vec2{panel_w, panel_h},
+                              ui::imm::rgba(0x71, 0x82, 0x99));
+        ui::imm::label(math::Vec2{x + 8.0f, y + 6.0f},
+                       text,
+                       ui::imm::rgba(0xFF, 0xD2, 0x66));
+        ui::imm::end_frame();
+    }
+
+    [[nodiscard]] static editor::FrameOverlayStats make_engine_overlay_stats(
+        const render::FrameStats& stats) noexcept {
+        editor::FrameOverlayStats out{};
+        out.draw_calls = stats.raster_draws;
+        out.triangles = stats.raster_triangles;
+        out.active_voices = 0u;
+        out.rt_tiles = stats.rt_tiles;
+        out.rt_jobs = stats.rt_jobs;
+        out.raster_stats_valid = stats.raster_reported;
+        out.rt_stats_valid = stats.rt_reported;
+        out.render_stats_valid = stats.has_render_report();
+        return out;
+    }
+
+    [[nodiscard]] ui::imm::DebugHudStats make_engine_debug_hud(
+        const render::FrameStats& stats) const noexcept {
+        return editor::make_debug_hud_stats(engine_frame_ms_,
+                                            average_engine_frame_ms(),
+                                            make_engine_overlay_stats(stats));
+    }
 };
 
 enum class FrameAction {
@@ -135,73 +871,138 @@ struct WindowFrameContextT {
     platform::Window& window;
     render::Framebuffer& framebuffer;
     const ArgsT& args;
-    u32 frame_index = 0;
     f64 seconds = 0.0;
+    f32 dt = 1.0f / 60.0f;
+    u32 frame_index = 0;
 };
 
 using WindowFrameContext = WindowFrameContextT<AppArgs>;
+static_assert(sizeof(WindowFrameContext) <= kCacheLine);
+
+class BasicSceneApp {
+   public:
+    void basic_scene_started(WindowApp& app) noexcept { scene_ = &app.create_active_scene(); }
+
+   protected:
+    [[nodiscard]] scene::Scene& scene() noexcept { return *scene_; }
+    [[nodiscard]] const scene::Scene& scene() const noexcept { return *scene_; }
+
+   private:
+    scene::Scene* scene_ = nullptr;
+};
 
 namespace detail {
 
-template <class Sample>
+template <class SampleT>
 auto parse_sample_args(int argc, char** argv) {
-    if constexpr (requires { Sample::parse_args(argc, argv); }) {
-        return Sample::parse_args(argc, argv);
+    if constexpr (requires { SampleT::parse_args(argc, argv); }) {
+        return SampleT::parse_args(argc, argv);
     } else {
         return parse_common_args(argc, argv).args;
     }
 }
 
-template <class Sample>
-std::string_view sample_log_name(const Sample& sample) noexcept {
+template <class SampleT>
+std::string_view sample_log_name(const SampleT& sample) noexcept {
     if constexpr (requires { sample.log_name(); }) {
         return sample.log_name();
-    } else if constexpr (requires { Sample::log_name(); }) {
-        return Sample::log_name();
+    } else if constexpr (requires { SampleT::log_name(); }) {
+        return SampleT::log_name();
+    } else if constexpr (requires { std::string_view{SampleT::log_name}; }) {
+        return std::string_view{SampleT::log_name};
     } else {
         return "app";
     }
 }
 
-template <class Sample>
-std::string_view sample_display_name(const Sample& sample) noexcept {
+template <class SampleT>
+std::string_view sample_display_name(const SampleT& sample) noexcept {
     if constexpr (requires { sample.display_name(); }) {
         return sample.display_name();
-    } else if constexpr (requires { Sample::display_name(); }) {
-        return Sample::display_name();
+    } else if constexpr (requires { SampleT::display_name(); }) {
+        return SampleT::display_name();
+    } else if constexpr (requires { std::string_view{SampleT::display_name}; }) {
+        return std::string_view{SampleT::display_name};
     } else {
         return sample_log_name(sample);
     }
 }
 
-template <class Sample, class ArgsT>
-WindowAppOptions sample_window_options(const Sample& sample, const ArgsT& args) noexcept {
+template <class SampleT, class ArgsT>
+constexpr bool sample_has_custom_run() noexcept {
+    return requires(SampleT& sample, WindowApp& app, const ArgsT& args) {
+        sample.run(app, args);
+    };
+}
+
+template <class SampleT, class ArgsT>
+WindowAppOptions sample_window_options(const SampleT& sample, const ArgsT& args) noexcept {
+    WindowAppOptions options{};
     if constexpr (requires { sample.window_options(args); }) {
-        return sample.window_options(args);
-    } else if constexpr (requires { Sample::window_options(args); }) {
-        return Sample::window_options(args);
+        options = sample.window_options(args);
+    } else if constexpr (requires { SampleT::window_options(args); }) {
+        options = SampleT::window_options(args);
+    }
+    if constexpr (sample_has_custom_run<SampleT, ArgsT>())
+        options.scene_notices = false;
+    return options;
+}
+
+template <class SampleT, class ArgsT>
+platform::WindowDesc sample_window_desc(const SampleT& sample, const ArgsT& args) {
+    if constexpr (requires { sample.window_desc(args); }) {
+        return sample.window_desc(args);
+    } else if constexpr (requires { SampleT::window_desc(args); }) {
+        return SampleT::window_desc(args);
     } else {
-        return {};
+        return default_window_desc(sample_display_name(sample));
     }
 }
 
-template <class Sample>
-void sample_started(Sample& sample, WindowApp& app) {
-    if constexpr (requires { sample.started(app); }) {
+template <class SampleT, class ArgsT>
+void sample_started(SampleT& sample, WindowApp& app, const ArgsT& args) {
+    if constexpr (std::derived_from<SampleT, BasicSceneApp>) {
+        sample.basic_scene_started(app);
+    }
+    if constexpr (requires { sample.started(app, args); }) {
+        sample.started(app, args);
+    } else if constexpr (requires { sample.started(app); }) {
         sample.started(app);
     }
 }
 
-template <class Sample>
-void sample_stopped(Sample& sample, WindowApp& app) {
+template <class SampleT>
+void sample_stopped(SampleT& sample, WindowApp& app) {
     if constexpr (requires { sample.stopped(app); }) {
         sample.stopped(app);
     }
 }
 
-template <class Sample, class ArgsT>
-FrameAction run_sample_frame(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
-    if constexpr (requires { sample.frame(ctx); }) {
+template <class SampleT, class ArgsT>
+void run_sample_frame_begin(SampleT& sample,
+                            WindowFrameContextT<ArgsT>& ctx,
+                            WindowFrameCacheReady& cr) {
+    if constexpr (requires { sample.frame_begin(ctx, cr); }) {
+        sample.frame_begin(ctx, cr);
+    } else if constexpr (requires { sample.frame_begin(ctx); }) {
+        sample.frame_begin(ctx);
+    }
+}
+
+template <class SampleT, class ArgsT>
+FrameAction run_sample_frame(SampleT& sample,
+                             WindowFrameContextT<ArgsT>& ctx,
+                             WindowFrameCacheReady& cr) {
+    if constexpr (requires { sample.frame(ctx, cr); }) {
+        if constexpr (requires {
+                          { sample.frame(ctx, cr) } -> std::same_as<FrameAction>;
+                      }) {
+            return sample.frame(ctx, cr);
+        } else {
+            sample.frame(ctx, cr);
+            return FrameAction::Continue;
+        }
+    } else if constexpr (requires { sample.frame(ctx); }) {
         if constexpr (requires {
                           { sample.frame(ctx) } -> std::same_as<FrameAction>;
                       }) {
@@ -215,22 +1016,132 @@ FrameAction run_sample_frame(Sample& sample, WindowFrameContextT<ArgsT>& ctx) {
     }
 }
 
+template <class SampleT, class ArgsT>
+FrameClear sample_frame_clear(SampleT& sample,
+                              const WindowFrameContextT<ArgsT>& ctx,
+                              WindowFrameCacheReady& cr) noexcept {
+    if constexpr (requires { sample.frame_clear(ctx, cr); }) {
+        return sample.frame_clear(ctx, cr);
+    } else if constexpr (requires { SampleT::frame_clear(ctx, cr); }) {
+        return SampleT::frame_clear(ctx, cr);
+    } else if constexpr (requires { sample.frame_clear(ctx); }) {
+        return sample.frame_clear(ctx);
+    } else if constexpr (requires { SampleT::frame_clear(ctx); }) {
+        return SampleT::frame_clear(ctx);
+    } else if constexpr (requires { sample.frame_clear(); }) {
+        return sample.frame_clear();
+    } else if constexpr (requires { SampleT::frame_clear(); }) {
+        return SampleT::frame_clear();
+    } else if constexpr (requires {
+                             { SampleT::frame_clear } -> std::convertible_to<FrameClear>;
+                         }) {
+        return SampleT::frame_clear;
+    } else {
+        (void)sample;
+        (void)ctx;
+        return FrameClear::none();
+    }
+}
+
+template <class SampleT>
+constexpr bool engine_frame_post_enabled() noexcept {
+    if constexpr (requires {
+                      { SampleT::engine_frame_post_enabled() } -> std::convertible_to<bool>;
+                  }) {
+        return SampleT::engine_frame_post_enabled();
+    } else if constexpr (requires {
+                             { SampleT::engine_frame_post_enabled } -> std::convertible_to<bool>;
+                         }) {
+        return SampleT::engine_frame_post_enabled;
+    } else {
+        return true;
+    }
+}
+
+template <class SampleT, class ArgsT>
+void run_engine_frame_post(SampleT& sample,
+                           WindowFrameContextT<ArgsT>& ctx,
+                           WindowFrameCacheReady& cr) {
+    if constexpr (requires { sample.frame_post(ctx, cr); }) {
+        sample.frame_post(ctx, cr);
+    } else if constexpr (requires { sample.frame_post(ctx); }) {
+        sample.frame_post(ctx);
+    } else if constexpr (engine_frame_post_enabled<SampleT>()) {
+        ctx.app.engine_frame_post();
+    }
+}
+
+inline void mount_directory_if_present(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec))
+        asset::Vault::Get().mount_directory(path.string());
+}
+
+inline void mount_archive_if_present(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(path, ec))
+        asset::Vault::Get().mount_vault(path.string());
+}
+
+template <class SampleT>
+std::string_view sample_asset_root(const SampleT&) {
+    if constexpr (requires {
+                      { SampleT::asset_root() } -> std::convertible_to<std::string_view>;
+                  }) {
+        return SampleT::asset_root();
+    } else if constexpr (requires {
+                             { SampleT::asset_root } -> std::convertible_to<std::string_view>;
+                         }) {
+        return SampleT::asset_root;
+    } else {
+        return {};
+    }
+}
+
+template <class SampleT>
+void mount_standard_asset_roots(const SampleT& sample) {
+    namespace fs = std::filesystem;
+
+    const auto mount_archives = [](const fs::path& root) {
+        if (root.empty())
+            return;
+        mount_archive_if_present(root / "psynder.psyvault");
+        mount_archive_if_present(root / "assets.psyvault");
+    };
+
+    const fs::path exe_path{platform::executable_path()};
+    const fs::path exe_dir = exe_path.parent_path();
+    mount_archives(exe_dir);
+    mount_archives(fs::path{platform::current_working_directory()});
+
+    const std::string_view root = sample_asset_root(sample);
+    if (!root.empty()) {
+        mount_directory_if_present(exe_dir);
+#if defined(PSYNDER_SOURCE_DIR)
+        mount_directory_if_present(fs::path{PSYNDER_SOURCE_DIR} / fs::path{std::string(root)});
+#else
+        mount_directory_if_present(fs::path{std::string(root)});
+#endif
+    }
+}
+
 }  // namespace detail
 
-template <class Sample>
+template <class SampleT>
 int run_window_sample(int argc, char** argv) {
-    const auto args = detail::parse_sample_args<Sample>(argc, argv);
-    Sample sample{};
+    const auto args = detail::parse_sample_args<SampleT>(argc, argv);
+    SampleT sample{};
     const std::string_view log_name = detail::sample_log_name(sample);
     const std::string_view display_name = detail::sample_display_name(sample);
 
-    WindowApp app{args, sample.window_desc(args), detail::sample_window_options(sample, args)};
+    WindowApp app{args, detail::sample_window_desc(sample, args), detail::sample_window_options(sample, args)};
     if (!app) {
         PSY_LOG_ERROR("{}: failed to create window", log_name);
         return EXIT_FAILURE;
     }
 
-    detail::sample_started(sample, app);
+    detail::mount_standard_asset_roots(sample);
+    detail::sample_started(sample, app, args);
 
     if (args.smoke_frames > 0) {
         PSY_LOG_INFO("{} — smoke mode, {} frames", display_name, args.smoke_frames);
@@ -245,21 +1156,37 @@ int run_window_sample(int argc, char** argv) {
     }
 
     const u64 t0 = platform::Clock::ticks_now();
+    u64 last_frame_ticks = t0;
     u32 frame = 0;
     while (!app.window().should_close()) {
         app.window().poll_events();
+
+        f64 seconds = static_cast<f64>(frame) * (1.0 / 60.0);
+        f32 dt = 1.0f / 60.0f;
+        if (args.smoke_frames == 0) {
+            const u64 now_ticks = platform::Clock::ticks_now();
+            seconds = platform::Clock::seconds(now_ticks - t0);
+            const f64 raw_dt = frame == 0 ? 1.0 / 60.0
+                                          : platform::Clock::seconds(now_ticks - last_frame_ticks);
+            dt = static_cast<f32>(std::clamp(raw_dt, 0.0, 0.1));
+            last_frame_ticks = now_ticks;
+        }
 
         WindowFrameContextT<std::decay_t<decltype(args)>> ctx{
             app,
             app.window(),
             app.framebuffer(),
             args,
+            seconds,
+            dt,
             frame,
-            args.smoke_frames > 0 ? static_cast<f64>(frame) * (1.0 / 60.0)
-                                  : platform::Clock::seconds(platform::Clock::ticks_now() - t0),
         };
+        WindowFrameCacheReady cr = app.cache_ready();
 
-        const FrameAction action = detail::run_sample_frame(sample, ctx);
+        detail::run_sample_frame_begin(sample, ctx, cr);
+        app.engine_frame_begin(detail::sample_frame_clear(sample, ctx, cr));
+        const FrameAction action = detail::run_sample_frame(sample, ctx, cr);
+        detail::run_engine_frame_post(sample, ctx, cr);
         app.present();
 
         ++frame;

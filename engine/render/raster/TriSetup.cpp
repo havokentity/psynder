@@ -43,6 +43,46 @@ bool setup_triangle(const math::Vec4& cp0_in,
                     u32 viewport_h,
                     TriSetup& out,
                     u8 cull_mode) noexcept {
+    return setup_triangle_lit(cp0_in,
+                              cp1_in,
+                              cp2_in,
+                              {0.0f, 0.0f, 0.0f},
+                              {0.0f, 0.0f, 0.0f},
+                              {0.0f, 0.0f, 0.0f},
+                              {0.0f, 1.0f, 0.0f},
+                              {0.0f, 1.0f, 0.0f},
+                              {0.0f, 1.0f, 0.0f},
+                              uv0,
+                              uv1,
+                              uv2,
+                              col0,
+                              col1,
+                              col2,
+                              viewport_w,
+                              viewport_h,
+                              out,
+                              cull_mode);
+}
+
+bool setup_triangle_lit(const math::Vec4& cp0_in,
+                        const math::Vec4& cp1_in,
+                        const math::Vec4& cp2_in,
+                        math::Vec3 world0,
+                        math::Vec3 world1,
+                        math::Vec3 world2,
+                        math::Vec3 normal0,
+                        math::Vec3 normal1,
+                        math::Vec3 normal2,
+                        math::Vec2 uv0,
+                        math::Vec2 uv1,
+                        math::Vec2 uv2,
+                        u32 col0,
+                        u32 col1,
+                        u32 col2,
+                        u32 viewport_w,
+                        u32 viewport_h,
+                        TriSetup& out,
+                        u8 cull_mode) noexcept {
     // Reject triangles with any vertex on or behind the eye plane (w <= 0),
     // where the perspective divide is invalid. This is the eye-plane test, not
     // the near-plane test (z + w >= 0): near-plane straddlers are already split
@@ -91,6 +131,8 @@ bool setup_triangle(const math::Vec4& cp0_in,
             std::swap(cp1, cp2);
             std::swap(uv1, uv2);
             std::swap(col1, col2);
+            std::swap(world1, world2);
+            std::swap(normal1, normal2);
         }
     } else if (mode == CullMode::Front) {
         if (sa >= 0.0f) {  // front face or degenerate
@@ -100,6 +142,8 @@ bool setup_triangle(const math::Vec4& cp0_in,
         std::swap(cp1, cp2);  // rewind the kept back face to front for setup
         std::swap(uv1, uv2);
         std::swap(col1, col2);
+        std::swap(world1, world2);
+        std::swap(normal1, normal2);
     } else {               // Back (default) — also the safe fallback for any
                            // unexpected cull_mode value: cull, never silently
                            // disable culling.
@@ -173,7 +217,14 @@ bool setup_triangle(const math::Vec4& cp0_in,
 
     // Pack ScreenVerts with 1/w + attributes premultiplied by 1/w for
     // perspective-correct interpolation (DESIGN.md §7.4).
-    auto make_screen_vert = [&](f32 sx, f32 sy, f32 z_div_w, f32 inv_w, math::Vec2 uv, u32 col) noexcept {
+    auto make_screen_vert = [&](f32 sx,
+                                f32 sy,
+                                f32 z_div_w,
+                                f32 inv_w,
+                                math::Vec2 uv,
+                                u32 col,
+                                math::Vec3 world,
+                                math::Vec3 normal) noexcept {
         ScreenVertex v;
         v.x = sx;
         v.y = sy;
@@ -185,6 +236,12 @@ bool setup_triangle(const math::Vec4& cp0_in,
         v.g_over_w = static_cast<f32>(unpack_g(col)) * (1.0f / 255.0f) * inv_w;
         v.b_over_w = static_cast<f32>(unpack_b(col)) * (1.0f / 255.0f) * inv_w;
         v.a_over_w = static_cast<f32>(unpack_a(col)) * (1.0f / 255.0f) * inv_w;
+        v.wx_over_w = world.x * inv_w;
+        v.wy_over_w = world.y * inv_w;
+        v.wz_over_w = world.z * inv_w;
+        v.nx_over_w = normal.x * inv_w;
+        v.ny_over_w = normal.y * inv_w;
+        v.nz_over_w = normal.z * inv_w;
         return v;
     };
 
@@ -196,9 +253,9 @@ bool setup_triangle(const math::Vec4& cp0_in,
     const f32 z1 = cp1.z * inv_w1 * 0.5f + 0.5f;
     const f32 z2 = cp2.z * inv_w2 * 0.5f + 0.5f;
 
-    out.v0 = make_screen_vert(sx0, sy0, z0, inv_w0, uv0, col0);
-    out.v1 = make_screen_vert(sx1, sy1, z1, inv_w1, uv1, col1);
-    out.v2 = make_screen_vert(sx2, sy2, z2, inv_w2, uv2, col2);
+    out.v0 = make_screen_vert(sx0, sy0, z0, inv_w0, uv0, col0, world0, normal0);
+    out.v1 = make_screen_vert(sx1, sy1, z1, inv_w1, uv1, col1, world1, normal1);
+    out.v2 = make_screen_vert(sx2, sy2, z2, inv_w2, uv2, col2, world2, normal2);
 
     out.valid = true;
     return true;

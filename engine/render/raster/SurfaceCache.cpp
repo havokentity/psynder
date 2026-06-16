@@ -28,7 +28,7 @@ struct SurfaceCacheCvars {
             "r_force_shading_path",
             "0",
             "0=auto, 1=force OnTheFly, 2=force SurfaceCached. Debug A/B only.",
-            console::CVAR_ARCHIVE);
+            console::CVarFlags::Archive);
     }
 };
 PSY_FORCEINLINE SurfaceCacheCvars& cache_cvars() noexcept {
@@ -374,7 +374,7 @@ ShadingPath classify_surface(const SurfaceDesc& s) noexcept {
             return ShadingPath::SurfaceCached;
     }
     auto& cache = SurfaceCache::Get();
-    const bool eligible = (s.flags & draw_flags::kEligibleMask) == draw_flags::kEligibleMask;
+    const bool eligible = draw_flags_has_all(s.flags, DrawFlags::EligibleMask);
     if (!eligible) {
         cache.mark_ineligible(s.surface_id);
         return ShadingPath::OnTheFly;

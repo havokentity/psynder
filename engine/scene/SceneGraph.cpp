@@ -3,10 +3,7 @@
 
 #include "scene/SceneGraph.h"
 
-#include "jobs/JobSystem.h"
-
 #include <algorithm>
-#include <atomic>
 #include <limits>
 
 namespace psynder::scene {
@@ -53,33 +50,106 @@ void SceneGraph::clear() {
     next_sibling_.clear();
     prev_sibling_.clear();
     depth_.clear();
+    local_translation_.clear();
+    local_rotation_.clear();
+    local_scale_.clear();
     local_.clear();
     world_.clear();
     local_dirty_.clear();
+    local_matrix_dirty_.clear();
     effective_dirty_.clear();
-    nodes_by_depth_.clear();
+    dirty_queued_.clear();
+    dirty_roots_.clear();
+    free_nodes_.clear();
     analytic_spheres_.clear();
     live_nodes_ = 0;
+    max_depth_ = 0;
+}
+
+void SceneGraph::reserve_nodes(u32 count) {
+    generation_.reserve(count);
+    alive_.reserve(count);
+    parent_.reserve(count);
+    first_child_.reserve(count);
+    next_sibling_.reserve(count);
+    prev_sibling_.reserve(count);
+    depth_.reserve(count);
+    local_translation_.reserve(count);
+    local_rotation_.reserve(count);
+    local_scale_.reserve(count);
+    local_.reserve(count);
+    world_.reserve(count);
+    local_dirty_.reserve(count);
+    local_matrix_dirty_.reserve(count);
+    effective_dirty_.reserve(count);
+    dirty_queued_.reserve(count);
+    dirty_roots_.reserve(count);
+    free_nodes_.reserve(count);
+    analytic_spheres_.reserve(count);
+}
+
+void SceneGraph::reserve_analytic_spheres(u32 count) {
+    analytic_spheres_.reserve(count);
 }
 
 SceneNode SceneGraph::create_node(SceneNode parent, const LocalTransform& local) {
     const u32 parent_index = valid_index(parent) ? parent.index() : kInvalidIndex;
-    const u32 index = static_cast<u32>(generation_.size());
-    const u32 generation = 1u;
-    generation_.push_back(generation);
-    alive_.push_back(1u);
-    parent_.push_back(parent_index);
-    first_child_.push_back(kInvalidIndex);
-    next_sibling_.push_back(kInvalidIndex);
-    prev_sibling_.push_back(kInvalidIndex);
-    depth_.push_back(parent_index == kInvalidIndex ? 0u : depth_[parent_index] + 1u);
-    local_.push_back(local_transform_matrix(local));
-    world_.push_back(local_[index]);
-    local_dirty_.push_back(1u);
-    effective_dirty_.push_back(1u);
-    if (nodes_by_depth_.size() <= depth_[index])
-        nodes_by_depth_.resize(static_cast<usize>(depth_[index]) + 1u);
-    nodes_by_depth_[depth_[index]].push_back(index);
+
+    u32 index = kInvalidIndex;
+    if (!free_nodes_.empty()) {
+        auto it = free_nodes_.end();
+        if (parent_index == kInvalidIndex) {
+            it = free_nodes_.end() - 1;
+        } else {
+            it = std::find_if(free_nodes_.begin(), free_nodes_.end(), [&](u32 candidate) {
+                return candidate > parent_index;
+            });
+        }
+        if (it != free_nodes_.end()) {
+            index = *it;
+            *it = free_nodes_.back();
+            free_nodes_.pop_back();
+        }
+    }
+
+    if (index == kInvalidIndex) {
+        index = static_cast<u32>(generation_.size());
+        generation_.push_back(1u);
+        alive_.push_back(0u);
+        parent_.push_back(kInvalidIndex);
+        first_child_.push_back(kInvalidIndex);
+        next_sibling_.push_back(kInvalidIndex);
+        prev_sibling_.push_back(kInvalidIndex);
+        depth_.push_back(0u);
+        local_translation_.push_back({});
+        local_rotation_.push_back({});
+        local_scale_.push_back({});
+        local_.push_back(math::identity4());
+        world_.push_back(math::identity4());
+        local_dirty_.push_back(0u);
+        local_matrix_dirty_.push_back(0u);
+        effective_dirty_.push_back(0u);
+        dirty_queued_.push_back(0u);
+    }
+
+    const u32 generation = generation_[index];
+    alive_[index] = 1u;
+    parent_[index] = parent_index;
+    first_child_[index] = kInvalidIndex;
+    next_sibling_[index] = kInvalidIndex;
+    prev_sibling_[index] = kInvalidIndex;
+    depth_[index] = parent_index == kInvalidIndex ? 0u : depth_[parent_index] + 1u;
+    local_translation_[index] = local.translation;
+    local_rotation_[index] = local.rotation;
+    local_scale_[index] = local.scale;
+    local_[index] = math::identity4();
+    world_[index] = math::identity4();
+    local_dirty_[index] = 1u;
+    local_matrix_dirty_[index] = 1u;
+    effective_dirty_[index] = 1u;
+    dirty_queued_[index] = 1u;
+    dirty_roots_.push_back(index);
+    max_depth_ = std::max(max_depth_, depth_[index]);
     if (parent_index != kInvalidIndex)
         attach_child(parent_index, index);
     ++live_nodes_;
@@ -104,9 +174,13 @@ bool SceneGraph::destroy_node(SceneNode node) {
     first_child_[index] = kInvalidIndex;
     parent_[index] = kInvalidIndex;
     local_dirty_[index] = 0u;
+    local_matrix_dirty_[index] = 0u;
     effective_dirty_[index] = 0u;
+    if (index < dirty_queued_.size())
+        dirty_queued_[index] = 0u;
+    free_nodes_.push_back(index);
     --live_nodes_;
-    rebuild_depth_lists();
+    recompute_depth_bounds();
     return true;
 }
 
@@ -134,7 +208,7 @@ bool SceneGraph::set_parent(SceneNode node, SceneNode parent) {
     if (parent_index != kInvalidIndex)
         attach_child(parent_index, index);
     update_subtree_depths(index, parent_index == kInvalidIndex ? 0u : depth_[parent_index] + 1u);
-    rebuild_depth_lists();
+    recompute_depth_bounds();
     mark_dirty(node);
     return true;
 }
@@ -147,7 +221,14 @@ SceneNode SceneGraph::parent(SceneNode node) const noexcept {
 }
 
 void SceneGraph::set_local_transform(SceneNode node, const LocalTransform& local) {
-    set_local_matrix(node, local_transform_matrix(local));
+    if (!valid_index(node))
+        return;
+    const u32 index = node.index();
+    local_translation_[index] = local.translation;
+    local_rotation_[index] = local.rotation;
+    local_scale_[index] = local.scale;
+    local_matrix_dirty_[index] = 1u;
+    mark_dirty(node);
 }
 
 void SceneGraph::set_local_matrix(SceneNode node, const math::Mat4& local) {
@@ -155,6 +236,7 @@ void SceneGraph::set_local_matrix(SceneNode node, const math::Mat4& local) {
         return;
     const u32 index = node.index();
     local_[index] = local;
+    local_matrix_dirty_[index] = 0u;
     mark_dirty(node);
 }
 
@@ -169,45 +251,74 @@ const math::Mat4& SceneGraph::world_matrix(SceneNode node) const noexcept {
 }
 
 void SceneGraph::mark_dirty(SceneNode node) {
-    if (valid_index(node))
-        local_dirty_[node.index()] = 1u;
+    if (!valid_index(node))
+        return;
+    const u32 index = node.index();
+    local_dirty_[index] = 1u;
+    if (index < dirty_queued_.size() && dirty_queued_[index] != 0u)
+        return;
+    if (dirty_queued_.size() <= index)
+        dirty_queued_.resize(static_cast<usize>(index) + 1u, 0u);
+    dirty_queued_[index] = 1u;
+    dirty_roots_.push_back(index);
 }
 
 SceneGraphUpdateStats SceneGraph::update_world_transforms(u32 parallel_threshold) {
+    (void)parallel_threshold;
     SceneGraphUpdateStats stats{};
-    stats.depth_levels = static_cast<u32>(nodes_by_depth_.size());
-    std::atomic<u32> updated{0u};
+    stats.depth_levels = live_nodes_ == 0u ? 0u : max_depth_ + 1u;
 
-    auto update_one = [&](u32 index) {
-        if (alive_[index] == 0u)
+    auto has_dirty_ancestor = [&](u32 index) {
+        for (u32 p = parent_[index]; p != kInvalidIndex; p = parent_[p]) {
+            if (alive_[p] != 0u && local_dirty_[p] != 0u)
+                return true;
+        }
+        return false;
+    };
+
+    auto update_subtree = [&](auto& self, u32 index, bool parent_dirty) -> void {
+        if (index >= alive_.size() || alive_[index] == 0u)
             return;
+        ++stats.nodes_visited;
         const u32 p = parent_[index];
-        const bool parent_dirty = p != kInvalidIndex && effective_dirty_[p] != 0u;
         const bool dirty = local_dirty_[index] != 0u || parent_dirty;
         effective_dirty_[index] = dirty ? 1u : 0u;
         if (dirty) {
-            world_[index] = p == kInvalidIndex ? local_[index] : math::mul(world_[p], local_[index]);
+            if (local_matrix_dirty_[index] != 0u) {
+                local_[index] = local_transform_matrix(LocalTransform{local_translation_[index],
+                                                                      local_rotation_[index],
+                                                                      local_scale_[index]});
+                local_matrix_dirty_[index] = 0u;
+            }
+            world_[index] =
+                p == kInvalidIndex ? local_[index] : math::mul_affine(world_[p], local_[index]);
             local_dirty_[index] = 0u;
-            updated.fetch_add(1u, std::memory_order_relaxed);
+            ++stats.transforms_updated;
         }
+        for (u32 child = first_child_[index]; child != kInvalidIndex; child = next_sibling_[child])
+            self(self, child, dirty);
     };
 
-    for (const std::vector<u32>& level : nodes_by_depth_) {
-        stats.nodes_visited += static_cast<u32>(level.size());
-        if (level.size() >= parallel_threshold) {
-            if (jobs::JobSystem::Get().worker_count() == 0u)
-                jobs::JobSystem::Get().start(0);
-            jobs::JobSystem::Get().parallel_for(0, level.size(), 64, [&](usize begin, usize end) {
-                for (usize i = begin; i < end; ++i)
-                    update_one(level[i]);
-            });
-        } else {
-            for (u32 index : level)
-                update_one(index);
-        }
+    for (u32 index : dirty_roots_) {
+        if (index >= alive_.size() || alive_[index] == 0u || local_dirty_[index] == 0u)
+            continue;
+        if (has_dirty_ancestor(index))
+            continue;
+        update_subtree(update_subtree, index, false);
     }
 
-    stats.transforms_updated = updated.load(std::memory_order_relaxed);
+    for (u32 index : dirty_roots_) {
+        if (index < dirty_queued_.size())
+            dirty_queued_[index] = 0u;
+    }
+    dirty_roots_.clear();
+
+    if (stats.transforms_updated == 0u) {
+        for (u32 index = 0; index < local_dirty_.size(); ++index) {
+            if (alive_[index] != 0u && local_dirty_[index] != 0u)
+                mark_dirty(make_handle(index, generation_[index]));
+        }
+    }
     return stats;
 }
 
@@ -266,14 +377,12 @@ void SceneGraph::detach_child(u32 child_index) noexcept {
     next_sibling_[child_index] = kInvalidIndex;
 }
 
-void SceneGraph::rebuild_depth_lists() {
-    nodes_by_depth_.clear();
+void SceneGraph::recompute_depth_bounds() noexcept {
+    max_depth_ = 0u;
     for (u32 i = 0; i < alive_.size(); ++i) {
         if (alive_[i] == 0u)
             continue;
-        if (nodes_by_depth_.size() <= depth_[i])
-            nodes_by_depth_.resize(static_cast<usize>(depth_[i]) + 1u);
-        nodes_by_depth_[depth_[i]].push_back(i);
+        max_depth_ = std::max(max_depth_, depth_[i]);
     }
 }
 

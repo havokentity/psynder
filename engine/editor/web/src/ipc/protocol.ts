@@ -9,30 +9,41 @@
 //   - "selection" : engine pushes the currently-selected entity's component
 //                   values; panel pushes back property edits. Also carries
 //                   `spawn_prop` commands from the prop-spawn menu.
-//   - "console"   : bi-directional REPL — panel sends `eval`, engine streams
-//                   `log` lines plus the eventual `result`.
+//   - "console"   : bi-directional engine-console / Lua command path — panel
+//                   sends `eval`, engine streams `log` lines plus `result`.
+//   - "scene"     : active engine scene snapshots/deltas, including the
+//                   hierarchy shown by the web editor.
 //   - "profiler"  : engine pushes a `frame` sample per render frame (cpu_ms,
-//                   gpu_ms, ms_per_section breakdown, fps).
+//                   render_ms, ms_per_section breakdown, fps).
 //   - "assets"    : engine pushes the catalog of entries in the loaded
 //                   `.lmpak` archives, plus deltas as packs mount/unmount.
 //   - "props"     : engine pushes the searchable prop library used by the
 //                   spawn menu (thumbnails are URLs served by the IPC HTTP
 //                   side; in mock mode they're inline svg data URIs).
+//   - "psygraph"  : graph-authoring documents for PsyScript/PsyGraph
+//                   behavior assets. Wave C starts with mock/offline data.
 //
 // The version `v` is the protocol revision. Wave-A pegs it to 1. A drift
 // detector in `client.ts` logs a warning if the engine reports a higher
 // version than the bundle was built against; the React app degrades to
 // best-effort rendering of channels it understands.
 
-export const PROTOCOL_VERSION = 1;
+import { kProtocolVersion } from './protocol.gen';
+import type { ConsoleCompletionQuery } from './protocol.gen';
+
+export const PROTOCOL_VERSION = kProtocolVersion;
 
 export type Channel =
+    | 'stats'
+    | 'perf'
     | 'schemas'
     | 'selection'
     | 'console'
+    | 'scene'
     | 'profiler'
     | 'assets'
-    | 'props';
+    | 'props'
+    | 'psygraph';
 
 export interface Envelope<T = unknown> {
     v: number;
@@ -54,9 +65,9 @@ export type FieldKind =
     | 'bool'
     | 'enum'
     | 'string'
-    | 'color'    // RGBA8 packed in a u32; widget = color picker.
+    | 'color'    // Engine RGBA8 packed in a u32, R in low byte; widget = color picker.
     | 'vec2' | 'vec3' | 'vec4'
-    | 'quat';    // four floats — surfaced as Euler degrees for editing.
+    | 'quat';    // four raw quaternion floats; engine-facing Transform rotation uses vec3 degrees.
 
 export interface NumericFieldHints {
     min?: number;
@@ -134,11 +145,38 @@ export interface SelectionSet {
     value: unknown;
 }
 
+export interface SceneDirtyState {
+    dirty: boolean;
+    generation?: number;
+}
+
+// Inspector "Add Component" intent: panel -> engine on the `selection` channel.
+// `variant` is an optional sub-kind discriminator (e.g. "static" for a static
+// RigidBody); omit for the component's default flavor. The engine replies on
+// the `selection` channel with a `command_ack` whose command is
+// "add_component".
+export interface SelectionComponentAdd {
+    entity_id: number;
+    component: string;
+    variant?: string;
+}
+
+// Inspector per-component remove intent (inverse of "Add Component"):
+// panel -> engine on the `selection` channel. The engine replies on the
+// `selection` channel with a `command_ack` whose command is "remove_component".
+export interface SelectionComponentRemove {
+    entity_id: number;
+    component: string;
+}
+
 // ─── Console channel ─────────────────────────────────────────────────────
 //
-// `eval`   : panel → engine. Pushes a snippet to the Lua REPL host.
-// `log`    : engine → panel. Stream of log lines tagged with a severity.
-// `result` : engine → panel. The terminal value (or error) of the prior eval.
+// `eval`        : panel → engine. Pushes either an engine-console command/cvar
+//                 or an explicit Lua REPL snippet.
+// `complete`    : panel → engine. Requests native console completions.
+// `completions` : engine → panel. Ranked native console completion matches.
+// `log`         : engine → panel. Stream of log lines tagged with a severity.
+// `result`      : engine → panel. The terminal value (or error) of the prior eval.
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
@@ -146,6 +184,10 @@ export interface ConsoleEval {
     /** Monotonic id so the panel can correlate the `result` reply. */
     id: number;
     source: string;
+    /** Optional UI hint for engines that route multiple console languages. */
+    mode?: 'console' | 'lua';
+    /** Suppress successful result rows for GUI-generated commands. Errors still surface. */
+    quiet?: boolean;
 }
 
 export interface ConsoleLog {
@@ -162,6 +204,28 @@ export interface ConsoleResult {
     ok: boolean;
     /** Pretty-printed value (engine-side `tostring`) or an error message. */
     text: string;
+    /** Optional engine-side timing for the evaluated request. */
+    duration_ms?: number;
+    /** Optional coarse value label for richer GUI consoles. */
+    value_kind?: 'nil' | 'boolean' | 'number' | 'string' | 'table' | 'error' | 'text';
+}
+
+export type ConsoleCompletionRequest = ConsoleCompletionQuery;
+
+export type ConsoleCompletionKind = 'cvar' | 'command' | 'value';
+
+export interface ConsoleCompletionItem {
+    name: string;
+    kind: ConsoleCompletionKind;
+    value?: string;
+    description?: string;
+}
+
+export interface ConsoleCompletionReply {
+    id: number;
+    start: number;
+    end: number;
+    items: ConsoleCompletionItem[];
 }
 
 // ─── Profiler channel ────────────────────────────────────────────────────
@@ -178,9 +242,19 @@ export interface ProfilerFrame {
     /** Engine-side frame counter. Monotonic; gaps imply dropped frames. */
     frame: number;
     cpu_ms: number;
-    gpu_ms: number;
+    render_ms: number;
+    draw_calls?: number;
+    entities?: number;
     /** Per-system / per-pass breakdown — `sum(sections.ms) ≈ cpu_ms`. */
     sections: ProfilerSection[];
+}
+
+export interface StatsTick {
+    frame_index: number;
+    cpu_ms: number;
+    render_ms: number;
+    draw_calls: number;
+    entities: number;
 }
 
 // ─── Assets channel ──────────────────────────────────────────────────────
@@ -251,4 +325,58 @@ export interface SpawnPropCommand {
     prop_id: string;
     /** Optional placement hint; engine picks a cursor location when absent. */
     position?: [number, number, number];
+}
+
+export interface EditorCommandAck {
+    command: string;
+    ok: boolean;
+    text: string;
+}
+
+// ─── PsyGraph channel ───────────────────────────────────────────────────
+//
+// Visual behavior authoring. The editor manipulates this graph document; the
+// cooker lowers it to packed behavior ops in `.psyscene`.
+
+export type PsyGraphValue =
+    | number
+    | string
+    | boolean
+    | [number, number, number]
+    | { type: 'constant'; value: number }
+    | { type: 'linearIndex'; base: number; step: number };
+
+export interface PsyGraphPin {
+    id: string;
+    label: string;
+    kind: 'flow' | 'float' | 'vec3' | 'group' | 'bool';
+}
+
+export interface PsyGraphNode {
+    id: string;
+    op: string;
+    title: string;
+    x: number;
+    y: number;
+    inputs: PsyGraphPin[];
+    outputs: PsyGraphPin[];
+    values: Record<string, PsyGraphValue>;
+}
+
+export interface PsyGraphLink {
+    id: string;
+    from_node: string;
+    from_pin: string;
+    to_node: string;
+    to_pin: string;
+}
+
+export interface PsyGraphDocument {
+    id: string;
+    name: string;
+    source_path: string;
+    target_group: string;
+    nodes: PsyGraphNode[];
+    links: PsyGraphLink[];
+    diagnostics: Array<{ level: LogLevel; text: string; node_id?: string }>;
 }

@@ -60,6 +60,20 @@ endif()
 
 psynder_add_lane(script LINKS psynder_core psynder_scene psynder_lua)
 
+# ─── PsyGraph visual-scripting core (M-PSYGRAPH) ─────────────────────────
+# A separate, dependency-light static library under psygraph/. The script
+# lane's psynder_add_lane() glob is GLOB_RECURSE, so it also picked up the
+# psygraph/*.cpp sources; strip them off psynder_script so they compile only
+# into psynder_psygraph (no duplicate symbols). Then build + link the lib.
+get_target_property(_PSY_SCRIPT_SRCS psynder_script SOURCES)
+if(_PSY_SCRIPT_SRCS)
+    list(FILTER _PSY_SCRIPT_SRCS EXCLUDE REGEX "/psygraph/")
+    set_target_properties(psynder_script PROPERTIES SOURCES "${_PSY_SCRIPT_SRCS}")
+endif()
+
+add_subdirectory(psygraph)
+target_link_libraries(psynder_script PUBLIC psynder_psygraph)
+
 # ─── Hook psynder_script onto the shared unit-test binary ────────────────
 # The shared `psynder_unit` target is created later in the build by lane 25
 # (tests/unit/CMakeLists.txt), so we cannot reference it at parse time of

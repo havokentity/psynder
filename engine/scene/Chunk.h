@@ -72,7 +72,7 @@ static_assert(alignof(Chunk) == kCacheLine, "Chunk must be cache-line aligned");
 // ─── Chunk pool ────────────────────────────────────────────────────────
 // A poor-man's `TypedPool<Chunk>` until lane 01 fills in the real one.
 // Backs all chunks with page-aligned blocks. Reuses returned chunks via a
-// free list. App-scope lifetime — owned by the World.
+// free list. App-scope lifetime — owned by the ECS registry.
 class ChunkPool {
    public:
     ChunkPool() = default;

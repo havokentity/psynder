@@ -325,6 +325,32 @@ TEST_CASE("ipc: live server accepts good WebSocket token", "[ipc][session][serve
     sock_close(s);
 }
 
+TEST_CASE("ipc: server destructor stops live websocket workers", "[ipc][session][server]") {
+    auto port = pick_port();
+    sock_t s;
+    {
+        psynder::editor::ipc::internal::Server srv;
+        REQUIRE(srv.start("127.0.0.1", port, true));
+        const std::string good_token = srv.session_token();
+
+        s = connect_local(port);
+        REQUIRE(sock_valid(s));
+        std::string upgrade = "GET /ws?token=" + good_token +
+                              " HTTP/1.1\r\n"
+                              "Host: 127.0.0.1\r\n"
+                              "Upgrade: websocket\r\n"
+                              "Connection: Upgrade\r\n"
+                              "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                              "Sec-WebSocket-Version: 13\r\n\r\n";
+        REQUIRE(send_all(s, upgrade));
+
+        std::vector<::psynder::u8> tail;
+        auto head = read_http_head(s, tail);
+        REQUIRE(head.rfind("HTTP/1.1 101", 0) == 0);
+    }
+    sock_close(s);
+}
+
 TEST_CASE("ipc: HTTP healthz route works without auth", "[ipc][http][server]") {
     ServerGuard guard;
     auto port = pick_port();
@@ -362,4 +388,40 @@ TEST_CASE("ipc: HTTP healthz route works without auth", "[ipc][http][server]") {
     // (in `tail`) or already merged into `head` — accept either form.
     std::string body(reinterpret_cast<const char*>(tail.data()), tail.size());
     REQUIRE((body == "ok\n" || head.find("ok") != std::string::npos));
+}
+
+TEST_CASE("ipc: HTTP panel route serves an editor page without auth", "[ipc][http][server]") {
+    ServerGuard guard;
+    auto port = pick_port();
+    ServerDesc desc;
+    desc.bind_host = "127.0.0.1";
+    desc.port = port;
+    desc.require_session_token = true;
+    auto& srv = *guard.srv;
+    REQUIRE(srv.start(desc));
+
+    sock_t s = connect_local(port);
+    REQUIRE(sock_valid(s));
+    REQUIRE(send_all(s, "GET /panels/console?token=test HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+    std::vector<::psynder::u8> tail;
+    auto head = read_http_head(s, tail);
+    {
+        set_recv_timeout(s, std::chrono::milliseconds(500));
+        char tmp[1024];
+        for (;;) {
+            auto got = ::recv(s, tmp, sizeof(tmp), 0);
+            if (got <= 0)
+                break;
+            tail.insert(tail.end(),
+                        reinterpret_cast<const ::psynder::u8*>(tmp),
+                        reinterpret_cast<const ::psynder::u8*>(tmp) + got);
+        }
+    }
+    sock_close(s);
+
+    REQUIRE(head.rfind("HTTP/1.1 200", 0) == 0);
+    REQUIRE(head.find("Content-Type: text/html") != std::string::npos);
+    std::string body(reinterpret_cast<const char*>(tail.data()), tail.size());
+    REQUIRE((body.find("<div id=\"root\"></div>") != std::string::npos ||
+             body.find("Psynder Editor") != std::string::npos));
 }

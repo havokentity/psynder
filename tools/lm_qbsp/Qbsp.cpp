@@ -3,6 +3,15 @@
 
 #include "Qbsp.h"
 
+// Engine BSP runtime format + PVS builder. lm_qbsp_lib already links
+// psynder_world_bsp (see tools/lm_qbsp/CMakeLists.txt), so the offline compiler
+// can reuse the exact on-disk layout and the exact leaf-portal-flood PVS the
+// runtime consumes — no duplicated format/algorithm to drift.
+#include "world/bsp/Bsp.h"
+#include "world/bsp/BspFormat.h"
+#include "world/bsp/Portal.h"
+#include "world/bsp/PvsBuild.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -761,18 +770,943 @@ bool read_psybsp(std::span<const u8> bytes, CompiledBsp& out, std::string* err) 
     return true;
 }
 
+// ─── `.rooms` source: parse + compile + engine-format emit ───────────────────
+
+namespace {
+
+// Whitespace / comment-skipping word tokenizer for `.rooms` (reuses the same
+// comment + delimiter rules as MapTok but yields bare words only — `.rooms` has
+// no parens/braces/quotes).
+class RoomsTok {
+   public:
+    explicit RoomsTok(std::string_view s) : src_(s), pos_(0) {}
+    bool next(std::string& out) {
+        skip_ws();
+        if (pos_ >= src_.size())
+            return false;
+        usize start = pos_;
+        while (pos_ < src_.size() && !std::isspace(static_cast<unsigned char>(src_[pos_])))
+            ++pos_;
+        out.assign(src_.data() + start, src_.data() + pos_);
+        return start != pos_;
+    }
+    bool next_i32(i32& out) {
+        std::string s;
+        if (!next(s))
+            return false;
+        char* e = nullptr;
+        long v = std::strtol(s.c_str(), &e, 10);
+        if (e == s.c_str())
+            return false;
+        out = static_cast<i32>(v);
+        return true;
+    }
+    bool next_f32(f32& out) {
+        std::string s;
+        if (!next(s))
+            return false;
+        char* e = nullptr;
+        out = std::strtof(s.c_str(), &e);
+        return e != s.c_str();
+    }
+    usize line_no() const {
+        usize n = 1;
+        for (usize i = 0; i < pos_ && i < src_.size(); ++i)
+            if (src_[i] == '\n')
+                ++n;
+        return n;
+    }
+
+   private:
+    void skip_ws() {
+        while (pos_ < src_.size()) {
+            char c = src_[pos_];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                ++pos_;
+                continue;
+            }
+            if (c == '/' && pos_ + 1 < src_.size() && src_[pos_ + 1] == '/') {
+                while (pos_ < src_.size() && src_[pos_] != '\n')
+                    ++pos_;
+                continue;
+            }
+            break;
+        }
+    }
+    std::string_view src_;
+    usize pos_;
+};
+
+}  // namespace
+
+bool parse_rooms(std::string_view text, RoomsFile& out, std::string* err) {
+    out = {};
+    RoomsTok t(text);
+    auto fail = [&](const std::string& msg) {
+        if (err)
+            *err = "rooms: " + msg + " (line " + std::to_string(t.line_no()) + ")";
+        return false;
+    };
+
+    std::string kw;
+    if (!t.next(kw) || kw != "rooms")
+        return fail("expected 'rooms <N>' header");
+    i32 room_count = 0;
+    if (!t.next_i32(room_count) || room_count < 0)
+        return fail("bad room count");
+
+    out.rooms.reserve(static_cast<usize>(room_count));
+    for (i32 i = 0; i < room_count; ++i) {
+        if (!t.next(kw) || kw != "room")
+            return fail("expected 'room' record");
+        RoomVolume rv;
+        if (!t.next_i32(rv.cluster) || rv.cluster < 0)
+            return fail("bad cluster id");
+        f32 v[6];
+        for (f32& f : v) {
+            if (!t.next_f32(f))
+                return fail("expected room bounds (6 floats)");
+        }
+        rv.bounds.min = {v[0], v[1], v[2]};
+        rv.bounds.max = {v[3], v[4], v[5]};
+        if (rv.bounds.min.x > rv.bounds.max.x || rv.bounds.min.y > rv.bounds.max.y ||
+            rv.bounds.min.z > rv.bounds.max.z)
+            return fail("room bounds min > max");
+        // Optional trailing bare-word name (not 'room'/'portals'/'portal').
+        // Peek: only consume if the next token is not a known keyword.
+        RoomsTok save = t;
+        std::string maybe_name;
+        if (save.next(maybe_name) && maybe_name != "room" && maybe_name != "portals" &&
+            maybe_name != "portal") {
+            rv.name = maybe_name;
+            t = save;
+        }
+        out.rooms.push_back(std::move(rv));
+    }
+
+    // Reject duplicate cluster ids (each room is one PVS cluster row).
+    for (usize i = 0; i < out.rooms.size(); ++i) {
+        for (usize j = i + 1; j < out.rooms.size(); ++j) {
+            if (out.rooms[i].cluster == out.rooms[j].cluster)
+                return fail("duplicate cluster id " + std::to_string(out.rooms[i].cluster));
+        }
+    }
+
+    // Portals are optional (a single-room map has none).
+    std::string tok;
+    if (!t.next(tok))
+        return true;
+    if (tok != "portals")
+        return fail("expected 'portals <M>' after rooms");
+    i32 portal_count = 0;
+    if (!t.next_i32(portal_count) || portal_count < 0)
+        return fail("bad portal count");
+    out.portals.reserve(static_cast<usize>(portal_count));
+    for (i32 i = 0; i < portal_count; ++i) {
+        if (!t.next(kw) || kw != "portal")
+            return fail("expected 'portal' record");
+        RoomPortal rp;
+        if (!t.next_i32(rp.cluster_a) || !t.next_i32(rp.cluster_b))
+            return fail("portal needs two cluster ids");
+        out.portals.push_back(rp);
+    }
+    return true;
+}
+
+namespace {
+
+// Recursively split a set of room leaves into a median-split kd-tree. `order`
+// holds room indices; we split on the axis of largest centroid spread at the
+// median, emitting an internal node whose plane separates the two halves. A
+// node child is encoded BspFormat-style: child < 0 => leaf (~leaf_index),
+// child >= 0 => node index. Leaf index == room index (1 leaf per room).
+//
+// The split plane is axis-aligned (normal = +axis unit, d = split coordinate).
+// `Bsp::locate` evaluates dot(n,p) - d >= 0 => front child. We place rooms whose
+// centroid coordinate >= split on the FRONT side so a point inside a room lands
+// in that room's half.
+i32 build_kd(CompiledBsp& bsp,
+             const RoomsFile& rooms,
+             std::vector<u32>& order,
+             u32 lo,
+             u32 hi) {
+    const u32 n = hi - lo;
+    if (n == 1) {
+        return ~static_cast<i32>(order[lo]);  // leaf reference
+    }
+
+    // Pick split axis = largest spread of room-centre coordinates in [lo,hi).
+    f32 cmin[3] = {1e30f, 1e30f, 1e30f};
+    f32 cmax[3] = {-1e30f, -1e30f, -1e30f};
+    auto centre = [&](u32 ri, int ax) {
+        const math::Aabb& b = rooms.rooms[ri].bounds;
+        const f32 lo3[3] = {b.min.x, b.min.y, b.min.z};
+        const f32 hi3[3] = {b.max.x, b.max.y, b.max.z};
+        return 0.5f * (lo3[ax] + hi3[ax]);
+    };
+    for (u32 i = lo; i < hi; ++i) {
+        for (int ax = 0; ax < 3; ++ax) {
+            const f32 c = centre(order[i], ax);
+            if (c < cmin[ax])
+                cmin[ax] = c;
+            if (c > cmax[ax])
+                cmax[ax] = c;
+        }
+    }
+    int axis = 0;
+    f32 best = cmax[0] - cmin[0];
+    for (int ax = 1; ax < 3; ++ax) {
+        const f32 spread = cmax[ax] - cmin[ax];
+        if (spread > best) {
+            best = spread;
+            axis = ax;
+        }
+    }
+
+    // Sort [lo,hi) by centre on the chosen axis (deterministic stable sort).
+    std::stable_sort(order.begin() + lo, order.begin() + hi, [&](u32 a, u32 b) {
+        const f32 ca = centre(a, axis);
+        const f32 cb = centre(b, axis);
+        if (ca != cb)
+            return ca < cb;
+        return a < b;  // tie-break by room index for determinism
+    });
+    const u32 mid = lo + n / 2;
+    // Split plane sits midway between the two straddling room centres so every
+    // room on the FRONT (>= split) side resolves to a front-subtree leaf.
+    const f32 split = 0.5f * (centre(order[mid - 1], axis) + centre(order[mid], axis));
+
+    math::Vec3 normal{0, 0, 0};
+    (&normal.x)[axis] = 1.0f;
+
+    BspPlane plane{};
+    plane.normal = normal;
+    plane.d = split;
+    bsp.planes.push_back(plane);
+    const i32 plane_idx = static_cast<i32>(bsp.planes.size() - 1);
+
+    const u32 node_idx = static_cast<u32>(bsp.nodes.size());
+    bsp.nodes.push_back(BspNode{plane_idx, 0, 0});
+
+    // FRONT = rooms with centre >= split = upper half [mid,hi); BACK = [lo,mid).
+    const i32 front = build_kd(bsp, rooms, order, mid, hi);
+    const i32 back = build_kd(bsp, rooms, order, lo, mid);
+    bsp.nodes[node_idx].front = front;
+    bsp.nodes[node_idx].back = back;
+    return static_cast<i32>(node_idx);
+}
+
+// --- W10-2: room box geometry emission ---------------------------------------
+//
+// Each room is an axis-aligned box [lo, hi]. We tessellate its 6 faces INWARD-
+// facing (normal points into the room interior) so a camera standing inside the
+// room sees the walls/floor/ceiling. Each face is a quad fan-triangulated as
+// {0,1,2, 0,2,3}; indices are FACE-LOCAL (0..3). The runtime BspDraw converter
+// aliases the face's index block at `geom.indices[first_vertex]`, so we advance
+// the shared (vertex==index) cursor by max(4, 6) = 6 per quad to keep the
+// parallel index blocks from overlapping (2 trailing vertex slots per face are
+// padding - cheap, and keeps the BspDraw addressing contract intact).
+
+constexpr u32 kQuadVerts = 4u;
+constexpr u32 kQuadIndices = 6u;            // (4-2)*3 fan triangles
+constexpr u32 kFaceCursorStride = 6u;       // max(kQuadVerts, kQuadIndices)
+
+// Emit one inward-facing quad. `corners` are the 4 box corners of the face in an
+// arbitrary order; we re-order them CCW as seen from `+inward_normal` so the
+// face's front side (CCW after the viewport Y-flip) points into the room. The
+// face uses `material` and is unlit (kBspNoLightmap, zero lightmap_uv).
+void emit_quad(CompiledBsp& bsp,
+               const math::Vec3 corners[4],
+               math::Vec3 inward_normal,
+               u32 material,
+               u32 color) {
+    // Order the 4 corners CCW about `inward_normal`. Compute the face centroid,
+    // then sort by the signed angle in the plane (deterministic atan2 order).
+    math::Vec3 c{0, 0, 0};
+    for (int i = 0; i < 4; ++i)
+        c = math::add(c, corners[i]);
+    c = math::mul(c, 0.25f);
+    // Build an in-plane basis (u, v) with v = inward_normal x u so that
+    // (u, v, inward_normal) is right-handed -> increasing atan2(.,.) is CCW seen
+    // from +inward_normal.
+    math::Vec3 ref = math::sub(corners[0], c);
+    f32 rlen = std::sqrt(math::dot(ref, ref));
+    math::Vec3 u = (rlen > 1e-9f) ? math::mul(ref, 1.0f / rlen) : math::Vec3{1, 0, 0};
+    math::Vec3 v = math::cross(inward_normal, u);
+    f32 vlen = std::sqrt(math::dot(v, v));
+    if (vlen > 1e-9f)
+        v = math::mul(v, 1.0f / vlen);
+
+    struct Keyed {
+        math::Vec3 p;
+        f32 ang;
+    };
+    Keyed k[4];
+    for (int i = 0; i < 4; ++i) {
+        const math::Vec3 r = math::sub(corners[i], c);
+        const f32 du = math::dot(r, u);
+        const f32 dv = math::dot(r, v);
+        k[i].p = corners[i];
+        k[i].ang = std::atan2(dv, du);
+    }
+    std::stable_sort(k, k + 4, [](const Keyed& a, const Keyed& b) { return a.ang < b.ang; });
+
+    const u32 base = static_cast<u32>(bsp.vertices.size());
+    QbFace face{};
+    face.first_vertex = base;
+    face.vertex_count = kQuadVerts;
+    face.material = material;
+    face.lightmap = kBspNoLightmap;
+    bsp.faces.push_back(face);
+
+    // 4 vertices (CCW), then 2 padding slots so the next face's first_vertex lands
+    // kFaceCursorStride later and its index block doesn't collide with ours.
+    static constexpr math::Vec2 kCornerUv[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (int i = 0; i < 4; ++i) {
+        QbVertex vert{};
+        vert.position = k[i].p;
+        vert.normal = inward_normal;
+        vert.uv = kCornerUv[i];
+        vert.lightmap_uv = {0.0f, 0.0f};
+        vert.color = color;
+        bsp.vertices.push_back(vert);
+    }
+    // Pad vertices up to the stride (these padding verts are never indexed).
+    for (u32 i = kQuadVerts; i < kFaceCursorStride; ++i)
+        bsp.vertices.push_back(QbVertex{});
+
+    // Face-local fan indices {0,1,2, 0,2,3} written at the parallel slab offset.
+    bsp.indices.resize(base + kFaceCursorStride, 0u);
+    bsp.indices[base + 0] = 0u;
+    bsp.indices[base + 1] = 1u;
+    bsp.indices[base + 2] = 2u;
+    bsp.indices[base + 3] = 0u;
+    bsp.indices[base + 4] = 2u;
+    bsp.indices[base + 5] = 3u;
+}
+
+// Emit the 6 inward-facing box faces for `bounds` and record them under leaf
+// `leaf_idx`. Material id == cluster (room tint resolved at runtime).
+void emit_room_box(CompiledBsp& bsp,
+                   const math::Aabb& bounds,
+                   u32 material,
+                   u32 color,
+                   usize leaf_idx) {
+    const u32 first = static_cast<u32>(bsp.faces.size());
+    const f32 x0 = bounds.min.x, y0 = bounds.min.y, z0 = bounds.min.z;
+    const f32 x1 = bounds.max.x, y1 = bounds.max.y, z1 = bounds.max.z;
+
+    // -X wall: inward normal +X.
+    {
+        const math::Vec3 q[4] = {{x0, y0, z0}, {x0, y1, z0}, {x0, y1, z1}, {x0, y0, z1}};
+        emit_quad(bsp, q, {1, 0, 0}, material, color);
+    }
+    // +X wall: inward normal -X.
+    {
+        const math::Vec3 q[4] = {{x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}};
+        emit_quad(bsp, q, {-1, 0, 0}, material, color);
+    }
+    // -Z wall: inward normal +Z.
+    {
+        const math::Vec3 q[4] = {{x0, y0, z0}, {x1, y0, z0}, {x1, y1, z0}, {x0, y1, z0}};
+        emit_quad(bsp, q, {0, 0, 1}, material, color);
+    }
+    // +Z wall: inward normal -Z.
+    {
+        const math::Vec3 q[4] = {{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}};
+        emit_quad(bsp, q, {0, 0, -1}, material, color);
+    }
+    // Floor (y = y0): inward normal +Y.
+    {
+        const math::Vec3 q[4] = {{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}};
+        emit_quad(bsp, q, {0, 1, 0}, material, color);
+    }
+    // Ceiling (y = y1): inward normal -Y.
+    {
+        const math::Vec3 q[4] = {{x0, y1, z0}, {x1, y1, z0}, {x1, y1, z1}, {x0, y1, z1}};
+        emit_quad(bsp, q, {0, -1, 0}, material, color);
+    }
+
+    const u32 count = static_cast<u32>(bsp.faces.size()) - first;
+    if (leaf_idx < bsp.leaf_first_face.size()) {
+        bsp.leaf_first_face[leaf_idx] = first;
+        bsp.leaf_face_count[leaf_idx] = count;
+    }
+}
+
+}  // namespace
+
+bool compile_rooms(const RoomsFile& rooms, CompiledBsp& out, std::string* err) {
+    out = {};
+    if (rooms.rooms.empty()) {
+        if (err)
+            *err = "rooms: no rooms to compile";
+        return false;
+    }
+
+    // One leaf per room, in room order, carrying the room bounds + cluster.
+    out.leaves.reserve(rooms.rooms.size());
+    for (const RoomVolume& rv : rooms.rooms) {
+        BspLeaf leaf{};
+        leaf.cluster = rv.cluster;
+        leaf.flags = kLeafFlagEmpty;
+        leaf.bounds = rv.bounds;
+        out.leaves.push_back(leaf);
+    }
+
+    // W10-2: emit the room WALL/FLOOR/CEILING geometry, grouped by leaf so the
+    // PBSP v1 leaf records carry a contiguous face range and PVS culling skips a
+    // culled leaf's faces wholesale. Material id == cluster (the runtime tints
+    // per room); a deterministic per-cluster vertex colour gives each room a
+    // distinct look even before material resolution. Faces are inward-facing.
+    out.leaf_first_face.assign(out.leaves.size(), 0u);
+    out.leaf_face_count.assign(out.leaves.size(), 0u);
+    auto cluster_tint = [](i32 cluster) -> u32 {
+        // Cheap deterministic palette in the engine's 0xAABBGGRR packing.
+        const u32 c = static_cast<u32>(cluster);
+        const u32 r = 120u + ((c * 53u) % 110u);
+        const u32 g = 120u + ((c * 97u) % 110u);
+        const u32 b = 120u + ((c * 29u) % 110u);
+        return (r & 0xFFu) | ((g & 0xFFu) << 8) | ((b & 0xFFu) << 16) | (0xFFu << 24);
+    };
+    for (usize i = 0; i < rooms.rooms.size(); ++i) {
+        const RoomVolume& rv = rooms.rooms[i];
+        emit_room_box(out, rv.bounds, static_cast<u32>(rv.cluster), cluster_tint(rv.cluster), i);
+    }
+
+    // Median-split kd-tree of nodes over the leaf boxes so locate() descends.
+    std::vector<u32> order(rooms.rooms.size());
+    for (u32 i = 0; i < order.size(); ++i)
+        order[i] = i;
+    const i32 root = build_kd(out, rooms, order, 0, static_cast<u32>(order.size()));
+
+    // Ensure nodes[0] is the root (build_kd appends the root last). For a single
+    // room there are no nodes; synthesize a degenerate root pointing at leaf 0 on
+    // both sides so the runtime walker always lands somewhere.
+    if (out.nodes.empty()) {
+        BspPlane p{};
+        p.normal = {0, 0, 1};
+        p.d = 0;
+        out.planes.push_back(p);
+        out.nodes.push_back(BspNode{0, ~0, ~0});  // both children -> leaf 0
+    } else if (root >= 0 && static_cast<usize>(root) != out.nodes.size() - 1) {
+        // build_kd returns the root as the LAST appended node. Move it to slot 0.
+        const i32 root_idx = root;
+        std::swap(out.nodes[0], out.nodes[static_cast<usize>(root_idx)]);
+        for (BspNode& nd : out.nodes) {
+            if (nd.front == 0)
+                nd.front = root_idx;
+            else if (nd.front == root_idx)
+                nd.front = 0;
+            if (nd.back == 0)
+                nd.back = root_idx;
+            else if (nd.back == root_idx)
+                nd.back = 0;
+        }
+    } else if (root >= 0 && static_cast<usize>(root) == out.nodes.size() - 1 && root != 0) {
+        // Root is the last node and != 0: swap into slot 0 and patch refs.
+        const i32 root_idx = root;
+        std::swap(out.nodes[0], out.nodes[static_cast<usize>(root_idx)]);
+        for (BspNode& nd : out.nodes) {
+            if (nd.front == 0)
+                nd.front = root_idx;
+            else if (nd.front == root_idx)
+                nd.front = 0;
+            if (nd.back == 0)
+                nd.back = root_idx;
+            else if (nd.back == root_idx)
+                nd.back = 0;
+        }
+    }
+
+    // Portals: map cluster id -> leaf index (== room order). front_leaf/back_leaf
+    // are LEAF indices to match BspPortalSet semantics consumed by build_pvs.
+    auto leaf_for_cluster = [&](i32 cluster) -> i32 {
+        for (usize i = 0; i < out.leaves.size(); ++i)
+            if (out.leaves[i].cluster == cluster)
+                return static_cast<i32>(i);
+        return -1;
+    };
+    for (const RoomPortal& rp : rooms.portals) {
+        const i32 a = leaf_for_cluster(rp.cluster_a);
+        const i32 b = leaf_for_cluster(rp.cluster_b);
+        if (a < 0 || b < 0) {
+            if (err)
+                *err = "rooms: portal references unknown cluster";
+            return false;
+        }
+        BspPortal portal{};
+        portal.front_leaf = a;
+        portal.back_leaf = b;
+        portal.first_vertex = static_cast<u32>(out.portal_vertices.size());
+        portal.vertex_count = 0u;  // PVS flood needs only adjacency, not windings
+        // Plane: the shared boundary between the two room boxes (informational;
+        // the coarse flood ignores it). Use the midplane on the axis of contact.
+        portal.plane_normal = {0, 0, 1};
+        portal.plane_d = 0.0f;
+        out.portals.push_back(portal);
+    }
+    return true;
+}
+
+// --- W12-2: per-face lightmap bake -------------------------------------------
+namespace {
+
+// f32 -> IEEE-754 binary16 (round-to-nearest-even, deterministic). The runtime
+// decode (world::bsp half_to_f32) is its exact inverse for representable values.
+u16 f32_to_half(f32 v) noexcept {
+    u32 bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+    const u32 sign = (bits >> 16) & 0x8000u;
+    i32 exp = static_cast<i32>((bits >> 23) & 0xFFu) - 127 + 15;
+    u32 mant = bits & 0x7FFFFFu;
+    if (((bits >> 23) & 0xFFu) == 0xFFu) {
+        // inf / nan
+        return static_cast<u16>(sign | 0x7C00u | (mant ? 0x200u : 0u));
+    }
+    if (exp >= 0x1F) {
+        return static_cast<u16>(sign | 0x7C00u);  // overflow -> inf
+    }
+    if (exp <= 0) {
+        if (exp < -10) {
+            return static_cast<u16>(sign);  // underflow -> zero
+        }
+        mant |= 0x800000u;  // restore implicit 1
+        const u32 shift = static_cast<u32>(14 - exp);
+        u32 half_mant = mant >> shift;
+        // round to nearest even
+        const u32 rem = mant & ((1u << shift) - 1u);
+        const u32 halfway = 1u << (shift - 1u);
+        if (rem > halfway || (rem == halfway && (half_mant & 1u)))
+            ++half_mant;
+        return static_cast<u16>(sign | half_mant);
+    }
+    u16 half_mant = static_cast<u16>(mant >> 13);
+    const u32 rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (half_mant & 1u))) {
+        ++half_mant;
+        if (half_mant == 0x400u) {  // mantissa overflow -> bump exponent
+            half_mant = 0u;
+            ++exp;
+            if (exp >= 0x1F)
+                return static_cast<u16>(sign | 0x7C00u);
+        }
+    }
+    return static_cast<u16>(sign | (static_cast<u32>(exp) << 10) | half_mant);
+}
+
+// Axis-aligned segment-vs-box overlap on the half-open interval (t in (0,1)).
+// Used for the coarse lumel->light visibility test: a light is occluded when the
+// segment from the lumel to the light pierces a DIFFERENT room's solid shell.
+// We treat each room box as a thin-walled shell, so we only count an occlusion
+// when the segment ENTERS and EXITS a box that neither endpoint lies inside
+// (a real wall between them), not when it merely grazes the lumel's own room.
+bool segment_hits_box_interior(math::Vec3 a, math::Vec3 b, const math::Aabb& box) noexcept {
+    const math::Vec3 d = math::sub(b, a);
+    f32 tmin = 0.0f;
+    f32 tmax = 1.0f;
+    const f32 lo[3] = {box.min.x, box.min.y, box.min.z};
+    const f32 hi[3] = {box.max.x, box.max.y, box.max.z};
+    const f32 oa[3] = {a.x, a.y, a.z};
+    const f32 od[3] = {d.x, d.y, d.z};
+    for (int i = 0; i < 3; ++i) {
+        if (std::fabs(od[i]) < 1e-8f) {
+            if (oa[i] < lo[i] || oa[i] > hi[i])
+                return false;
+        } else {
+            const f32 inv = 1.0f / od[i];
+            f32 t1 = (lo[i] - oa[i]) * inv;
+            f32 t2 = (hi[i] - oa[i]) * inv;
+            if (t1 > t2)
+                std::swap(t1, t2);
+            tmin = std::max(tmin, t1);
+            tmax = std::min(tmax, t2);
+            if (tmin > tmax)
+                return false;
+        }
+    }
+    // Require a non-trivial interior crossing strictly between the endpoints.
+    return tmax > tmin + 1e-4f && tmin > 1e-3f && tmax < 1.0f - 1e-3f;
+}
+
+}  // namespace
+
+u32 bake_room_lightmaps(const RoomsFile& rooms,
+                        CompiledBsp& bsp,
+                        const LightmapBakeParams& params) {
+    bsp.lightmaps.clear();
+    bsp.lightmap_pixels.clear();
+    if (bsp.faces.empty())
+        return 0u;
+
+    const u32 N = params.lumels_per_axis < 1u ? 1u : params.lumels_per_axis;
+
+    // Resolve the light list. With no explicit lights, drop one warm point light
+    // near the centre-top of every room so each room is lit from its own ceiling
+    // (deterministic, derived purely from the room bounds).
+    std::vector<LightmapBakeLight> lights = params.lights;
+    if (lights.empty()) {
+        for (const RoomVolume& rv : rooms.rooms) {
+            const math::Vec3 c{
+                0.5f * (rv.bounds.min.x + rv.bounds.max.x),
+                rv.bounds.max.y - 0.35f * (rv.bounds.max.y - rv.bounds.min.y),
+                0.5f * (rv.bounds.min.z + rv.bounds.max.z),
+            };
+            LightmapBakeLight l{};
+            l.position = c;
+            l.color = {1.0f, 0.93f, 0.82f};  // warm
+            l.intensity = 2.6f;
+            const f32 dx = rv.bounds.max.x - rv.bounds.min.x;
+            const f32 dz = rv.bounds.max.z - rv.bounds.min.z;
+            l.range = std::max(8.0f, std::max(dx, dz) * 1.6f);
+            lights.push_back(l);
+        }
+    }
+
+    // Occlusion geometry: the room boxes, slightly shrunk so a lumel sitting ON a
+    // wall doesn't self-occlude against its own room shell.
+    std::vector<math::Aabb> occluders;
+    occluders.reserve(rooms.rooms.size());
+    for (const RoomVolume& rv : rooms.rooms) {
+        math::Aabb b = rv.bounds;
+        const f32 eps = 0.05f;
+        b.min = math::add(b.min, math::Vec3{eps, eps, eps});
+        b.max = math::sub(b.max, math::Vec3{eps, eps, eps});
+        occluders.push_back(b);
+    }
+
+    auto pack_lumel = [&](math::Vec3 rgb) {
+        const u16 hr = f32_to_half(rgb.x);
+        const u16 hg = f32_to_half(rgb.y);
+        const u16 hb = f32_to_half(rgb.z);
+        u8 buf[6];
+        std::memcpy(buf + 0, &hr, 2);
+        std::memcpy(buf + 2, &hg, 2);
+        std::memcpy(buf + 4, &hb, 2);
+        bsp.lightmap_pixels.insert(bsp.lightmap_pixels.end(), buf, buf + 6);
+    };
+
+    u32 lit_faces = 0u;
+    for (usize fi = 0; fi < bsp.faces.size(); ++fi) {
+        QbFace& f = bsp.faces[fi];
+        if (f.vertex_count < 3u || f.first_vertex + 4u > bsp.vertices.size())
+            continue;
+
+        // The 4 CCW quad corners (emit_quad wrote corner UVs {0,0}{1,0}{1,1}{0,1}
+        // at vertices [first_vertex+0..3]); reconstruct the face plane + the two
+        // UV-aligned edges so a lumel at (u,v) maps to a world position.
+        const math::Vec3 p0 = bsp.vertices[f.first_vertex + 0].position;
+        const math::Vec3 p1 = bsp.vertices[f.first_vertex + 1].position;
+        const math::Vec3 p3 = bsp.vertices[f.first_vertex + 3].position;
+        const math::Vec3 normal = bsp.vertices[f.first_vertex + 0].normal;
+        const math::Vec3 edge_u = math::sub(p1, p0);  // along U (0..1)
+        const math::Vec3 edge_v = math::sub(p3, p0);  // along V (0..1)
+        // Nudge the sample point off the surface toward the interior so the
+        // occlusion ray starts inside the room, not embedded in the wall.
+        const math::Vec3 lift = math::mul(normal, 0.04f);
+
+        QbLightmap lm{};
+        lm.face = static_cast<u32>(fi);
+        lm.width = N;
+        lm.height = N;
+        lm.pixel_offset = static_cast<u32>(bsp.lightmap_pixels.size());
+
+        for (u32 ly = 0; ly < N; ++ly) {
+            // Lumel centres at (i+0.5)/N -> deterministic, symmetric.
+            const f32 fv = (static_cast<f32>(ly) + 0.5f) / static_cast<f32>(N);
+            for (u32 lx = 0; lx < N; ++lx) {
+                const f32 fu = (static_cast<f32>(lx) + 0.5f) / static_cast<f32>(N);
+                math::Vec3 world = math::add(p0, math::add(math::mul(edge_u, fu),
+                                                           math::mul(edge_v, fv)));
+                const math::Vec3 sample = math::add(world, lift);
+
+                math::Vec3 irr = params.ambient;
+                for (const LightmapBakeLight& L : lights) {
+                    const math::Vec3 to_light = math::sub(L.position, sample);
+                    const f32 dist = math::length(to_light);
+                    if (dist < 1e-4f || dist > L.range)
+                        continue;
+                    const math::Vec3 dir = math::mul(to_light, 1.0f / dist);
+                    const f32 ndotl = math::dot(normal, dir);
+                    if (ndotl <= 0.0f)
+                        continue;
+                    // Smooth quadratic range falloff -> 0 at L.range.
+                    const f32 x = dist / L.range;
+                    const f32 atten = (1.0f - x) * (1.0f - x);
+                    // Coarse visibility: occluded if the segment crosses any room
+                    // box interior (a wall) between the lumel and the light.
+                    bool occluded = false;
+                    for (const math::Aabb& box : occluders) {
+                        if (segment_hits_box_interior(sample, L.position, box)) {
+                            occluded = true;
+                            break;
+                        }
+                    }
+                    if (occluded)
+                        continue;
+                    const f32 s = L.intensity * ndotl * atten;
+                    irr = math::add(irr, math::mul(L.color, s));
+                }
+
+                // Cheap edge AO: lumels near a face border (small fu/fv or near 1)
+                // gather less of the hemisphere -> darken toward the corners.
+                const f32 du = std::min(fu, 1.0f - fu);
+                const f32 dv = std::min(fv, 1.0f - fv);
+                const f32 edge = std::min(du, dv);              // 0 at border, .5 centre
+                const f32 ao = 0.55f + 0.45f * std::min(1.0f, edge * 4.0f);
+                irr = math::mul(irr, ao);
+
+                pack_lumel(irr);
+            }
+        }
+
+        f.lightmap = static_cast<u32>(bsp.lightmaps.size());
+        bsp.lightmaps.push_back(lm);
+        ++lit_faces;
+    }
+    return lit_faces;
+}
+
+void write_psybsp_engine(const CompiledBsp& bsp,
+                         std::vector<u8>& out,
+                         u32* out_clusters,
+                         u32* out_pvs_row_bytes) {
+    namespace wb = ::psynder::world::bsp;
+
+    // 1. Build a runtime BspMap + BspPortalSet from the compiled data so we can
+    //    bake the PVS with the SAME flood the runtime uses for in-memory maps.
+    wb::BspMap map;
+    map.nodes.reserve(bsp.nodes.size());
+    for (const BspNode& n : bsp.nodes) {
+        wb::BspNode rn{};
+        if (n.plane >= 0 && static_cast<usize>(n.plane) < bsp.planes.size()) {
+            rn.plane_normal = bsp.planes[static_cast<usize>(n.plane)].normal;
+            rn.plane_d = bsp.planes[static_cast<usize>(n.plane)].d;
+        }
+        rn.front_child = n.front;
+        rn.back_child = n.back;
+        map.nodes.push_back(rn);
+    }
+    map.leaves.reserve(bsp.leaves.size());
+    for (usize li = 0; li < bsp.leaves.size(); ++li) {
+        const BspLeaf& l = bsp.leaves[li];
+        wb::BspLeaf rl{};
+        rl.cluster = l.cluster;
+        // W10-2: carry the per-leaf face range emitted by compile_rooms (zero
+        // when the leaf has no geometry, e.g. the brush path or an empty room).
+        rl.first_face = (li < bsp.leaf_first_face.size()) ? bsp.leaf_first_face[li] : 0u;
+        rl.face_count = (li < bsp.leaf_face_count.size()) ? bsp.leaf_face_count[li] : 0u;
+        rl.bounds = l.bounds;
+        map.leaves.push_back(rl);
+    }
+
+    wb::BspPortalSet portal_set;
+    portal_set.portals.reserve(bsp.portals.size());
+    for (const BspPortal& p : bsp.portals) {
+        wb::BspPortal rp{};
+        rp.front_leaf = p.front_leaf;
+        rp.back_leaf = p.back_leaf;
+        rp.first_vertex = 0u;
+        rp.vertex_count = 0u;
+        rp.plane_normal = p.plane_normal;
+        rp.plane_d = p.plane_d;
+        portal_set.portals.push_back(rp);
+    }
+
+    wb::PvsBuildScratch scratch;
+    std::vector<u8> pvs;
+    u32 row_bytes = 0u;
+    const u32 clusters = wb::build_pvs(map, portal_set, scratch, pvs, row_bytes);
+    if (out_clusters)
+        *out_clusters = clusters;
+    if (out_pvs_row_bytes)
+        *out_pvs_row_bytes = row_bytes;
+
+    // 2. Serialise the engine PBSP v1 layout (BspFormat.h). Header is 96 bytes;
+    //    chunks (nodes/leaves/faces/vertices/indices/pvs) follow 4-byte aligned.
+    //    W10-2: faces/vertices/indices now carry the emitted room geometry (when
+    //    the rooms path filled them); they stay empty for the brush path / empty
+    //    rooms, so the brush pipeline is byte-for-byte unchanged.
+    constexpr u32 kHeaderBytes = static_cast<u32>(sizeof(wb::BspFileHeader));
+    static_assert(kHeaderBytes == 96u, "engine BSP header must be 96 bytes");
+
+    // On-disk record sizes. The vertex stride mirrors the rasterizer Vertex
+    // packed layout (pos3/normal3/uv2/lm_uv2 + RGBA8 = 44 bytes); the loader
+    // memcpys with the same stride. BspFileFace is 16 bytes; indices are u32.
+    constexpr u32 kVertexBytes = kQbVertexBytes;  // 44
+    constexpr u32 kFaceBytes = static_cast<u32>(sizeof(wb::BspFileFace));  // 16
+    constexpr u32 kIndexBytes = wb::kBspFileIndexBytes;  // 4
+
+    const u32 node_count = static_cast<u32>(map.nodes.size());
+    const u32 leaf_count = static_cast<u32>(map.leaves.size());
+    const u32 face_count = static_cast<u32>(bsp.faces.size());
+    const u32 vertex_count = static_cast<u32>(bsp.vertices.size());
+    const u32 index_count = static_cast<u32>(bsp.indices.size());
+    // W12-2 lightmap chunks. `kLmBytes` is the BspFileLightmap directory-record
+    // stride (16); the pixel blob is already a flat byte array of RGB16F lumels.
+    constexpr u32 kLmBytes = static_cast<u32>(sizeof(wb::BspFileLightmap));  // 16
+    const u32 lightmap_count = static_cast<u32>(bsp.lightmaps.size());
+    const u32 lightmap_pixel_bytes = static_cast<u32>(bsp.lightmap_pixels.size());
+
+    auto align4 = [](u32 v) { return (v + 3u) & ~3u; };
+
+    const u32 nodes_off = kHeaderBytes;
+    const u32 nodes_bytes = node_count * static_cast<u32>(sizeof(wb::BspFileNode));
+    const u32 leaves_off = align4(nodes_off + nodes_bytes);
+    const u32 leaves_bytes = leaf_count * static_cast<u32>(sizeof(wb::BspFileLeaf));
+    const u32 faces_off = align4(leaves_off + leaves_bytes);
+    const u32 faces_bytes = face_count * kFaceBytes;
+    const u32 vertices_off = align4(faces_off + faces_bytes);
+    const u32 vertices_bytes = vertex_count * kVertexBytes;
+    const u32 indices_off = align4(vertices_off + vertices_bytes);
+    const u32 indices_bytes = index_count * kIndexBytes;
+    const u32 pvs_off = align4(indices_off + indices_bytes);
+    const u32 pvs_bytes = static_cast<u32>(pvs.size());
+    const u32 lightmaps_off = align4(pvs_off + pvs_bytes);
+    const u32 lightmaps_bytes = lightmap_count * kLmBytes;
+    const u32 lightmap_pixels_off = align4(lightmaps_off + lightmaps_bytes);
+    const u32 total_bytes = align4(lightmap_pixels_off + lightmap_pixel_bytes);
+
+    wb::BspFileHeader header{};
+    header.magic = wb::kBspFileMagic;
+    header.version = wb::kBspFileVersion;
+    header.flags = 0u;
+    header.total_bytes = total_bytes;
+    header.cluster_count = clusters;
+    header.pvs_row_bytes = row_bytes;
+    header.nodes = {nodes_off, node_count};
+    header.leaves = {leaves_off, leaf_count};
+    header.faces = {faces_off, face_count};
+    header.vertices = {vertices_off, vertex_count};
+    header.indices = {indices_off, index_count};
+    header.pvs = {pvs_off, pvs_bytes};
+    // W12-2: lightmap directory (count = rows) + packed RGB16F lumels (count =
+    // BYTE size). Both 0/0 when the blob was not baked -> the chunk is absent
+    // and load_lightmaps treats the level as unlit (full-bright).
+    header.lightmaps = {lightmaps_off, lightmap_count};
+    header.lightmap_pixels = {lightmap_pixels_off, lightmap_pixel_bytes};
+
+    out.assign(total_bytes, 0u);
+    std::memcpy(out.data(), &header, kHeaderBytes);
+
+    for (u32 i = 0; i < node_count; ++i) {
+        wb::BspFileNode fn{};
+        fn.nx = map.nodes[i].plane_normal.x;
+        fn.ny = map.nodes[i].plane_normal.y;
+        fn.nz = map.nodes[i].plane_normal.z;
+        fn.d = map.nodes[i].plane_d;
+        fn.front_child = map.nodes[i].front_child;
+        fn.back_child = map.nodes[i].back_child;
+        std::memcpy(out.data() + nodes_off + i * sizeof(wb::BspFileNode), &fn, sizeof(fn));
+    }
+    for (u32 i = 0; i < leaf_count; ++i) {
+        wb::BspFileLeaf fl{};
+        fl.cluster = map.leaves[i].cluster;
+        fl.first_face = map.leaves[i].first_face;
+        fl.face_count = map.leaves[i].face_count;
+        fl.bbox_min_x = map.leaves[i].bounds.min.x;
+        fl.bbox_min_y = map.leaves[i].bounds.min.y;
+        fl.bbox_min_z = map.leaves[i].bounds.min.z;
+        fl.bbox_max_x = map.leaves[i].bounds.max.x;
+        fl.bbox_max_y = map.leaves[i].bounds.max.y;
+        fl.bbox_max_z = map.leaves[i].bounds.max.z;
+        std::memcpy(out.data() + leaves_off + i * sizeof(wb::BspFileLeaf), &fl, sizeof(fl));
+    }
+    // Faces: 16-byte records (first_vertex, vertex_count, material, lightmap).
+    for (u32 i = 0; i < face_count; ++i) {
+        wb::BspFileFace ff{};
+        ff.first_vertex = bsp.faces[i].first_vertex;
+        ff.vertex_count = bsp.faces[i].vertex_count;
+        ff.material = bsp.faces[i].material;
+        ff.lightmap = bsp.faces[i].lightmap;
+        std::memcpy(out.data() + faces_off + i * kFaceBytes, &ff, sizeof(ff));
+    }
+    // Vertices: 44-byte packed records written field-by-field little-endian so
+    // the tool needs no rasterizer header; the loader reads with the runtime
+    // Vertex stride. (offset accumulates per field within the 44-byte record.)
+    for (u32 i = 0; i < vertex_count; ++i) {
+        const QbVertex& v = bsp.vertices[i];
+        u32 off = vertices_off + i * kVertexBytes;
+        auto put_f32 = [&](f32 value) {
+            u32 bits = 0u;
+            std::memcpy(&bits, &value, sizeof(bits));
+            out[off + 0] = static_cast<u8>(bits & 0xFFu);
+            out[off + 1] = static_cast<u8>((bits >> 8) & 0xFFu);
+            out[off + 2] = static_cast<u8>((bits >> 16) & 0xFFu);
+            out[off + 3] = static_cast<u8>((bits >> 24) & 0xFFu);
+            off += 4u;
+        };
+        auto put_u32 = [&](u32 value) {
+            out[off + 0] = static_cast<u8>(value & 0xFFu);
+            out[off + 1] = static_cast<u8>((value >> 8) & 0xFFu);
+            out[off + 2] = static_cast<u8>((value >> 16) & 0xFFu);
+            out[off + 3] = static_cast<u8>((value >> 24) & 0xFFu);
+            off += 4u;
+        };
+        put_f32(v.position.x);
+        put_f32(v.position.y);
+        put_f32(v.position.z);
+        put_f32(v.normal.x);
+        put_f32(v.normal.y);
+        put_f32(v.normal.z);
+        put_f32(v.uv.x);
+        put_f32(v.uv.y);
+        put_f32(v.lightmap_uv.x);
+        put_f32(v.lightmap_uv.y);
+        put_u32(v.color);
+    }
+    // Indices: u32 little-endian.
+    for (u32 i = 0; i < index_count; ++i) {
+        const u32 idx = bsp.indices[i];
+        const u32 off = indices_off + i * kIndexBytes;
+        out[off + 0] = static_cast<u8>(idx & 0xFFu);
+        out[off + 1] = static_cast<u8>((idx >> 8) & 0xFFu);
+        out[off + 2] = static_cast<u8>((idx >> 16) & 0xFFu);
+        out[off + 3] = static_cast<u8>((idx >> 24) & 0xFFu);
+    }
+    if (pvs_bytes > 0u) {
+        std::memcpy(out.data() + pvs_off, pvs.data(), pvs_bytes);
+    }
+    // W12-2: lightmap directory rows (16-byte BspFileLightmap each) then the
+    // packed RGB16F lumel blob. Directory rows are written field-by-field LE so
+    // the tool stays independent of the engine record's struct padding (it is
+    // tightly packed at 16 bytes, but we serialise explicitly to be safe).
+    for (u32 i = 0; i < lightmap_count; ++i) {
+        const QbLightmap& q = bsp.lightmaps[i];
+        const u32 off = lightmaps_off + i * kLmBytes;
+        auto put_u32 = [&](u32 base, u32 value) {
+            out[base + 0] = static_cast<u8>(value & 0xFFu);
+            out[base + 1] = static_cast<u8>((value >> 8) & 0xFFu);
+            out[base + 2] = static_cast<u8>((value >> 16) & 0xFFu);
+            out[base + 3] = static_cast<u8>((value >> 24) & 0xFFu);
+        };
+        put_u32(off + 0, q.face);
+        put_u32(off + 4, q.width);
+        put_u32(off + 8, q.height);
+        put_u32(off + 12, q.pixel_offset);
+    }
+    if (lightmap_pixel_bytes > 0u) {
+        std::memcpy(out.data() + lightmap_pixels_off, bsp.lightmap_pixels.data(),
+                    lightmap_pixel_bytes);
+    }
+}
+
 void print_help() {
     std::fprintf(stdout,
                  "lm_qbsp — Psynder BSP compiler (id-inspired)\n"
                  "\n"
                  "Usage:\n"
-                 "  lm_qbsp <input.map> <output.psybsp>\n"
+                 "  lm_qbsp <input.map> <output.psybsp>            (brush .map -> PSBP v2)\n"
+                 "  lm_qbsp --rooms <input.rooms> <output.psybsp>  (rooms -> engine PBSP v1 + baked PVS)\n"
                  "  lm_qbsp --help\n"
                  "\n"
-                 "Accepts brush-list .map files in Quake / TrenchBroom format and\n"
-                 "compiles a leafy BSP. Wave-B output (.psybsp v2) carries a portal\n"
-                 "table connecting non-solid leaves on every splitter plane; PVS\n"
-                 "bit-vector generation still lives in lane 10's loader.\n");
+                 "Brush mode accepts Quake / TrenchBroom .map files and compiles a leafy\n"
+                 "BSP into the tool's PSBP v2 blob (planes/nodes/leaves/brushes/portals).\n"
+                 "\n"
+                 "--rooms mode accepts a `.rooms` source (axis-aligned room volumes +\n"
+                 "explicit portals; see assets/maps/duke_e1m1.rooms), compiles a leaf-per-\n"
+                 "room BSP, BAKES a Quake-style leaf-portal-flood PVS, and emits the engine\n"
+                 "PBSP v1 format that world::bsp::Bsp::load consumes at runtime.\n");
 }
 
 namespace {
@@ -815,6 +1749,66 @@ int cli_main(int argc, char** argv) {
         print_help();
         return 0;
     }
+
+    // --rooms <input.rooms> <output.psybsp>: compile the room/portal source into
+    // the engine PBSP v1 format with a baked PVS (loader-consumable).
+    if (a == "--rooms") {
+        if (argc < 4) {
+            print_help();
+            return 1;
+        }
+        std::string rtext;
+        std::string rerr;
+        if (!read_file(fs::path(argv[2]), rtext, rerr)) {
+            std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
+            return 1;
+        }
+        RoomsFile rooms;
+        if (!parse_rooms(rtext, rooms, &rerr)) {
+            std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
+            return 1;
+        }
+        CompiledBsp rbsp;
+        if (!compile_rooms(rooms, rbsp, &rerr)) {
+            std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
+            return 1;
+        }
+        // W12-2: bake a per-face lightmap (ambient + per-room point lights with
+        // coarse occlusion + edge AO) so the runtime renders the rooms LIT. Pure
+        // CPU + deterministic -> the .psybsp bytes are stable across runs.
+        const LightmapBakeParams bake_params{};
+        const u32 lit_faces = bake_room_lightmaps(rooms, rbsp, bake_params);
+        std::vector<u8> rbytes;
+        u32 clusters = 0u, row_bytes = 0u;
+        write_psybsp_engine(rbsp, rbytes, &clusters, &row_bytes);
+        if (!write_file(fs::path(argv[3]), rbytes, rerr)) {
+            std::fprintf(stderr, "lm_qbsp: %s\n", rerr.c_str());
+            return 1;
+        }
+        const u32 lumels_per_face =
+            bake_params.lumels_per_axis * bake_params.lumels_per_axis;
+        std::fprintf(stdout,
+                     "lm_qbsp: %s -> %s (engine PBSP v1: nodes=%u leaves=%u faces=%u verts=%u "
+                     "indices=%u portals=%u clusters=%u pvs_row_bytes=%u bytes=%u "
+                     "lightmap=%ux%u lumels/face, %u lit faces)\n",
+                     argv[2],
+                     argv[3],
+                     static_cast<u32>(rbsp.nodes.size()),
+                     static_cast<u32>(rbsp.leaves.size()),
+                     static_cast<u32>(rbsp.faces.size()),
+                     static_cast<u32>(rbsp.vertices.size()),
+                     static_cast<u32>(rbsp.indices.size()),
+                     static_cast<u32>(rbsp.portals.size()),
+                     clusters,
+                     row_bytes,
+                     static_cast<u32>(rbytes.size()),
+                     bake_params.lumels_per_axis,
+                     bake_params.lumels_per_axis,
+                     lit_faces);
+        (void)lumels_per_face;
+        return 0;
+    }
+
     if (argc < 3) {
         print_help();
         return 1;

@@ -15,8 +15,10 @@ project(psynder
 
 # ─── Project-level options ────────────────────────────────────────────────
 option(PSYNDER_EDITOR                "Build editor / sandbox mode + IPC server + React panels"  ON)
+option(PSYNDER_BUILD_PLAYER          "Build the generic cooked-game player executable"          ON)
 option(PSYNDER_BUILD_TOOLS           "Build offline tools (lm_pak, lm_cook, lm_qbsp, lm_bake)"   ON)
 option(PSYNDER_BUILD_SAMPLES         "Build sample programs under samples/"                     ON)
+option(PSYNDER_BUILD_GAMES           "Build standalone demo games under games/"                 ON)
 option(PSYNDER_BUILD_TESTS           "Build unit / golden / bench tests under tests/"           ON)
 option(PSYNDER_ENABLE_TRACY          "Enable Tracy profiler integration (debug builds default)" OFF)
 option(PSYNDER_ENABLE_SANITIZERS     "Enable ASan + UBSan (debug Linux/Mac only)"               OFF)
@@ -53,6 +55,7 @@ include(Sanitizers)
 include(Dependencies)
 include(Lanes)
 include(Goldens)
+include(PsySceneAssets)
 
 # ─── Platform detection helpers ───────────────────────────────────────────
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
@@ -119,6 +122,13 @@ add_subdirectory(engine/scene)
 add_subdirectory(engine/render)
 add_subdirectory(engine/world)
 add_subdirectory(engine/physics)
+# M-COMBAT gameplay-combat module (DOTS). Placed after scene + physics since it
+# links both; depends on them + math, never the reverse.
+add_subdirectory(engine/gameplay)
+# M-AI enemy-AI module (DOTS). Placed after gameplay since it links the combat
+# components (Health/Faction reuse); depends on scene + gameplay + math, never
+# the reverse, and never on render/host/net.
+add_subdirectory(engine/ai)
 add_subdirectory(engine/audio)
 add_subdirectory(engine/net)
 add_subdirectory(engine/script)
@@ -126,6 +136,9 @@ add_subdirectory(engine/ui)
 add_subdirectory(engine/platform)
 if(PSYNDER_EDITOR)
     add_subdirectory(engine/editor)
+endif()
+if(PSYNDER_BUILD_PLAYER)
+    add_subdirectory(player)
 endif()
 
 # ─── Tools / samples / tests ──────────────────────────────────────────────
@@ -135,17 +148,32 @@ endif()
 if(PSYNDER_BUILD_SAMPLES)
     add_subdirectory(samples)
 endif()
+# Standalone demo games (first DEMO GAME: psynder_shooter_demo). Reuses
+# samples/common (the shared CharacterController), so it builds the samples_common
+# INTERFACE target on its own when samples are off.
+if(PSYNDER_BUILD_GAMES)
+    if(NOT TARGET psynder_samples_common)
+        add_subdirectory(samples/common samples_common)
+    endif()
+    add_subdirectory(games)
+endif()
 if(PSYNDER_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
 
+# Source-visible asset precook declarations keep sample/app CMake boilerplate
+# out of leaf projects.
+psynder_autocook_declared_assets()
+
 # ─── Summary ──────────────────────────────────────────────────────────────
 message(STATUS "")
 message(STATUS "── Psynder build summary ──────────────────────────────")
 message(STATUS "  Editor mode:     ${PSYNDER_EDITOR}")
+message(STATUS "  Player:          ${PSYNDER_BUILD_PLAYER}")
 message(STATUS "  Tools:           ${PSYNDER_BUILD_TOOLS}")
 message(STATUS "  Samples:         ${PSYNDER_BUILD_SAMPLES}")
+message(STATUS "  Games:           ${PSYNDER_BUILD_GAMES}")
 message(STATUS "  Tests:           ${PSYNDER_BUILD_TESTS}")
 message(STATUS "  Tracy:           ${PSYNDER_ENABLE_TRACY}")
 message(STATUS "  Sanitizers:      ${PSYNDER_ENABLE_SANITIZERS}")

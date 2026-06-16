@@ -28,9 +28,35 @@ if(TARGET Catch2::Catch2WithMain)
         psynder_asset psynder_audio psynder_net psynder_platform
         psynder_ui_imm psynder_ui_console psynder_editor_core
     )
+    # M-COMBAT gameplay-combat module unit tests (gameplay_combat.cpp).
+    if(TARGET psynder_gameplay)
+        target_link_libraries(psynder_unit PRIVATE psynder_gameplay)
+    endif()
+    # M-AI enemy-AI module unit tests (ai_systems.cpp).
+    if(TARGET psynder_ai)
+        target_link_libraries(psynder_unit PRIVATE psynder_ai)
+    endif()
+    # M-PSYGRAPH visual-scripting module (script_psygraph.cpp + editor_play's
+    # gameplay PsyGraph phase). editor_play already links it PUBLICly, but link
+    # it explicitly so the tests resolve even when editor_play is OFF.
+    if(TARGET psynder_psygraph)
+        target_link_libraries(psynder_unit PRIVATE psynder_psygraph)
+    endif()
     # Lane-19 (editor-ipc) tests need to link against the IPC server library.
     if(TARGET psynder_editor_ipc)
         target_link_libraries(psynder_unit PRIVATE psynder_editor_ipc)
+    endif()
+    # Lane-18 (editor-world) level-source loader tests.
+    if(TARGET psynder_editor_world)
+        target_link_libraries(psynder_unit PRIVATE psynder_editor_world)
+    endif()
+    # Editor PLAY MODE physics runtime tests (editor/play).
+    if(TARGET psynder_editor_play)
+        target_link_libraries(psynder_unit PRIVATE psynder_editor_play)
+    endif()
+    # Editor render glue (RT scene render + lightmap bake entry points).
+    if(TARGET psynder_editor_render)
+        target_link_libraries(psynder_unit PRIVATE psynder_editor_render)
     endif()
     # Platform lanes (21/22/23) export internal symbols for host-specific
     # tests; link the host's platform lib directly so those tests resolve.
@@ -47,7 +73,7 @@ if(TARGET Catch2::Catch2WithMain)
         target_link_libraries(psynder_unit PRIVATE psynder_platform_shim)
     endif()
     # Tool libs (lane 24) when PSYNDER_BUILD_TOOLS=ON.
-    foreach(_tlib IN ITEMS lm_pak_lib lm_cook_lib lm_qbsp_lib lm_bake_lib lm_mapimport_lib)
+    foreach(_tlib IN ITEMS lm_pak_lib lm_cook_lib lm_qbsp_lib lm_bake_lib lm_mapimport_lib scene_cook_lib)
         if(TARGET ${_tlib})
             target_link_libraries(psynder_unit PRIVATE ${_tlib})
         endif()

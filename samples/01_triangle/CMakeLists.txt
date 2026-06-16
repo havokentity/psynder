@@ -14,8 +14,8 @@ target_link_libraries(sample_01_triangle PRIVATE
     psynder_samples_common
 )
 
-# Stage the texture next to the binary so the launcher can find it via the
-# in-source asset-search fallback (sample's find_asset() walks a few roots).
+# Stage the loose texture next to the binary. The app host mounts the binary
+# directory and the source asset root into the runtime Vault.
 add_custom_command(TARGET sample_01_triangle POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         $<TARGET_FILE_DIR:sample_01_triangle>/assets

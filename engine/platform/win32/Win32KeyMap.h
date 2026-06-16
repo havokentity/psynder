@@ -44,6 +44,10 @@ inline KeyCode vk_to_keycode(u32 vk, u32 lparam_flags) noexcept {
             return KeyCode::Backspace;
         case VK_DELETE:
             return KeyCode::Delete;
+        case VK_HOME:
+            return KeyCode::Home;
+        case VK_END:
+            return KeyCode::End;
         case VK_LEFT:
             return KeyCode::Left;
         case VK_RIGHT:
@@ -72,6 +76,10 @@ inline KeyCode vk_to_keycode(u32 vk, u32 lparam_flags) noexcept {
             return KeyCode::RightAlt;
         case VK_MENU:
             return extended ? KeyCode::RightAlt : KeyCode::LeftAlt;
+        case VK_LWIN:
+            return KeyCode::LeftSuper;
+        case VK_RWIN:
+            return KeyCode::RightSuper;
         default:
             return KeyCode::Unknown;
     }

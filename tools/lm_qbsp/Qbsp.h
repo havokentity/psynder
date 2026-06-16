@@ -118,6 +118,47 @@ struct BspPortal {
     f32 plane_d;
 };
 
+// W10-2 room geometry records. `QbVertex` mirrors the rasterizer
+// `render::raster::Vertex` packed layout (position / normal / uv / lightmap_uv /
+// packed RGBA8) so the runtime bulk-memcpys the bytes straight into a
+// `render::raster::Vertex` array; the tool serialises field-by-field little-
+// endian (write_psybsp_engine) and the loader reads with the runtime struct
+// stride - both agree on kQbVertexBytes == 44. `QbFace` is a fan-triangulated
+// convex n-gon: `first_vertex` indexes BOTH the vertex AND the (parallel) index
+// slab, since the runtime BspDraw converter aliases `geom.indices[first_vertex]`
+// as the face's index block (BspDraw.h). Indices are FACE-LOCAL (0-based within
+// the face's vertex block). `lightmap` == kBspNoLightmap when unlit.
+struct QbVertex {
+    math::Vec3 position;
+    math::Vec3 normal;
+    math::Vec2 uv;
+    math::Vec2 lightmap_uv;
+    u32 color = 0xFFFFFFFFu;
+};
+inline constexpr u32 kQbVertexBytes = 44u;  // 3+3+2+2 f32 + 1 u32, packed LE.
+
+struct QbFace {
+    u32 first_vertex;
+    u32 vertex_count;
+    u32 material;
+    u32 lightmap;
+};
+inline constexpr u32 kBspNoLightmap = 0xFFFFFFFFu;  // "no baked lightmap" sentinel.
+
+// W12-2 per-face baked lightmap. One block of `width * height` RGB16F lumels
+// (3 half-floats each, row-major) sampled by the face's base UV (0..1). The
+// directory record `face` ties it to a `CompiledBsp::faces` index; `pixel_offset`
+// is the BYTE offset into the shared `lightmap_pixels` blob. Mirrors the engine
+// `world::bsp::BspFileLightmap` on-disk record (BspFormat.h) so write_psybsp_engine
+// emits it 1:1. Lumels are stored half-float so the bake can carry HDR irradiance.
+struct QbLightmap {
+    u32 face = 0u;
+    u32 width = 0u;
+    u32 height = 0u;
+    u32 pixel_offset = 0u;  // byte offset into CompiledBsp::lightmap_pixels.
+};
+inline constexpr u32 kQbLightmapTexelBytes = 6u;  // RGB16F.
+
 struct CompiledBsp {
     std::vector<BspPlane> planes;
     std::vector<BspNode> nodes;
@@ -126,6 +167,23 @@ struct CompiledBsp {
     std::vector<u32> brush_planes;            // flattened plane indices per brush
     std::vector<BspPortal> portals;           // Wave-B
     std::vector<math::Vec3> portal_vertices;  // Wave-B (windings)
+
+    // W10-2: emitted room geometry (rooms path only). Faces are ordered by leaf
+    // (leaf i owns faces [leaf_first_face[i], leaf_first_face[i]+leaf_face_count[i]))
+    // so write_psybsp_engine can stamp the per-leaf face range into the PBSP v1
+    // leaf records and PVS culling skips a culled leaf's faces wholesale.
+    std::vector<QbFace> faces;
+    std::vector<QbVertex> vertices;
+    std::vector<u32> indices;                 // face-local, parallel to vertices
+    std::vector<u32> leaf_first_face;         // per leaf: index into `faces`
+    std::vector<u32> leaf_face_count;         // per leaf: face count
+
+    // W12-2: baked lightmaps (filled by bake_room_lightmaps; empty otherwise so
+    // the brush path / an un-baked rooms blob stays unlit). `lightmaps` is the
+    // per-lit-face directory; `lightmap_pixels` is the packed RGB16F lumel blob
+    // the directory's `pixel_offset` rows index into.
+    std::vector<QbLightmap> lightmaps;
+    std::vector<u8> lightmap_pixels;
 };
 
 // Compile the worldspawn (entity 0) brushes into a leafy BSP. Other
@@ -135,6 +193,108 @@ bool compile_bsp(const MapFile& map, CompiledBsp& out, std::string* err = nullpt
 
 void write_psybsp(const CompiledBsp& bsp, std::vector<u8>& out);
 bool read_psybsp(std::span<const u8> bytes, CompiledBsp& out, std::string* err = nullptr);
+
+// ─── Additive: `.rooms` source + engine-format (PBSP v1) emitter ─────────────
+//
+// The Wave-A/B path above compiles a Quake `.map` brush list into the tool's own
+// `PSBP` v2 blob (planes/nodes/leaves/brushes/portals, NO faces and NO baked
+// PVS). The engine runtime loader `world::bsp::Bsp::load` reads a *different*
+// on-disk format — `PBSP` v1 (BspFormat.h): nodes / leaves / faces / vertices /
+// indices + a **baked PVS bit-vector table**. So the brush path could not feed
+// the runtime end-to-end (it emits neither the loader's magic/layout nor a PVS).
+//
+// This block closes that gap additively, without touching the existing brush
+// pipeline or its format:
+//   * a small, deterministic `.rooms` source format (axis-aligned room volumes
+//     + explicit portals) that authors a clean multi-room indoor level — the
+//     on-disk authoring of what games/duke_demo assembled in code;
+//   * `compile_rooms`, which builds a leafy BSP (one leaf/cluster per room, a
+//     median-split kd-tree of nodes so `Bsp::locate` descends correctly) and a
+//     portal table from the explicit portal list;
+//   * `write_psybsp_engine`, which BAKES the PVS (Quake-style leaf-portal flood,
+//     reusing engine `world::bsp::build_pvs`) and serialises the engine `PBSP`
+//     v1 layout that `Bsp::load` validates and consumes.
+//
+// W10-2: the rooms compiler ALSO emits REAL room geometry (see compile_rooms +
+// write_psybsp_engine). For each room box it tessellates the 6 axis-aligned
+// faces (4 walls + floor + ceiling) as PBSP v1 faces + vertices + indices,
+// INWARD-facing so the room interior is visible from a camera standing inside
+// it. Faces are stored per-leaf so PVS culling skips a culled leaf's faces.
+// Lightmaps are out of scope (flat/unlit). The QbVertex / QbFace records used
+// by CompiledBsp are declared above (next to the other compiled tables).
+
+struct RoomVolume {
+    i32 cluster = 0;
+    math::Aabb bounds{};
+    std::string name;
+};
+
+struct RoomPortal {
+    i32 cluster_a = 0;
+    i32 cluster_b = 0;
+};
+
+struct RoomsFile {
+    std::vector<RoomVolume> rooms;
+    std::vector<RoomPortal> portals;
+};
+
+// Parse a `.rooms` source (see assets/maps/duke_e1m1.rooms for the grammar).
+bool parse_rooms(std::string_view text, RoomsFile& out, std::string* err = nullptr);
+
+// Compile rooms -> a leafy CompiledBsp: leaves carry the room bounds + cluster,
+// nodes form a median-split kd-tree over the leaf boxes (so `Bsp::locate`
+// resolves an arbitrary point to its room leaf), portals mirror the explicit
+// open connections (front_leaf/back_leaf are LEAF indices == room order).
+bool compile_rooms(const RoomsFile& rooms, CompiledBsp& out, std::string* err = nullptr);
+
+// ─── W12-2: per-face lightmap bake ────────────────────────────────────────
+//
+// Bake a per-lumel lightmap for every room face emitted by compile_rooms and
+// stash it on `bsp` (bsp.lightmaps + bsp.lightmap_pixels; each face's
+// QbFace::lightmap is repointed at its directory row). The bake is OFFLINE,
+// pure-CPU, and DETERMINISTIC (no RNG, no time, integer lumel centres) so the
+// emitted .psybsp bytes are stable across runs.
+//
+// Lighting model (DESIGN.md §8.1, "believable per-lumel shade", not full
+// radiosity): ambient + N point lights, each lumel's irradiance =
+//   ambient + sum_l ( color_l * intensity_l * max(0, dot(N, L)) * atten(dist)
+//                      * visibility(lumel -> light) )
+// `visibility` is a coarse ray-vs-room-box occlusion test against the OTHER
+// room boxes (so a wall shadows the lumels a neighbouring room would block) plus
+// a cheap corner-darkening AO term (lumels near a wall edge gather less of the
+// hemisphere), which gives the brighter-near-the-light / darker-in-corners look.
+// Lumels are written as RGB16F half-floats.
+struct LightmapBakeLight {
+    math::Vec3 position{0, 0, 0};
+    math::Vec3 color{1, 1, 1};
+    f32 intensity = 1.0f;
+    f32 range = 12.0f;  // metres; quadratic falloff reaches ~0 at `range`.
+};
+
+struct LightmapBakeParams {
+    u32 lumels_per_axis = 12u;        // NxN lumel grid per face.
+    math::Vec3 ambient{0.12f, 0.13f, 0.16f};
+    std::vector<LightmapBakeLight> lights;  // empty -> a default per-room light.
+};
+
+// Bake lightmaps for the rooms-path faces of `bsp` (in place). `rooms` supplies
+// the room volumes used for the occlusion/AO geometry. Returns the number of
+// lit faces. A face with no resolvable lighting still gets an ambient-only
+// lightmap (so the whole level is consistently lit, no full-bright patches).
+u32 bake_room_lightmaps(const RoomsFile& rooms,
+                        CompiledBsp& bsp,
+                        const LightmapBakeParams& params = {});
+
+// Bake the PVS from the compiled portal graph and write the engine `PBSP` v1
+// blob (world::bsp::BspFormat.h) that `Bsp::load` consumes. `out_clusters` and
+// `out_pvs_row_bytes` (when non-null) receive the baked PVS dimensions. W12-2:
+// when `bsp.lightmaps` is non-empty (bake_room_lightmaps ran) the lightmap
+// directory + packed RGB16F lumels are serialised into the new header chunks.
+void write_psybsp_engine(const CompiledBsp& bsp,
+                         std::vector<u8>& out,
+                         u32* out_clusters = nullptr,
+                         u32* out_pvs_row_bytes = nullptr);
 
 int cli_main(int argc, char** argv);
 void print_help();

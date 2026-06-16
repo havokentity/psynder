@@ -29,13 +29,20 @@
 #include "editor/ipc/proto/Protocol.gen.h"
 
 #include "core/Log.h"
+#include "core/console/Completion.h"
+#include "core/console/Console.h"
 #include "script/internal/ReplHook.h"
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -82,6 +89,577 @@ namespace psynder::editor::ipc::internal {
 namespace {
 // GUID per RFC 6455 §1.3 — concatenated with Sec-WebSocket-Key for handshake.
 constexpr const char* kWsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+constexpr std::string_view kPanelIndexName = "index.html";
+constexpr std::string_view kLegacyChannelProfiler = "profiler";
+constexpr std::string_view kLegacyChannelSchema = "schema";
+constexpr std::size_t kMaxOutboundFramesPerConnection = 256;
+
+void warn_noexcept(const char* message) noexcept {
+    try {
+        PSY_LOG_WARN("{}", message);
+    } catch (...) {
+        std::fputs("[warn] ", stderr);
+        std::fputs(message, stderr);
+        std::fputc('\n', stderr);
+    }
+}
+
+::psynder::console::ExecuteResult dispatch_editor_console(std::string_view text,
+                                                          std::string_view mode,
+                                                          bool repl_live) {
+    ::psynder::console::ExecuteResult result;
+    if (mode == "lua") {
+        if (!repl_live) {
+            result.ok = false;
+            result.error = "lua: REPL backend is not installed";
+            return result;
+        }
+        result.ok = ::psynder::script::dispatch_repl(text, result.output);
+        if (!result.ok) {
+            result.error = std::move(result.output);
+            result.output.clear();
+        }
+        return result;
+    }
+
+    return ::psynder::console::Console::Get().ExecuteScript(text);
+}
+
+bool string_ends_with(std::string_view text, std::string_view suffix) noexcept {
+    return text.size() >= suffix.size() &&
+           text.substr(text.size() - suffix.size()) == suffix;
+}
+
+void normalize_console_mode(std::string& mode, bool& quiet) {
+    if (mode.empty()) {
+        mode = "console";
+        return;
+    }
+
+    constexpr std::array<std::string_view, 3> kQuietSuffixes{
+        ":quiet",
+        "+quiet",
+        ",quiet",
+    };
+    for (const auto suffix : kQuietSuffixes) {
+        if (string_ends_with(mode, suffix)) {
+            mode.resize(mode.size() - suffix.size());
+            quiet = true;
+            break;
+        }
+    }
+
+    if (mode == "quiet") {
+        mode = "console";
+        quiet = true;
+    } else if (mode.empty()) {
+        mode = "console";
+    }
+}
+
+std::string console_result_text(const ::psynder::console::ExecuteResult& result) {
+    if (!result.ok)
+        return !result.error.empty() ? result.error : result.output;
+    return !result.output.empty() ? result.output : result.error;
+}
+
+std::string_view console_result_value_kind(const ::psynder::console::ExecuteResult& result) noexcept {
+    return result.ok ? std::string_view{"text"} : std::string_view{"error"};
+}
+
+bool decode_bool_loose(msgpack::Reader& r, bool& out) {
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+    if (tag == 0xC2 || tag == 0xC3)
+        return r.boolean(out);
+    if (!((tag & 0x80) == 0 || tag == 0xCC || tag == 0xCD || tag == 0xCE || tag == 0xCF))
+        return false;
+    ::psynder::u32 numeric = 0;
+    if (r.u32_(numeric)) {
+        out = numeric != 0;
+        return true;
+    }
+    return false;
+}
+
+bool decode_u32_loose(msgpack::Reader& r, ::psynder::u32& out) {
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+    if (!((tag & 0x80) == 0 || tag == 0xCC || tag == 0xCD || tag == 0xCE || tag == 0xCF))
+        return false;
+    return r.u32_(out);
+}
+
+struct ConsoleCommandWire {
+    std::string text;
+    std::string mode = "console";
+    ::psynder::u32 request_id = 0;
+    bool has_request_id = false;
+    bool quiet = false;
+};
+
+bool decode_console_command_array(msgpack::Reader& r, ConsoleCommandWire& out) {
+    ::psynder::u32 count = 0;
+    if (!r.array_header(count) || count == 0)
+        return false;
+
+    if (!r.str(out.text))
+        return false;
+    if (count >= 2) {
+        if (!r.str(out.mode))
+            return false;
+    }
+    if (count >= 3) {
+        if (decode_u32_loose(r, out.request_id)) {
+            out.has_request_id = true;
+        } else if (!r.skip()) {
+            return false;
+        }
+    }
+    if (count >= 4) {
+        if (!decode_bool_loose(r, out.quiet) && !r.skip())
+            return false;
+    }
+    for (::psynder::u32 i = 4; i < count; ++i) {
+        if (!r.skip())
+            return false;
+    }
+
+    normalize_console_mode(out.mode, out.quiet);
+    return true;
+}
+
+bool decode_console_command_map(msgpack::Reader& r, ConsoleCommandWire& out) {
+    ::psynder::u32 count = 0;
+    if (!r.map_header(count))
+        return false;
+
+    for (::psynder::u32 i = 0; i < count; ++i) {
+        std::string key;
+        if (!r.str(key))
+            return false;
+        if (key == "source" || key == "text") {
+            if (!r.str(out.text))
+                return false;
+        } else if (key == "mode") {
+            if (!r.str(out.mode))
+                return false;
+        } else if (key == "id" || key == "request_id") {
+            if (!decode_u32_loose(r, out.request_id))
+                return false;
+            out.has_request_id = true;
+        } else if (key == "quiet") {
+            if (!decode_bool_loose(r, out.quiet))
+                return false;
+        } else if (!r.skip()) {
+            return false;
+        }
+    }
+
+    normalize_console_mode(out.mode, out.quiet);
+    return true;
+}
+
+bool decode_console_command(msgpack::Reader& r, ConsoleCommandWire& out) {
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+    if ((tag & 0xF0) == 0x90 || tag == 0xDC || tag == 0xDD)
+        return decode_console_command_array(r, out);
+    if ((tag & 0xF0) == 0x80 || tag == 0xDE || tag == 0xDF)
+        return decode_console_command_map(r, out);
+    if (r.str(out.text)) {
+        normalize_console_mode(out.mode, out.quiet);
+        return true;
+    }
+    return false;
+}
+
+::psynder::u8 completion_kind(::psynder::console::CompletionKind kind) noexcept {
+    using Kind = ::psynder::console::CompletionKind;
+    switch (kind) {
+        case Kind::Cvar:
+            return 0;
+        case Kind::Command:
+            return 1;
+        case Kind::Value:
+            return 2;
+    }
+    return 0;
+}
+
+proto::ConsoleCompletionReply build_console_completion_reply(
+    const proto::ConsoleCompletionQuery& query) {
+    const std::size_t cursor =
+        std::min<std::size_t>(query.cursor, query.input.size());
+    const auto token = ::psynder::console::CurrentToken(query.input, cursor);
+    const auto matches =
+        ::psynder::console::BuildCompletions(token, /*max_results*/ 24, /*description_clip*/ 96);
+
+    proto::ConsoleCompletionReply reply;
+    reply.id = query.id;
+    reply.start = static_cast<::psynder::u32>(
+        std::min<std::size_t>(token.start, query.input.size()));
+    reply.end = static_cast<::psynder::u32>(
+        std::min<std::size_t>(token.end, query.input.size()));
+    reply.names.reserve(matches.size());
+    reply.kinds.reserve(matches.size());
+    reply.values.reserve(matches.size());
+    reply.descriptions.reserve(matches.size());
+    for (const auto& match : matches) {
+        reply.names.push_back(match.name);
+        reply.kinds.push_back(completion_kind(match.kind));
+        reply.values.push_back(match.value);
+        reply.descriptions.push_back(match.description);
+    }
+    return reply;
+}
+
+std::vector<std::string> subscription_aliases(std::string_view channel) {
+    std::vector<std::string> out;
+    out.emplace_back(channel);
+
+    if (channel == kLegacyChannelProfiler) {
+        // The React profiler panel predates the generated StatsFrame and
+        // subscribes to "profiler"; generated C++ stats use "stats", while
+        // Wave-B perf deltas use "perf".
+        out.emplace_back(proto::channels::kstats);
+        out.emplace_back(proto::channels::kperf);
+    } else if (channel == proto::channels::kstats || channel == proto::channels::kperf) {
+        out.emplace_back(kLegacyChannelProfiler);
+        if (channel == proto::channels::kstats)
+            out.emplace_back(proto::channels::kperf);
+        else
+            out.emplace_back(proto::channels::kstats);
+    } else if (channel == kLegacyChannelSchema) {
+        out.emplace_back(proto::channels::kschemas);
+    } else if (channel == proto::channels::kschemas) {
+        out.emplace_back(kLegacyChannelSchema);
+    }
+
+    return out;
+}
+
+void subscribe_channel(Connection& conn, std::string_view channel) {
+    std::lock_guard<std::mutex> lk(conn.sub_mu);
+    for (auto& alias : subscription_aliases(channel)) {
+        conn.subscribed.insert(std::move(alias));
+    }
+}
+
+void unsubscribe_channel(Connection& conn, std::string_view channel) {
+    std::lock_guard<std::mutex> lk(conn.sub_mu);
+    for (const auto& alias : subscription_aliases(channel)) {
+        conn.subscribed.erase(alias);
+    }
+}
+
+struct LegacyEnvelope {
+    std::string channel;
+    std::string type;
+    std::string prop_id;
+    std::string console_text;
+    std::string console_mode = "console";
+    ::psynder::u32 console_request_id = 0;
+    ::psynder::u32 entity_id = 0;
+    bool has_entity_id = false;
+    bool has_console_request_id = false;
+    bool quiet = false;
+    std::string component;
+    std::string field;
+    std::string field_kind;
+    std::string variant;
+    ::psynder::editor::ipc::SelectionComponentEditValue value;
+    bool has_value = false;
+};
+
+std::atomic<::psynder::editor::ipc::SelectionSelectHandler> g_selection_select_handler{nullptr};
+std::atomic<::psynder::editor::ipc::SelectionComponentEditHandler>
+    g_selection_component_edit_handler{nullptr};
+std::atomic<::psynder::editor::ipc::SelectionComponentAddHandler>
+    g_selection_component_add_handler{nullptr};
+std::atomic<::psynder::editor::ipc::SelectionComponentRemoveHandler>
+    g_selection_component_remove_handler{nullptr};
+
+bool msgpack_tag_is_signed_integer(::psynder::u8 tag) noexcept {
+    return (tag & 0xE0) == 0xE0 || tag == 0xD0 || tag == 0xD1 || tag == 0xD2 || tag == 0xD3;
+}
+
+bool msgpack_tag_is_unsigned_integer(::psynder::u8 tag) noexcept {
+    return (tag & 0x80) == 0 || tag == 0xCC || tag == 0xCD || tag == 0xCE || tag == 0xCF;
+}
+
+bool msgpack_tag_is_float(::psynder::u8 tag) noexcept {
+    return tag == 0xCA || tag == 0xCB;
+}
+
+bool decode_numeric_f64(msgpack::Reader& r, ::psynder::f64& out) {
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+    if (msgpack_tag_is_float(tag))
+        return r.f64_(out);
+    if (msgpack_tag_is_signed_integer(tag)) {
+        ::psynder::i64 value = 0;
+        if (!r.i64_(value))
+            return false;
+        out = static_cast<::psynder::f64>(value);
+        return true;
+    }
+    if (msgpack_tag_is_unsigned_integer(tag)) {
+        ::psynder::u64 value = 0;
+        if (!r.u64_(value))
+            return false;
+        out = static_cast<::psynder::f64>(value);
+        return true;
+    }
+    return false;
+}
+
+bool decode_legacy_component_value(msgpack::Reader& r,
+                                   ::psynder::editor::ipc::SelectionComponentEditValue& out) {
+    namespace pub = ::psynder::editor::ipc;
+
+    ::psynder::u8 tag = 0;
+    if (!r.peek(tag))
+        return false;
+
+    if (tag == 0xC0) {
+        if (!r.nil())
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::Null;
+        return true;
+    }
+    if (tag == 0xC2 || tag == 0xC3) {
+        if (!r.boolean(out.bool_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::Bool;
+        return true;
+    }
+    if ((tag & 0xE0) == 0xA0 || tag == 0xD9 || tag == 0xDA || tag == 0xDB) {
+        if (!r.str(out.string_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::String;
+        return true;
+    }
+    if (msgpack_tag_is_float(tag)) {
+        if (!r.f64_(out.f64_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::F64;
+        return true;
+    }
+    if (msgpack_tag_is_signed_integer(tag)) {
+        if (!r.i64_(out.i64_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::I64;
+        return true;
+    }
+    if (msgpack_tag_is_unsigned_integer(tag)) {
+        if (!r.u64_(out.u64_value))
+            return false;
+        out.kind = pub::SelectionComponentEditValueKind::U64;
+        return true;
+    }
+
+    ::psynder::u32 count = 0;
+    if (!r.array_header(count))
+        return false;
+    if (count == 0) {
+        out.kind = pub::SelectionComponentEditValueKind::F64Array;
+        return true;
+    }
+
+    if (!r.peek(tag))
+        return false;
+    if (tag == 0xC2 || tag == 0xC3) {
+        out.kind = pub::SelectionComponentEditValueKind::BoolArray;
+        out.bool_values.reserve(count);
+        for (::psynder::u32 i = 0; i < count; ++i) {
+            bool value = false;
+            if (!r.boolean(value))
+                return false;
+            out.bool_values.push_back(value ? 1u : 0u);
+        }
+        return true;
+    }
+    if ((tag & 0xE0) == 0xA0 || tag == 0xD9 || tag == 0xDA || tag == 0xDB) {
+        out.kind = pub::SelectionComponentEditValueKind::StringArray;
+        out.string_values.reserve(count);
+        for (::psynder::u32 i = 0; i < count; ++i) {
+            std::string value;
+            if (!r.str(value))
+                return false;
+            out.string_values.push_back(std::move(value));
+        }
+        return true;
+    }
+
+    out.kind = pub::SelectionComponentEditValueKind::F64Array;
+    out.f64_values.reserve(count);
+    for (::psynder::u32 i = 0; i < count; ++i) {
+        ::psynder::f64 value = 0.0;
+        if (!decode_numeric_f64(r, value))
+            return false;
+        out.f64_values.push_back(value);
+    }
+    return true;
+}
+
+bool decode_legacy_payload(msgpack::Reader& r, LegacyEnvelope& out) {
+    ::psynder::u32 count = 0;
+    if (!r.map_header(count))
+        return r.skip();
+
+    for (::psynder::u32 i = 0; i < count; ++i) {
+        std::string key;
+        if (!r.str(key))
+            return false;
+        if (key == "prop_id") {
+            if (!r.str(out.prop_id))
+                return false;
+        } else if (key == "source" || key == "text") {
+            if (!r.str(out.console_text))
+                return false;
+        } else if (key == "mode") {
+            if (!r.str(out.console_mode))
+                return false;
+            normalize_console_mode(out.console_mode, out.quiet);
+        } else if (key == "id" || key == "request_id") {
+            if (!decode_u32_loose(r, out.console_request_id))
+                return false;
+            out.has_console_request_id = true;
+        } else if (key == "quiet") {
+            if (!decode_bool_loose(r, out.quiet))
+                return false;
+        } else if (key == "entity_id") {
+            if (!r.u32_(out.entity_id))
+                return false;
+            out.has_entity_id = true;
+        } else if (key == "component") {
+            if (!r.str(out.component))
+                return false;
+        } else if (key == "field") {
+            if (!r.str(out.field))
+                return false;
+        } else if (key == "field_kind") {
+            if (!r.str(out.field_kind))
+                return false;
+        } else if (key == "variant") {
+            if (!r.str(out.variant))
+                return false;
+        } else if (key == "value") {
+            if (!decode_legacy_component_value(r, out.value))
+                return false;
+            out.has_value = true;
+        } else if (!r.skip()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool decode_legacy_envelope(std::span<const ::psynder::u8> payload, LegacyEnvelope& out) {
+    msgpack::Reader r(payload.data(), payload.size());
+    ::psynder::u32 count = 0;
+    if (!r.map_header(count))
+        return false;
+
+    for (::psynder::u32 i = 0; i < count; ++i) {
+        std::string key;
+        if (!r.str(key))
+            return false;
+        if (key == "ch") {
+            if (!r.str(out.channel))
+                return false;
+        } else if (key == "type") {
+            if (!r.str(out.type))
+                return false;
+        } else if (key == "payload") {
+            if (!decode_legacy_payload(r, out))
+                return false;
+        } else if (!r.skip()) {
+            return false;
+        }
+    }
+    return !out.channel.empty() && !out.type.empty();
+}
+
+bool handle_legacy_subscription(Connection& conn, const LegacyEnvelope& env) {
+    if (env.type == "subscribe") {
+        subscribe_channel(conn, env.channel);
+        return true;
+    }
+    if (env.type == "unsubscribe") {
+        unsubscribe_channel(conn, env.channel);
+        return true;
+    }
+    return false;
+}
+
+std::vector<::psynder::u8> encode_legacy_command_ack(std::string_view channel,
+                                                     std::string_view command,
+                                                     bool ok,
+                                                     std::string_view text,
+                                                     std::string_view value_kind = "text",
+                                                     std::string_view output = {},
+                                                     std::string_view error = {}) {
+    msgpack::Writer w;
+    w.map_header(4);
+    w.str("v");
+    w.u32_(proto::kProtocolVersion);
+    w.str("ch");
+    w.str(channel);
+    w.str("type");
+    w.str("command_ack");
+    w.str("payload");
+    w.map_header(6);
+    w.str("command");
+    w.str(command);
+    w.str("ok");
+    w.boolean(ok);
+    w.str("text");
+    w.str(text);
+    w.str("value_kind");
+    w.str(value_kind);
+    w.str("output");
+    w.str(output);
+    w.str("error");
+    w.str(error);
+    return w.buffer();
+}
+
+std::vector<::psynder::u8> encode_legacy_console_result(
+    std::string_view channel,
+    const ::psynder::console::ExecuteResult& result,
+    ::psynder::u32 request_id,
+    bool has_request_id) {
+    const std::string text = console_result_text(result);
+    msgpack::Writer w;
+    w.map_header(4);
+    w.str("v");
+    w.u32_(proto::kProtocolVersion);
+    w.str("ch");
+    w.str(channel);
+    w.str("type");
+    w.str("result");
+    w.str("payload");
+    w.map_header(6);
+    w.str("id");
+    w.u32_(has_request_id ? request_id : 0);
+    w.str("ok");
+    w.boolean(result.ok);
+    w.str("text");
+    w.str(text);
+    w.str("value_kind");
+    w.str(console_result_value_kind(result));
+    w.str("output");
+    w.str(result.output);
+    w.str("error");
+    w.str(result.error);
+    return w.buffer();
+}
 
 bool send_all(socket_t s, const ::psynder::u8* buf, ::psynder::usize n) {
     while (n) {
@@ -123,12 +701,71 @@ bool send_all(socket_t s, const ::psynder::u8* buf, ::psynder::usize n) {
     }
 }
 
+std::filesystem::path editor_web_dist_dir() {
+    auto source_file = std::filesystem::path{__FILE__};
+    return source_file.parent_path().parent_path() / "web" / "dist";
+}
+
+bool path_segment_is_safe(std::string_view s) noexcept {
+    return !s.empty() && s.find("..") == std::string_view::npos &&
+           s.find('\\') == std::string_view::npos;
+}
+
+std::optional<std::string> read_text_file(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return std::nullopt;
+    std::string body;
+    in.seekg(0, std::ios::end);
+    const auto size = in.tellg();
+    if (size > 0)
+        body.resize(static_cast<std::size_t>(size));
+    in.seekg(0, std::ios::beg);
+    if (!body.empty())
+        in.read(body.data(), static_cast<std::streamsize>(body.size()));
+    return body;
+}
+
+std::string_view content_type_for(std::string_view path) noexcept {
+    if (path.ends_with(".css"))
+        return "text/css; charset=utf-8";
+    if (path.ends_with(".js") || path.ends_with(".mjs"))
+        return "text/javascript; charset=utf-8";
+    if (path.ends_with(".json") || path.ends_with(".map"))
+        return "application/json; charset=utf-8";
+    if (path.ends_with(".html"))
+        return "text/html; charset=utf-8";
+    if (path.ends_with(".svg"))
+        return "image/svg+xml";
+    if (path.ends_with(".png"))
+        return "image/png";
+    if (path.ends_with(".jpg") || path.ends_with(".jpeg"))
+        return "image/jpeg";
+    if (path.ends_with(".webp"))
+        return "image/webp";
+    return "application/octet-stream";
+}
+
 }  // namespace
 
 // ─── Singleton wiring ──────────────────────────────────────────────────────
+Connection::~Connection() noexcept {
+    alive.store(false);
+    out_cv.notify_all();
+    try {
+        if (worker.joinable())
+            worker.detach();
+    } catch (...) {
+    }
+}
+
 Server& Server::Get() {
     static Server s;
     return s;
+}
+
+Server::~Server() {
+    stop();
 }
 
 bool Server::validate_token(std::string_view t) const noexcept {
@@ -230,9 +867,8 @@ bool Server::start(const char* bind_host, ::psynder::u16 port, bool require_sess
     running_.store(true);
     accept_thread_ = std::thread([this]() { this->accept_loop(); });
 
-    // Wave-B: route ConsoleFrame messages through the script lane's REPL hook
-    // by default. The script lane installs its own evaluator; we only verify
-    // that a backend is registered so `dispatch_repl` is callable from pump().
+    // ConsoleFrame messages carry an explicit mode: engine console or Lua.
+    // Keep the script REPL installed for the Lua tab.
     install_repl_backend();
 
     PSY_LOG_INFO("editor-ipc: listening on {}:{}", bind_host_, port_);
@@ -242,9 +878,8 @@ bool Server::start(const char* bind_host, ::psynder::u16 port, bool require_sess
 void Server::install_repl_backend() {
     // The script lane's `dispatch_repl(...)` already falls back to the
     // default Vm evaluator when no custom backend is installed (see
-    // engine/script/internal/ReplHook.cpp). Calling this method here is the
-    // explicit hand-off point: the IPC server now considers the REPL wiring
-    // live, and `pump()` will forward ConsoleCmd text through Lua.
+    // engine/script/internal/ReplHook.cpp). Calling this method here keeps the
+    // Lua tab available without the IPC server owning the script VM.
     //
     // We deliberately do NOT install our own backend that supplants the
     // script lane's default — tests opt in to a fake backend via
@@ -288,8 +923,19 @@ void Server::stop() {
             c->sock = -1;
         }
         c->out_cv.notify_all();
-        if (c->worker.joinable())
-            c->worker.join();
+        // NB: workers are detached (see accept_loop), so join() is a no-op here.
+        // We wait on the worker counter below instead.
+    }
+
+    // Drop our refs so the only thing keeping a Connection alive is the worker
+    // that still holds its locked shared_ptr. Then block until every detached
+    // worker has run off the end of client_loop — guarantees no worker touches
+    // `this` after stop()/~Server returns.
+    snapshot.clear();
+    {
+        std::unique_lock<std::mutex> lk(workers_mu_);
+        workers_done_cv_.wait(
+            lk, [this] { return active_workers_.load(std::memory_order_acquire) == 0; });
     }
 }
 
@@ -327,10 +973,18 @@ void Server::accept_loop() {
             conns_.push_back(conn);
         }
         std::weak_ptr<Connection> wconn = conn;
+        // Bump BEFORE spawning so stop() can never observe a zero count while a
+        // worker is mid-launch. The worker decrements + notifies on exit.
+        active_workers_.fetch_add(1, std::memory_order_acq_rel);
         conn->worker = std::thread([this, wconn]() {
             if (auto c = wconn.lock())
                 this->client_loop(c);
+            if (active_workers_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                std::lock_guard<std::mutex> lk(workers_mu_);
+                workers_done_cv_.notify_all();
+            }
         });
+        conn->worker.detach();
     }
 }
 
@@ -362,10 +1016,13 @@ void Server::send_http(Connection& conn,
 void Server::serve_static(Connection& conn, const std::string& path) {
     // path includes everything after the leading scheme/host, so it starts
     // with '/'. We map:
-    //   /              -> bootstrap HTML
-    //   /panels/<name> -> bootstrap HTML
+    //   /              -> bundled React index
+    //   /panels/<name> -> bundled React index
+    //   /assets/<file> -> bundled React asset
     //   /healthz       -> "ok\n"
     //   /protocol.json -> a tiny version stamp
+    // If the web bundle is missing, fall back to the tiny bootstrap page so
+    // the IPC server remains inspectable in minimal source-only builds.
     std::string clean = path;
     auto qpos = clean.find_first_of("?#");
     if (qpos != std::string::npos)
@@ -382,8 +1039,26 @@ void Server::serve_static(Connection& conn, const std::string& path) {
         send_http(conn, 200, "OK", "application/json", body);
         return;
     }
+    if (clean.rfind("/assets/", 0) == 0) {
+        const std::string_view asset_rel(clean.data() + 1, clean.size() - 1);
+        if (!path_segment_is_safe(asset_rel)) {
+            send_http(conn, 400, "Bad Request", "text/plain", "bad asset path\n");
+            return;
+        }
+        const auto asset_path = editor_web_dist_dir() / std::filesystem::path{std::string{asset_rel}};
+        if (auto body = read_text_file(asset_path)) {
+            send_http(conn, 200, "OK", content_type_for(clean), *body);
+            return;
+        }
+        send_http(conn, 404, "Not Found", "text/plain", "asset not found\n");
+        return;
+    }
     if (clean == "/" || clean.rfind("/panels/", 0) == 0) {
-        send_http(conn, 200, "OK", "text/html; charset=utf-8", kPanelBootstrapHtml);
+        if (auto body = read_text_file(editor_web_dist_dir() / std::string{kPanelIndexName})) {
+            send_http(conn, 200, "OK", "text/html; charset=utf-8", *body);
+        } else {
+            send_http(conn, 200, "OK", "text/html; charset=utf-8", kPanelBootstrapHtml);
+        }
         return;
     }
     send_http(conn, 404, "Not Found", "text/plain", "not found\n");
@@ -437,9 +1112,19 @@ bool Server::handle_http_upgrade(Connection& conn,
 }
 
 void Server::enqueue(Connection& conn, std::vector<::psynder::u8> frame) {
-    {
+    try {
         std::lock_guard<std::mutex> lk(conn.out_mu);
+        while (conn.out_queue.size() >= kMaxOutboundFramesPerConnection)
+            conn.out_queue.pop_front();
         conn.out_queue.emplace_back(std::move(frame));
+    } catch (const std::exception&) {
+        conn.alive.store(false);
+        warn_noexcept("editor-ipc: dropping outbound frame after enqueue failure");
+        return;
+    } catch (...) {
+        conn.alive.store(false);
+        warn_noexcept("editor-ipc: dropping outbound frame after unknown enqueue failure");
+        return;
     }
     conn.out_cv.notify_all();
 }
@@ -543,36 +1228,149 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
             // Binary frame: opcode (u16) + msgpack body.
             msgpack::Reader r(fr.payload);
             ::psynder::u16 op = 0;
-            if (!r.u16_(op))
+            if (!r.u16_(op)) {
+                LegacyEnvelope env;
+                const std::span<const ::psynder::u8> legacy_payload(fr.payload.data(),
+                                                                    fr.payload.size());
+                if (!decode_legacy_envelope(legacy_payload, env))
+                    continue;
+                if (handle_legacy_subscription(*conn, env))
+                    continue;
+                if (env.channel == proto::channels::kselection &&
+                    env.type == "select" &&
+                    env.has_entity_id) {
+                    // ECS-mutating selection ops must run on the main thread.
+                    // Enqueue rather than invoking the handler inline on this
+                    // socket worker thread (the registry is iterated every
+                    // frame; an off-thread structural mutation is a data race).
+                    InboundCmd ic;
+                    ic.conn = conn;
+                    ic.selection_op = InboundCmd::SelectionOp::Select;
+                    ic.selection_entity_id = env.entity_id;
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
+                } else if (env.channel == proto::channels::kselection &&
+                           env.type == "component_edit" &&
+                           env.has_entity_id &&
+                           !env.component.empty() &&
+                           !env.field.empty() &&
+                           !env.field_kind.empty() &&
+                           env.has_value) {
+                    InboundCmd ic;
+                    ic.conn = conn;
+                    ic.selection_op = InboundCmd::SelectionOp::ComponentEdit;
+                    ic.selection_entity_id = env.entity_id;
+                    ic.selection_edit.entity_id = env.entity_id;
+                    ic.selection_edit.component = std::move(env.component);
+                    ic.selection_edit.field = std::move(env.field);
+                    ic.selection_edit.field_kind = std::move(env.field_kind);
+                    ic.selection_edit.value = std::move(env.value);
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
+                } else if (env.channel == proto::channels::kselection &&
+                           env.type == "add_component" &&
+                           env.has_entity_id &&
+                           !env.component.empty()) {
+                    InboundCmd ic;
+                    ic.conn = conn;
+                    ic.selection_op = InboundCmd::SelectionOp::ComponentAdd;
+                    ic.selection_entity_id = env.entity_id;
+                    ic.selection_add.entity_id = env.entity_id;
+                    ic.selection_add.component = std::move(env.component);
+                    ic.selection_add.variant = std::move(env.variant);
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
+                } else if (env.channel == proto::channels::kselection &&
+                           env.type == "remove_component" &&
+                           env.has_entity_id &&
+                           !env.component.empty()) {
+                    InboundCmd ic;
+                    ic.conn = conn;
+                    ic.selection_op = InboundCmd::SelectionOp::ComponentRemove;
+                    ic.selection_entity_id = env.entity_id;
+                    ic.selection_remove.entity_id = env.entity_id;
+                    ic.selection_remove.component = std::move(env.component);
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
+                } else if (env.channel == proto::channels::kselection &&
+                    env.type == "spawn_prop" &&
+                    !env.prop_id.empty()) {
+                    std::string text = "editor_spawn_prop ";
+                    text += env.prop_id;
+
+                    InboundCmd ic;
+                    ic.channel = "console";
+                    ic.payload.assign(reinterpret_cast<const ::psynder::u8*>(text.data()),
+                                      reinterpret_cast<const ::psynder::u8*>(text.data()) +
+                                          text.size());
+                    ic.conn = conn;
+                    ic.reply_channel = proto::channels::kselection;
+                    ic.reply_type = "command_ack";
+                    ic.reply_command = "spawn_prop";
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
+                } else if (env.channel == proto::channels::kconsole &&
+                           env.type == "eval" &&
+                           !env.console_text.empty()) {
+                    InboundCmd ic;
+                    ic.channel = env.console_mode.empty() ? std::string{"console"} : env.console_mode;
+                    ic.payload.assign(
+                        reinterpret_cast<const ::psynder::u8*>(env.console_text.data()),
+                        reinterpret_cast<const ::psynder::u8*>(env.console_text.data()) +
+                            env.console_text.size());
+                    ic.conn = conn;
+                    ic.reply_channel = proto::channels::kconsole;
+                    ic.request_id = env.console_request_id;
+                    ic.has_request_id = env.has_console_request_id;
+                    ic.quiet = env.quiet;
+                    ic.legacy_console_result = true;
+                    std::lock_guard<std::mutex> lk(inbound_mu_);
+                    inbound_.emplace_back(std::move(ic));
+                }
                 continue;
+            }
             switch (op) {
                 case proto::opcodes::kSubscribeFrame: {
                     proto::Subscribe sub;
                     if (proto::Subscribe_decode(r, sub)) {
-                        std::lock_guard<std::mutex> lk(conn->sub_mu);
-                        conn->subscribed.insert(sub.channel);
+                        subscribe_channel(*conn, sub.channel);
                     }
                     break;
                 }
                 case proto::opcodes::kUnsubscribeFrame: {
                     proto::Unsubscribe usub;
                     if (proto::Unsubscribe_decode(r, usub)) {
-                        std::lock_guard<std::mutex> lk(conn->sub_mu);
-                        conn->subscribed.erase(usub.channel);
+                        unsubscribe_channel(*conn, usub.channel);
                     }
                     break;
                 }
                 case proto::opcodes::kConsoleFrame: {
-                    proto::ConsoleCmd cmd;
-                    if (proto::ConsoleCmd_decode(r, cmd)) {
+                    ConsoleCommandWire cmd;
+                    if (decode_console_command(r, cmd)) {
                         InboundCmd ic;
-                        ic.channel = proto::channels::kconsole;
+                        ic.channel = cmd.mode.empty() ? std::string{"console"} : std::move(cmd.mode);
                         ic.payload.assign(reinterpret_cast<const ::psynder::u8*>(cmd.text.data()),
                                           reinterpret_cast<const ::psynder::u8*>(cmd.text.data()) +
                                               cmd.text.size());
                         ic.conn = conn;  // weak ref so pump() can ship the reply.
+                        ic.request_id = cmd.request_id;
+                        ic.has_request_id = cmd.has_request_id;
+                        ic.quiet = cmd.quiet;
                         std::lock_guard<std::mutex> lk(inbound_mu_);
                         inbound_.emplace_back(std::move(ic));
+                    }
+                    break;
+                }
+                case proto::opcodes::kConsoleCompletionQueryFrame: {
+                    proto::ConsoleCompletionQuery query;
+                    if (proto::ConsoleCompletionQuery_decode(r, query)) {
+                        InboundCompletion ic;
+                        ic.id = query.id;
+                        ic.cursor = query.cursor;
+                        ic.input = std::move(query.input);
+                        ic.conn = conn;
+                        std::lock_guard<std::mutex> lk(inbound_mu_);
+                        inbound_completions_.emplace_back(std::move(ic));
                     }
                     break;
                 }
@@ -600,35 +1398,79 @@ void Server::client_loop(std::shared_ptr<Connection> conn) {
 
 // ─── Pub/sub broadcast & pump ──────────────────────────────────────────────
 void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> payload) {
-    auto frame = wsframe::encode_server_binary(payload.data(), payload.size());
-    std::vector<std::shared_ptr<Connection>> snapshot;
-    {
-        std::lock_guard<std::mutex> lk(conns_mu_);
-        snapshot = conns_;
-    }
-    for (auto& c : snapshot) {
-        if (!c || !c->authed.load() || !c->alive.load())
-            continue;
-        bool subscribed = false;
+    try {
+        auto frame = wsframe::encode_server_binary(payload.data(), payload.size());
+        std::vector<std::shared_ptr<Connection>> snapshot;
         {
-            std::lock_guard<std::mutex> lk(c->sub_mu);
-            subscribed = c->subscribed.count(std::string(channel)) > 0;
+            std::lock_guard<std::mutex> lk(conns_mu_);
+            snapshot = conns_;
         }
-        if (!subscribed)
-            continue;
-        enqueue(*c, frame);  // copy intentionally — each conn owns its outbound buf.
-    }
+        const std::string channel_str(channel);
+        auto aliases = subscription_aliases(channel);
+        for (auto& c : snapshot) {
+            if (!c || !c->authed.load() || !c->alive.load())
+                continue;
+            bool subscribed = false;
+            {
+                std::lock_guard<std::mutex> lk(c->sub_mu);
+                subscribed = c->subscribed.count(channel_str) > 0;
+                if (!subscribed) {
+                    for (const auto& alias : aliases) {
+                        if (c->subscribed.count(alias) > 0) {
+                            subscribed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!subscribed)
+                continue;
+            enqueue(*c, frame);  // copy intentionally — each conn owns its outbound buf.
+        }
 
-    // Garbage-collect dead connections opportunistically.
-    {
-        std::lock_guard<std::mutex> lk(conns_mu_);
-        conns_.erase(std::remove_if(conns_.begin(),
-                                    conns_.end(),
-                                    [](const std::shared_ptr<Connection>& c) {
-                                        return !c || !c->alive.load();
-                                    }),
-                     conns_.end());
+        // Garbage-collect dead connections opportunistically.
+        {
+            std::lock_guard<std::mutex> lk(conns_mu_);
+            conns_.erase(std::remove_if(conns_.begin(),
+                                        conns_.end(),
+                                        [](const std::shared_ptr<Connection>& c) {
+                                            return !c || !c->alive.load();
+                                        }),
+                         conns_.end());
+        }
+    } catch (const std::exception&) {
+        warn_noexcept("editor-ipc: broadcast dropped after exception");
+    } catch (...) {
+        warn_noexcept("editor-ipc: broadcast dropped after unknown exception");
     }
+}
+
+bool Server::has_subscribers(std::string_view channel) {
+    try {
+        std::vector<std::shared_ptr<Connection>> snapshot;
+        {
+            std::lock_guard<std::mutex> lk(conns_mu_);
+            snapshot = conns_;
+        }
+        const std::string channel_str(channel);
+        auto aliases = subscription_aliases(channel);
+        for (auto& c : snapshot) {
+            if (!c || !c->authed.load() || !c->alive.load())
+                continue;
+            std::lock_guard<std::mutex> sub_lk(c->sub_mu);
+            if (c->subscribed.count(channel_str) > 0)
+                return true;
+            for (const auto& alias : aliases) {
+                if (c->subscribed.count(alias) > 0)
+                    return true;
+            }
+        }
+    } catch (const std::exception&) {
+        warn_noexcept("editor-ipc: subscriber check failed after exception");
+    } catch (...) {
+        warn_noexcept("editor-ipc: subscriber check failed after unknown exception");
+    }
+    return false;
 }
 
 void Server::push_scene_delta(std::string_view slice_name,
@@ -649,17 +1491,28 @@ void Server::push_scene_delta(std::string_view slice_name,
         snapshot = conns_;
     }
     // Deliver to every authenticated connection whose subscription set
-    // contains `slice_name`. The slice and the WS subscription channel are
-    // the same string by convention so lane 20 panels can keep using the
-    // existing SubscribeFrame mechanism.
+    // contains `slice_name`, a known alias, or the physical "scene" channel.
+    // The slice and the WS subscription channel are the same string by
+    // convention, while "scene" remains a catch-all for clients that want to
+    // demux SceneDeltaSlice themselves.
     const std::string slice_str(slice_name);
+    auto aliases = subscription_aliases(slice_name);
     for (auto& c : snapshot) {
         if (!c || !c->authed.load() || !c->alive.load())
             continue;
         bool subscribed = false;
         {
             std::lock_guard<std::mutex> lk(c->sub_mu);
-            subscribed = c->subscribed.count(slice_str) > 0;
+            subscribed = c->subscribed.count(slice_str) > 0 ||
+                         c->subscribed.count(proto::channels::kscene) > 0;
+            if (!subscribed) {
+                for (const auto& alias : aliases) {
+                    if (c->subscribed.count(alias) > 0) {
+                        subscribed = true;
+                        break;
+                    }
+                }
+            }
         }
         if (!subscribed)
             continue;
@@ -682,33 +1535,124 @@ void Server::push_scene_delta(std::string_view slice_name,
 
 void Server::pump() {
     std::deque<InboundCmd> local;
+    std::deque<InboundCompletion> completions;
     {
         std::lock_guard<std::mutex> lk(inbound_mu_);
         local.swap(inbound_);
+        completions.swap(inbound_completions_);
     }
-    const bool repl_live = repl_installed_.load(std::memory_order_acquire);
-    for (auto& cmd : local) {
-        std::string text(reinterpret_cast<const char*>(cmd.payload.data()), cmd.payload.size());
-        PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);
-        if (!repl_live)
+
+    for (auto& completion : completions) {
+        auto conn = completion.conn.lock();
+        if (!conn || !conn->alive.load())
             continue;
 
-        // Route through the script lane's REPL hook. `dispatch_repl` looks up
-        // whatever backend is currently installed (default = Vm::execute_repl,
-        // tests may override). The result string goes back to the originating
-        // panel as a ConsoleReply frame (opcode 21).
-        std::string out;
-        const bool ok = ::psynder::script::dispatch_repl(text, out);
+        proto::ConsoleCompletionQuery query;
+        query.id = completion.id;
+        query.input = std::move(completion.input);
+        query.cursor = completion.cursor;
+        proto::ConsoleCompletionReply reply = build_console_completion_reply(query);
+
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kConsoleCompletionReplyFrame);
+        proto::ConsoleCompletionReply_encode(w, reply);
+        auto frame = wsframe::encode_server_binary(w.data(), w.size());
+        enqueue(*conn, std::move(frame));
+    }
+
+    const bool repl_live = repl_installed_.load(std::memory_order_acquire);
+    for (auto& cmd : local) {
+        // Selection ops mutate the ECS - dispatch them here on the main thread
+        // (pump() runs from the engine frame loop). The registered host handler
+        // targets the entity carried in the typed payload and validates that it
+        // is still alive at apply time.
+        if (cmd.selection_op != InboundCmd::SelectionOp::None) {
+            switch (cmd.selection_op) {
+                case InboundCmd::SelectionOp::Select: {
+                    if (auto* handler =
+                            g_selection_select_handler.load(std::memory_order_acquire))
+                        handler(cmd.selection_entity_id);
+                    break;
+                }
+                case InboundCmd::SelectionOp::ComponentEdit: {
+                    if (auto* handler =
+                            g_selection_component_edit_handler.load(std::memory_order_acquire))
+                        handler(cmd.selection_edit);
+                    break;
+                }
+                case InboundCmd::SelectionOp::ComponentAdd: {
+                    if (auto* handler =
+                            g_selection_component_add_handler.load(std::memory_order_acquire))
+                        handler(cmd.selection_add);
+                    break;
+                }
+                case InboundCmd::SelectionOp::ComponentRemove: {
+                    if (auto* handler =
+                            g_selection_component_remove_handler.load(std::memory_order_acquire))
+                        handler(cmd.selection_remove);
+                    break;
+                }
+                case InboundCmd::SelectionOp::None:
+                    break;
+            }
+            continue;
+        }
+
+        std::string text(reinterpret_cast<const char*>(cmd.payload.data()), cmd.payload.size());
+        if (!cmd.quiet)
+            PSY_LOG_INFO("editor-ipc: console cmd ({}): {}", cmd.channel, text);
+        auto result = dispatch_editor_console(text, cmd.channel, repl_live);
+        auto& console = ::psynder::console::Console::Get();
+        if (cmd.channel == "console" && !cmd.quiet)
+            console.PushHistory(text);
+
+        if (!cmd.quiet || !result.ok) {
+            std::string mirror_line;
+            if (cmd.channel == "lua") {
+                mirror_line = "[lua] ";
+                mirror_line += text;
+            } else {
+                mirror_line = text;
+            }
+            console.NotifyExternalExecution(mirror_line, result);
+        }
 
         auto conn = cmd.conn.lock();
         if (!conn || !conn->alive.load())
             continue;
 
+        if (cmd.legacy_console_result) {
+            if (cmd.quiet && result.ok)
+                continue;
+            auto reply = encode_legacy_console_result(cmd.reply_channel.empty() ? "console"
+                                                                                : cmd.reply_channel,
+                                                      result,
+                                                      cmd.request_id,
+                                                      cmd.has_request_id);
+            auto frame = wsframe::encode_server_binary(reply.data(), reply.size());
+            enqueue(*conn, std::move(frame));
+            continue;
+        }
+
+        if (!cmd.reply_channel.empty()) {
+            const std::string reply_text = console_result_text(result);
+            auto ack = encode_legacy_command_ack(cmd.reply_channel,
+                                                 cmd.reply_command,
+                                                 result.ok,
+                                                 reply_text,
+                                                 console_result_value_kind(result),
+                                                 result.output,
+                                                 result.error);
+            auto frame = wsframe::encode_server_binary(ack.data(), ack.size());
+            enqueue(*conn, std::move(frame));
+            continue;
+        }
+
         msgpack::Writer w;
         w.u16_(proto::opcodes::kConsoleReplyFrame);
         proto::ConsoleReply rep;
-        rep.ok = ok;
-        rep.text = std::move(out);
+        rep.ok = result.ok;
+        rep.text = console_result_text(result);
         proto::ConsoleReply_encode(w, rep);
         auto frame = wsframe::encode_server_binary(w.data(), w.size());
         enqueue(*conn, std::move(frame));
@@ -734,7 +1678,67 @@ void Server::stop() {
 }
 
 void Server::broadcast(std::string_view channel, std::span<const ::psynder::u8> msgpack_payload) {
-    internal::Server::Get().broadcast(channel, msgpack_payload);
+    try {
+        internal::Server::Get().broadcast(channel, msgpack_payload);
+    } catch (...) {
+        internal::warn_noexcept("editor-ipc: public broadcast dropped after exception");
+    }
+}
+
+void Server::broadcast_stats_tick(const StatsTick& tick) {
+    try {
+        msgpack::Writer w;
+        w.u16_(proto::opcodes::kStatsFrame);
+        w.map_header(6);
+        w.str("frame");
+        w.u64_(tick.frame_index);
+        w.str("cpu_ms");
+        w.f32_(tick.cpu_ms);
+        w.str("render_ms");
+        w.f32_(tick.render_ms);
+        w.str("draw_calls");
+        w.u32_(tick.draw_calls);
+        w.str("entities");
+        w.u32_(tick.entities);
+        w.str("sections");
+        w.array_header(tick.sections.size());
+        for (const StatsSection& section : tick.sections) {
+            w.map_header(2);
+            w.str("name");
+            w.str(section.name);
+            w.str("ms");
+            w.f32_(section.ms);
+        }
+        internal::Server::Get().broadcast(proto::channels::kstats,
+                                          std::span<const ::psynder::u8>(w.data(), w.size()));
+    } catch (...) {
+        internal::warn_noexcept("editor-ipc: stats frame dropped after exception");
+    }
+}
+
+void Server::set_selection_select_handler(SelectionSelectHandler handler) {
+    internal::g_selection_select_handler.store(handler, std::memory_order_release);
+}
+
+void Server::set_selection_component_edit_handler(SelectionComponentEditHandler handler) {
+    internal::g_selection_component_edit_handler.store(handler, std::memory_order_release);
+}
+
+void Server::set_selection_component_add_handler(SelectionComponentAddHandler handler) {
+    internal::g_selection_component_add_handler.store(handler, std::memory_order_release);
+}
+
+void Server::set_selection_component_remove_handler(SelectionComponentRemoveHandler handler) {
+    internal::g_selection_component_remove_handler.store(handler, std::memory_order_release);
+}
+
+bool Server::has_subscribers(std::string_view channel) const {
+    try {
+        return internal::Server::Get().has_subscribers(channel);
+    } catch (...) {
+        internal::warn_noexcept("editor-ipc: public subscriber check failed after exception");
+        return false;
+    }
 }
 
 void Server::pump() {

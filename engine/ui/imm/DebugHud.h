@@ -42,6 +42,11 @@ struct DebugHudStats {
     usize draw_calls = 0;
     usize triangles = 0;
     usize active_voices = 0;
+    u32 rt_tiles = 0;
+    u32 rt_jobs = 0;
+    bool raster_stats_valid = false;
+    bool rt_stats_valid = false;
+    bool render_stats_valid = false;
 };
 
 struct DebugHudFrameHistory {

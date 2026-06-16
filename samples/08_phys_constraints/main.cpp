@@ -42,7 +42,6 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "ui/console/ConsoleOverlay.h"
 
 #include <algorithm>
 #include <array>
@@ -481,21 +480,9 @@ void render_scene(std::vector<u32>& px, const Scene& s, const Camera& cam) {
 
 }  // namespace
 
-platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 08 (constraints / ragdoll)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = kFbW;
-    desc.render_height = kFbH;
-    desc.scale_mode = platform::ScaleMode::Linear;
-    return desc;
-}
-
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
     const u32 smoke_frames = args.smoke_frames;
-    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     // Earth gravity into the engine world (it integrates the bodies; we mirror
@@ -514,9 +501,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         scene.graph.size());
 
     std::vector<u32>& pixels = app_host.pixels();
-    render::Framebuffer& fb = app_host.framebuffer();
 
-    const f32 aspect = static_cast<f32>(kFbW) / static_cast<f32>(kFbH);
+    const render::Framebuffer& fb = app_host.framebuffer();
+    const f32 aspect =
+        fb.height == 0u ? 1.0f : static_cast<f32>(fb.width) / static_cast<f32>(fb.height);
 
     // Fixed-tick contract: engine sim is 120 Hz. Pin dt in smoke mode for
     // determinism (mirrors the other samples' time pinning).
@@ -531,15 +519,13 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
         // Editor F2/~ toggle + PLAY/EDIT badge. EDIT mode freezes the sim so
         // the hanging pose can be inspected.
-        const editor::Mode edit_mode = platform::input()
-                                           ? editor::sample_step(*platform::input(), fb, kFixedDt)
-                                           : editor::Mode::Play;
+        const editor::Mode edit_mode = app_host.engine_frame_update(kFixedDt);
 
         if (edit_mode != editor::Mode::Edit) {
             // Advance both the engine world (exercises step) and the PBD
@@ -558,8 +544,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         const Camera cam = make_orbit_camera(t, aspect);
 
         render_scene(pixels, scene, cam);
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (smoke_frames > 0) {
             // Read the static anchor pose back THROUGH the engine to prove the
@@ -599,14 +585,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
 struct PhysConstraintsSample {
     static constexpr std::string_view log_name() noexcept { return "sample_08"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 08"; }
-
-    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
-        return make_window_desc(args);
-    }
+    static constexpr const char* display_name = "Psynder sample 08 (constraints / ragdoll)";
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Psynder — Sample 03 / M3 demo. Walking-POV "Quake room": a small BSP map
 // built in-memory at startup, walked first-person with WASD + mouse-look,
-// rendered face-by-face through the hybrid scene renderer facade.
+// rendered face-by-face through the hybrid rendering system facade.
 //
 // Wave A's `lm_qbsp` compiler exists, but its output isn't wired into a
 // shippable .psybsp file under VFS yet. So we synthesise a tiny 4-leaf map
@@ -25,6 +25,7 @@
 #include "common/Lighting.h"
 #include "common/MeshWinding.h"
 #include "core/AppArgs.h"
+#include "core/BuildMeta.h"
 #include "core/Log.h"
 #include "core/Types.h"
 #include "editor/core/Editor.h"
@@ -33,9 +34,8 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/raster/Raster.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "world/bsp/Bsp.h"
 #include "world/bsp/BspFormat.h"
 
@@ -47,6 +47,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+PSYNDER_RUNTIME_BUNDLE("03_quake_room");
 
 using namespace psynder;
 
@@ -464,7 +466,7 @@ void build_world(World& w) {
 // ─── Visibility callback context ─────────────────────────────────────────
 struct DrawCtx {
     const World* world = nullptr;
-    render::SceneRenderer* renderer = nullptr;
+    render::RenderingSystem* renderer = nullptr;
     u32 draw_count = 0;
 };
 
@@ -496,20 +498,8 @@ void emit_leaf_faces(const world::bsp::BspLeaf& leaf, void* user) {
 
 }  // namespace
 
-platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
-    platform::WindowDesc desc{};
-    desc.title = "Psynder — sample 03 (Quake room)";
-    desc.window_width = 1280;
-    desc.window_height = 720;
-    desc.render_width = 640;
-    desc.render_height = 360;
-    desc.scale_mode = platform::ScaleMode::Integer;
-    return desc;
-}
-
-int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
+int run_sample(const app::AppArgs& base_args, app::WindowApp& app_host) {
     const app::AppArgs& args = base_args;
-    const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
 
     auto* input = platform::input();
@@ -572,7 +562,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
     controller.set_position({0.0f, w.floor_y + cc_cfg.eye_height, -5.0f});  // in Room A
     controller.set_look(0.0f, 0.0f);
 
-    render::SceneRenderer renderer;
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 03 running{}",
                  args.smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", args.smoke_frames)
@@ -593,9 +583,9 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
                 : std::min(0.1f, static_cast<f32>(platform::Clock::seconds(now - last_ticks)));
         last_ticks = now;
 
-        // Run console capture before gameplay hotkeys so toggle/escape frames
+        // Run overlay input before gameplay hotkeys so toggle/escape frames
         // never leak into the controller or host quit path.
-        (void)editor::sample_update(*input, dt);
+        (void)app_host.engine_frame_update(dt);
 
         // ── Input integration ────────────────────────────────────────────
         if (!editor::overlays_capturing() && input->key_down(platform::KeyCode::Escape)) {
@@ -632,8 +622,7 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
         view.target = fb;
         view.view = controller.view_matrix();
         view.projection = math::perspective_rh(70.0f * math::kDegToRad,
-                                               static_cast<f32>(desc.render_width) /
-                                                   static_cast<f32>(desc.render_height),
+                                               static_cast<f32>(fb.width) / static_cast<f32>(fb.height),
                                                0.05f,
                                                200.0f);
         view.tile_w = 64;
@@ -648,15 +637,8 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
         renderer.end_raster_frame();
 
-        // PLAY/EDIT badge bottom-right (lane 18). Drawn after the rasterizer so
-        // the badge composites on top of the scene.
-        editor::sample_draw(fb);
-
-        // Drop-down developer console (`~`). Drawn last so the panel +
-        // scrollback composite over the scene, badge, and HUD.
-        ui::console::draw(fb);
-
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         if (args.smoke_frames > 0) {
             PSY_LOG_INFO(
@@ -684,18 +666,10 @@ int sample_main(const app::AppArgs& base_args, app::WindowApp& app_host) {
 
 struct QuakeRoomSample {
     static constexpr std::string_view log_name() noexcept { return "sample_03"; }
-    static constexpr std::string_view display_name() noexcept { return "Psynder sample 03"; }
-
-    static platform::WindowDesc window_desc(const app::AppArgs& args) noexcept {
-        return make_window_desc(args);
-    }
-
-    static app::WindowAppOptions window_options(const app::AppArgs&) noexcept {
-        return {.depth_buffer = true};
-    }
+    static constexpr const char* display_name = "Psynder sample 03 (Quake room)";
 
     int run(app::WindowApp& app_host, const app::AppArgs& args) {
-        return sample_main(args, app_host);
+        return run_sample(args, app_host);
     }
 };
 

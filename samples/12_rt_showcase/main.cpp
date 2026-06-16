@@ -7,7 +7,7 @@
 // sphere — reused across dozens of TLAS instances; that reuse is exactly
 // what the TLAS is for). The field is lit by six orbiting colored point
 // lights, each casting traced shadows. The sample now hands its TLAS,
-// camera, lights, and instance materials to the hybrid scene renderer;
+// camera, lights, and instance materials to the hybrid rendering system;
 // the engine owns primary visibility, AO, 8-wide shadow packets, shading,
 // and upsample.
 //
@@ -25,6 +25,8 @@
 //   --rt-ao-strength=F       Override AO ambient strength for capture/perf checks.
 //   --rt-ao-lit-strength=F   Override AO direct-light strength for capture/perf checks.
 //   --rt-cores=N             Override sample RT worker chunk target for smoke/perf checks.
+//   --debug-hud=off|compact|full
+//                            Force the IMM debug HUD for smoke/perf graph checks.
 
 #include "core/AppArgs.h"
 #include "core/Log.h"
@@ -36,10 +38,9 @@
 #include "platform/App.h"
 #include "platform/Platform.h"
 #include "render/Framebuffer.h"
-#include "render/SceneRenderer.h"
+#include "render/RenderingSystem.h"
 #include "render/rt/Bvh.h"
 #include "render/rt/FrameRenderer.h"
-#include "ui/console/ConsoleOverlay.h"
 #include "ui/imm/DebugHud.h"
 
 #include <algorithm>
@@ -69,11 +70,22 @@ struct Args : app::AppArgs {
     std::string rt_ao_radius;
     std::string rt_ao_strength;
     std::string rt_ao_lit_strength;
+    int debug_hud = -1;
 };
 
 int parse_bool_arg(std::string_view v) noexcept {
     u32 value = 0;
     return app::parse_u32_decimal(v, value) && value != 0u ? 1 : 0;
+}
+
+int parse_debug_hud_arg(std::string_view v) noexcept {
+    if (v == "off" || v == "0")
+        return 0;
+    if (v == "compact" || v == "1")
+        return 1;
+    if (v == "full" || v == "2")
+        return 2;
+    return -1;
 }
 
 Args parse_sample12_args(int argc, char** argv) {
@@ -92,6 +104,8 @@ Args parse_sample12_args(int argc, char** argv) {
     constexpr std::string_view kAoLitStrengthSp = "--rt-ao-lit-strength";
     constexpr std::string_view kRtCoresEq = "--rt-cores=";
     constexpr std::string_view kRtCoresSp = "--rt-cores";
+    constexpr std::string_view kDebugHudEq = "--debug-hud=";
+    constexpr std::string_view kDebugHudSp = "--debug-hud";
     for (int i = 1; i < argc; ++i) {
         if (app::consume_common_arg(argc, argv, i, a))
             continue;
@@ -124,6 +138,10 @@ Args parse_sample12_args(int argc, char** argv) {
             a.rt_cores_hint = std::string(s.substr(kRtCoresEq.size()));
         } else if (s == kRtCoresSp && i + 1 < argc) {
             a.rt_cores_hint = argv[++i];
+        } else if (s.starts_with(kDebugHudEq)) {
+            a.debug_hud = parse_debug_hud_arg(s.substr(kDebugHudEq.size()));
+        } else if (s == kDebugHudSp && i + 1 < argc) {
+            a.debug_hud = parse_debug_hud_arg(std::string_view{argv[++i]});
         }
     }
     return a;
@@ -370,11 +388,14 @@ platform::WindowDesc make_window_desc(const app::AppArgs&) noexcept {
     return desc;
 }
 
-int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
+int run_sample(const Args& parsed_args, app::WindowApp& app_host) {
     const Args& args = parsed_args;
     const u32 smoke_frames = args.smoke_frames;
     render::rt::ensure_frame_renderer_console_registered();
     apply_rt_arg_overrides(args);
+    if (args.debug_hud >= 0) {
+        ui::imm::set_debug_hud_mode(static_cast<ui::imm::DebugHudMode>(args.debug_hud));
+    }
     render::rt::ensure_denoise_console_commands_registered();
     const platform::WindowDesc desc = make_window_desc(args);
     auto* window = &app_host.window();
@@ -387,12 +408,15 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
     std::array<FieldInstance, kFieldCount> field = make_field_instances();
 
     std::vector<render::rt::Triangle> cube_tris;
+    cube_tris.reserve(12);
     emit_unit_cube(cube_tris);
 
     std::vector<render::rt::Triangle> sphere_tris;
+    sphere_tris.reserve(2u * 14u * (10u - 1u));
     emit_unit_sphere(sphere_tris, /*stacks=*/10, /*slices=*/14);
 
     std::vector<render::rt::Triangle> ground_tris;
+    ground_tris.reserve(2);
     emit_ground(ground_tris, /*half=*/14.0f);
 
     render::rt::Bvh8 cube_blas;
@@ -417,15 +441,15 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
         render::MaterialDesc material{};
         material.albedo_rgba8 = fi.color;
-        material.flags = render::Material_RtVisible | render::Material_CastsRtShadow |
-                         render::Material_ReceivesRtShadow;
+        material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::CastsRtShadow |
+                         render::MaterialFlags::ReceivesRtShadow;
         instance_materials[i] = material_library.create(material);
     }
     insts[kFieldCount].blas = &ground_blas;
     insts[kFieldCount].transform = math::identity4();
     render::MaterialDesc ground_material{};
     ground_material.albedo_rgba8 = pack_rgba8(55, 55, 65);
-    ground_material.flags = render::Material_RtVisible | render::Material_ReceivesRtShadow;
+    ground_material.flags = render::MaterialFlags::RtVisible | render::MaterialFlags::ReceivesRtShadow;
     instance_materials[kFieldCount] = material_library.create(ground_material);
 
     render::rt::Tlas tlas;
@@ -433,9 +457,7 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
     // ── CPU framebuffers. ───────────────────────────────────────────────
     std::vector<u32>& final_pixels = app_host.pixels();
-    render::SceneRenderer renderer;
-
-    render::Framebuffer& fb = app_host.framebuffer();
+    render::RenderingSystem& renderer = app_host.rendering_system();
 
     PSY_LOG_INFO("Psynder sample 12 running{} — {} TLAS instances, {} lights",
                  smoke_frames > 0 ? fmt::format(" — smoke mode, {} frames", smoke_frames)
@@ -462,7 +484,6 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
     std::array<Light, kNumLights> lights{};
 
-    ui::imm::DebugHudFrameHistory hud_history{};
     u64 prev_frame_ticks = t0;
     // Smoke-mode frame-time stand-in (60 FPS budget = 1/60 s).
     constexpr f32 kSmokeFrameMs = 1000.0f / 60.0f;
@@ -478,19 +499,17 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
                 ? kSmokeFrameMs
                 : static_cast<f32>(platform::Clock::seconds(now_ticks - prev_frame_ticks) * 1000.0);
         prev_frame_ticks = now_ticks;
-        hud_history.push(frame_ms);
 
         // ESC quits — unless the console is open, where Esc closes it instead.
         if (auto* in = platform::input();
-            in && in->key_down(platform::KeyCode::Escape) && !ui::console::is_open()) {
+            in && in->key_down(platform::KeyCode::Escape) && !editor::overlays_capturing()) {
             break;
         }
 
         // Editor F2/~ toggle + PLAY/EDIT badge bottom-right. EDIT mode
         // pins time so the user can inspect the BVH with a frozen scene.
         const editor::Mode edit_mode =
-            platform::input() ? editor::sample_step(*platform::input(), fb, frame_ms * 0.001f)
-                              : editor::Mode::Play;
+            app_host.engine_frame_update(frame_ms * 0.001f);
 
         // Smoke runs pin time to frame index so the captured PNG is
         // deterministic across hosts.
@@ -501,7 +520,6 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
 
         orbit_lights(static_cast<f32>(t), lights);
         const Camera cam = make_orbit_camera(static_cast<f32>(t), aspect);
-        apply_rt_arg_overrides(args);
         render::rt::FrameRenderInput rt_input{};
         rt_input.tlas = &tlas;
         rt_input.camera = cam;
@@ -532,10 +550,8 @@ int sample_main(const Args& parsed_args, app::WindowApp& app_host) {
             }
         }
 
-        ui::imm::draw_debug_hud(fb, hud_history.make_stats(frame_ms, 1, 0, 0));
-
-        ui::console::draw(fb);  // drop-down console (`~`) overlays everything
-        window->present(fb);
+        app_host.engine_frame_post();
+        app_host.present();
 
         ++frame;
         if (smoke_frames > 0 && frame >= smoke_frames) {
@@ -562,7 +578,7 @@ struct RtShowcaseSample {
 
     static Args parse_args(int argc, char** argv) { return parse_sample12_args(argc, argv); }
 
-    int run(app::WindowApp& app_host, const Args& args) { return sample_main(args, app_host); }
+    int run(app::WindowApp& app_host, const Args& args) { return run_sample(args, app_host); }
 };
 
 PSYNDER_WINDOW_SAMPLE_MAIN(RtShowcaseSample)

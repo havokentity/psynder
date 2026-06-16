@@ -1,0 +1,457 @@
+// SPDX-License-Identifier: MIT
+// Psynder — hybrid rendering system queue tests.
+
+#include <catch2/catch_test_macros.hpp>
+
+#include "render/RenderingSystem.h"
+
+#include <algorithm>
+#include <array>
+#include <span>
+
+using namespace psynder;
+
+namespace {
+
+constexpr std::array<render::raster::Vertex, 3> kVerts{{
+    {{-0.5f, -0.5f, 0.0f}, {0, 0, 1}, {0, 0}, {0, 0}, 0xFFFFFFFFu},
+    {{0.5f, -0.5f, 0.0f}, {0, 0, 1}, {1, 0}, {0, 0}, 0xFFFFFFFFu},
+    {{0.0f, 0.5f, 0.0f}, {0, 0, 1}, {0, 1}, {0, 0}, 0xFFFFFFFFu},
+}};
+
+constexpr std::array<u32, 3> kIndices{0, 2, 1};
+
+}  // namespace
+
+TEST_CASE("rendering system queues split raster, transparent, RT, and shadow work",
+          "[render][rendering_system]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+
+    render::MaterialDesc opaque_desc{};
+    opaque_desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::RtVisible |
+                        render::MaterialFlags::CastsRtShadow;
+    const render::MaterialId opaque = scene.materials().create(opaque_desc);
+
+    render::MaterialDesc glass_desc{};
+    glass_desc.blend = render::MaterialBlendMode::AlphaBlend;
+    glass_desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::RtVisible;
+    const render::MaterialId glass = scene.materials().create(glass_desc);
+
+    render::MaterialDesc probe_only_desc{};
+    probe_only_desc.flags = render::MaterialFlags::RtVisible;
+    const render::MaterialId probe_only = scene.materials().create(probe_only_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    const render::MeshId mesh_a = renderer.meshes().create_mesh(mesh_desc);
+    const render::MeshId mesh_b = renderer.meshes().create_mesh(mesh_desc);
+    const render::MeshId mesh_c = renderer.meshes().create_mesh(mesh_desc);
+
+    const Entity a = scene.create_renderable(renderer.make_mesh_renderable(mesh_a, opaque));
+    const Entity b = scene.create_renderable(renderer.make_mesh_renderable(mesh_b, glass));
+    const Entity c = scene.create_renderable(renderer.make_mesh_renderable(mesh_c, probe_only));
+
+    render::SceneRenderQueues queues;
+    render::build_scene_render_queues(scene, queues);
+
+    REQUIRE(queues.all.size() == 3u);
+    REQUIRE(queues.raster_opaque.size() == 1u);
+    REQUIRE(queues.raster_transparent.size() == 1u);
+    REQUIRE(queues.rt_visible.size() == 3u);
+    REQUIRE(queues.rt_shadow_casters.size() == 1u);
+    REQUIRE(queues.item(queues.raster_opaque[0]).entity == a);
+    REQUIRE(queues.item(queues.raster_transparent[0]).entity == b);
+    REQUIRE(queues.item(queues.rt_shadow_casters[0]).entity == a);
+
+    REQUIRE(scene.destroy_entity(a));
+    REQUIRE(scene.destroy_entity(b));
+    REQUIRE(scene.destroy_entity(c));
+}
+
+TEST_CASE("rendering system emits raster draws from mesh handles", "[render][rendering_system]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+
+    render::MaterialDesc material_desc{};
+    material_desc.flags = render::MaterialFlags::RasterVisible;
+    const render::MaterialId material = scene.materials().create(material_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    const render::MeshId mesh = renderer.meshes().create_mesh(mesh_desc);
+    const Entity entity = scene.create_renderable(renderer.make_mesh_renderable(mesh, material));
+
+    std::array<u32, 16 * 16> pixels{};
+    render::Framebuffer fb{};
+    fb.pixels = reinterpret_cast<u8*>(pixels.data());
+    fb.width = 16;
+    fb.height = 16;
+    fb.pitch = 16 * sizeof(u32);
+    fb.format = render::PixelFormat::RGBA8;
+
+    render::raster::ViewState view{};
+    view.target = fb;
+    view.view = math::identity4();
+    view.projection = math::identity4();
+
+    const render::SceneRenderStats stats = renderer.render_raster(scene, view);
+    REQUIRE(stats.submitted == 1u);
+    REQUIRE(stats.raster_draws == 1u);
+    REQUIRE(stats.raster_triangles == 1u);
+    REQUIRE(stats.raster_skipped == 0u);
+    REQUIRE(std::ranges::any_of(pixels, [](u32 p) { return p != 0u; }));
+
+    REQUIRE(scene.destroy_entity(entity));
+}
+
+TEST_CASE("rendering system filters static baked and projected raster shadow queues",
+          "[render][rendering_system]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+
+    render::MaterialDesc static_desc{};
+    static_desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::CastsRasterShadow |
+                        render::MaterialFlags::ReceivesRasterShadow | render::MaterialFlags::BakeVisible |
+                        render::MaterialFlags::CastsBakedShadow | render::MaterialFlags::ReceivesBakedShadow;
+    static_desc.raster_shadow_mode = render::MaterialRasterShadowMode::ProjectedDecal;
+    const render::MaterialId static_material = scene.materials().create(static_desc);
+
+    render::MaterialDesc dynamic_bake_desc{};
+    dynamic_bake_desc.flags = render::MaterialFlags::RasterVisible | render::MaterialFlags::BakeVisible |
+                              render::MaterialFlags::CastsBakedShadow;
+    const render::MaterialId dynamic_bake_material = scene.materials().create(dynamic_bake_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    const render::MeshId mesh_a = renderer.meshes().create_mesh(mesh_desc);
+    const render::MeshId mesh_b = renderer.meshes().create_mesh(mesh_desc);
+
+    const Entity static_entity =
+        scene.create_renderable(renderer.make_mesh_renderable(mesh_a,
+                                                              static_material,
+                                                              scene::RenderableFlags::Visible,
+                                                              mesh_desc.local_bounds,
+                                                              scene::ObjectMobility::Static));
+    const Entity dynamic_entity =
+        scene.create_renderable(renderer.make_mesh_renderable(mesh_b, dynamic_bake_material));
+
+    const render::SceneRenderStats stats = renderer.build(scene);
+    REQUIRE(stats.submitted == 2u);
+    REQUIRE(stats.raster_shadow_casters == 1u);
+    REQUIRE(stats.raster_shadow_receivers == 1u);
+    REQUIRE(stats.bake_static == 1u);
+    REQUIRE(stats.bake_shadow_casters == 1u);
+    REQUIRE(stats.bake_shadow_receivers == 1u);
+    REQUIRE(stats.dynamic_bake_rejected == 1u);
+    REQUIRE(renderer.queues().item(renderer.queues().raster_shadow_casters[0]).entity == static_entity);
+    REQUIRE(renderer.queues().item(renderer.queues().bake_shadow_casters[0]).entity == static_entity);
+
+    std::vector<render::SceneRenderPolicyIssue> issues;
+    REQUIRE(render::collect_scene_render_policy_issues(scene, issues) == 1u);
+    REQUIRE(issues[0].entity == dynamic_entity);
+    REQUIRE((issues[0].material_flags & render::Material_BakedLightingMask) != 0u);
+
+    REQUIRE(scene.destroy_entity(static_entity));
+    REQUIRE(scene.destroy_entity(dynamic_entity));
+}
+
+TEST_CASE("rendering system mesh entities use pooled handles", "[render][rendering_system]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+    renderer.reserve_scene_capacity(8u);
+
+    render::MaterialDesc material_desc{};
+    material_desc.flags = render::MaterialFlags::RasterVisible;
+    const render::MaterialId material = scene.materials().create(material_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+
+    const render::SceneMeshEntity first = renderer.create_mesh_entity(scene, mesh_desc, material);
+    REQUIRE(first.entity.valid());
+    REQUIRE(first.mesh.valid());
+    REQUIRE(renderer.meshes().live_count() == 1u);
+
+    REQUIRE(renderer.meshes().destroy(first.mesh));
+    REQUIRE(renderer.meshes().live_count() == 0u);
+    REQUIRE(renderer.meshes().free_count() == 1u);
+
+    const render::SceneMeshEntity second = renderer.create_mesh_entity(scene, mesh_desc, material);
+    REQUIRE(second.entity.valid());
+    REQUIRE(second.mesh.valid());
+    REQUIRE((second.mesh.raw & 0x00FFFFFFu) == (first.mesh.raw & 0x00FFFFFFu));
+    REQUIRE(second.mesh.raw != first.mesh.raw);
+
+    const render::SceneMeshEntity third =
+        renderer.create_mesh_entity(scene, mesh_desc, material_desc);
+    REQUIRE(third.entity.valid());
+    REQUIRE(third.mesh.valid());
+    REQUIRE(third.material.valid());
+    REQUIRE(scene.materials().valid(third.material));
+
+    REQUIRE(scene.destroy_entity(first.entity));
+    REQUIRE(scene.destroy_entity(second.entity));
+    REQUIRE(scene.destroy_entity(third.entity));
+}
+
+TEST_CASE("scene spawn mesh delegates to bound rendering system", "[render][rendering_system]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+
+    scene.bind_mesh_spawner(
+        &renderer,
+        [](void* user,
+           scene::Scene& target_scene,
+           const render::MeshDesc& mesh_desc,
+           const scene::LocalTransform& local,
+           scene::SceneNode parent,
+           scene::RenderableFlags flags,
+           scene::ObjectMobility mobility) -> Entity {
+            auto* bound_renderer = static_cast<render::RenderingSystem*>(user);
+            return bound_renderer->spawn_mesh(target_scene, mesh_desc, local, parent, flags, mobility);
+        });
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+
+    const Entity entity = scene.spawn_mesh(mesh_desc);
+
+    REQUIRE(entity.valid());
+    REQUIRE(renderer.meshes().live_count() == 1u);
+
+    const auto* renderable = registry.get<scene::RenderableComponent>(entity);
+    REQUIRE(renderable != nullptr);
+    REQUIRE(renderable->geometry == scene::GeometryKind::Mesh);
+    REQUIRE(renderable->material.valid());
+    REQUIRE(scene.materials().valid(renderable->material));
+
+    REQUIRE(scene.destroy_entity(entity));
+}
+
+TEST_CASE("scene mesh batch spawn reuses one mesh and pooled storage",
+          "[render][rendering_system][pool]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+
+    scene::ScenePrewarmConfig config{};
+    config.scene_entities = 4u;
+    config.renderables = 4u;
+    config.render_items = 4u;
+    scene.prewarm_capacity(config);
+    renderer.reserve_scene_capacity(4u, 1u);
+
+    scene.bind_mesh_spawner(
+        &renderer,
+        [](void* user,
+           scene::Scene& target_scene,
+           const render::MeshDesc& mesh_desc,
+           const scene::LocalTransform& local,
+           scene::SceneNode parent,
+           scene::RenderableFlags flags,
+           scene::ObjectMobility mobility) -> Entity {
+            auto* bound_renderer = static_cast<render::RenderingSystem*>(user);
+            return bound_renderer->spawn_mesh(target_scene, mesh_desc, local, parent, flags, mobility);
+        },
+        [](void* user,
+           scene::Scene& target_scene,
+           render::MeshId mesh,
+           render::MaterialId material,
+           const scene::LocalTransform& local,
+           scene::SceneNode parent,
+           scene::RenderableFlags flags,
+           scene::ObjectMobility mobility) -> Entity {
+            auto* bound_renderer = static_cast<render::RenderingSystem*>(user);
+            return bound_renderer->spawn_mesh_instance(
+                target_scene, mesh, material, local, parent, flags, mobility);
+        },
+        [](void* user,
+           scene::Scene& target_scene,
+           render::MeshId mesh,
+           render::MaterialId material,
+           std::span<const scene::LocalTransform> local,
+           std::span<Entity> out,
+           scene::SceneNode parent,
+           scene::RenderableFlags flags,
+           scene::ObjectMobility mobility) -> u32 {
+            auto* bound_renderer = static_cast<render::RenderingSystem*>(user);
+            return bound_renderer->spawn_mesh_batch(
+                target_scene, mesh, material, local, out, parent, flags, mobility);
+        });
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    const render::MeshId mesh = renderer.meshes().create_mesh(mesh_desc);
+
+    render::MaterialDesc material_desc{};
+    material_desc.flags = render::MaterialFlags::RasterVisible;
+    const render::MaterialId material = scene.materials().create(material_desc);
+
+    const auto before = scene.pool_stats();
+    std::array<scene::LocalTransform, 4> local{};
+    for (usize i = 0; i < local.size(); ++i)
+        local[i].translation = {static_cast<f32>(i), 0.0f, 0.0f};
+    std::array<Entity, 4> entities{};
+
+    REQUIRE(scene.spawn_mesh_batch(mesh, material, local, entities) == entities.size());
+    REQUIRE(renderer.meshes().live_count() == 1u);
+    for (Entity entity : entities)
+        REQUIRE(entity.valid());
+
+    const render::SceneRenderStats stats = renderer.build(scene);
+    REQUIRE(stats.submitted == entities.size());
+    REQUIRE(stats.raster_draws == 0u);
+
+    const auto after_spawn = scene.pool_stats();
+    REQUIRE(after_spawn.entity_capacity == before.entity_capacity);
+    REQUIRE(after_spawn.node_capacity == before.node_capacity);
+    REQUIRE(after_spawn.chunk_live_count == before.chunk_live_count);
+
+    REQUIRE(scene.despawn_batch(entities) == entities.size());
+    REQUIRE(scene.graph().free_node_count() >= entities.size());
+
+    std::array<Entity, 4> reused{};
+    REQUIRE(scene.spawn_mesh_batch(mesh, material, local, reused) == reused.size());
+    const auto after_reuse = scene.pool_stats();
+    REQUIRE(after_reuse.entity_capacity == before.entity_capacity);
+    REQUIRE(after_reuse.node_capacity == before.node_capacity);
+    REQUIRE(after_reuse.chunk_live_count == before.chunk_live_count);
+
+    REQUIRE(scene.despawn_batch(reused) == reused.size());
+}
+
+TEST_CASE("rendering system caches built-in and generated meshes",
+          "[render][rendering_system][mesh_cache]") {
+    render::RenderingSystem renderer;
+
+    renderer.prewarm_builtin_meshes();
+    REQUIRE(renderer.meshes().live_count() == 8u);
+    renderer.prewarm_builtin_meshes();
+    REQUIRE(renderer.meshes().live_count() == 8u);
+
+    const render::MeshId triangle_a =
+        renderer.builtin_mesh(render::BuiltInMesh::TexturedTriangle);
+    const render::MeshId triangle_b =
+        renderer.builtin_mesh(render::BuiltInMesh::TexturedTriangle);
+    const render::MeshId cube = renderer.builtin_mesh(render::BuiltInMesh::UnitCube);
+
+    REQUIRE(triangle_a.valid());
+    REQUIRE(triangle_a == triangle_b);
+    REQUIRE(cube.valid());
+    REQUIRE(cube != triangle_a);
+    REQUIRE(renderer.meshes().live_count() == 8u);
+
+    render::geometry_tools::SphereDesc sphere_desc{};
+    sphere_desc.slices = 8u;
+    sphere_desc.stacks = 4u;
+    sphere_desc.radius = 1.5f;
+    const render::geometry_tools::GeneratedMesh sphere_a =
+        render::geometry_tools::uv_sphere(sphere_desc);
+    const render::geometry_tools::GeneratedMesh sphere_b =
+        render::geometry_tools::uv_sphere(sphere_desc);
+
+    const render::MeshId cached_a = renderer.cached_mesh(sphere_a);
+    const render::MeshId cached_b = renderer.cached_mesh(sphere_b);
+    REQUIRE(cached_a.valid());
+    REQUIRE(cached_a == cached_b);
+    REQUIRE(renderer.meshes().live_count() == 9u);
+
+    sphere_desc.radius = 2.0f;
+    const render::MeshId cached_c = renderer.cached_mesh(render::geometry_tools::uv_sphere(sphere_desc));
+    REQUIRE(cached_c.valid());
+    REQUIRE(cached_c != cached_a);
+    REQUIRE(renderer.meshes().live_count() == 10u);
+}
+
+TEST_CASE("rendering system builds material batches for CPU effects", "[render][rendering_system]") {
+    auto& registry = scene::EcsRegistry::Get();
+    registry.set_structural_deferred(false);
+    scene::Scene scene{registry};
+    render::RenderingSystem renderer;
+    renderer.reserve_scene_capacity(4u);
+
+    render::MaterialDesc scrolling_desc{};
+    scrolling_desc.flags = render::MaterialFlags::RasterVisible;
+    scrolling_desc.cpu_effect.type = render::MaterialCpuEffect::UvScroll;
+    scrolling_desc.cpu_effect.uv_scroll_u = 0.25f;
+    scrolling_desc.cpu_effect.uv_scroll_v = -0.5f;
+    const render::MaterialId scrolling = scene.materials().create(scrolling_desc);
+
+    render::MaterialDesc static_desc{};
+    static_desc.flags = render::MaterialFlags::RasterVisible;
+    const render::MaterialId static_material = scene.materials().create(static_desc);
+
+    render::MeshDesc mesh_desc{};
+    mesh_desc.vertices = kVerts.data();
+    mesh_desc.vertex_count = static_cast<u32>(kVerts.size());
+    mesh_desc.indices = kIndices.data();
+    mesh_desc.index_count = static_cast<u32>(kIndices.size());
+    mesh_desc.local_bounds = math::Aabb{{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+
+    const render::SceneMeshEntity a = renderer.create_mesh_entity(scene, mesh_desc, scrolling);
+    const render::SceneMeshEntity b = renderer.create_mesh_entity(scene, mesh_desc, static_material);
+    const render::SceneMeshEntity c = renderer.create_mesh_entity(scene, mesh_desc, scrolling);
+
+    const render::SceneRenderStats stats = renderer.build(scene);
+    REQUIRE(stats.submitted == 3u);
+    REQUIRE(stats.material_batches == 2u);
+
+    const auto batches = renderer.material_batches().batches();
+    REQUIRE(batches.size() == 2u);
+    REQUIRE(batches[0].material == scrolling);
+    REQUIRE(batches[0].cpu_effect == render::MaterialCpuEffect::UvScroll);
+    REQUIRE(batches[0].count == 2u);
+    REQUIRE(batches[1].material == static_material);
+    REQUIRE(batches[1].cpu_effect == render::MaterialCpuEffect::None);
+    REQUIRE(batches[1].count == 1u);
+
+    const auto scrolling_indices = renderer.material_batches().indices_for(batches[0]);
+    REQUIRE(scrolling_indices.size() == 2u);
+    REQUIRE(renderer.queues().all[scrolling_indices[0]].entity == a.entity);
+    REQUIRE(renderer.queues().all[scrolling_indices[1]].entity == c.entity);
+
+    const render::MaterialView material_view = scene.materials().view();
+    REQUIRE(material_view.cpu_effect[batches[0].material_slot] == render::MaterialCpuEffect::UvScroll);
+    REQUIRE(material_view.uv_scroll_u[batches[0].material_slot] == 0.25f);
+    REQUIRE(material_view.uv_scroll_v[batches[0].material_slot] == -0.5f);
+
+    REQUIRE(scene.destroy_entity(a.entity));
+    REQUIRE(scene.destroy_entity(b.entity));
+    REQUIRE(scene.destroy_entity(c.entity));
+}

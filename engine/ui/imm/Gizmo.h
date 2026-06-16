@@ -92,6 +92,83 @@ inline constexpr u32 kColourY = rgba(0x30, 0xFF, 0x50);    // green
 inline constexpr u32 kColourZ = rgba(0x30, 0x50, 0xFF);    // blue
 inline constexpr u32 kColourHot = rgba(0xFF, 0xFF, 0x40);  // yellow when grabbed
 
+inline void draw_arrow_head(math::Vec2 origin, math::Vec2 tip, u32 colour) noexcept {
+    constexpr f32 kHeadLen = 10.0f;
+    constexpr f32 kHeadHalfWidth = 5.0f;
+    const f32 dx = tip.x - origin.x;
+    const f32 dy = tip.y - origin.y;
+    const f32 len = std::sqrt(dx * dx + dy * dy);
+    if (len <= 0.0001f)
+        return;
+    const f32 ux = dx / len;
+    const f32 uy = dy / len;
+    const math::Vec2 base{tip.x - ux * kHeadLen, tip.y - uy * kHeadLen};
+    const math::Vec2 perp{-uy * kHeadHalfWidth, ux * kHeadHalfWidth};
+    ::psynder::ui::imm::line(tip, {base.x + perp.x, base.y + perp.y}, colour);
+    ::psynder::ui::imm::line(tip, {base.x - perp.x, base.y - perp.y}, colour);
+}
+
+inline math::Vec2 plane_corner(math::Vec2 origin,
+                               math::Vec2 a,
+                               math::Vec2 b,
+                               f32 da,
+                               f32 db) noexcept {
+    return {origin.x + (a.x - origin.x) * da + (b.x - origin.x) * db,
+            origin.y + (a.y - origin.y) * da + (b.y - origin.y) * db};
+}
+
+inline f32 cross2(math::Vec2 a, math::Vec2 b, math::Vec2 c) noexcept {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+inline bool point_in_triangle(math::Vec2 p, math::Vec2 a, math::Vec2 b, math::Vec2 c) noexcept {
+    const f32 c1 = cross2(a, b, p);
+    const f32 c2 = cross2(b, c, p);
+    const f32 c3 = cross2(c, a, p);
+    const bool has_neg = c1 < 0.0f || c2 < 0.0f || c3 < 0.0f;
+    const bool has_pos = c1 > 0.0f || c2 > 0.0f || c3 > 0.0f;
+    return !(has_neg && has_pos);
+}
+
+inline bool point_in_quad(math::Vec2 p,
+                          math::Vec2 a,
+                          math::Vec2 b,
+                          math::Vec2 c,
+                          math::Vec2 d) noexcept {
+    return point_in_triangle(p, a, b, c) || point_in_triangle(p, a, c, d);
+}
+
+inline bool draw_plane_handle(math::Vec2 origin,
+                              math::Vec2 a,
+                              math::Vec2 b,
+                              math::Vec2 mouse,
+                              u32 colour) noexcept {
+    constexpr f32 kNear = 0.22f;
+    constexpr f32 kFar = 0.43f;
+    const f32 ax = a.x - origin.x;
+    const f32 ay = a.y - origin.y;
+    const f32 bx = b.x - origin.x;
+    const f32 by = b.y - origin.y;
+    const f32 alen = std::sqrt(ax * ax + ay * ay);
+    const f32 blen = std::sqrt(bx * bx + by * by);
+    if (alen <= 0.0001f || blen <= 0.0001f)
+        return false;
+    const f32 area = std::fabs((ax / alen) * (by / blen) - (ay / alen) * (bx / blen));
+    if (area < 0.2f)
+        return false;
+    const math::Vec2 p0 = plane_corner(origin, a, b, kNear, kNear);
+    const math::Vec2 p1 = plane_corner(origin, a, b, kFar, kNear);
+    const math::Vec2 p2 = plane_corner(origin, a, b, kFar, kFar);
+    const math::Vec2 p3 = plane_corner(origin, a, b, kNear, kFar);
+    const bool hot = point_in_quad(mouse, p0, p1, p2, p3);
+    const u32 c = hot ? kColourHot : colour;
+    ::psynder::ui::imm::line(p0, p1, c);
+    ::psynder::ui::imm::line(p1, p2, c);
+    ::psynder::ui::imm::line(p2, p3, c);
+    ::psynder::ui::imm::line(p3, p0, c);
+    return hot;
+}
+
 }  // namespace gizmo_detail
 
 // ─── gizmo_translate ─────────────────────────────────────────────────────
@@ -140,6 +217,10 @@ inline bool gizmo_translate(math::Vec3& pos,
     const math::Vec2 tip_y = unit_arm(sy, o);
     const math::Vec2 tip_z = unit_arm(sz, o);
 
+    const bool plane_xy = gd::draw_plane_handle(o, tip_x, tip_y, mouse_screen, rgba(0xB8, 0xB8, 0x58));
+    const bool plane_xz = gd::draw_plane_handle(o, tip_x, tip_z, mouse_screen, rgba(0xB8, 0x58, 0xB8));
+    const bool plane_yz = gd::draw_plane_handle(o, tip_y, tip_z, mouse_screen, rgba(0x58, 0xB8, 0xB8));
+
     // Hit-test the cursor against each arm.
     const f32 dx_arm = gd::dist_point_to_segment(mouse_screen, o, tip_x);
     const f32 dy_arm = gd::dist_point_to_segment(mouse_screen, o, tip_y);
@@ -165,6 +246,9 @@ inline bool gizmo_translate(math::Vec3& pos,
     imm::line(o, tip_x, col_x);
     imm::line(o, tip_y, col_y);
     imm::line(o, tip_z, col_z);
+    gd::draw_arrow_head(o, tip_x, col_x);
+    gd::draw_arrow_head(o, tip_y, col_y);
+    gd::draw_arrow_head(o, tip_z, col_z);
 
     const bool grabbed = (picked >= 0) && mouse_down;
     if (grabbed) {
@@ -174,7 +258,7 @@ inline bool gizmo_translate(math::Vec3& pos,
         // intentionally only reports the grabbed state.
         (void)pos;  // (raw delta path lives in editor-core/Lane 18.)
     }
-    return (picked >= 0);
+    return (picked >= 0) || plane_xy || plane_xz || plane_yz;
 }
 
 // ─── gizmo_rotate ────────────────────────────────────────────────────────

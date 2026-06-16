@@ -63,7 +63,7 @@ void render_once(Image& img, bool affine) {
     // Ensure cvars are registered; the rasterizer registers them on first
     // begin_frame, but test ordering is random — touching the value via
     // SetCVarOverride before that point would no-op. Force registration.
-    console::Console::Get().RegisterCVar("r_affine", "0", "", 0);
+    console::Console::Get().RegisterCVar("r_affine", "0", "", console::CVarFlags::None);
     console::Console::Get().SetCVarOverride("r_affine", affine ? "1" : "0");
 
     ViewState v{};

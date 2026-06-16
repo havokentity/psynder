@@ -27,11 +27,6 @@ std::mutex g_mutate;
 
 namespace psynder::physics::detail {
 
-VehicleWorld& vehicle_world() {
-    static VehicleWorld w;
-    return w;
-}
-
 // ─── Per-vehicle solver step (Wave B) ────────────────────────────────────
 //
 // Runs once per fixed sub-tick after the integrator has applied gravity but
@@ -54,7 +49,7 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
     // local-+Z layout this derivation yields exactly +Z, so existing callers
     // are unaffected; it falls back to local +Z when the layout is degenerate
     // (no axle split, or coincident axle centroids).
-    math::Vec3 up = quat_rotate(chassis.rotation, {0, 1, 0});
+    math::Vec3 up = detail::quat_rotate(chassis.rotation, {0, 1, 0});
     math::Vec3 fwd_local{0.0f, 0.0f, 1.0f};
     {
         math::Vec3 front_sum{0, 0, 0}, rear_sum{0, 0, 0};
@@ -75,7 +70,7 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
                 fwd_local = math::normalize(d);
         }
     }
-    math::Vec3 forward = quat_rotate(chassis.rotation, fwd_local);
+    math::Vec3 forward = detail::quat_rotate(chassis.rotation, fwd_local);
     // right = up x forward, but guard the degenerate case: if the chassis has
     // pitched/rolled so forward is ~parallel to up (e.g. mid-flip) the cross
     // collapses to ~0 and a plain normalize() would yield NaN, poisoning the
@@ -83,7 +78,7 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
     const math::Vec3 right_raw = math::cross(up, forward);
     const f32 right_len2 = math::dot(right_raw, right_raw);
     math::Vec3 right = (right_len2 > 1e-8f) ? math::mul(right_raw, 1.0f / std::sqrt(right_len2))
-                                            : quat_rotate(chassis.rotation, {1, 0, 0});
+                                            : detail::quat_rotate(chassis.rotation, {1, 0, 0});
 
     // Drivetrain: read drive-wheel omegas and step the engine + gearbox.
     f32 omega_l = 0.0f, omega_r = 0.0f;
@@ -99,8 +94,18 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
                 break;
         }
     }
+    // Speed governor (#58): as the chassis FORWARD speed approaches the cap,
+    // taper the throttle fed to the drivetrain so engine→wheel torque rolls off
+    // smoothly. Scaling the throttle (not just the output torque) is what makes
+    // the car CRUISE at the cap instead of running away: less engine torque →
+    // less wheel spin → less tire slip → drag pulls the chassis back to the cap.
+    // Computed once per tick; gov == 1 when the governor is disabled (legacy).
+    const f32 fwd_speed = math::dot(chassis.linear_velocity, forward);
+    const f32 gov = kernels::kernel_speed_governor(fwd_speed, v.max_speed_mps);
+    const f32 gov_throttle = v.throttle * gov;
+
     auto dt_out = kernels::kernel_drivetrain_step(v.drivetrain,
-                                                  v.throttle,
+                                                  gov_throttle,
                                                   v.brake,
                                                   v.clutch,
                                                   v.gear,
@@ -120,6 +125,20 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
         // the kernel deterministic.
         constexpr f32 kWheelMoment = 1.5f;
         wh.angular_velocity += (t / kWheelMoment) * dt;
+
+        // Governor spin clamp: at/above the cap, a drive wheel that is still
+        // over-spinning would keep slip-driving the chassis past the cap even
+        // with zero throttle (it carries its own angular momentum). Clamp the
+        // circumferential speed to the no-slip speed at the cap so the tire
+        // longitudinal force cannot push the chassis beyond it. Only ever
+        // REDUCES |omega| (never adds energy) and only when governed + the
+        // wheel is over-driving forward, so coasting/braking is untouched and
+        // determinism holds.
+        if (v.max_speed_mps > 0.0f && wh.radius > 1e-4f) {
+            const f32 omega_cap = v.max_speed_mps / wh.radius;
+            if (wh.angular_velocity > omega_cap)
+                wh.angular_velocity = omega_cap;
+        }
         ++assigned;
         if (assigned == 2)
             break;
@@ -143,14 +162,30 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
     // along the contact normal at the wheel (force + torque about the COM).
     // When the attach point is too high the wheel is airborne (load 0); the
     // Pacejka loop below then skips it.
-    const math::Vec3 contact_normal{0.0f, 1.0f, 0.0f};  // flat ground → world up
+    //
+    // GROUND HEIGHT: when a heightfield sampler is attached the per-wheel
+    // ground height is sampled under THAT wheel's (x, z) world column, so each
+    // corner contacts the local terrain surface and the chassis follows the
+    // slope. With no sampler this is the flat fast-path constant `v.ground_y`,
+    // bit-for-bit identical to the prior behaviour. The contact normal stays
+    // world-up: a per-wheel normal load along +Y over a gently sloped surface
+    // is a standard ray-cast-vehicle approximation and keeps the tire basis
+    // (which lies in the world XZ plane) consistent across all wheels.
+    const math::Vec3 contact_normal{0.0f, 1.0f, 0.0f};  // world up
     for (VehicleWheel& wh : v.wheels) {
         const math::Vec3 attach =
-            math::add(chassis.position, quat_rotate(chassis.rotation, wh.local_position));
+            math::add(chassis.position, detail::quat_rotate(chassis.rotation, wh.local_position));
         const math::Vec3 ra = math::sub(attach, chassis.position);
 
+        // Sampled ground height under this wheel (heightfield) or the flat
+        // plane (fast path). The sampler is a borrowed host callback; a null
+        // fn keeps the flat ground_y so existing callers are unaffected.
+        const f32 ground_h = (v.terrain_fn != nullptr)
+                                 ? v.terrain_fn(v.terrain_user, attach.x, attach.z)
+                                 : v.ground_y;
+
         const f32 max_reach = wh.suspension_rest_length + wh.radius;
-        const f32 gap = attach.y - v.ground_y;  // attach height above ground
+        const f32 gap = attach.y - ground_h;  // attach height above ground
         f32 compression = max_reach - gap;
 
         if (compression <= 0.0f) {
@@ -194,12 +229,20 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
     //                 chassis axes rotated by steer_angle below), so it is NOT
     //                 subtracted again here — doing so would double-count it.
     //   * Fz        = suspension normal load computed above this tick
+    // Speed-scaled steering authority (#58): full angle at parking speed,
+    // tapered at speed to damp twitch. Computed once per tick from the chassis
+    // speed magnitude; identity (1.0) when the vehicle opts out (default).
+    const f32 speed_mag = math::length(chassis.linear_velocity);
+    const f32 steer_auth = kernels::kernel_steer_authority(
+        speed_mag, v.steer_full_speed, v.steer_taper_speed, v.steer_min_authority);
+    const f32 effective_steer = v.steer * steer_auth;
+
     for (VehicleWheel& wh : v.wheels) {
         // Propagate the chassis steering command to the steered wheels. Only
         // the front (non-drive) wheels steer; the rear/drive wheels stay fixed.
         // set_steer() only writes v.steer, so without this the per-wheel
         // steer_angle stays 0 and the car cannot turn.
-        wh.steer_angle = wh.drive_wheel ? 0.0f : v.steer;
+        wh.steer_angle = wh.drive_wheel ? 0.0f : effective_steer;
 
         if (!wh.on_ground || wh.load_n <= 0.0f)
             continue;
@@ -207,7 +250,7 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
         // World position of the wheel contact patch (approximation: chassis
         // COM + rotated local + downward suspension extension).
         math::Vec3 wheel_world =
-            math::add(chassis.position, quat_rotate(chassis.rotation, wh.local_position));
+            math::add(chassis.position, detail::quat_rotate(chassis.rotation, wh.local_position));
         math::Vec3 ra = math::sub(wheel_world, chassis.position);
 
         // Velocity of the contact patch in world frame, projected into the
@@ -241,10 +284,19 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
         auto tf =
             kernels::kernel_pacejka_combined(slip_long, slip_lat, wh.load_n, v.tire_friction, v.tire_coeffs);
 
-        // Project tire forces back into world frame: Fx along tire_fwd, Fy
-        // along tire_right. Both lie in the ground plane (perpendicular to
-        // suspension up).
-        math::Vec3 tire_force = math::add(math::mul(tire_fwd, tf.Fx), math::mul(tire_right, tf.Fy));
+        // Project tire forces back into world frame. Fx (drive/brake) acts
+        // along tire_fwd. The lateral (cornering) force must OPPOSE the lateral
+        // slip — a real tire's lateral force is restoring: it pushes the contact
+        // patch back against the slide. The Pacejka magic formula returns Fy
+        // with the SAME sign as the slip angle (and hence as v_lat), so applying
+        // it along +tire_right is positive feedback — any steer feeds a side-
+        // slide that grows without bound and spins the chassis. Negate it so it
+        // restores. The friction-ellipse clip uses |Fy|, so the sign flip here
+        // preserves the combined-slip magnitude. Both forces lie in the ground
+        // plane (perpendicular to suspension up).
+        const f32 lateral_restoring = -tf.Fy;
+        math::Vec3 tire_force =
+            math::add(math::mul(tire_fwd, tf.Fx), math::mul(tire_right, lateral_restoring));
         total_force = math::add(total_force, tire_force);
         total_torque = math::add(total_torque, math::cross(ra, tire_force));
 
@@ -274,16 +326,33 @@ void vehicle_step(Vehicle& v, Body& chassis, f32 dt) noexcept {
 
 namespace psynder::physics::vehicle {
 
-VehicleId create(const VehicleDesc& d) {
-    auto& w = detail::vehicle_world();
+namespace {
+// Decode a VehicleId to its live slot with a FULL generation check so a stale
+// handle never aliases a recycled vehicle slot.
+detail::Vehicle* resolve_vehicle(detail::VehicleWorld& w, VehicleId id) noexcept {
+    const u32 idx = detail::handle_index(id.raw);
+    if (idx >= w.vehicles.size())
+        return nullptr;
+    detail::Vehicle& v = w.vehicles[idx];
+    if (!v.alive || v.gen != detail::handle_gen(id.raw))
+        return nullptr;
+    return &v;
+}
+}  // namespace
+
+VehicleId create(const VehicleDesc& d, World& world) {
+    auto& w = world.internal().vehicles;
     std::lock_guard<std::mutex> lock(g_mutate);
     u32 idx;
+    u32 reuse_gen;
     if (!w.free_slots.empty()) {
         idx = w.free_slots.back();
         w.free_slots.pop_back();
+        reuse_gen = detail::handle_next_gen(w.vehicles[idx].gen);
     } else {
         idx = static_cast<u32>(w.vehicles.size());
         w.vehicles.emplace_back();
+        reuse_gen = w.vehicles[idx].gen;  // fresh slot starts at gen == 1
     }
     detail::Vehicle& v = w.vehicles[idx];
     v.chassis_body = d.chassis.raw;
@@ -307,6 +376,17 @@ VehicleId create(const VehicleDesc& d) {
     v.engine_max_torque = d.engine_max_torque;
     v.drag_coefficient = d.drag_coefficient;
     v.downforce_coefficient = d.downforce_coefficient;
+    // Governor + steering authority (additive; defaults are no-ops so legacy
+    // descs that never set these keep the unclamped Wave-B behaviour).
+    v.max_speed_mps = d.max_speed;
+    v.steer_full_speed = d.steer_full_speed;
+    v.steer_taper_speed = d.steer_taper_speed;
+    v.steer_min_authority = d.steer_min_authority;
+    // A freshly created (or recycled) vehicle starts on the flat ground plane:
+    // clear any borrowed heightfield from a prior occupant of this slot.
+    v.terrain_fn = nullptr;
+    v.terrain_user = nullptr;
+    v.ground_y = 0.0f;
     v.throttle = v.brake = v.steer = 0.0f;
     v.clutch = 1.0f;
     v.gear = 1;
@@ -314,47 +394,62 @@ VehicleId create(const VehicleDesc& d) {
     detail::vehicle_default_engine_curve(v.drivetrain, d.engine_max_torque);
     v.tire_coeffs = detail::kernels::PacejkaCoeffs{};
     v.tire_friction = 1.0f;
-    if (v.gen == 0)
-        v.gen = 1;
-    return VehicleId{(v.gen << 24) | (idx & 0x00FFFFFFu)};
+    v.gen = reuse_gen;  // bumped on reuse, fresh slots start at 1
+    v.alive = true;
+    return VehicleId{detail::handle_encode(v.gen, idx)};
 }
 
-void destroy(VehicleId id) {
-    auto& w = detail::vehicle_world();
+void destroy(VehicleId id, World& world) {
+    auto& w = world.internal().vehicles;
     std::lock_guard<std::mutex> lock(g_mutate);
-    u32 idx = id.raw & 0x00FFFFFFu;
+    const u32 idx = detail::handle_index(id.raw);
     if (idx >= w.vehicles.size())
         return;
-    w.vehicles[idx].gen = 0;
+    detail::Vehicle& v = w.vehicles[idx];
+    // Reject stale / already-freed handles to guard against a double-destroy
+    // pushing the same slot onto the free-list twice.
+    if (!v.alive || v.gen != detail::handle_gen(id.raw))
+        return;
+    v.alive = false;  // KEEP gen for the next reuse to bump
     w.free_slots.push_back(idx);
 }
 
-void set_throttle(VehicleId id, f32 t) {
-    auto& w = detail::vehicle_world();
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx < w.vehicles.size())
-        w.vehicles[idx].throttle = t;
+void set_throttle(VehicleId id, f32 t, World& world) {
+    auto& w = world.internal().vehicles;
+    if (detail::Vehicle* v = resolve_vehicle(w, id))
+        v->throttle = t;
 }
 
-void set_brake(VehicleId id, f32 b) {
-    auto& w = detail::vehicle_world();
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx < w.vehicles.size())
-        w.vehicles[idx].brake = b;
+void set_brake(VehicleId id, f32 b, World& world) {
+    auto& w = world.internal().vehicles;
+    if (detail::Vehicle* v = resolve_vehicle(w, id))
+        v->brake = b;
 }
 
-void set_steer(VehicleId id, f32 angle) {
-    auto& w = detail::vehicle_world();
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx < w.vehicles.size())
-        w.vehicles[idx].steer = angle;
+void set_steer(VehicleId id, f32 angle, World& world) {
+    auto& w = world.internal().vehicles;
+    if (detail::Vehicle* v = resolve_vehicle(w, id))
+        v->steer = angle;
 }
 
-void set_ground_plane(VehicleId id, f32 ground_y) {
-    auto& w = detail::vehicle_world();
-    u32 idx = id.raw & 0x00FFFFFFu;
-    if (idx < w.vehicles.size())
-        w.vehicles[idx].ground_y = ground_y;
+void set_ground_plane(VehicleId id, f32 ground_y, World& world) {
+    auto& w = world.internal().vehicles;
+    if (detail::Vehicle* v = resolve_vehicle(w, id)) {
+        v->ground_y = ground_y;
+        // Selecting the flat fast path DETACHES any borrowed heightfield so a
+        // later set_ground_plane call cleanly reverts terrain following.
+        v->terrain_fn = nullptr;
+        v->terrain_user = nullptr;
+    }
+}
+
+void set_ground_heightfield(VehicleId id, HeightSampler terrain, World& world) {
+    auto& w = world.internal().vehicles;
+    if (detail::Vehicle* v = resolve_vehicle(w, id)) {
+        // A null fn reverts to the flat ground_y fast path (detach).
+        v->terrain_fn = terrain.fn;
+        v->terrain_user = terrain.user;
+    }
 }
 
 }  // namespace psynder::physics::vehicle

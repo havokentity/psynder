@@ -30,7 +30,7 @@ struct CacheReset {
     CacheReset() {
         // Force r_force_shading_path to 0 (auto). Tests that need a
         // different value re-set it.
-        console::Console::Get().RegisterCVar("r_force_shading_path", "0", "", 0);
+        console::Console::Get().RegisterCVar("r_force_shading_path", "0", "", console::CVarFlags::None);
         console::Console::Get().SetCVarOverride("r_force_shading_path", "0");
         SurfaceCache::Get().clear();
         SurfaceCache::Get().reset_stats();
@@ -44,7 +44,7 @@ TEST_CASE("classify_surface returns OnTheFly when no eligibility hints",
     CacheReset reset;
     SurfaceDesc s{};
     s.surface_id = 1;
-    s.flags = 0;  // none of the eligibility bits set
+    s.flags = DrawFlags::None;  // none of the eligibility bits set
     REQUIRE(classify_surface(s) == ShadingPath::OnTheFly);
 }
 
@@ -55,7 +55,7 @@ TEST_CASE(
     CacheReset reset;
     SurfaceDesc s{};
     s.surface_id = 42;
-    s.flags = draw_flags::kEligibleMask;
+    s.flags = DrawFlags::EligibleMask;
 
     // First (kHysteresis - 1) classifications must still be OnTheFly.
     for (u32 i = 0; i < SurfaceCache::kHysteresis - 1; ++i) {
@@ -72,10 +72,10 @@ TEST_CASE("classify_surface: a single ineligible frame resets the streak",
     CacheReset reset;
     SurfaceDesc eligible{};
     eligible.surface_id = 7;
-    eligible.flags = draw_flags::kEligibleMask;
+    eligible.flags = DrawFlags::EligibleMask;
     SurfaceDesc passing_flash{};
     passing_flash.surface_id = 7;
-    passing_flash.flags = draw_flags::kEligibleMask & ~draw_flags::kNoDynamicLights;
+    passing_flash.flags = draw_flags_without(DrawFlags::EligibleMask, DrawFlags::NoDynamicLights);
 
     // Build up 3 eligible frames (still OnTheFly — one short of the bar).
     for (u32 i = 0; i < 3; ++i) {
@@ -100,7 +100,7 @@ TEST_CASE("r_force_shading_path forces both paths regardless of eligibility",
     CacheReset reset;
     SurfaceDesc s{};
     s.surface_id = 11;
-    s.flags = draw_flags::kEligibleMask;
+    s.flags = DrawFlags::EligibleMask;
 
     // Force OnTheFly even when surface is fully eligible.
     console::Console::Get().SetCVarOverride("r_force_shading_path", "1");
@@ -113,7 +113,7 @@ TEST_CASE("r_force_shading_path forces both paths regardless of eligibility",
     console::Console::Get().SetCVarOverride("r_force_shading_path", "2");
     SurfaceDesc t{};
     t.surface_id = 12;
-    t.flags = 0;
+    t.flags = DrawFlags::None;
     REQUIRE(classify_surface(t) == ShadingPath::SurfaceCached);
 
     // Reset the override.
@@ -192,7 +192,7 @@ TEST_CASE(
     auto& c = SurfaceCache::Get();
     SurfaceDesc s{};
     s.surface_id = 9001;
-    s.flags = draw_flags::kEligibleMask;
+    s.flags = DrawFlags::EligibleMask;
 
     // Pass the hysteresis bar.
     for (u32 i = 0; i < SurfaceCache::kHysteresis; ++i) {
@@ -202,7 +202,7 @@ TEST_CASE(
     REQUIRE(c.past_hysteresis(9001));
 
     // Drop eligibility — the streak resets to 0…
-    s.flags = 0;
+    s.flags = DrawFlags::None;
     c.begin_frame();
     (void)classify_surface(s);
     REQUIRE_FALSE(c.past_hysteresis(9001));
@@ -294,7 +294,7 @@ TEST_CASE(
     d.index_count = mesh.index_count;
     d.model = math::identity4();
     d.material = MaterialId{/*raw*/ 0xCAFE};
-    d.flags = draw_flags::kEligibleMask;  // fully eligible
+    d.flags = DrawFlags::EligibleMask;  // fully eligible
 
     auto& r = Rasterizer::Get();
     // Run kHysteresis frames — each begin_frame bumps the cache index.

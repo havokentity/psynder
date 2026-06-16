@@ -43,6 +43,61 @@ PSY_FORCEINLINE f32 reinhard(f32 x, f32 exposure) noexcept {
     return ex / (1.0f + ex);
 }
 
+PSY_FORCEINLINE f32 saturate(f32 x) noexcept {
+    if (x <= 0.0f)
+        return 0.0f;
+    if (x >= 1.0f)
+        return 1.0f;
+    return x;
+}
+
+PSY_FORCEINLINE f32 lerp(f32 a, f32 b, f32 t) noexcept {
+    return a + (b - a) * t;
+}
+
+PSY_FORCEINLINE f32 smootherstep01(f32 x) noexcept {
+    const f32 t = saturate(x);
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+PSY_FORCEINLINE f32 fade_envelope(f32 age, f32 fade_in, f32 hold, f32 fade_out) noexcept {
+    if (age <= 0.0f)
+        return 0.0f;
+    const f32 in_d = fade_in > 0.0f ? fade_in : 0.0f;
+    const f32 hold_d = hold > 0.0f ? hold : 0.0f;
+    const f32 out_d = fade_out > 0.0f ? fade_out : 0.0f;
+    if (in_d > 0.0f && age < in_d)
+        return smootherstep01(age / in_d);
+    const f32 out_start = in_d + hold_d;
+    if (age <= out_start)
+        return 1.0f;
+    if (out_d <= 0.0f)
+        return 0.0f;
+    return 1.0f - smootherstep01((age - out_start) / out_d);
+}
+
+PSY_FORCEINLINE f32 rgb_luminance(f32 r, f32 g, f32 b) noexcept {
+    return 0.2126f * r + 0.7152f * g + 0.0722f * b;
+}
+
+PSY_FORCEINLINE f32 glow_soft_knee_weight(f32 luminance, f32 threshold, f32 knee) noexcept {
+    if (threshold <= 0.0f)
+        return 1.0f;
+    const f32 k = knee > 0.0f ? knee : 0.0f;
+    if (k <= 0.0f)
+        return luminance > threshold ? 1.0f : 0.0f;
+    const f32 lo = threshold - k;
+    const f32 hi = threshold + k;
+    return smootherstep01((luminance - lo) / (hi - lo));
+}
+
+PSY_FORCEINLINE HdrPixel scale_rgb(HdrPixel p, f32 scale) noexcept {
+    p.r *= scale;
+    p.g *= scale;
+    p.b *= scale;
+    return p;
+}
+
 // ─── Linear → sRGB gamma encode ──────────────────────────────────────────
 // Piecewise sRGB curve. Faster than IEC 61966-2-1 + branchless for the lit
 // region; the gamma argument is honoured for non-2.2 users (CRT lovers tend

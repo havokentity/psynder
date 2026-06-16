@@ -56,8 +56,10 @@ constexpr u16 kVK_ANSI_N = 0x2D; constexpr u16 kVK_ANSI_M = 0x2E;
 constexpr u16 kVK_Return    = 0x24; constexpr u16 kVK_Tab    = 0x30;
 constexpr u16 kVK_Space     = 0x31; constexpr u16 kVK_Delete = 0x33;
 constexpr u16 kVK_ForwardDelete = 0x75;  // Del / fn+Delete (forward delete)
+constexpr u16 kVK_Home = 0x73; constexpr u16 kVK_End = 0x77;
 constexpr u16 kVK_Escape    = 0x35; constexpr u16 kVK_LShift = 0x38;
 constexpr u16 kVK_LControl  = 0x3B; constexpr u16 kVK_LOption= 0x3A;
+constexpr u16 kVK_LCommand  = 0x37; constexpr u16 kVK_RCommand = 0x36;
 constexpr u16 kVK_RShift    = 0x3C; constexpr u16 kVK_RControl=0x3E;
 constexpr u16 kVK_ROption   = 0x3D;
 constexpr u16 kVK_LeftArrow = 0x7B; constexpr u16 kVK_RightArrow = 0x7C;
@@ -76,6 +78,8 @@ KeyCode translate_key(unsigned short vk) {
         case kVK_Tab:         return KeyCode::Tab;
         case kVK_Delete:      return KeyCode::Backspace;
         case kVK_ForwardDelete: return KeyCode::Delete;
+        case kVK_Home:        return KeyCode::Home;
+        case kVK_End:         return KeyCode::End;
         case kVK_LeftArrow:   return KeyCode::Left;
         case kVK_RightArrow:  return KeyCode::Right;
         case kVK_UpArrow:     return KeyCode::Up;
@@ -125,7 +129,24 @@ KeyCode translate_key(unsigned short vk) {
         case kVK_RControl:    return KeyCode::RightCtrl;
         case kVK_LOption:     return KeyCode::LeftAlt;
         case kVK_ROption:     return KeyCode::RightAlt;
+        case kVK_LCommand:    return KeyCode::LeftSuper;
+        case kVK_RCommand:    return KeyCode::RightSuper;
         default:              return KeyCode::Unknown;
+    }
+}
+
+KeyCode translate_appkit_function_char(unichar c) {
+    // AppKit reports Fn-modified arrows and some navigation keys as private-use
+    // function characters in -charactersIgnoringModifiers.
+    switch (c) {
+        case 0xF700: return KeyCode::Up;      // NSUpArrowFunctionKey
+        case 0xF701: return KeyCode::Down;    // NSDownArrowFunctionKey
+        case 0xF702: return KeyCode::Left;    // NSLeftArrowFunctionKey
+        case 0xF703: return KeyCode::Right;   // NSRightArrowFunctionKey
+        case 0xF728: return KeyCode::Delete;  // NSDeleteFunctionKey
+        case 0xF729: return KeyCode::Home;    // NSHomeFunctionKey
+        case 0xF72B: return KeyCode::End;     // NSEndFunctionKey
+        default:     return KeyCode::Unknown;
     }
 }
 
@@ -139,11 +160,7 @@ public:
     bool key_pressed(KeyCode k) const override {
         auto i = static_cast<usize>(k);
         if (i >= pressed_.size()) return false;
-        // exchange() is non-const on std::atomic but the read-and-clear is
-        // the documented semantic of key_pressed (edge-triggered query),
-        // so we cast through the const this pointer.
-        auto& slot = const_cast<std::atomic<bool>&>(pressed_[i]);
-        return slot.exchange(false, std::memory_order_relaxed);
+        return pressed_[i].load(std::memory_order_relaxed);
     }
     const MouseState& mouse() const override { return mouse_state_; }
     std::span<const u32> text_input() const override { return text_; }
@@ -178,6 +195,8 @@ public:
         mouse_state_.dx = 0;
         mouse_state_.dy = 0;
         mouse_state_.wheel = 0;
+        for (auto& key : pressed_)
+            key.store(false, std::memory_order_relaxed);
         text_.clear();  // text_input() reports only this frame's codepoints
     }
 
@@ -196,6 +215,157 @@ private:
 MacInput& mac_input() {
     static MacInput i;
     return i;
+}
+
+void forward_appkit_function_keys(NSEvent* event, bool down) {
+    auto forward_chars = [&](NSString* chars) {
+        const NSUInteger n = [chars length];
+        for (NSUInteger i = 0; i < n; ++i) {
+            const KeyCode k = translate_appkit_function_char([chars characterAtIndex:i]);
+            if (k != KeyCode::Unknown)
+                mac_input().on_key(k, down);
+        }
+    };
+    forward_chars([event charactersIgnoringModifiers]);
+    forward_chars([event characters]);
+}
+
+void release_physical_navigation_aliases(unsigned short vk) {
+    switch (vk) {
+        case kVK_LeftArrow:  mac_input().on_key(KeyCode::Home, false); break;
+        case kVK_RightArrow: mac_input().on_key(KeyCode::End, false); break;
+        default: break;
+    }
+}
+
+void sync_modifier_keys(NSEvent* event) {
+    const NSEventModifierFlags f = [event modifierFlags];
+    const bool shift = (f & NSEventModifierFlagShift) != 0;
+    const bool ctrl  = (f & NSEventModifierFlagControl) != 0;
+    const bool alt   = (f & NSEventModifierFlagOption) != 0;
+    const bool super = (f & NSEventModifierFlagCommand) != 0;
+
+    mac_input().on_key(KeyCode::LeftShift, shift);
+    mac_input().on_key(KeyCode::RightShift, shift);
+    mac_input().on_key(KeyCode::LeftCtrl, ctrl);
+    mac_input().on_key(KeyCode::RightCtrl, ctrl);
+    mac_input().on_key(KeyCode::LeftAlt, alt);
+    mac_input().on_key(KeyCode::RightAlt, alt);
+    mac_input().on_key(KeyCode::LeftSuper, super);
+    mac_input().on_key(KeyCode::RightSuper, super);
+}
+
+void merge_modifier_keys(NSEvent* event) {
+    sync_modifier_keys(event);
+}
+
+bool console_shortcut_key(KeyCode k) noexcept {
+    switch (k) {
+        case KeyCode::A:
+        case KeyCode::C:
+        case KeyCode::V:
+        case KeyCode::X:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool console_shortcut_modifier(NSEventModifierFlags flags) noexcept {
+    return (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) != 0;
+}
+
+KeyCode console_shortcut_from_event(NSEvent* event) {
+    if (!console_shortcut_modifier([event modifierFlags]))
+        return KeyCode::Unknown;
+    NSString* chars = [[event charactersIgnoringModifiers] lowercaseString];
+    if (chars == nil || [chars length] == 0)
+        return KeyCode::Unknown;
+    switch ([chars characterAtIndex:0]) {
+        case 'a': return KeyCode::A;
+        case 'c': return KeyCode::C;
+        case 'v': return KeyCode::V;
+        case 'x': return KeyCode::X;
+        default:  return KeyCode::Unknown;
+    }
+}
+
+void handle_key_down_event(NSEvent* event) {
+    merge_modifier_keys(event);
+    KeyCode key = translate_key([event keyCode]);
+    const KeyCode shortcut_key = console_shortcut_from_event(event);
+    if (shortcut_key != KeyCode::Unknown)
+        key = shortcut_key;
+    mac_input().on_key(key, true);
+    forward_appkit_function_keys(event, true);
+
+    // Text entry for the software console overlay. -characters is already
+    // mapped through the active keyboard layout + Shift, so we get '@' for
+    // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command/
+    // Control chords (those are shortcuts, not text) and C0/DEL control codes
+    // — the console reads Enter/Backspace/arrows via key_pressed instead.
+    if (console_shortcut_modifier([event modifierFlags])) {
+        if (console_shortcut_key(key))
+            mac_input().on_key(key, false);
+        return;
+    }
+    NSString* chars = [event characters];
+    const NSUInteger n = [chars length];
+    for (NSUInteger i = 0; i < n;) {
+        const unichar c = [chars characterAtIndex:i];
+        uint32_t cp = c;
+        // Recombine a UTF-16 surrogate pair into one scalar value.
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+            const unichar lo = [chars characterAtIndex:i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000u + ((static_cast<uint32_t>(c) - 0xD800u) << 10) +
+                     (static_cast<uint32_t>(lo) - 0xDC00u);
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+        // Drop C0 controls + DEL, and AppKit's function-key encodings
+        // (arrows, Delete, Home/End, F-keys, ...) which it reports in the
+        // U+F700..U+F8FF private-use block — those are NOT text and would
+        // otherwise insert missing-glyph boxes into the console prompt.
+        if (cp >= 0x20 && cp != 0x7F && !(cp >= 0xF700 && cp <= 0xF8FF))
+            mac_input().on_text(cp);
+    }
+}
+
+bool handle_key_equivalent_event(NSEvent* event) {
+    if ([event type] != NSEventTypeKeyDown)
+        return false;
+    if (!console_shortcut_key(console_shortcut_from_event(event)))
+        return false;
+    handle_key_down_event(event);
+    return true;
+}
+
+void handle_key_up_event(NSEvent* event) {
+    merge_modifier_keys(event);
+    mac_input().on_key(translate_key([event keyCode]), false);
+    forward_appkit_function_keys(event, false);
+    release_physical_navigation_aliases([event keyCode]);
+}
+
+bool handle_keyboard_event(NSEvent* event) {
+    switch ([event type]) {
+        case NSEventTypeKeyDown:
+            handle_key_down_event(event);
+            return true;
+        case NSEventTypeKeyUp:
+            handle_key_up_event(event);
+            return true;
+        case NSEventTypeFlagsChanged:
+            sync_modifier_keys(event);
+            return true;
+        default:
+            return false;
+    }
 }
 
 // ─── NSApp lazy bootstrap ────────────────────────────────────────────────
@@ -320,6 +490,33 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
 }  // anonymous namespace
 }  // namespace psynder::platform
 
+namespace psynder::platform {
+
+std::string mac_clipboard_text_impl() {
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+    NSString* text = [pb stringForType:NSPasteboardTypeString];
+    if (text == nil)
+        return {};
+    const char* utf8 = [text UTF8String];
+    return utf8 != nullptr ? std::string{utf8} : std::string{};
+}
+
+void mac_set_clipboard_text_impl(std::string_view text) {
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    NSString* ns = [[NSString alloc] initWithBytes:text.data()
+                                            length:text.size()
+                                          encoding:NSUTF8StringEncoding];
+    if (ns != nil) {
+        [pb setString:ns forType:NSPasteboardTypeString];
+#if !__has_feature(objc_arc)
+        [ns release];
+#endif
+    }
+}
+
+}  // namespace psynder::platform
+
 // ─── NSWindow delegate: bridges the close button ─────────────────────────
 @interface PsynderWindowDelegate : NSObject <NSWindowDelegate>
 @end
@@ -367,56 +564,33 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
 }
 
 // ── Keyboard ─────────────────────────────────────────────────────────────
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+    if (psynder::platform::handle_key_equivalent_event(event))
+        return YES;
+    return [super performKeyEquivalent:event];
+}
 - (void)keyDown:(NSEvent*)event {
-    psynder::platform::mac_input().on_key(
-        psynder::platform::translate_key([event keyCode]), true);
-
-    // Text entry for the software console overlay. -characters is already
-    // mapped through the active keyboard layout + Shift, so we get '@' for
-    // Shift+2 on US, accented glyphs on dead-key layouts, etc. Skip Command
-    // chords (those are shortcuts, not text) and C0/DEL control codes — the
-    // console reads Enter/Backspace/arrows via key_pressed instead.
-    if (([event modifierFlags] & NSEventModifierFlagCommand) != 0) return;
-    NSString* chars = [event characters];
-    const NSUInteger n = [chars length];
-    for (NSUInteger i = 0; i < n;) {
-        const unichar c = [chars characterAtIndex:i];
-        uint32_t cp = c;
-        // Recombine a UTF-16 surrogate pair into one scalar value.
-        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
-            const unichar lo = [chars characterAtIndex:i + 1];
-            if (lo >= 0xDC00 && lo <= 0xDFFF) {
-                cp = 0x10000u + ((static_cast<uint32_t>(c) - 0xD800u) << 10) +
-                     (static_cast<uint32_t>(lo) - 0xDC00u);
-                i += 2;
-            } else {
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
-        // Drop C0 controls + DEL, and AppKit's function-key encodings
-        // (arrows, Delete, Home/End, F-keys, ...) which it reports in the
-        // U+F700..U+F8FF private-use block — those are NOT text and would
-        // otherwise insert missing-glyph boxes into the console prompt.
-        if (cp >= 0x20 && cp != 0x7F && !(cp >= 0xF700 && cp <= 0xF8FF))
-            psynder::platform::mac_input().on_text(cp);
-    }
+    psynder::platform::handle_key_down_event(event);
 }
 - (void)keyUp:(NSEvent*)event {
-    psynder::platform::mac_input().on_key(
-        psynder::platform::translate_key([event keyCode]), false);
+    psynder::platform::handle_key_up_event(event);
 }
 - (void)flagsChanged:(NSEvent*)event {
-    NSEventModifierFlags f = [event modifierFlags];
-    using psynder::platform::KeyCode;
-    auto set = [&](KeyCode k, BOOL on) {
-        psynder::platform::mac_input().on_key(k, on ? true : false);
-    };
-    set(KeyCode::LeftShift, (f & NSEventModifierFlagShift)   != 0);
-    set(KeyCode::LeftCtrl,  (f & NSEventModifierFlagControl) != 0);
-    set(KeyCode::LeftAlt,   (f & NSEventModifierFlagOption)  != 0);
+    psynder::platform::handle_keyboard_event(event);
 }
+- (void)doCommandBySelector:(SEL)selector {
+    (void)selector;
+}
+- (void)noResponderFor:(SEL)selector {
+    (void)selector;
+}
+- (void)cut:(id)sender       { (void)sender; }
+- (void)copy:(id)sender      { (void)sender; }
+- (void)paste:(id)sender     { (void)sender; }
+- (void)selectAll:(id)sender { (void)sender; }
+- (void)deleteBackward:(id)sender { (void)sender; }
+- (void)deleteForward:(id)sender  { (void)sender; }
+- (void)noop:(id)sender { (void)sender; }
 
 // ── Mouse ────────────────────────────────────────────────────────────────
 - (void)mouseMoved:(NSEvent*)event       { [self forwardMouseMove:event]; }
@@ -432,8 +606,8 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
         static_cast<psynder::f32>(p.x),
         static_cast<psynder::f32>(self.bounds.size.height - p.y));
 }
-- (void)mouseDown:(NSEvent*)event        { psynder::platform::mac_input().on_mouse_button(0, true);  }
-- (void)mouseUp:(NSEvent*)event          { psynder::platform::mac_input().on_mouse_button(0, false); }
+- (void)mouseDown:(NSEvent*)event        { [self forwardMouseMove:event]; psynder::platform::mac_input().on_mouse_button(0, true);  }
+- (void)mouseUp:(NSEvent*)event          { [self forwardMouseMove:event]; psynder::platform::mac_input().on_mouse_button(0, false); }
 - (void)rightMouseDown:(NSEvent*)event   { psynder::platform::mac_input().on_mouse_button(1, true);  }
 - (void)rightMouseUp:(NSEvent*)event     { psynder::platform::mac_input().on_mouse_button(1, false); }
 - (void)otherMouseDown:(NSEvent*)event   { psynder::platform::mac_input().on_mouse_button(2, true);  }
@@ -455,6 +629,14 @@ MTLPixelFormat mtl_format_for(render::PixelFormat fmt) {
 }
 - (BOOL)canBecomeMainWindow {
     return YES;
+}
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+    if (psynder::platform::handle_key_equivalent_event(event))
+        return YES;
+    return [super performKeyEquivalent:event];
+}
+- (void)noResponderFor:(SEL)selector {
+    (void)selector;
 }
 @end
 
@@ -556,7 +738,8 @@ public:
                                            untilDate:[NSDate distantPast]
                                               inMode:NSDefaultRunLoopMode
                                              dequeue:YES];
-                if (event) [NSApp sendEvent:event];
+                if (event && !handle_keyboard_event(event))
+                    [NSApp sendEvent:event];
             } while (event);
             [NSApp updateWindows];
 
@@ -802,6 +985,16 @@ public:
         desc_.window_height = h;
     }
 
+    void raise_and_focus() override {
+        if (!ns_window_) return;
+        @autoreleasepool {
+            [ns_window_ deminiaturize:nil];
+            [ns_window_ makeFirstResponder:metal_view_];
+            [ns_window_ makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        }
+    }
+
 private:
     // ─── Metal pipeline / sampler setup ──────────────────────────────────
     void build_pipeline_() {
@@ -944,6 +1137,11 @@ struct CoreAudioState {
     std::atomic<bool>      running{false};
     u32                    sample_rate = 48000;
     u32                    channels    = 2;
+    // Interleave scratch the render callback fills. Heap-owned and sized once
+    // at audio_start so the CoreAudio RT thread neither allocates per-callback
+    // nor carries a 128 KB stack frame (kMaxFrames*8*4) — RT threads can have
+    // small/unknown stacks, and a worst-case VLA-on-stack risks overflow.
+    std::vector<f32>       scratch;
 };
 
 CoreAudioState& ca_state() {
@@ -974,12 +1172,19 @@ OSStatus core_audio_render(void* in_ref_con,
     if (ch == 0) return noErr;
 
     if (st->callback) {
-        // Interleave float scratch the callback fills, then de-interleave
-        // into AudioBufferList. Buffer size is small (typ. 512), stack-OK.
+        // De-interleave from a heap scratch the callback fills (pre-sized in
+        // audio_start; never allocated on this RT thread — see CoreAudioState).
         constexpr UInt32 kMaxFrames = 4096;
         UInt32 frames = std::min<UInt32>(in_number_frames, kMaxFrames);
-        f32 scratch[kMaxFrames * 8];
         UInt32 use_ch = std::min<UInt32>(ch, 8);
+        f32* scratch = st->scratch.data();
+        // Defensive: if scratch wasn't sized (callback registered out of band),
+        // emit silence rather than write through a null/short buffer.
+        if (st->scratch.size() < static_cast<usize>(kMaxFrames) * 8u) {
+            for (UInt32 c = 0; c < ch; ++c)
+                std::memset(io_data->mBuffers[c].mData, 0, io_data->mBuffers[c].mDataByteSize);
+            return noErr;
+        }
         st->callback(st->user, scratch, frames, use_ch, st->sample_rate);
         for (UInt32 c = 0; c < ch; ++c) {
             f32* dst = static_cast<f32*>(io_data->mBuffers[c].mData);
@@ -1007,6 +1212,9 @@ bool audio_start(const AudioDeviceDesc& desc, AudioRenderCallback cb, void* user
     st.user        = user;
     st.sample_rate = desc.sample_rate;
     st.channels    = desc.channels;
+    // Size the RT interleave scratch once, here on the caller's thread — the
+    // render callback must never allocate. Worst case kMaxFrames(4096)*8 ch.
+    st.scratch.assign(static_cast<usize>(4096) * 8u, 0.0f);
 
     // Locate DefaultOutput AudioComponent
     AudioComponentDescription cd{};

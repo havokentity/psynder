@@ -31,6 +31,7 @@
 
 #include "Editor.h"
 #include "HotKey.h"
+#include "WebPanels.h"
 
 #include "core/Types.h"
 #include "math/Math.h"
@@ -40,7 +41,9 @@
 #include "ui/imm/DebugHud.h"
 #include "ui/imm/Imm.h"
 
+#include <algorithm>
 #include <array>
+#include <span>
 
 namespace psynder::editor {
 
@@ -50,6 +53,7 @@ struct OverlayState {
     bool enabled = true;          // master switch for the whole overlay suite
     bool capturing = false;       // input was consumed by overlays this frame
     u64 last_tick = 0;            // for the internal frame-time measurement
+    u64 web_frame_index = 0;      // profiler stream frame id
     std::array<f32, 120> ring{};  // ~2 s rolling window for avg frame ms
     u32 head = 0;
     u32 count = 0;
@@ -83,7 +87,7 @@ inline bool overlays_capturing() noexcept {
 // Draw a small "PLAY" / "EDIT" badge in the bottom-right corner of `fb`,
 // sized for the lane-16 6×8 fixed font (4 chars + 2-px padding + border).
 // Low-alpha panel so it stays unobtrusive over gameplay.
-inline void draw_mode_badge(render::Framebuffer& fb, Mode mode) noexcept {
+inline void draw_mode_badge(::psynder::render::Framebuffer& fb, Mode mode) noexcept {
     constexpr u32 kBadgeW = 6 * 4 + 2 * 2;  // 28 px
     constexpr u32 kBadgeH = 8 + 2 * 2;      // 12 px
     constexpr u32 kMargin = 4;
@@ -117,9 +121,19 @@ inline ui::imm::DebugHudMode next_debug_hud_mode(ui::imm::DebugHudMode mode) noe
     }
     return DebugHudMode::Off;
 }
+
+inline f32 elapsed_ms(u64 begin_ticks, u64 end_ticks) noexcept {
+    if (end_ticks <= begin_ticks)
+        return 0.0f;
+    return static_cast<f32>(platform::Clock::seconds(end_ticks - begin_ticks) * 1000.0);
+}
+
 }  // namespace detail
 
 inline Mode sample_update(const platform::Input& input, f32 dt) noexcept {
+    ensure_web_panel_commands_registered();
+    pump_web_panels();
+
     auto& st = detail::overlay_state();
     if (!st.enabled) {
         st.capturing = false;
@@ -143,7 +157,7 @@ inline Mode sample_update(const platform::Input& input, f32 dt) noexcept {
     return current_mode();
 }
 
-inline void sample_draw(render::Framebuffer& fb) noexcept {
+inline void sample_draw(::psynder::render::Framebuffer& fb) noexcept {
     if (!overlays_enabled())
         return;
     draw_mode_badge(fb, current_mode());
@@ -154,7 +168,7 @@ inline void sample_draw(render::Framebuffer& fb) noexcept {
 // and draws the PLAY/EDIT badge. Returns the resolved mode. `dt` paces the
 // console slide / caret blink / key auto-repeat. Most hosts call the
 // higher-level `frame_overlays` instead of this directly.
-inline Mode sample_step(const platform::Input& input, render::Framebuffer& fb, f32 dt) noexcept {
+inline Mode sample_step(const platform::Input& input, ::psynder::render::Framebuffer& fb, f32 dt) noexcept {
     const Mode mode = sample_update(input, dt);
     draw_mode_badge(fb, mode);
     return mode;
@@ -166,8 +180,70 @@ inline Mode sample_step(const platform::Input& input, render::Framebuffer& fb, f
 struct FrameOverlayStats {
     usize draw_calls = 0;
     usize triangles = 0;
+    usize entities = 0;
+    f32 render_ms = 0.0f;
     usize active_voices = 0;
+    u32 rt_tiles = 0;
+    u32 rt_jobs = 0;
+    bool raster_stats_valid = false;
+    bool rt_stats_valid = false;
+    bool render_stats_valid = false;
 };
+
+inline ui::imm::DebugHudStats make_debug_hud_stats(f32 frame_ms,
+                                                   f32 avg_frame_ms,
+                                                   const FrameOverlayStats& stats = {}) noexcept {
+    ui::imm::DebugHudStats hud{};
+    hud.frame_ms = frame_ms;
+    hud.avg_frame_ms = avg_frame_ms;
+    hud.draw_calls = stats.draw_calls;
+    hud.triangles = stats.triangles;
+    hud.active_voices = stats.active_voices;
+    hud.rt_tiles = stats.rt_tiles;
+    hud.rt_jobs = stats.rt_jobs;
+    hud.raster_stats_valid = stats.raster_stats_valid;
+    hud.rt_stats_valid = stats.rt_stats_valid;
+    hud.render_stats_valid = stats.render_stats_valid;
+    return hud;
+}
+
+inline ui::imm::DebugHudStats make_debug_hud_stats_with_render(f32 frame_ms,
+                                                               f32 avg_frame_ms,
+                                                               const FrameOverlayStats& stats) noexcept {
+    ui::imm::DebugHudStats hud = make_debug_hud_stats(frame_ms, avg_frame_ms, stats);
+    hud.raster_stats_valid = true;
+    hud.render_stats_valid = true;
+    return hud;
+}
+
+inline u32 saturated_u32(usize value) noexcept {
+    return static_cast<u32>(value > 0xFFFFFFFFull ? 0xFFFFFFFFull : value);
+}
+
+inline void publish_frame_profile(f32 frame_ms,
+                                  const FrameOverlayStats& stats = {},
+                                  std::span<const WebProfilerSection> sections = {}) noexcept {
+    if (!overlays_enabled())
+        return;
+
+    auto& st = detail::overlay_state();
+    publish_web_profiler_frame(WebProfilerFrame{
+        st.web_frame_index++,
+        frame_ms,
+        stats.render_ms,
+        saturated_u32(stats.draw_calls),
+        saturated_u32(stats.entities),
+        sections,
+    });
+}
+
+inline void draw_frame_overlays(::psynder::render::Framebuffer& fb, const ui::imm::DebugHudStats& hud) noexcept {
+    if (!overlays_enabled())
+        return;
+    draw_mode_badge(fb, current_mode());
+    ui::imm::draw_debug_hud(fb, hud);  // early-returns when the HUD is Off
+    ui::console::draw(fb);             // drop-down console composites on top
+}
 
 // THE host entry point. Call once near the end of the loop (after the scene
 // is rendered, before present). Internally measures frame_ms from the wall
@@ -176,7 +252,7 @@ struct FrameOverlayStats {
 // (so hosts can freeze physics / AI in Edit mode). No-op returning
 // current_mode() when `set_overlays_enabled(false)`.
 inline Mode frame_overlays(const platform::Input& input,
-                           render::Framebuffer& fb,
+                           ::psynder::render::Framebuffer& fb,
                            const FrameOverlayStats& stats = {}) noexcept {
     auto& st = detail::overlay_state();
     if (!st.enabled)
@@ -200,17 +276,24 @@ inline Mode frame_overlays(const platform::Input& input,
         avg += st.ring[i];
     avg = (st.count > 0u) ? avg / static_cast<f32>(st.count) : frame_ms;
 
-    const Mode mode = sample_step(input, fb, frame_ms / 1000.0f);
+    const u64 update_begin = platform::Clock::ticks_now();
+    const Mode mode = sample_update(input, frame_ms / 1000.0f);
+    const u64 update_end = platform::Clock::ticks_now();
 
-    ui::imm::DebugHudStats hud{};
-    hud.frame_ms = frame_ms;
-    hud.avg_frame_ms = avg;
-    hud.draw_calls = stats.draw_calls;
-    hud.triangles = stats.triangles;
-    hud.active_voices = stats.active_voices;
-    ui::imm::draw_debug_hud(fb, hud);  // early-returns when the HUD is Off
+    const u64 draw_begin = update_end;
+    draw_frame_overlays(fb, make_debug_hud_stats(frame_ms, avg, stats));
+    const u64 draw_end = platform::Clock::ticks_now();
 
-    ui::console::draw(fb);  // drop-down console composites on top
+    const f32 update_ms = detail::elapsed_ms(update_begin, update_end);
+    const f32 draw_ms = detail::elapsed_ms(draw_begin, draw_end);
+    const f32 host_ms = std::max(0.0f, frame_ms - update_ms - draw_ms);
+    const std::array<WebProfilerSection, 3> sections{{
+        {"host/frame", host_ms},
+        {"editor/update", update_ms},
+        {"editor/draw", draw_ms},
+    }};
+
+    publish_frame_profile(frame_ms, stats, sections);
     return mode;
 }
 

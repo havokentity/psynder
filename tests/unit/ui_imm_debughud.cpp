@@ -8,6 +8,7 @@
 #include "ui/imm/DebugHud.h"
 
 #include "core/Types.h"
+#include "editor/core/SampleHook.h"
 #include "render/Framebuffer.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -65,6 +66,8 @@ imm::DebugHudStats sample_stats() {
     s.draw_calls = 1234;
     s.triangles = 56789;
     s.active_voices = 4;
+    s.raster_stats_valid = true;
+    s.render_stats_valid = true;
     return s;
 }
 
@@ -90,10 +93,34 @@ TEST_CASE("ui_imm::DebugHud: Full mode paints pixels in the top-left panel", "[u
     // Panel frame outline at (4,4) → outline pixel at (4,4) must be set.
     REQUIRE(t.at(4U, 4U) != 0U);
 
+    // Full mode should not be a mostly empty tall panel when no diagnostics
+    // have been pushed; it still owns render stats, memory, and diag labels.
+    REQUIRE(t.count_nonzero(8U, 72U, 210U, 180U) > 0U);
+
     // Region clearly *outside* the panel must remain untouched. The
     // panel is at most 224 px wide / 204 px tall. Pick a pixel well
     // outside that and assert it's still zero.
     REQUIRE(t.at(300U, 230U) == 0U);
+}
+
+TEST_CASE("editor overlay stats keep raster and RT reports separate", "[ui_imm][debug_hud]") {
+    psynder::editor::FrameOverlayStats rt{};
+    rt.rt_tiles = 512;
+    rt.rt_jobs = 4;
+    rt.rt_stats_valid = true;
+    rt.render_stats_valid = true;
+
+    const imm::DebugHudStats rt_hud = psynder::editor::make_debug_hud_stats(8.0f, 8.0f, rt);
+    REQUIRE_FALSE(rt_hud.raster_stats_valid);
+    REQUIRE(rt_hud.rt_stats_valid);
+    REQUIRE(rt_hud.rt_tiles == 512U);
+    REQUIRE(rt_hud.rt_jobs == 4U);
+
+    psynder::editor::FrameOverlayStats legacy{};
+    const imm::DebugHudStats legacy_hud =
+        psynder::editor::make_debug_hud_stats_with_render(8.0f, 8.0f, legacy);
+    REQUIRE(legacy_hud.raster_stats_valid);
+    REQUIRE_FALSE(legacy_hud.rt_stats_valid);
 }
 
 TEST_CASE("ui_imm::DebugHud: Compact mode writes fewer pixels than Full", "[ui_imm][debug_hud]") {
@@ -106,7 +133,7 @@ TEST_CASE("ui_imm::DebugHud: Compact mode writes fewer pixels than Full", "[ui_i
     imm::push_diag_line("ai: graph rebuilt 2ms");
     imm::push_diag_line("net: snapshot 11kb");
     imm::push_diag_line("snd: 4 voices");
-    imm::push_diag_line("gpu: tile bin 9ms");
+    imm::push_diag_line("rast: tile bin 9ms");
 
     TestFb t_full;
     imm::set_debug_hud_mode(imm::DebugHudMode::Full);
