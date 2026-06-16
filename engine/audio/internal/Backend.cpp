@@ -34,6 +34,10 @@ u32 g_null_frames = 512;
 #define PSY_WEAK
 #endif
 
+// MSVC has no ELF-style weak function support. On Windows builds that also link
+// the Win32 lane, leave the WASAPI symbols to Win32Audio.cpp to avoid duplicate
+// strong definitions.
+#if !(defined(_MSC_VER) && defined(PSYNDER_PLATFORM_WIN32))
 PSY_WEAK bool backend_init_wasapi(const DeviceDesc&, MixerCallback cb, void* user) noexcept {
     PSY_LOG_INFO("[audio] backend_init_wasapi: lane 12 fallback (null device).");
     g_null_cb = cb;
@@ -44,6 +48,7 @@ PSY_WEAK void backend_shutdown_wasapi() noexcept {
     g_null_cb = nullptr;
     g_null_user = nullptr;
 }
+#endif
 
 PSY_WEAK bool backend_init_coreaudio(const DeviceDesc& desc, MixerCallback cb, void* user) noexcept {
     PSY_LOG_INFO("[audio] backend_init_coreaudio: lane 12 fallback (null device).");
