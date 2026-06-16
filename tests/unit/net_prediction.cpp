@@ -29,6 +29,7 @@
 #include "scene/SceneEcs.h"
 #include "scene/SceneGraph.h"
 
+#include <cstring>
 #include <span>
 #include <vector>
 
@@ -86,8 +87,7 @@ TEST_CASE("net: InputCmd wire round-trips byte-exactly", "[net][prediction][wire
     CHECK_FALSE(decode_input(std::span<const u8>(buf, 4), back));
 }
 
-TEST_CASE("net: prediction moves the controlled entity the same tick",
-          "[net][prediction][local]") {
+TEST_CASE("net: prediction moves the controlled entity the same tick", "[net][prediction][local]") {
     RegistryReset reset;
     EcsRegistry& reg = EcsRegistry::Get();
     SceneGraph graph;
@@ -217,8 +217,7 @@ TEST_CASE("net: prediction + reconciliation converge over the loopback",
         InputCmd cmd = pred.predict(reg, t, {1.f, 0.f, 0.f});
         u8 ibuf[kInputCmdBytes];
         encode_input(cmd, std::span<u8>(ibuf, sizeof(ibuf)));
-        host_c->send(c_to_s, std::span<const u8>(ibuf, sizeof(ibuf)), /*reliable=*/true,
-                     kChannelDefault);
+        host_c->send(c_to_s, std::span<const u8>(ibuf, sizeof(ibuf)), /*reliable=*/true, kChannelDefault);
 
         // Server receives inputs, processes them authoritatively.
         host_c->poll(c_in);
@@ -237,19 +236,21 @@ TEST_CASE("net: prediction + reconciliation converge over the loopback",
         u8 sbuf[16];
         const math::Vec3 ap = server.authoritative_pos();
         u32 ax, ay, az;
-        __builtin_memcpy(&ax, &ap.x, 4);
-        __builtin_memcpy(&ay, &ap.y, 4);
-        __builtin_memcpy(&az, &ap.z, 4);
+        std::memcpy(&ax, &ap.x, sizeof(ax));
+        std::memcpy(&ay, &ap.y, sizeof(ay));
+        std::memcpy(&az, &ap.z, sizeof(az));
         const u32 acked = server.acked_input();
         auto put = [&](u8* d, u32 v) {
-            d[0] = u8(v); d[1] = u8(v >> 8); d[2] = u8(v >> 16); d[3] = u8(v >> 24);
+            d[0] = u8(v);
+            d[1] = u8(v >> 8);
+            d[2] = u8(v >> 16);
+            d[3] = u8(v >> 24);
         };
         put(sbuf + 0, ax);
         put(sbuf + 4, ay);
         put(sbuf + 8, az);
         put(sbuf + 12, acked);
-        host_s->send(s_to_c, std::span<const u8>(sbuf, sizeof(sbuf)), /*reliable=*/true,
-                     kChannelDefault);
+        host_s->send(s_to_c, std::span<const u8>(sbuf, sizeof(sbuf)), /*reliable=*/true, kChannelDefault);
 
         host_s->poll(s_in);
         host_c->poll(c_in);
@@ -261,9 +262,9 @@ TEST_CASE("net: prediction + reconciliation converge over the loopback",
                 u32 bx = get(m.bytes.data() + 0), by = get(m.bytes.data() + 4),
                     bz = get(m.bytes.data() + 8), bk = get(m.bytes.data() + 12);
                 math::Vec3 ap2;
-                __builtin_memcpy(&ap2.x, &bx, 4);
-                __builtin_memcpy(&ap2.y, &by, 4);
-                __builtin_memcpy(&ap2.z, &bz, 4);
+                std::memcpy(&ap2.x, &bx, sizeof(ap2.x));
+                std::memcpy(&ap2.y, &by, sizeof(ap2.y));
+                std::memcpy(&ap2.z, &bz, sizeof(ap2.z));
                 pred.reconcile(reg, ap2, bk);
             }
         }

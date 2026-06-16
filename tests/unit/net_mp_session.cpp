@@ -35,6 +35,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <span>
 #include <vector>
 
@@ -68,16 +69,24 @@ constexpr f32 kBotSpeed = 0.6f;
 constexpr u32 kReportBytes = 16u;
 
 void put_u32(u8* d, u32 v) noexcept {
-    d[0] = u8(v); d[1] = u8(v >> 8); d[2] = u8(v >> 16); d[3] = u8(v >> 24);
+    d[0] = u8(v);
+    d[1] = u8(v >> 8);
+    d[2] = u8(v >> 16);
+    d[3] = u8(v >> 24);
 }
 u32 get_u32(const u8* d) noexcept {
     return u32(d[0]) | (u32(d[1]) << 8) | (u32(d[2]) << 16) | (u32(d[3]) << 24);
 }
 void put_f32(u8* d, f32 v) noexcept {
-    u32 b; __builtin_memcpy(&b, &v, 4); put_u32(d, b);
+    u32 b;
+    std::memcpy(&b, &v, sizeof(b));
+    put_u32(d, b);
 }
 f32 get_f32(const u8* d) noexcept {
-    const u32 b = get_u32(d); f32 v; __builtin_memcpy(&v, &b, 4); return v;
+    const u32 b = get_u32(d);
+    f32 v;
+    std::memcpy(&v, &b, sizeof(v));
+    return v;
 }
 
 ReplicatedComponentSet make_set() {
@@ -109,11 +118,11 @@ math::Vec3 transform_pos(EcsRegistry& reg, Entity e) {
 
 math::Vec3 bot_path(u32 bot_index, u32 tick) {
     const f32 centre = (static_cast<f32>(bot_index) + 0.5f) * (kMapX / static_cast<f32>(kNumBots));
-    const f32 phase =
-        static_cast<f32>(tick) * kBotSpeed + static_cast<f32>(bot_index) * 5.0f;
+    const f32 phase = static_cast<f32>(tick) * kBotSpeed + static_cast<f32>(bot_index) * 5.0f;
     const f32 period = 4.0f * kBotSpan;
     f32 s = std::fmod(phase, period);
-    if (s < 0.f) s += period;
+    if (s < 0.f)
+        s += period;
     f32 tri = (s < 2.0f * kBotSpan) ? (s / kBotSpan - 1.0f) : (3.0f - s / kBotSpan);
     return math::Vec3{centre + tri * kBotSpan, 0.f, 0.f};
 }
@@ -202,8 +211,10 @@ TEST_CASE("net: shared session - 2 clients converge, AOI despawns, prediction bo
             const InputCmd cmd = predictor[c].predict(reg, tick, math::Vec3{dir, 0.f, 0.f});
             std::array<u8, kInputCmdBytes> ibuf{};
             encode_input(cmd, std::span<u8>(ibuf.data(), ibuf.size()));
-            client_hosts[c]->send(to_server[c], std::span<const u8>(ibuf.data(), ibuf.size()),
-                                  true, kChannelDefault);
+            client_hosts[c]->send(to_server[c],
+                                  std::span<const u8>(ibuf.data(), ibuf.size()),
+                                  true,
+                                  kChannelDefault);
         }
         // 2. Server applies inputs per source peer.
         for (u32 c = 0; c < kClients; ++c) {
@@ -232,17 +243,20 @@ TEST_CASE("net: shared session - 2 clients converge, AOI despawns, prediction bo
             const math::Vec3 apos = server_inputs[c].authoritative_pos();
             aoi.set_peer(PeerId{client_key[c]}, apos, kAoiRadius);
             snap.clear();
-            server.serialize_snapshot_aoi(reg, client_key[c], tick, aoi, PeerId{client_key[c]}, 0,
-                                          snap);
-            server_host->send(PeerId{client_key[c]}, std::span<const u8>(snap.data(), snap.size()),
-                              false, kChannelSnapshot);
+            server.serialize_snapshot_aoi(reg, client_key[c], tick, aoi, PeerId{client_key[c]}, 0, snap);
+            server_host->send(PeerId{client_key[c]},
+                              std::span<const u8>(snap.data(), snap.size()),
+                              false,
+                              kChannelSnapshot);
             std::array<u8, kReportBytes> rep{};
             put_f32(rep.data() + 0, apos.x);
             put_f32(rep.data() + 4, apos.y);
             put_f32(rep.data() + 8, apos.z);
             put_u32(rep.data() + 12, server_inputs[c].acked_input());
-            server_host->send(PeerId{client_key[c]}, std::span<const u8>(rep.data(), rep.size()),
-                              true, kChannelDefault);
+            server_host->send(PeerId{client_key[c]},
+                              std::span<const u8>(rep.data(), rep.size()),
+                              true,
+                              kChannelDefault);
         }
         // 5. Clients apply + reconcile.
         server_host->poll(server_inbox);  // flush.
@@ -257,17 +271,21 @@ TEST_CASE("net: shared session - 2 clients converge, AOI despawns, prediction bo
                     repl[c].apply_snapshot(reg, std::span<const u8>(m.bytes.data(), m.bytes.size()));
                     std::array<u8, 4> abuf{};
                     put_u32(abuf.data(), repl[c].ack_seq());
-                    client_hosts[c]->send(to_server[c], std::span<const u8>(abuf.data(), 4), false,
+                    client_hosts[c]->send(to_server[c],
+                                          std::span<const u8>(abuf.data(), 4),
+                                          false,
                                           kChannelSnapshot);
                     for (u32 id = 1; id < 32; ++id)
                         if (before[id] && !repl[c].entity_for(id).valid())
                             observed_despawn[c] = true;
                 } else if (m.channel == kChannelDefault && m.bytes.size() == kReportBytes) {
-                    math::Vec3 auth{get_f32(m.bytes.data() + 0), get_f32(m.bytes.data() + 4),
+                    math::Vec3 auth{get_f32(m.bytes.data() + 0),
+                                    get_f32(m.bytes.data() + 4),
                                     get_f32(m.bytes.data() + 8)};
                     predictor[c].reconcile(reg, auth, get_u32(m.bytes.data() + 12));
                     const f32 err = std::fabs(predictor[c].predicted_pos().x - auth.x);
-                    if (err > worst_pred[c]) worst_pred[c] = err;
+                    if (err > worst_pred[c])
+                        worst_pred[c] = err;
                 }
             }
             repl[c].interpolate_transforms(reg, 1.0f);
@@ -281,20 +299,23 @@ TEST_CASE("net: shared session - 2 clients converge, AOI despawns, prediction bo
                     if (client_key[c] == m.from.raw)
                         server.ack_from_client(client_key[c], get_u32(m.bytes.data()));
         server_host->tick();
-        for (u32 c = 0; c < kClients; ++c) client_hosts[c]->tick();
+        for (u32 c = 0; c < kClients; ++c)
+            client_hosts[c]->tick();
 
         // 7. Convergence sampling: a bot both clients can see.
         for (u32 b = 0; b < kNumBots; ++b) {
             const u32 id = kBotIdBase + b;
             const Entity e0 = repl[0].entity_for(id);
             const Entity e1 = repl[1].entity_for(id);
-            if (!e0.valid() || !e1.valid()) continue;
+            if (!e0.valid() || !e1.valid())
+                continue;
             const f32 srv = transform_pos(reg, bots[b]).x;
             const f32 d0 = std::fabs(transform_pos(reg, e0).x - srv);
             const f32 d1 = std::fabs(transform_pos(reg, e1).x - srv);
             const f32 dcc = std::fabs(transform_pos(reg, e0).x - transform_pos(reg, e1).x);
             ++agree_samples;
-            if (d0 > kAgreeTol || d1 > kAgreeTol || dcc > kAgreeTol) agree_failed = true;
+            if (d0 > kAgreeTol || d1 > kAgreeTol || dcc > kAgreeTol)
+                agree_failed = true;
         }
     }
 
@@ -308,6 +329,7 @@ TEST_CASE("net: shared session - 2 clients converge, AOI despawns, prediction bo
     CHECK(worst_pred[0] <= kPredBound);
     CHECK(worst_pred[1] <= kPredBound);
 
-    for (u32 c = 0; c < kClients; ++c) destroy_test_host(client_hosts[c]);
+    for (u32 c = 0; c < kClients; ++c)
+        destroy_test_host(client_hosts[c]);
     destroy_test_host(server_host);
 }

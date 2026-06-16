@@ -68,6 +68,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <span>
 #include <string>
@@ -107,8 +108,8 @@ constexpr u16 kClientPort0 = 41001u;
 constexpr u32 kSnapshotBudget = 0u;
 
 // Tolerances for the PASS assertions.
-constexpr f32 kAgreeTol = 1.25f;       // client-vs-server transform agreement.
-constexpr f32 kPredictionBound = 2.5f; // |predicted - authoritative| per tick.
+constexpr f32 kAgreeTol = 1.25f;        // client-vs-server transform agreement.
+constexpr f32 kPredictionBound = 2.5f;  // |predicted - authoritative| per tick.
 
 // --- Wire helpers: server->client authoritative-avatar report (channel 0) ---
 // Carries the client's authoritative avatar position + the highest input seq
@@ -127,13 +128,13 @@ u32 get_u32(const u8* d) noexcept {
 }
 void put_f32(u8* d, f32 v) noexcept {
     u32 bits;
-    __builtin_memcpy(&bits, &v, 4);
+    std::memcpy(&bits, &v, sizeof(bits));
     put_u32(d, bits);
 }
 f32 get_f32(const u8* d) noexcept {
     const u32 bits = get_u32(d);
     f32 v;
-    __builtin_memcpy(&v, &bits, 4);
+    std::memcpy(&v, &bits, sizeof(v));
     return v;
 }
 
@@ -155,10 +156,8 @@ net::ReplicatedComponentSet make_set() {
 // One bot's deterministic ping-pong path. Position is a pure function of tick:
 // triangle wave along X about a fixed centre. No RNG, no integration drift.
 math::Vec3 bot_path(u32 bot_index, u32 tick) noexcept {
-    const f32 centre = (static_cast<f32>(bot_index) + 0.5f) *
-                       (kMapX / static_cast<f32>(kNumBots));
-    const f32 phase = static_cast<f32>(tick) * kBotSpeed +
-                      static_cast<f32>(bot_index) * 5.0f;
+    const f32 centre = (static_cast<f32>(bot_index) + 0.5f) * (kMapX / static_cast<f32>(kNumBots));
+    const f32 phase = static_cast<f32>(tick) * kBotSpeed + static_cast<f32>(bot_index) * 5.0f;
     // Triangle wave in [-1, 1] from a sawtooth, period 4*kBotSpan.
     const f32 period = 4.0f * kBotSpan;
     f32 s = std::fmod(phase, period);
@@ -185,13 +184,13 @@ math::Vec3 avatar_move(u32 client_index, u32 tick) noexcept {
 
 // --- Per-client runtime state ----------------------------------------------
 struct ClientRuntime {
-    net::HostImpl* host = nullptr;     // this client's loopback host.
-    net::PeerId to_server{};           // peer handle: client -> server.
-    net::ReplicationClient repl;       // decodes server snapshots.
-    net::Predictor predictor;          // local prediction for the avatar.
+    net::HostImpl* host = nullptr;             // this client's loopback host.
+    net::PeerId to_server{};                   // peer handle: client -> server.
+    net::ReplicationClient repl;               // decodes server snapshots.
+    net::Predictor predictor;                  // local prediction for the avatar.
     Entity predicted_avatar = kInvalidEntity;  // client-local predicted row.
     math::Vec3 avatar_start{0.f, 0.f, 0.f};
-    u32 client_key = 0;                // server-side key == server's PeerId.raw.
+    u32 client_key = 0;  // server-side key == server's PeerId.raw.
     // True once we have observed a net_id that was mapped on a prior tick
     // disappear from this client (an AOI-leave despawn).
     bool observed_despawn = false;
@@ -203,12 +202,10 @@ struct ClientRuntime {
 };
 
 // Build a server-side replicated entity at `pos` with the given net_id.
-Entity spawn_server_entity(EcsRegistry& reg, SceneGraph& graph, u32 net_id,
-                           math::Vec3 pos) noexcept {
+Entity spawn_server_entity(EcsRegistry& reg, SceneGraph& graph, u32 net_id, math::Vec3 pos) noexcept {
     LocalTransform local{};
     local.translation = pos;
-    const Entity e =
-        scene::create_scene_entity(reg, graph, scene::kInvalidSceneNode, local);
+    const Entity e = scene::create_scene_entity(reg, graph, scene::kInvalidSceneNode, local);
     net::NetIdComponent tag{};
     tag.net_id = net_id;
     reg.add<net::NetIdComponent>(e, tag);
@@ -288,8 +285,7 @@ int run_session_demo(u32 frames) {
     // seeding the AOI peer entry. Keying both the replication client_key and the
     // AOI peer on the SAME server-side PeerId.raw keeps the gate consistent.
     for (u32 c = 0; c < kNumClients; ++c) {
-        const net::PeerId s_to_c =
-            server_host->connect(static_cast<u16>(kClientPort0 + c));
+        const net::PeerId s_to_c = server_host->connect(static_cast<u16>(kClientPort0 + c));
         clients[c].client_key = s_to_c.raw;
         aoi.set_peer(s_to_c, clients[c].avatar_start, kAoiRadius);
     }
@@ -301,8 +297,7 @@ int run_session_demo(u32 frames) {
         ClientRuntime& cr = clients[c];
         LocalTransform local{};
         local.translation = cr.avatar_start;
-        cr.predicted_avatar =
-            scene::create_scene_entity(reg, graph, scene::kInvalidSceneNode, local);
+        cr.predicted_avatar = scene::create_scene_entity(reg, graph, scene::kInvalidSceneNode, local);
         net::PredictedComponent pc{};
         pc.pos = cr.avatar_start;
         reg.add<net::PredictedComponent>(cr.predicted_avatar, pc);
@@ -320,7 +315,9 @@ int run_session_demo(u32 frames) {
     u32 agree_samples = 0;  // ticks where both clients shared a visible entity.
 
     PSY_LOG_INFO("psynder_mp_demo: server + {} clients up, {} bots, {} ticks",
-                 kNumClients, kNumBots, frames);
+                 kNumClients,
+                 kNumBots,
+                 frames);
 
     // ===================== MAIN SHARED-SESSION LOOP =========================
     for (u32 tick = 1; tick <= frames; ++tick) {
@@ -333,7 +330,8 @@ int run_session_demo(u32 frames) {
             net::encode_input(cmd, std::span<u8>(ibuf.data(), ibuf.size()));
             cr.host->send(cr.to_server,
                           std::span<const u8>(ibuf.data(), ibuf.size()),
-                          /*reliable=*/true, net::kChannelDefault);
+                          /*reliable=*/true,
+                          net::kChannelDefault);
         }
 
         // --- 2. Pump client->server transport; server applies inputs --------
@@ -357,8 +355,7 @@ int run_session_demo(u32 frames) {
             for (u32 c = 0; c < kNumClients; ++c) {
                 if (clients[c].client_key == m.from.raw) {
                     server_inputs[c].process(reg, in);
-                    set_server_pos(reg, server_avatars[c],
-                                   server_inputs[c].authoritative_pos());
+                    set_server_pos(reg, server_avatars[c], server_inputs[c].authoritative_pos());
                     break;
                 }
             }
@@ -377,13 +374,18 @@ int run_session_demo(u32 frames) {
             aoi.set_peer(net::PeerId{cr.client_key}, avatar_pos, kAoiRadius);
 
             snap_scratch.clear();
-            server.serialize_snapshot_aoi(reg, cr.client_key, tick, aoi,
+            server.serialize_snapshot_aoi(reg,
+                                          cr.client_key,
+                                          tick,
+                                          aoi,
                                           net::PeerId{cr.client_key},
-                                          kSnapshotBudget, snap_scratch);
+                                          kSnapshotBudget,
+                                          snap_scratch);
             // Ship the snapshot on the snapshot channel (unreliable, latest-wins).
             server_host->send(net::PeerId{cr.client_key},
                               std::span<const u8>(snap_scratch.data(), snap_scratch.size()),
-                              /*reliable=*/false, net::kChannelSnapshot);
+                              /*reliable=*/false,
+                              net::kChannelSnapshot);
 
             // Server reports the client's authoritative avatar state for
             // reconciliation on the default channel.
@@ -394,7 +396,8 @@ int run_session_demo(u32 frames) {
             put_u32(rep.data() + 12, server_inputs[c].acked_input());
             server_host->send(net::PeerId{cr.client_key},
                               std::span<const u8>(rep.data(), rep.size()),
-                              /*reliable=*/true, net::kChannelDefault);
+                              /*reliable=*/true,
+                              net::kChannelDefault);
         }
 
         // --- 5. Pump server->client transport; clients apply + reconcile ----
@@ -413,8 +416,7 @@ int run_session_demo(u32 frames) {
                     for (u32 id = 1; id < 64; ++id)
                         before[id] = cr.repl.entity_for(id).valid();
 
-                    cr.repl.apply_snapshot(
-                        reg, std::span<const u8>(m.bytes.data(), m.bytes.size()));
+                    cr.repl.apply_snapshot(reg, std::span<const u8>(m.bytes.data(), m.bytes.size()));
 
                     // Echo the ack back on the snapshot channel.
                     const u32 ack = cr.repl.ack_seq();
@@ -422,15 +424,15 @@ int run_session_demo(u32 frames) {
                     put_u32(abuf.data(), ack);
                     cr.host->send(cr.to_server,
                                   std::span<const u8>(abuf.data(), abuf.size()),
-                                  /*reliable=*/false, net::kChannelSnapshot);
+                                  /*reliable=*/false,
+                                  net::kChannelSnapshot);
 
                     // Detect AOI despawn: a net_id mapped before, gone after.
                     for (u32 id = 1; id < 64; ++id) {
                         if (before[id] && !cr.repl.entity_for(id).valid())
                             cr.observed_despawn = true;
                     }
-                } else if (m.channel == net::kChannelDefault &&
-                           m.bytes.size() == kReportBytes) {
+                } else if (m.channel == net::kChannelDefault && m.bytes.size() == kReportBytes) {
                     // Authoritative avatar report -> reconcile prediction.
                     math::Vec3 auth{};
                     auth.x = get_f32(m.bytes.data() + 0);
@@ -484,17 +486,19 @@ int run_session_demo(u32 frames) {
             ++agree_samples;
             if (d0 > kAgreeTol || d1 > kAgreeTol || dcc > kAgreeTol) {
                 agree_failed = true;
-                PSY_LOG_WARN(
-                    "psynder_mp_demo: tick {} bot {} disagreement d0={} d1={} dcc={}",
-                    tick, id, d0, d1, dcc);
+                PSY_LOG_WARN("psynder_mp_demo: tick {} bot {} disagreement d0={} d1={} dcc={}",
+                             tick,
+                             id,
+                             d0,
+                             d1,
+                             dcc);
             }
         }
     }
     // ====================== END SESSION LOOP ================================
 
     // --- Tally the three PASS conditions ------------------------------------
-    const bool any_despawn =
-        clients[0].observed_despawn || clients[1].observed_despawn;
+    const bool any_despawn = clients[0].observed_despawn || clients[1].observed_despawn;
     f32 worst_prediction = 0.f;
     for (u32 c = 0; c < kNumClients; ++c)
         if (clients[c].max_prediction_error > worst_prediction)
@@ -507,14 +511,21 @@ int run_session_demo(u32 frames) {
     PSY_LOG_INFO(
         "psynder_mp_demo: agree_samples={} agree_ok={} despawn[c0={} c1={}] "
         "worst_pred_err={}",
-        agree_samples, agree_ok, clients[0].observed_despawn,
-        clients[1].observed_despawn, worst_prediction);
+        agree_samples,
+        agree_ok,
+        clients[0].observed_despawn,
+        clients[1].observed_despawn,
+        worst_prediction);
 
     std::printf(
         "psynder_mp_demo: frames=%u clients-agree=%d aoi-despawn=%d "
         "bounded-prediction=%d (worst_err=%.3f) %s\n",
-        frames, agree_ok ? 1 : 0, any_despawn ? 1 : 0, prediction_ok ? 1 : 0,
-        static_cast<double>(worst_prediction), pass ? "PASS" : "FAIL");
+        frames,
+        agree_ok ? 1 : 0,
+        any_despawn ? 1 : 0,
+        prediction_ok ? 1 : 0,
+        static_cast<double>(worst_prediction),
+        pass ? "PASS" : "FAIL");
     std::fflush(stdout);
 
     // --- Teardown -----------------------------------------------------------
@@ -578,16 +589,14 @@ void mc_send_join(MatchClient& c) {
     net::MatchJoinMsg req{};  // session_id 0 == find-or-create-any.
     std::array<u8, net::kMatchJoinBytes> jb{};
     net::encode_match_join(req, std::span<u8>(jb.data(), jb.size()));
-    c.host->send(c.to_server, std::span<const u8>(jb.data(), jb.size()), true,
-                 net::kChannelDefault);
+    c.host->send(c.to_server, std::span<const u8>(jb.data(), jb.size()), true, net::kChannelDefault);
 }
 
 void mc_send_leave(MatchClient& c) {
     net::MatchLeaveMsg bye{};
     std::array<u8, net::kMatchLeaveBytes> lb{};
     net::encode_match_leave(bye, std::span<u8>(lb.data(), lb.size()));
-    c.host->send(c.to_server, std::span<const u8>(lb.data(), lb.size()), true,
-                 net::kChannelDefault);
+    c.host->send(c.to_server, std::span<const u8>(lb.data(), lb.size()), true, net::kChannelDefault);
 }
 
 void mc_pump(MatchClient& c, EcsRegistry& reg) {
@@ -598,8 +607,7 @@ void mc_pump(MatchClient& c, EcsRegistry& reg) {
             c.repl.apply_snapshot(reg, std::span<const u8>(m.bytes.data(), m.bytes.size()));
             std::array<u8, 4> abuf{};
             put_u32(abuf.data(), c.repl.ack_seq());
-            c.host->send(c.to_server, std::span<const u8>(abuf.data(), 4), false,
-                         net::kChannelSnapshot);
+            c.host->send(c.to_server, std::span<const u8>(abuf.data(), 4), false, net::kChannelSnapshot);
             if (c.repl.entity_for(kDedBotNetId).valid())
                 c.saw_bot = true;
         } else if (m.channel == net::kChannelDefault && m.bytes.size() == net::kMatchReplyBytes) {
@@ -643,8 +651,8 @@ int run_dedicated_demo(u32 frames) {
     d.default_max_players = 2u;  // tiny cap: a 3rd join is rejected.
     d.max_sessions = 1u;         // single match: full session rejects the 3rd.
     d.base_net_id = 300u;
-    d.aoi_radius = 1000.0f;      // generous: every client sees the shared bot.
-    d.frame_budget = 0;          // run until the last client leaves.
+    d.aoi_radius = 1000.0f;  // generous: every client sees the shared bot.
+    d.frame_budget = 0;      // run until the last client leaves.
     d.shutdown_when_empty = true;
     if (!srv.start(d)) {
         std::printf("psynder_mp_demo: dedicated server failed to start FAIL\n");
@@ -677,8 +685,7 @@ int run_dedicated_demo(u32 frames) {
         mc_pump(*b, reg);
     }
     const bool two_joined = a->joined && b->joined;
-    const bool distinct_slots = (a->controlled_net_id != 0u) &&
-                                (b->controlled_net_id != 0u) &&
+    const bool distinct_slots = (a->controlled_net_id != 0u) && (b->controlled_net_id != 0u) &&
                                 (a->controlled_net_id != b->controlled_net_id);
 
     // 2. A third join is REJECTED at the cap.
@@ -724,16 +731,21 @@ int run_dedicated_demo(u32 frames) {
     }
     const bool clean_shutdown = (srv.admitted_peers() == 0u) && !srv.running();
 
-    const bool pass = two_joined && distinct_slots && third_rejected &&
-                      freed_after_leave && rejoined && shared_world &&
-                      running_while_clients && clean_shutdown;
+    const bool pass = two_joined && distinct_slots && third_rejected && freed_after_leave &&
+                      rejoined && shared_world && running_while_clients && clean_shutdown;
 
     std::printf(
         "psynder_mp_demo: dedicated joins=%u rejections=%u two-join=%d distinct=%d "
         "reject-3rd=%d leave-frees=%d rejoin=%d shared-world=%d clean-shutdown=%d %s\n",
-        srv.total_joins(), srv.total_rejections(), two_joined ? 1 : 0,
-        distinct_slots ? 1 : 0, third_rejected ? 1 : 0, freed_after_leave ? 1 : 0,
-        rejoined ? 1 : 0, shared_world ? 1 : 0, clean_shutdown ? 1 : 0,
+        srv.total_joins(),
+        srv.total_rejections(),
+        two_joined ? 1 : 0,
+        distinct_slots ? 1 : 0,
+        third_rejected ? 1 : 0,
+        freed_after_leave ? 1 : 0,
+        rejoined ? 1 : 0,
+        shared_world ? 1 : 0,
+        clean_shutdown ? 1 : 0,
         pass ? "PASS" : "FAIL");
     std::fflush(stdout);
 
