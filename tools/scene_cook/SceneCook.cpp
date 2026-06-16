@@ -32,6 +32,8 @@ using tools::BehaviorScalarSource;
 using tools::BehaviorSpinOp;
 using tools::BehaviorTranslateOp;
 
+struct JsonMember;
+
 struct Json {
     enum class Kind : u8 {
         Null,
@@ -47,18 +49,39 @@ struct Json {
     f64 number = 0.0;
     std::string text;
     std::vector<Json> array;
-    std::vector<std::pair<std::string, Json>> object;
+    std::vector<JsonMember> object;
 
-    [[nodiscard]] const Json* field(std::string_view key) const noexcept {
-        if (kind != Kind::Object)
-            return nullptr;
-        for (const auto& [k, v] : object) {
-            if (k == key)
-                return &v;
-        }
-        return nullptr;
-    }
+    Json();
+    Json(const Json&);
+    Json(Json&&) noexcept;
+    Json& operator=(const Json&);
+    Json& operator=(Json&&) noexcept;
+    ~Json();
+
+    [[nodiscard]] const Json* field(std::string_view key) const noexcept;
 };
+
+struct JsonMember {
+    std::string key;
+    Json value;
+};
+
+Json::Json() = default;
+Json::Json(const Json&) = default;
+Json::Json(Json&&) noexcept = default;
+Json& Json::operator=(const Json&) = default;
+Json& Json::operator=(Json&&) noexcept = default;
+Json::~Json() = default;
+
+const Json* Json::field(std::string_view key) const noexcept {
+    if (kind != Kind::Object)
+        return nullptr;
+    for (const JsonMember& member : object) {
+        if (member.key == key)
+            return &member.value;
+    }
+    return nullptr;
+}
 
 class JsonParser {
    public:
@@ -84,8 +107,7 @@ class JsonParser {
     [[nodiscard]] char peek() const noexcept { return pos_ < input_.size() ? input_[pos_] : '\0'; }
 
     void skip_ws() noexcept {
-        while (pos_ < input_.size() &&
-               std::isspace(static_cast<unsigned char>(input_[pos_])) != 0) {
+        while (pos_ < input_.size() && std::isspace(static_cast<unsigned char>(input_[pos_])) != 0) {
             ++pos_;
         }
     }
@@ -271,7 +293,7 @@ class JsonParser {
             Json value;
             if (!parse_value(value))
                 return false;
-            out.object.emplace_back(std::move(key), std::move(value));
+            out.object.push_back(JsonMember{std::move(key), std::move(value)});
             skip_ws();
             if (consume('}'))
                 return true;
@@ -353,8 +375,8 @@ struct CookScene {
     const u8 b = hex_byte(s.substr(5, 2), ok);
     if (!ok)
         return fallback;
-    return static_cast<u32>(r) | (static_cast<u32>(g) << 8u) |
-           (static_cast<u32>(b) << 16u) | (0xFFu << 24u);
+    return static_cast<u32>(r) | (static_cast<u32>(g) << 8u) | (static_cast<u32>(b) << 16u) |
+           (0xFFu << 24u);
 }
 
 [[nodiscard]] scene::ObjectMobility read_mobility(const Json* v) noexcept {
@@ -488,10 +510,7 @@ struct CookScene {
            parse_f32_token(body.substr(comma1 + 1u), out.z);
 }
 
-[[nodiscard]] bool parse_pair_call(std::string_view source,
-                                   std::string_view call,
-                                   f32& a,
-                                   f32& b) noexcept {
+[[nodiscard]] bool parse_pair_call(std::string_view source, std::string_view call, f32& a, f32& b) noexcept {
     const usize marker = source.find(call);
     if (marker == std::string_view::npos)
         return false;
@@ -503,8 +522,7 @@ struct CookScene {
     const usize comma = body.find(',');
     if (comma == std::string_view::npos)
         return false;
-    return parse_f32_token(body.substr(0u, comma), a) &&
-           parse_f32_token(body.substr(comma + 1u), b);
+    return parse_f32_token(body.substr(0u, comma), a) && parse_f32_token(body.substr(comma + 1u), b);
 }
 
 [[nodiscard]] bool parse_assignment_number(std::string_view source,
@@ -519,8 +537,7 @@ struct CookScene {
     return parse_f32_token(source.substr(equals + 1u), out);
 }
 
-[[nodiscard]] std::string read_identifier_after(std::string_view source,
-                                                std::string_view marker) {
+[[nodiscard]] std::string read_identifier_after(std::string_view source, std::string_view marker) {
     const usize start = source.find(marker);
     if (start == std::string_view::npos)
         return {};
@@ -536,8 +553,7 @@ struct CookScene {
     return std::string{tail.substr(0u, end)};
 }
 
-[[nodiscard]] std::string read_quoted_after(std::string_view source,
-                                            std::string_view marker) {
+[[nodiscard]] std::string read_quoted_after(std::string_view source, std::string_view marker) {
     const usize start = source.find(marker);
     if (start == std::string_view::npos)
         return {};
@@ -559,9 +575,8 @@ struct CookScene {
     return source.substr(start, next - start);
 }
 
-[[nodiscard]] BehaviorScalarExpr read_behavior_scalar(
-    const Json* v,
-    BehaviorScalarExpr fallback = {}) noexcept {
+[[nodiscard]] BehaviorScalarExpr read_behavior_scalar(const Json* v,
+                                                      BehaviorScalarExpr fallback = {}) noexcept {
     if (!v)
         return fallback;
     if (v->kind == Json::Kind::Number)
@@ -570,9 +585,8 @@ struct CookScene {
         return fallback;
     const Json* type = v->field("type");
     if (type && type->kind == Json::Kind::String && type->text == "linearIndex") {
-        return BehaviorScalarExpr::linear_index(
-            read_f32(v->field("base"), fallback.base),
-            read_f32(v->field("step"), fallback.step));
+        return BehaviorScalarExpr::linear_index(read_f32(v->field("base"), fallback.base),
+                                                read_f32(v->field("step"), fallback.step));
     }
     return BehaviorScalarExpr::constant(read_f32(v->field("value"), fallback.base));
 }
@@ -751,9 +765,7 @@ struct CookScene {
     return true;
 }
 
-[[nodiscard]] bool cook_psygraph_graph(const Json& graph,
-                                       BehaviorProgram& program,
-                                       std::string& error) {
+[[nodiscard]] bool cook_psygraph_graph(const Json& graph, BehaviorProgram& program, std::string& error) {
     if (graph.kind != Json::Kind::Object) {
         error = "PsyGraph graph must be an object";
         return false;
@@ -841,8 +853,7 @@ struct CookScene {
         emitted = true;
     }
 
-    const std::string_view translate_source =
-        behavior_op_slice(source_view, "transform.translate");
+    const std::string_view translate_source = behavior_op_slice(source_view, "transform.translate");
     if (!translate_source.empty()) {
         math::Vec3 axis{0.0f, 1.0f, 0.0f};
         const usize axis_marker = translate_source.find("axis");
@@ -915,11 +926,9 @@ struct CookScene {
         spin.target_group_name_offset = add_string(out, op.target_group);
         spin.axis = op.axis;
         spin.speed_base = op.speed.base;
-        spin.speed_step =
-            op.speed.source == BehaviorScalarSource::LinearIndex ? op.speed.step : 0.0f;
+        spin.speed_step = op.speed.source == BehaviorScalarSource::LinearIndex ? op.speed.step : 0.0f;
         spin.phase_base = op.phase.base;
-        spin.phase_step =
-            op.phase.source == BehaviorScalarSource::LinearIndex ? op.phase.step : 0.0f;
+        spin.phase_step = op.phase.source == BehaviorScalarSource::LinearIndex ? op.phase.step : 0.0f;
         spin.flags = op.active ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
                                : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
         out.behavior_spin_ops.push_back(spin);
@@ -941,9 +950,9 @@ struct CookScene {
         translate.amount_base = op.amount.base;
         translate.amount_step =
             op.amount.source == BehaviorScalarSource::LinearIndex ? op.amount.step : 0.0f;
-        translate.flags =
-            op.active ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
-                      : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
+        translate.flags = op.active
+                              ? scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::Active)
+                              : scene::entity_behavior_flags_bits(scene::EntityBehaviorFlags::None);
         out.behavior_translate_ops.push_back(translate);
     }
     return true;
@@ -982,8 +991,10 @@ struct CookScene {
             camera.fov_y_rad = read_f32(c.field("fovYDegrees"), 60.0f) * math::kDegToRad;
             camera.near_z = read_f32(c.field("nearZ"), camera.near_z);
             camera.far_z = read_f32(c.field("farZ"), camera.far_z);
-            camera.tile_w = static_cast<u32>(read_f32(c.field("tileW"), static_cast<f32>(camera.tile_w)));
-            camera.tile_h = static_cast<u32>(read_f32(c.field("tileH"), static_cast<f32>(camera.tile_h)));
+            camera.tile_w =
+                static_cast<u32>(read_f32(c.field("tileW"), static_cast<f32>(camera.tile_w)));
+            camera.tile_h =
+                static_cast<u32>(read_f32(c.field("tileH"), static_cast<f32>(camera.tile_h)));
             camera.active = read_bool(c.field("active"), true) ? 1u : 0u;
             out.cameras.push_back(camera);
         }
@@ -1048,8 +1059,7 @@ struct CookScene {
                 material && material->kind == Json::Kind::String) {
                 instance.material_name_offset = add_string(out, material->text);
             }
-            if (const Json* group = m.field("group");
-                group && group->kind == Json::Kind::String) {
+            if (const Json* group = m.field("group"); group && group->kind == Json::Kind::String) {
                 instance.group_name_offset = add_string(out, group->text);
             }
             instance.mobility = read_mobility(m.field("mobility"));
@@ -1089,9 +1099,8 @@ void append_bytes(std::vector<u8>& out, const void* data, usize bytes) {
 }
 
 void pad_to_alignment(std::vector<u8>& out) {
-    const usize aligned =
-        ((out.size() + scene::kPsySceneAlignment - 1u) / scene::kPsySceneAlignment) *
-        scene::kPsySceneAlignment;
+    const usize aligned = ((out.size() + scene::kPsySceneAlignment - 1u) / scene::kPsySceneAlignment) *
+                          scene::kPsySceneAlignment;
     out.resize(aligned, 0u);
 }
 
@@ -1163,15 +1172,16 @@ void append_chunk(std::vector<u8>& bytes,
     append_chunk(bytes,
                  chunks,
                  scene::SceneFileChunkType::BehaviorSpinOps,
-                 std::span<const scene::SceneFileBehaviorSpinOp>{
-                     scene.behavior_spin_ops.data(), scene.behavior_spin_ops.size()},
+                 std::span<const scene::SceneFileBehaviorSpinOp>{scene.behavior_spin_ops.data(),
+                                                                 scene.behavior_spin_ops.size()},
                  sizeof(scene::SceneFileBehaviorSpinOp));
-    append_chunk(bytes,
-                 chunks,
-                 scene::SceneFileChunkType::BehaviorTranslateOps,
-                 std::span<const scene::SceneFileBehaviorTranslateOp>{
-                     scene.behavior_translate_ops.data(), scene.behavior_translate_ops.size()},
-                 sizeof(scene::SceneFileBehaviorTranslateOp));
+    append_chunk(
+        bytes,
+        chunks,
+        scene::SceneFileChunkType::BehaviorTranslateOps,
+        std::span<const scene::SceneFileBehaviorTranslateOp>{scene.behavior_translate_ops.data(),
+                                                             scene.behavior_translate_ops.size()},
+        sizeof(scene::SceneFileBehaviorTranslateOp));
 
     scene::SceneFileHeader header{};
     header.file_bytes = static_cast<u32>(bytes.size());

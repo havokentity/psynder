@@ -56,6 +56,7 @@
 #include "physics/Body.h"
 #include "physics/Narrowphase.h"
 
+#include <bit>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -134,8 +135,8 @@ struct BodyColorUsage {
     // One bitset row per body slot; flat [body * kWords + word]. Plus a per-body
     // generation stamp so we can "clear" the whole structure in O(1) by bumping
     // the global stamp instead of zeroing every row each island.
-    std::vector<u64> bits;     // size num_bodies * kWords
-    std::vector<u32> stamp;    // size num_bodies
+    std::vector<u64> bits;   // size num_bodies * kWords
+    std::vector<u32> stamp;  // size num_bodies
     u32 cur_stamp = 0;
 
     void ensure(usize num_bodies) {
@@ -171,7 +172,7 @@ PSY_FORCEINLINE u32 pick_color_from_words(const u64* used, bool* sat) noexcept {
     for (u32 w = 0; w < BodyColorUsage::kWords; ++w) {
         u64 free_bits = ~used[w];
         if (free_bits != 0u) {
-            u32 bit = static_cast<u32>(__builtin_ctzll(free_bits));
+            u32 bit = static_cast<u32>(std::countr_zero(free_bits));
             u32 color = w * 64u + bit;
             if (color < kMaxSolverColors) {
                 *sat = false;
@@ -313,8 +314,7 @@ using ColorBatchDispatch =
 // Serial dispatcher: the whole batch on this thread, ascending order. Default
 // for kernel_solve_island (tests + small-island fallback); bit-identical to the
 // parallel dispatcher (disjoint bodies => order-free).
-inline void solver_serial_dispatch(usize count,
-                                   const std::function<void(usize, usize)>& fn) {
+inline void solver_serial_dispatch(usize count, const std::function<void(usize, usize)>& fn) {
     fn(0, count);
 }
 

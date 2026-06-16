@@ -65,18 +65,17 @@ bool fire_hook(void* user, Entity agent, Entity target) {
 }
 
 // LOS hook that always reports clear sight.
-bool los_clear(void*, math::Vec3, math::Vec3) { return true; }
+bool los_clear(void*, math::Vec3, math::Vec3) {
+    return true;
+}
 
 // LOS hook that always reports a blocked line (a wall everywhere).
-bool los_blocked(void*, math::Vec3, math::Vec3) { return false; }
+bool los_blocked(void*, math::Vec3, math::Vec3) {
+    return false;
+}
 
-Entity spawn_agent(Scene& scene,
-                   math::Vec3 pos,
-                   u32 faction,
-                   f32 hp,
-                   f32 sight,
-                   f32 attack_range,
-                   f32 move_speed = 5.0f) {
+Entity spawn_agent(
+    Scene& scene, math::Vec3 pos, u32 faction, f32 hp, f32 sight, f32 attack_range, f32 move_speed = 5.0f) {
     LocalTransform local{};
     local.translation = pos;
     const Entity e = scene.create_entity(local);
@@ -113,14 +112,17 @@ Entity spawn_target(Scene& scene, math::Vec3 pos, u32 faction, f32 hp) {
 }  // namespace
 
 // ─── Idle -> Patrol -> Chase -> Attack + fires ────────────────────────────────
-TEST_CASE("ai: visible hostile in range drives Idle->...->Attack and fires",
-          "[ai][fsm]") {
+TEST_CASE("ai: visible hostile in range drives Idle->...->Attack and fires", "[ai][fsm]") {
     RegistryReset reset;
     Scene scene{EcsRegistry::Get()};
 
     // Agent faction 1, hostile faction 2 at x=3 (inside attack_range 5).
-    const Entity agent = spawn_agent(scene, {0, 0, 0}, /*faction*/ 1u, /*hp*/ 100.0f,
-                                     /*sight*/ 30.0f, /*attack*/ 5.0f);
+    const Entity agent = spawn_agent(scene,
+                                     {0, 0, 0},
+                                     /*faction*/ 1u,
+                                     /*hp*/ 100.0f,
+                                     /*sight*/ 30.0f,
+                                     /*attack*/ 5.0f);
     const Entity enemy = spawn_target(scene, {3, 0, 0}, /*faction*/ 2u, /*hp*/ 100.0f);
 
     FireSink sink;
@@ -148,13 +150,17 @@ TEST_CASE("ai: visible hostile in range drives Idle->...->Attack and fires",
 }
 
 // ─── Visible but out of attack range => Chase, no fire ────────────────────────
-TEST_CASE("ai: visible hostile beyond attack range chases without firing",
-          "[ai][fsm]") {
+TEST_CASE("ai: visible hostile beyond attack range chases without firing", "[ai][fsm]") {
     RegistryReset reset;
     Scene scene{EcsRegistry::Get()};
 
-    const Entity agent = spawn_agent(scene, {0, 0, 0}, 1u, 100.0f, /*sight*/ 30.0f,
-                                     /*attack*/ 4.0f, /*move*/ 5.0f);
+    const Entity agent = spawn_agent(scene,
+                                     {0, 0, 0},
+                                     1u,
+                                     100.0f,
+                                     /*sight*/ 30.0f,
+                                     /*attack*/ 4.0f,
+                                     /*move*/ 5.0f);
     spawn_target(scene, {20, 0, 0}, 2u, 100.0f);  // far away but in sight
 
     FireSink sink;
@@ -175,13 +181,17 @@ TEST_CASE("ai: visible hostile beyond attack range chases without firing",
 }
 
 // ─── LOS blocked => NOT attacked; chase to last-seen ──────────────────────────
-TEST_CASE("ai: hostile behind an LOS-blocking wall is not attacked, chases last-seen",
-          "[ai][los]") {
+TEST_CASE("ai: hostile behind an LOS-blocking wall is not attacked, chases last-seen", "[ai][los]") {
     RegistryReset reset;
     Scene scene{EcsRegistry::Get()};
 
-    const Entity agent = spawn_agent(scene, {0, 0, 0}, 1u, 100.0f, /*sight*/ 30.0f,
-                                     /*attack*/ 10.0f, /*move*/ 5.0f);
+    const Entity agent = spawn_agent(scene,
+                                     {0, 0, 0},
+                                     1u,
+                                     100.0f,
+                                     /*sight*/ 30.0f,
+                                     /*attack*/ 10.0f,
+                                     /*move*/ 5.0f);
     const Entity enemy = spawn_target(scene, {3, 0, 0}, 2u, 100.0f);  // in range
 
     FireSink sink;
@@ -254,14 +264,19 @@ TEST_CASE("ai: patrol advances through its waypoint ring", "[ai][patrol]") {
 
     // No hostile => the agent patrols. move_speed high so it covers the leg in
     // one step; arrive + dwell + advance.
-    const Entity agent = spawn_agent(scene, {0, 0, 0}, 1u, 100.0f, /*sight*/ 5.0f,
-                                     /*attack*/ 2.0f, /*move*/ 100.0f);
+    const Entity agent = spawn_agent(scene,
+                                     {0, 0, 0},
+                                     1u,
+                                     100.0f,
+                                     /*sight*/ 5.0f,
+                                     /*attack*/ 2.0f,
+                                     /*move*/ 100.0f);
     PatrolComponent patrol{};
     patrol.count = 2u;
     patrol.current = 0u;
     patrol.waypoints[0] = math::Vec3{2.0f, 0.0f, 0.0f};
     patrol.waypoints[1] = math::Vec3{2.0f, 0.0f, 2.0f};
-    patrol.wait_time = 0.0f;       // advance immediately on arrival
+    patrol.wait_time = 0.0f;  // advance immediately on arrival
     patrol.arrive_radius = 0.25f;
     scene.registry().add<PatrolComponent>(agent, sanitize_patrol(patrol));
 
@@ -297,8 +312,13 @@ TEST_CASE("ai: a zero-health agent goes Dead and stops acting", "[ai][death]") {
     RegistryReset reset;
     Scene scene{EcsRegistry::Get()};
 
-    const Entity agent = spawn_agent(scene, {0, 0, 0}, 1u, /*hp*/ 100.0f, 30.0f,
-                                     /*attack*/ 10.0f, /*move*/ 5.0f);
+    const Entity agent = spawn_agent(scene,
+                                     {0, 0, 0},
+                                     1u,
+                                     /*hp*/ 100.0f,
+                                     30.0f,
+                                     /*attack*/ 10.0f,
+                                     /*move*/ 5.0f);
     const Entity enemy = spawn_target(scene, {3, 0, 0}, 2u, 100.0f);
     (void)enemy;
 
@@ -331,8 +351,7 @@ TEST_CASE("ai: a zero-health agent goes Dead and stops acting", "[ai][death]") {
 }
 
 // ─── Multi-agent / multi-chunk: race-free + alloc-free ────────────────────────
-TEST_CASE("ai: many agents across chunks think + act race-free and alloc-free",
-          "[ai][parallel]") {
+TEST_CASE("ai: many agents across chunks think + act race-free and alloc-free", "[ai][parallel]") {
     RegistryReset reset;
     Scene scene{EcsRegistry::Get()};
 
@@ -346,8 +365,12 @@ TEST_CASE("ai: many agents across chunks think + act race-free and alloc-free",
     agents.reserve(kCount);
     for (int i = 0; i < kCount; ++i) {
         const f32 z = static_cast<f32>(i) * 8.0f;  // separate lanes, no cross-talk
-        const Entity a = spawn_agent(scene, {0.0f, 0.0f, z}, /*faction*/ 1u, 100.0f,
-                                     /*sight*/ 30.0f, /*attack*/ 5.0f);
+        const Entity a = spawn_agent(scene,
+                                     {0.0f, 0.0f, z},
+                                     /*faction*/ 1u,
+                                     100.0f,
+                                     /*sight*/ 30.0f,
+                                     /*attack*/ 5.0f);
         agents.push_back(a);
         spawn_target(scene, {2.0f, 0.0f, z}, /*faction*/ 2u, 100.0f);  // in range
     }
@@ -441,8 +464,7 @@ TEST_CASE("ai: A* finds a path around a wall through the one gap", "[ai][nav]") 
 }
 
 // ─── No path returns cleanly when the goal is walled off ─────────────────────
-TEST_CASE("ai: A* returns no-path cleanly when the goal is fully walled off",
-          "[ai][nav]") {
+TEST_CASE("ai: A* returns no-path cleanly when the goal is fully walled off", "[ai][nav]") {
     // 9x9 grid. A complete 3x3 box of walls around the goal cell (4,4) seals it
     // off — every neighbouring cell is blocked, so no route can reach it.
     NavGrid g = make_grid(9u, 9u);
@@ -456,8 +478,8 @@ TEST_CASE("ai: A* returns no-path cleanly when the goal is fully walled off",
     NavPath path;
     const bool ok = q.find_path(g, NavCell{0, 0}, NavCell{4, 4}, path);
 
-    REQUIRE_FALSE(ok);         // unreachable
-    REQUIRE(path.empty());     // cleared, no partial path
+    REQUIRE_FALSE(ok);      // unreachable
+    REQUIRE(path.empty());  // cleared, no partial path
     REQUIRE(path.count == 0u);
 
     // A blocked START is likewise a clean no-path, never a crash.
@@ -472,8 +494,8 @@ TEST_CASE("ai: A* returns no-path cleanly when the goal is fully walled off",
     REQUIRE(path3.empty());
 }
 
-// ─── Determinism: identical grid+endpoints => identical waypoint list ────────
-TEST_CASE("ai: A* is deterministic — identical waypoints across repeated runs",
+// Determinism: identical grid+endpoints => identical waypoint list.
+TEST_CASE("ai: A* is deterministic - identical waypoints across repeated runs",
           "[ai][nav][determinism]") {
     NavGrid g = make_grid(20u, 20u);
     // A scattering of obstacles to force a non-trivial route with tie choices.
@@ -508,8 +530,7 @@ TEST_CASE("ai: A* is deterministic — identical waypoints across repeated runs"
 }
 
 // ─── Smoothing reduces waypoint count on an open diagonal ────────────────────
-TEST_CASE("ai: string-pull smoothing reduces waypoints on an open diagonal",
-          "[ai][nav][smooth]") {
+TEST_CASE("ai: string-pull smoothing reduces waypoints on an open diagonal", "[ai][nav][smooth]") {
     // Wide open grid, straight diagonal route: the raw cell path is many
     // cell-centre steps; smoothing should collapse it to (nearly) start+goal
     // since the whole diagonal is in clear line of sight.
@@ -532,8 +553,7 @@ TEST_CASE("ai: string-pull smoothing reduces waypoints on an open diagonal",
 }
 
 // ─── Path-following: an agent reaches the goal cell over N ticks ─────────────
-TEST_CASE("ai: a nav-routed agent reaches the goal cell over many ticks",
-          "[ai][nav][follow]") {
+TEST_CASE("ai: a nav-routed agent reaches the goal cell over many ticks", "[ai][nav][follow]") {
     RegistryReset reset;
     Scene scene{EcsRegistry::Get()};
 
@@ -546,13 +566,17 @@ TEST_CASE("ai: a nav-routed agent reaches the goal cell over many ticks",
 
     // An agent (faction 1) with no hostile => it would Idle; give it a 1-waypoint
     // patrol AT the goal so think() drives it to Patrol and navigate() routes it.
-    const Entity agent = spawn_agent(scene, {1.5f, 0.0f, 1.5f}, /*faction*/ 1u,
-                                     /*hp*/ 100.0f, /*sight*/ 1.0f, /*attack*/ 1.0f,
+    const Entity agent = spawn_agent(scene,
+                                     {1.5f, 0.0f, 1.5f},
+                                     /*faction*/ 1u,
+                                     /*hp*/ 100.0f,
+                                     /*sight*/ 1.0f,
+                                     /*attack*/ 1.0f,
                                      /*move*/ 6.0f);
     PatrolComponent patrol{};
     patrol.count = 1u;
     patrol.waypoints[0] = math::Vec3{9.5f, 0.0f, 5.5f};
-    patrol.wait_time = 1000.0f;   // never advance once arrived
+    patrol.wait_time = 1000.0f;  // never advance once arrived
     patrol.arrive_radius = 0.5f;
     scene.registry().add<PatrolComponent>(agent, sanitize_patrol(patrol));
 
@@ -591,8 +615,13 @@ TEST_CASE("ai: with no nav grid wired, navigate() is a no-op", "[ai][nav]") {
     RegistryReset reset;
     Scene scene{EcsRegistry::Get()};
 
-    const Entity agent = spawn_agent(scene, {0, 0, 0}, 1u, 100.0f, /*sight*/ 30.0f,
-                                     /*attack*/ 4.0f, /*move*/ 5.0f);
+    const Entity agent = spawn_agent(scene,
+                                     {0, 0, 0},
+                                     1u,
+                                     100.0f,
+                                     /*sight*/ 30.0f,
+                                     /*attack*/ 4.0f,
+                                     /*move*/ 5.0f);
     spawn_target(scene, {20, 0, 0}, 2u, 100.0f);  // far, in sight => Chase
     // Even with a NavAgentComponent present, a null nav_grid means no routing.
     scene.registry().add<NavAgentComponent>(agent, sanitize_nav_agent(NavAgentComponent{}));
@@ -620,8 +649,13 @@ TEST_CASE("ai: separation nudges co-located agents apart", "[ai][nav][separation
 
     // Two agents almost on top of each other, both routing to the same far goal.
     auto make_nav_agent = [&](math::Vec3 pos) {
-        const Entity e = spawn_agent(scene, pos, /*faction*/ 1u, 100.0f,
-                                     /*sight*/ 1.0f, /*attack*/ 1.0f, /*move*/ 3.0f);
+        const Entity e = spawn_agent(scene,
+                                     pos,
+                                     /*faction*/ 1u,
+                                     100.0f,
+                                     /*sight*/ 1.0f,
+                                     /*attack*/ 1.0f,
+                                     /*move*/ 3.0f);
         PatrolComponent patrol{};
         patrol.count = 1u;
         patrol.waypoints[0] = math::Vec3{12.5f, 0.0f, 12.5f};
@@ -629,7 +663,7 @@ TEST_CASE("ai: separation nudges co-located agents apart", "[ai][nav][separation
         patrol.arrive_radius = 0.5f;
         scene.registry().add<PatrolComponent>(e, sanitize_patrol(patrol));
         NavAgentComponent nav{};
-        nav.separation_radius = 1.5f;   // enable separation
+        nav.separation_radius = 1.5f;  // enable separation
         nav.separation_weight = 4.0f;
         scene.registry().add<NavAgentComponent>(e, sanitize_nav_agent(nav));
         return e;
