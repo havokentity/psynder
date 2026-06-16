@@ -5,6 +5,8 @@
 
 #include "scene/SceneGraph.h"  // LocalTransform / TransformComponent fields.
 
+#include <cstring>
+
 namespace psynder::net {
 
 namespace {
@@ -24,13 +26,13 @@ PSY_FORCEINLINE u32 read_u32_le(const u8* p) noexcept {
 // the little-endian byte order the whole protocol already mandates).
 PSY_FORCEINLINE void write_f32_le(u8* p, f32 v) noexcept {
     u32 bits;
-    __builtin_memcpy(&bits, &v, sizeof(bits));
+    std::memcpy(&bits, &v, sizeof(bits));
     write_u32_le(p, bits);
 }
 PSY_FORCEINLINE f32 read_f32_le(const u8* p) noexcept {
     u32 bits = read_u32_le(p);
     f32 v;
-    __builtin_memcpy(&v, &bits, sizeof(v));
+    std::memcpy(&v, &bits, sizeof(v));
     return v;
 }
 
@@ -114,9 +116,7 @@ void Predictor::write_ecs_(scene::EcsRegistry& registry) noexcept {
         tc->local.translation = predicted_pos_;
 }
 
-InputCmd Predictor::predict(scene::EcsRegistry& registry,
-                            u32 client_tick,
-                            math::Vec3 move) noexcept {
+InputCmd Predictor::predict(scene::EcsRegistry& registry, u32 client_tick, math::Vec3 move) noexcept {
     InputCmd cmd{};
     cmd.seq = next_seq_++;
     cmd.tick = client_tick;

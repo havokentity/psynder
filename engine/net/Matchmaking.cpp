@@ -6,6 +6,8 @@
 #include "Frame.h"  // kChannelDefault / kChannelSnapshot.
 #include "scene/SceneEcs.h"
 
+#include <cstring>
+
 namespace psynder::net {
 
 namespace {
@@ -89,15 +91,14 @@ bool decode_match_leave(std::span<const u8> in, MatchLeaveMsg& m) noexcept {
 }
 
 // --- Matchmaker --------------------------------------------------------------
-Matchmaker::Matchmaker(u32 default_max_players, u32 base_net_id,
-                       u32 max_sessions) noexcept
-    : default_max_players_(default_max_players == 0 ? 8u : default_max_players),
-      max_sessions_(max_sessions == 0 ? static_cast<u32>(kMaxSessions)
-                    : (max_sessions > static_cast<u32>(kMaxSessions)
-                           ? static_cast<u32>(kMaxSessions)
-                           : max_sessions)),
-      next_session_id_(1),
-      next_net_id_block_(base_net_id == 0 ? 1u : base_net_id) {}
+Matchmaker::Matchmaker(u32 default_max_players, u32 base_net_id, u32 max_sessions) noexcept
+    : default_max_players_(default_max_players == 0 ? 8u : default_max_players)
+    , max_sessions_(max_sessions == 0 ? static_cast<u32>(kMaxSessions)
+                                      : (max_sessions > static_cast<u32>(kMaxSessions)
+                                             ? static_cast<u32>(kMaxSessions)
+                                             : max_sessions))
+    , next_session_id_(1)
+    , next_net_id_block_(base_net_id == 0 ? 1u : base_net_id) {}
 
 isize Matchmaker::find_session_(u32 session_id) const noexcept {
     if (session_id == 0)
@@ -157,8 +158,7 @@ isize Matchmaker::alloc_session_(u32 max_players) noexcept {
     return -1;
 }
 
-MatchJoinResult Matchmaker::try_join(u32 peer_key, u32 session_id,
-                                     u32 requested_max) noexcept {
+MatchJoinResult Matchmaker::try_join(u32 peer_key, u32 session_id, u32 requested_max) noexcept {
     MatchJoinResult r{};
 
     // Already admitted somewhere? Idempotent re-join of the SAME session.
@@ -228,8 +228,7 @@ MatchJoinResult Matchmaker::try_join(u32 peer_key, u32 session_id,
     return r;
 }
 
-bool Matchmaker::leave(u32 peer_key, u32& out_session_id,
-                       u32& out_freed_net_id) noexcept {
+bool Matchmaker::leave(u32 peer_key, u32& out_session_id, u32& out_freed_net_id) noexcept {
     out_session_id = 0;
     out_freed_net_id = 0;
     const isize si = find_session_of_peer_(peer_key);
@@ -284,14 +283,17 @@ u32 Matchmaker::total_admitted() const noexcept {
 }
 
 // --- DedicatedServer ---------------------------------------------------------
-DedicatedServer::DedicatedServer(scene::EcsRegistry& reg, scene::SceneGraph& graph,
+DedicatedServer::DedicatedServer(scene::EcsRegistry& reg,
+                                 scene::SceneGraph& graph,
                                  const ReplicatedComponentSet& set) noexcept
     : reg_(reg), graph_(graph), mm_(8, 100), repl_(set) {
     inbox_.reserve(64);
     snap_scratch_.reserve(2048);
 }
 
-DedicatedServer::~DedicatedServer() { stop(); }
+DedicatedServer::~DedicatedServer() {
+    stop();
+}
 
 bool DedicatedServer::start(const Desc& desc) noexcept {
     if (host_)
@@ -364,8 +366,7 @@ void DedicatedServer::admit_avatar_(u32 peer_key, const MatchJoinResult& r) noex
     const math::Vec3 spawn = spawn_for_(r.player_index);
     scene::LocalTransform local{};
     local.translation = spawn;
-    const Entity avatar =
-        scene::create_scene_entity(reg_, graph_, scene::kInvalidSceneNode, local);
+    const Entity avatar = scene::create_scene_entity(reg_, graph_, scene::kInvalidSceneNode, local);
     NetIdComponent tag{};
     tag.net_id = r.controlled_net_id;
     reg_.add<NetIdComponent>(avatar, tag);
@@ -426,7 +427,8 @@ u32 DedicatedServer::step() noexcept {
                 encode_match_reply(rep, std::span<u8>(reply_buf_.data(), reply_buf_.size()));
                 host_->send(m.from,
                             std::span<const u8>(reply_buf_.data(), reply_buf_.size()),
-                            /*reliable=*/true, kChannelDefault);
+                            /*reliable=*/true,
+                            kChannelDefault);
             }
             continue;
         }
@@ -473,28 +475,34 @@ u32 DedicatedServer::step() noexcept {
         const math::Vec3 apos = cs.input.authoritative_pos();
         aoi_.set_peer(PeerId{cs.peer_key}, apos, desc_.aoi_radius);
         snap_scratch_.clear();
-        repl_.serialize_snapshot_aoi(reg_, cs.peer_key, tick_, aoi_,
-                                     PeerId{cs.peer_key}, /*byte_budget=*/0,
+        repl_.serialize_snapshot_aoi(reg_,
+                                     cs.peer_key,
+                                     tick_,
+                                     aoi_,
+                                     PeerId{cs.peer_key},
+                                     /*byte_budget=*/0,
                                      snap_scratch_);
         host_->send(PeerId{cs.peer_key},
                     std::span<const u8>(snap_scratch_.data(), snap_scratch_.size()),
-                    /*reliable=*/false, kChannelSnapshot);
+                    /*reliable=*/false,
+                    kChannelSnapshot);
 
         // Authoritative avatar report for the client's reconciliation, on the
         // default channel: pos(12) + acked_input(4) == 16 bytes (mirrors mp_demo).
         std::array<u8, 16> rep{};
         const math::Vec3 a = cs.input.authoritative_pos();
         u32 bx, by, bz;
-        __builtin_memcpy(&bx, &a.x, 4);
-        __builtin_memcpy(&by, &a.y, 4);
-        __builtin_memcpy(&bz, &a.z, 4);
+        std::memcpy(&bx, &a.x, sizeof(bx));
+        std::memcpy(&by, &a.y, sizeof(by));
+        std::memcpy(&bz, &a.z, sizeof(bz));
         write_u32_le(rep.data() + 0, bx);
         write_u32_le(rep.data() + 4, by);
         write_u32_le(rep.data() + 8, bz);
         write_u32_le(rep.data() + 12, cs.input.acked_input());
         host_->send(PeerId{cs.peer_key},
                     std::span<const u8>(rep.data(), rep.size()),
-                    /*reliable=*/true, kChannelDefault);
+                    /*reliable=*/true,
+                    kChannelDefault);
     }
 
     // --- 4. Flush server sends + drain client snapshot acks ----------------
